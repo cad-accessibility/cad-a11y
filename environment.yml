@@ -1,0 +1,11 @@
+name: cad-a11y
+channels:
+  - conda-forge
+dependencies:
+  - python=3.9
+  - pythonocc-core
+  - pip
+  - pip:
+    - svgwrite
+    - flask
+    - flask-cors
