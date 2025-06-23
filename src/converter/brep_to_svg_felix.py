@@ -3,10 +3,13 @@ import create_hatch_lines_single_depth
 import os
 from copy import deepcopy
 
+from OCC.Core.BRepBndLib import brepbndlib
+from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.gp import gp_Pnt, gp_Dir,gp_Ax2, gp_Trsf, gp_Vec, gp_Ax1
 from OCC.Core.IntCurvesFace import IntCurvesFace_ShapeIntersector
 from OCC.Core.Quantity import Quantity_NOC_BLACK, Quantity_NOC_RED, Quantity_NOC_WHITE, Quantity_Color, Quantity_TOC_RGB
-from OCC.Core.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
+from OCC.Core.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape, HLRBRep_Data, HLRBRep_EdgeData, HLRBRep_FaceIterator
+from OCC.Core.HLRAlgo import HLRAlgo_EdgeIterator
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
 from OCC.Core.TopExp import TopExp_Explorer
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE
@@ -250,8 +253,67 @@ def is_point_visible(p, visibility_checker, projector, tolerance=1e-6):
     if p.Distance(intersection_point) < tolerance:
         return p_2d, True
     return p_2d, False
-    
 
+def get_edges(shape, algo):
+    data_structure: HLRBRep_Data = algo.DataStructure()
+
+    it = HLRAlgo_EdgeIterator()
+
+def InternalCompound(S, hlr):
+    """
+    reproduce internalCompound of occ by python
+    """
+    DS: HLRBRep_Data = hlr.DataStructure()
+
+    e1 = 1
+    e2 = DS.NbEdges()
+    f1 = 1
+    f2 = DS.NbFaces()
+    print("edges", e2)
+    print("faces", f2)
+
+    if S is not None:
+        index = hlr.Index(S)
+        v1, v2, e1, e2, f1, f2 = hlr.ShapeBounds(index).Bounds()
+    # end if
+    print("bounds", e1, e2, f1, f2)
+
+    #for ie in range(e1, e2 + 1):
+    for iface in range(f1, f2 + 1):
+        print("iface", iface)
+        DrawFace(iface, DS)
+        # end for
+    # end for
+
+
+def DrawFace(iface: int, DS: HLRBRep_Data,):
+    Itf = HLRBRep_FaceIterator()
+
+    Itf.InitEdge(DS.FDataArray().ChangeValue(iface))
+    while Itf.MoreEdge():
+        ie: int = Itf.Edge()
+        edf: HLRBRep_EdgeData = DS.EDataArray().ChangeValue(ie)
+        print(edf)
+        if not edf.Used():
+            DrawEdge(edf)
+
+        Itf.NextEdge()
+
+
+def DrawEdge(ed: HLRBRep_EdgeData):
+    tolsta: float = 0.0
+    tolend: float = 0.0
+
+    It = HLRAlgo_EdgeIterator()
+    It.InitVisible(ed.Status())
+    while It.MoreVisible():
+        # caught error here
+        sta, end, tolsta, tolend = It.Visible()
+        print(sta, end, tolsta, tolend)
+        It.NextVisible()
+        #break
+    # end while
+    
 def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
     step_reader = STEPControl_Reader()
     step_reader.ReadFile(step_file)
@@ -261,8 +323,11 @@ def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
     # add hatching lines on faces
     #myshape = add_hatching_lines(myshape)
     #hatching_lines = get_hatching_lines(myshape)
-    hatching_lines, myshape = create_hatch_lines_single_depth.create_hatch_lines_and_cut_shape(myshape, 
+    #hatching_lines, myshape = create_hatch_lines_single_depth.create_hatch_lines_and_cut_shape(myshape, 
+    #    depth=cut_depth, hatch_step=hatch_step, with_sampling=False)
+    myshape = create_hatch_lines_single_depth.create_hatch_shape(myshape, 
         depth=cut_depth, hatch_step=hatch_step, with_sampling=False)
+    hatching_lines = []
     #print(hatching_lines)
 
     # UNCOMMENT for debug visualization
@@ -303,30 +368,69 @@ def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
         ##trsf.SetTranslation(gp_Vec(0, 0, 50))  # X=0, Y=0, Z=50
         myshape = BRepBuilderAPI_Transform(myshape, trsf, True).Shape()
 
+        bbox = Bnd_Box()
+        brepbndlib.Add(myshape, bbox)
+        xmin, ymin, zmin, xmax, ymax, zmax = bbox.Get()
+        # center bbox for projection
+        trsf = gp_Trsf()
+        trsf.SetTranslation(gp_Vec(-(xmin+xmax)/2.0, -(ymin+ymax)/2.0, -(zmin+zmax)/2.0,))
+        myshape = BRepBuilderAPI_Transform(myshape, trsf, True).Shape()
+        #if max(zmin, zmax) > 0:
+        #    print(zmin, zmax)
+        #    z_trsf = gp_Trsf()
+        #    z_trsf.SetTranslation(gp_Vec(0, 0, -(max(zmin, zmax)+1.0)))
+        #    myshape = BRepBuilderAPI_Transform(myshape, z_trsf, True).Shape()
+        #if max(xmin, xmax) > 0:
+        #    print(xmin, xmax)
+        #    z_trsf = gp_Trsf()
+        #    z_trsf.SetTranslation(gp_Vec(-(max(xmin, xmax)+1.0), 0, 0))
+        #    myshape = BRepBuilderAPI_Transform(myshape, z_trsf, True).Shape()
+            
+        bbox = Bnd_Box()
+        brepbndlib.Add(myshape, bbox)
+        xmin, ymin, zmin, xmax, ymax, zmax = bbox.Get()
+        print("bbox")
+        print(xmin, xmax)
+        print(ymin, ymax)
+        print(zmin, zmax)
+        pmin = gp_Pnt(xmin, ymin, zmin)
+        pmax = gp_Pnt(xmax, ymax, zmax)
+        diagonal = pmin.Distance(pmax)
+        print(diagonal)
+
+
         for i in range(len(hatching_lines)):
             for l in range(len(hatching_lines[i])):
                 for p in range(len(hatching_lines[i][l])):
                     hatching_lines[i][l][p].Transform(trsf)
 
-        #display, start_display, add_menu, add_function_to_menu = init_display("pyqt5")
-        #builder = BRep_Builder()
-        #compound = TopoDS_Compound()
-        #builder.MakeCompound(compound)
-        #builder.Add(compound, myshape)
-        #for l in hatching_lines:
-        #    for seg in l:
-        #        edge = BRepBuilderAPI_MakeEdge(seg[0], seg[1]).Edge()
-        #        builder.Add(compound, edge)
-        #display.DisplayShape(compound, transparency=0.8, color=Quantity_NOC_BLACK, update=True)
-        #display.FitAll()
-        #start_display()
+        
+        #continue
+
+        #if view_key == "front":
+        #    display, start_display, add_menu, add_function_to_menu = init_display("pyqt5")
+        #    #builder = BRep_Builder()
+        #    #compound = TopoDS_Compound()
+        #    #builder.MakeCompound(compound)
+        #    #builder.Add(compound, myshape)
+        #    #for l in hatching_lines:
+        #    #    for seg in l:
+        #    #        edge = BRepBuilderAPI_MakeEdge(seg[0], seg[1]).Edge()
+        #    #        builder.Add(compound, edge)
+        #    display.DisplayShape(myshape, transparency=0.8, color=Quantity_NOC_BLACK, update=True)
+        #    display.FitAll()
+        #    start_display()
         #exit()
         #continue
 
         algo = HLRBRep_Algo()
         algo.Add(myshape)
+        algo.Projector()
         algo.Update()
         algo.Hide()
+
+        #InternalCompound(myshape, algo)
+        #exit()
 
         hlr = HLRBRep_HLRToShape(algo)
         proj = algo.Projector()
@@ -336,14 +440,14 @@ def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
 
         edges_projected = {
             "visible": hlr.VCompound(),
-            #"hidden": hlr.HCompound(),
             "visible_smooth": hlr.Rg1LineVCompound(),
-            #"hidden_smooth": hlr.Rg1LineHCompound(),
             "visible_seam": hlr.RgNLineVCompound(),
-            #"hidden_seam": hlr.RgNLineHCompound(),
             "visible_outlines": hlr.OutLineVCompound(),
-            #"hidden_outlines": hlr.OutLineHCompound(),
             "visible_iso": hlr.IsoLineVCompound(),
+            #"hidden": hlr.HCompound(),
+            #"hidden_smooth": hlr.Rg1LineHCompound(),
+            #"hidden_seam": hlr.RgNLineHCompound(),
+            #"hidden_outlines": hlr.OutLineHCompound(),
             #"hidden_iso": hlr.IsoLineHCompound(),
         }
 
@@ -385,8 +489,8 @@ def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
             all_edges += edges_2d
         
             #write_svg_lines(view_key+"_"+edge_type_key+".svg", edges_2d)
-        write_svg_lines(os.path.join("svg_views", os.path.basename(step_file).split(".")[0]+"_"+str(cut_depth)+"_"+view_key+".svg"), all_edges+visible_hatching_lines, 
+        write_svg_lines(os.path.join("svg_views", os.path.basename(step_file).split(".")[0]+"_"+str(cut_depth)+"_"+str(hatch_step)+"_"+view_key+".svg"), all_edges+visible_hatching_lines, 
                         width=800, height=800)
 
 if __name__ == '__main__':
-    create_orthographic_views(os.path.join("..", "models", "brep", "cut_cube.step"), cut_depth=0.9, hatch_step=0.01)
+    create_orthographic_views(os.path.join("..", "models", "brep", "cut_cube.step"), cut_depth=0.9, hatch_step=0.05)
