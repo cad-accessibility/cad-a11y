@@ -14,8 +14,30 @@ from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCC.Core.BOPAlgo import BOPAlgo_Builder, BOPAlgo_GlueFull, BOPAlgo_Splitter
 from OCC.Core.TopExp import TopExp_Explorer
 from OCC.Core.TopAbs import TopAbs_SOLID
+from OCC.Core.TopoDS import TopoDS_Edge, TopoDS_Face, TopoDS_Iterator, TopoDS_Compound
 from OCC.Core.TopoDS import topods
+from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
+from OCC.Core.GCPnts import GCPnts_TangentialDeflection
 import numpy as np
+
+def sample_edge(edge: TopoDS_Edge, deflection=0.01, angle_tol=0.01):
+    adaptor = BRepAdaptor_Curve(edge)
+    first = adaptor.FirstParameter()
+    last = adaptor.LastParameter()
+
+    sampler = GCPnts_TangentialDeflection()
+    print(first, last, deflection, angle_tol)
+    sampler.Initialize(adaptor, first, last, deflection, angle_tol)
+
+    #if not sampler.IsDone():
+    #    raise RuntimeError("Sampling failed")
+
+    points = []
+    for i in range(1, sampler.NbPoints() + 1):
+        pnt = sampler.Value(i)
+        points.append(pnt)
+        #points.append((pnt.X(), pnt.Y(), pnt.Z()))
+    return points
 
 def make_cutting_box_from_plane(plane_origin, plane_normal, bbox, extra_margin=2.0):
     # Get bounding box center

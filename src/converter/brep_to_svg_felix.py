@@ -84,7 +84,7 @@ def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
     views = {
         "top": {
             "eye": gp_Pnt(0, 0, -1000),
-            "dir": gp_Dir(0, 0, 1)
+            "dir": gp_Dir(1, 0, 1)
         },
         "front": {
             "eye": gp_Pnt(0, -1000, 0),
@@ -101,7 +101,7 @@ def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
 
         trsf = gp_Trsf()
         axis = gp_Ax1(gp_Pnt(0, 0, 0), views[view_key]["dir"])  # Y-axis
-        trsf.SetRotation(axis, -0.5 * 3.141592653589793)  # -90 degrees in radians
+        trsf.SetRotation(axis, 0.25 * 3.141592653589793)  # -90 degrees in radians
         myshape = BRepBuilderAPI_Transform(myshape, trsf, True).Shape()
 
         bbox = Bnd_Box()
