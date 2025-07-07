@@ -1,4 +1,9 @@
 import numpy as np
+import polyscope as ps
+import trimesh
+import cv2
+from shapely.geometry import LineString
+from shapely.ops import polygonize
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.validation import explain_validity
 import random
@@ -10,6 +15,7 @@ import os
 from copy import deepcopy
 import svgwrite
 
+from OCC.Extend.DataExchange import write_stl_file
 from OCC.Core.BRepBndLib import brepbndlib
 from OCC.Core.TopoDS import topods
 from OCC.Core.TopAbs import TopAbs_SOLID, TopAbs_FACE
@@ -24,6 +30,13 @@ from OCC.Core.STEPControl import STEPControl_Reader
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
 from OCC.Display.backend import load_pyqt5
 from OCC.Display.SimpleGui import init_display
+from OCC.Core.BRepGProp import brepgprop_SurfaceProperties, brepgprop
+from OCC.Core.GProp import GProp_GProps
+from OCC.Core.BRepClass3d import BRepClass3d_SolidClassifier
+from OCC.Core.TopAbs import TopAbs_IN, TopAbs_ON
+from scipy.spatial import ConvexHull
+from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Builder, TopoDS_Face
+from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakePolygon, BRepBuilderAPI_MakeFace
 
 
 def get_bbox(lines):
@@ -96,6 +109,7 @@ def project_shape(shape):
     algo = HLRBRep_Algo()
     algo.Add(shape)
     algo.Update()
+    projector = algo.Projector()
     algo.Hide()
     hlr = HLRBRep_HLRToShape(algo)
 
@@ -120,7 +134,7 @@ def project_shape(shape):
         all_edges += edges_2d
     #print(all_edges)
     algo.OutLinedShapeNullify()  # clears internal face data (safe to call both)
-    return all_edges
+    return all_edges, projector
 
 def snap_point(pt, tol=1e-5):
     return (round(pt[0] / tol) * tol, round(pt[1] / tol) * tol)
@@ -150,15 +164,154 @@ def handle_polygon(poly):
     else:
         return []
 
+def quantize_point(p, q=1e-1):
+    return (round(p[0] / q) * q, round(p[1] / q) * q)
+
+def scale_point(p, bounds, resolution):
+    xmin, xmax, ymin, ymax = bounds
+    x = int((p[0] - xmin) / (xmax - xmin) * (resolution - 1))
+    y = int((p[1] - ymin) / (ymax - ymin) * (resolution - 1))
+    return x, resolution - 1 - y  # flip y-axis
+
+def unscale_point(px, py, bounds, resolution):
+    xmin, xmax, ymin, ymax = bounds
+    x = px / (resolution - 1) * (xmax - xmin) + xmin
+    y = (resolution - 1 - py) / (resolution - 1) * (ymax - ymin) + ymin
+    return x, y
+
+def get_regions(all_edges):
+    # Define raster size and compute bounds
+    W, H = 1000, 1000
+
+    all_pts = [pt for edge in all_edges for pt in edge]
+    xmin = min(p[0] for p in all_pts)
+    xmax = max(p[0] for p in all_pts)
+    ymin = min(p[1] for p in all_pts)
+    ymax = max(p[1] for p in all_pts)
+    bounds = (xmin, xmax, ymin, ymax)
+    if np.isclose(xmax-xmin, 0.0) or np.isclose(ymax-ymin, 0.0):
+        return []
+
+    # Step 1: Rasterize all edges to binary canvas
+    canvas = np.zeros((H, W), dtype=np.uint8)
+
+    for edge in all_edges:
+        int_pts = [scale_point(p, bounds, W) for p in edge]
+        cv2.polylines(canvas, [np.array(int_pts, dtype=np.int32)], isClosed=False, color=255, thickness=1)
+
+    # Step 2: Find contours
+    contours, _ = cv2.findContours(canvas, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+
+    polygons = []
+    for cnt in contours:
+        pts = cnt.reshape(-1, 2)
+        if len(pts) < 4:
+            continue
+        pts = [unscale_point(p[0], p[1], bounds, W) for p in pts]
+        poly = Polygon(pts)
+        # Optional: Check if polygon is valid (simple polygon)
+        if poly.is_valid and poly.area > 0.01:
+            polygons.append(poly)
+    return polygons
+
+def plot_regions(polygons):
+    fig, ax = plt.subplots()
+    for poly in polygons:
+        x, y = poly.exterior.xy
+        ax.plot(x, y)
+        ax.fill(x, y, alpha=0.5)  # alpha for transparency, optional
+
+    ax.set_aspect('equal')
+    plt.show()
+
+def is_face_centroid_inside_solid(face, solid, use_convex=False):
+    props = GProp_GProps()
+    #brepgprop_SurfaceProperties(face, props)
+    brepgprop.SurfaceProperties(face, props)
+    centroid = props.CentreOfMass()
+
+
+    if use_convex:
+        cvx_solid = compute_convex_hull_shape(solid)
+        classifier = BRepClass3d_SolidClassifier(cvx_solid, centroid, 1e-1)
+    else:
+        classifier = BRepClass3d_SolidClassifier(solid, centroid, 1e-1)
+    #print(classifier.State(), classifier.State() == TopAbs_ON)
+    return classifier.State() == TopAbs_IN
+
+def compute_convex_hull_shape(shape):
+    write_stl_file(shape, "solid.stl", linear_deflection=0.1)
+    solid_mesh = trimesh.load_mesh("solid.stl")
+    pts = solid_mesh.vertices
+    hull = ConvexHull(pts)
+
+    # Create OCC faces from hull simplices (triangles)
+    builder = TopoDS_Builder()
+    compound = TopoDS_Compound()
+    builder.MakeCompound(compound)
+
+    for simplex in hull.simplices:
+        tri_pts = [pts[i] for i in simplex]
+        # Create a triangular face
+        p1, p2, p3 = [gp_Pnt(*p) for p in tri_pts]
+
+        poly = BRepBuilderAPI_MakePolygon(p1, p2, p3, True)
+        face = BRepBuilderAPI_MakeFace(poly.Wire())
+        builder.Add(compound, face.Face())
+    return compound
+
+def is_face_centroid_hidden(line_3d, face, solid):
+
+    origin_pnt = line_3d.Location()
+    direction_vec = line_3d.Direction()
+    ray_origin = [origin_pnt.X(), origin_pnt.Y(), origin_pnt.Z()]
+    ray_direction = [direction_vec.X(), direction_vec.Y(), direction_vec.Z()]
+    print(ray_origin)
+    print(ray_direction)
+    write_stl_file(face, "face.stl", linear_deflection=0.1)
+    write_stl_file(solid, "solid.stl", linear_deflection=0.1)
+    face_mesh = trimesh.load_mesh("face.stl")
+    #print(face_mesh.vertices)
+    solid_mesh = trimesh.load_mesh("solid.stl")
+    locations, index_ray, index_tri = solid_mesh.ray.intersects_location(
+        ray_origins=[ray_origin],
+        ray_directions=[ray_direction]
+    )
+    ps.init()
+    ps.register_surface_mesh("solid", solid_mesh.vertices, solid_mesh.faces)
+    ps.register_surface_mesh("face", face_mesh.vertices, face_mesh.faces)
+    ps.register_point_cloud("intersections", locations)
+    ps.register_point_cloud("origin", np.array([ray_origin]))
+    ps.show()
+
+def is_face_centroid_inside_solid_mesh(face, solid):
+    write_stl_file(face, "face.stl", linear_deflection=0.1)
+    write_stl_file(solid, "solid.stl", linear_deflection=0.1)
+    face_mesh = trimesh.load_mesh("face.stl")
+    #print(face_mesh.vertices)
+    solid_mesh = trimesh.load_mesh("solid.stl")
+    ps.init()
+    ps.register_surface_mesh("solid", solid_mesh.vertices, solid_mesh.faces)
+    ps.register_surface_mesh("face", face_mesh.vertices, face_mesh.faces)
+    ps.show()
+
+def apply_location_to_shape(shape):
+    loc = shape.Location()
+    if loc.IsIdentity():
+        return shape  # no transform needed
+    trsf = loc.Transformation()
+    return BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+
 def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
     step_reader = STEPControl_Reader()
     step_reader.ReadFile(step_file)
     step_reader.TransferRoot()
-    myshape = step_reader.Shape()
+    orig_shape = step_reader.Shape()
 
     ## add hatching lines on faces
-    #myshape = create_hatch_lines_single_depth.create_hatch_shape(myshape, 
-    #    depth=cut_depth, hatch_step=hatch_step, with_sampling=False)
+    myshape = create_hatch_lines_single_depth.create_hatch_shape(orig_shape, 
+        depth=0.5, hatch_step=15, with_sampling=False)
+    orig_shape = plane_intersection_utils.normalize_shape_diagonal(orig_shape)
 
     views = {
         "top": {
@@ -182,6 +335,7 @@ def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
         axis = gp_Ax1(gp_Pnt(0, 0, 0), views[view_key]["dir"])  # Y-axis
         trsf.SetRotation(axis, -0.5 * 3.141592653589793)  # -90 degrees in radians
         myshape = BRepBuilderAPI_Transform(myshape, trsf, True).Shape()
+        orig_shape = BRepBuilderAPI_Transform(orig_shape, trsf, True).Shape()
 
         bbox = Bnd_Box()
         brepbndlib.Add(myshape, bbox)
@@ -190,55 +344,60 @@ def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
         trsf = gp_Trsf()
         trsf.SetTranslation(gp_Vec(-(xmin+xmax)/2.0, -(ymin+ymax)/2.0, -(zmin+zmax)/2.0,))
         myshape = BRepBuilderAPI_Transform(myshape, trsf, True).Shape()
-        all_shape_edges = project_shape(myshape)
+        orig_shape = BRepBuilderAPI_Transform(orig_shape, trsf, True).Shape()
 
+        all_shape_edges, projector = project_shape(myshape)
+
+        shape_regions = get_regions(all_shape_edges)
+        #plot_regions(shape_regions)
         exp = TopExp_Explorer(myshape, TopAbs_FACE)
         all_edges = []
+        face_regions = {}
+        face_counter = 0
+        all_face_polys = []
         while exp.More():
-            face = topods.Face(exp.Current())
-            projected_edges = project_shape(face)
+            face = apply_location_to_shape(topods.Face(exp.Current()))
+
+            #face_global = apply_location_to_shape(face)
+            projected_edges, _ = project_shape(face)
             all_edges += projected_edges
 
-            ## Step 1: Build undirected graph from segments
-            #G = nx.Graph()
-            #for polyline in projected_edges:
-            #    for i in range(len(polyline) - 1):
-            #        start = tuple(snap_point(polyline[i], tol=1e-1))
-            #        end = tuple(snap_point(polyline[i + 1], tol=1e-1))
-            #        G.add_edge(start, end)
-
-            ## Step 2: Find all minimal cycles (closed loops)
-            #cycles = nx.minimum_cycle_basis(G)
-            #print(cycles)
-
-            ## Step 3: Plot the closed regions with random colors
-            #fig, ax = plt.subplots()
-            #for cycle in cycles:
-            #    #cycle.append(cycle[0])  # close the loop
-            #    poly = build_valid_polygon(cycle)
-            #    #poly = Polygon(cycle)
-            #    print(poly.is_valid)
-            #    for poly in valid_polygons:
-            #        if poly.is_valid and poly.area > 1e-6:
-            #            x, y = poly.exterior.xy
-            #            ax.fill(x, y, color=random_color(), alpha=0.5)
-            #    #if poly.is_valid and poly.area > 1e-6:
-            #    #    color = [random.random() for _ in range(3)]
-            #    #    x, y = poly.exterior.xy
-            #    #    ax.fill(x, y, color=color, alpha=0.6, edgecolor='black', linewidth=1)
-
-            ## Optional: plot the original edges for reference
-            ##for polyline in projected_edges:
-            ##    xs, ys = zip(*polyline)
-            ##    ax.plot(xs, ys, color='gray', linestyle='--', linewidth=0.5)
-
-            #ax.set_aspect('equal')
-            #plt.title("Detected Closed Regions from Polylines")
-            #plt.show()
-            for edge in all_edges:
-                plt.plot(np.array(edge)[:, 0], np.array(edge)[:, 1])
-            plt.show()
+            polys = get_regions(projected_edges)
+            all_face_polys += polys
+            face_regions[face_counter] = [face, polys]
+            face_counter += 1
+            #plot_regions(polys)
             exp.Next()
+        
+        print(len(shape_regions))
+        plot_regions(shape_regions)
+        for shape_region in shape_regions:
+            if shape_region.area < 0.01:
+                continue
+            plot_regions([shape_region])
+            best_poly = [-1, -1]
+            best_iou = -1
+            for face_id in face_regions.keys():
+                for i, face_region in enumerate(face_regions[face_id][1]):
+                    iou = face_region.intersection(shape_region).area / face_region.union(shape_region).area
+                    #print(iou)
+                    #plot_regions([shape_region, face_region])
+                    if iou > best_iou:
+                        best_poly = [face_id, i]
+                        best_iou = iou
+            #print(shape_region.area)
+            #print(best_iou, best_poly)
+            #print(face_regions[best_poly[0]][1][best_poly[1]])
+            center_2d = face_regions[best_poly[0]][1][best_poly[1]].representative_point()
+            print(center_2d)
+            internal_face = is_face_centroid_inside_solid(face_regions[best_poly[0]][0], orig_shape)
+            cvx_internal_face = is_face_centroid_inside_solid(face_regions[best_poly[0]][0], orig_shape, use_convex=True)
+            hidden_face = (not internal_face) and cvx_internal_face
+            #internal_face = is_face_centroid_hidden(projector.Shoot(center_2d.x, center_2d.y), 
+            #                                        face_regions[best_poly[0]][0], orig_shape)
+            print("internal_face", internal_face)
+            #plot_regions([shape_region, face_regions[best_poly[0]][1][best_poly[1]]])
+
 
         write_svg_lines(os.path.join("svg_views", 
                         os.path.basename(step_file).split(".")[0]+"_"+str(cut_depth)+"_"+str(hatch_step)+"_"+view_key+".svg"),
