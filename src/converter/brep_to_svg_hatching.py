@@ -4,7 +4,7 @@ import trimesh
 import cv2
 from shapely.geometry import LineString
 from shapely.ops import polygonize
-from shapely.geometry import Polygon, MultiPolygon
+from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely.validation import explain_validity
 import random
 import create_hatch_lines_single_depth
@@ -17,6 +17,8 @@ import svgwrite
 
 from OCC.Extend.DataExchange import write_stl_file
 from OCC.Core.BRepBndLib import brepbndlib
+from OCC.Core.BRepTools import breptools
+from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
 from OCC.Core.TopoDS import topods
 from OCC.Core.TopAbs import TopAbs_SOLID, TopAbs_FACE
 from OCC.Core.Bnd import Bnd_Box
@@ -46,7 +48,7 @@ def get_bbox(lines):
     pts = np.array(pts)
     return [np.min(pts[:, 0]), np.max(pts[:, 0]), np.min(pts[:, 1]), np.max(pts[:, 1])]
 
-def write_svg_lines(filename, lines, width=500, height=500, stroke_width=1.0):
+def write_svg_lines(filename, lines, width=500, height=500, stroke_width=1.0, regions=[]):
     if len(lines) == 0:
         x_min, x_max, y_min, y_max = 0, 100, 0, 100
     else:
@@ -58,13 +60,95 @@ def write_svg_lines(filename, lines, width=500, height=500, stroke_width=1.0):
         size=(f"{width}px", f"{height}px"),
     )
     dwg = svgwrite.Drawing(filename, size=(f"{width}px", f"{height}px"))
+
+    # MASKING
+    front_mask = dwg.mask(id="front_mask")
+    hidden_mask = dwg.mask(id="hidden_mask")
+    internal_mask = dwg.mask(id="internal_mask")
+
+    for region_entry in reversed(regions):
+        if isinstance(region_entry["region"], MultiPolygon):
+            for poly in region_entry["region"].geoms:
+                points = list(poly.exterior.coords)
+                copied_line = deepcopy(points)
+                for i in range(len(points)):
+                    copied_line[i] = [scale_factor*(points[i][0]-x_min), scale_factor*(points[i][1]-y_min)]
+                copied_line.append(copied_line[0])
+                if region_entry["internal_face"]:
+                    internal_mask.add(dwg.polygon(points=copied_line, fill='white'))
+                elif region_entry["hidden_face"]:
+                    hidden_mask.add(dwg.polygon(points=copied_line, fill='white'))
+                else:
+                    front_mask.add(dwg.polygon(points=copied_line, fill='white'))
+        else:
+            points = list(region_entry["region"].exterior.coords)
+            copied_line = deepcopy(points)
+            for i in range(len(points)):
+                copied_line[i] = [scale_factor*(points[i][0]-x_min), scale_factor*(points[i][1]-y_min)]
+            copied_line.append(copied_line[0])
+            if region_entry["internal_face"]:
+                internal_mask.add(dwg.polygon(points=copied_line, fill='white'))
+            elif region_entry["hidden_face"]:
+                hidden_mask.add(dwg.polygon(points=copied_line, fill='white'))
+            else:
+                front_mask.add(dwg.polygon(points=copied_line, fill='white'))
+
     
+    dwg.defs.add(front_mask)
+    dwg.defs.add(hidden_mask)
+    dwg.defs.add(internal_mask)
+
+    # COLORED BG
+    front_bg = dwg.rect(insert=(0, 0), size=("100%", "100%"), fill='#1b9e77')
+    front_bg['mask'] = 'url(#front_mask)'
+    dwg.add(front_bg)
+
+    hidden_bg = dwg.rect(insert=(0, 0), size=("100%", "100%"), fill='#7570b3')
+    hidden_bg['mask'] = 'url(#hidden_mask)'
+    dwg.add(hidden_bg)
+
+    internal_bg = dwg.rect(insert=(0, 0), size=("100%", "100%"), fill='#d95f02')
+    internal_bg['mask'] = 'url(#internal_mask)'
+    dwg.add(internal_bg)
+
+    # HATCHING PATTERNS
+#    stipple = dwg.pattern(id="stipple", size=(10, 10), patternUnits="userSpaceOnUse")
+#    stipple.add(dwg.circle(center=(5, 5), r=3.0, fill='black'))
+#    dwg.defs.add(stipple)
+#
+#    #diagonal = dwg.pattern(id="diagonal", size=(10, 10), patternUnits="userSpaceOnUse")
+#    #diagonal.add(dwg.line(start=(-5, -5), end=(15, 15), stroke="black", stroke_width=2, stroke_linecap="square"))
+#    #dwg.defs.add(diagonal)
+#
+#    spacing = 20
+#    # Draw lines from top-left to bottom-right (45°)
+#    for x in range(-width, width, spacing):
+#        start = (x, 0)
+#        end = (x + height, height)
+#        dwg.add(dwg.line(start=start, end=end,
+#                         stroke="black", stroke_width=2,
+#                         stroke_linecap="butt",
+#                         mask="url(#front_mask)"))
+#
+#    vertical = dwg.pattern(id="vertical", size=(10, 10), patternUnits="userSpaceOnUse")
+#    vertical.add(dwg.line(start=(5, 0), end=(5, 10), stroke="black", stroke_width=2, stroke_linecap="square"))
+#    dwg.defs.add(vertical)
+#
+#    dwg.add(dwg.rect(insert=(0, 0), size=("100%", "100%"), fill="url(#diagonal)", mask="url(#front_mask)"))
+#    dwg.add(dwg.rect(insert=(0, 0), size=("100%", "100%"), fill="url(#vertical)", mask="url(#hidden_mask)"))
+#    dwg.add(dwg.rect(insert=(0, 0), size=("100%", "100%"), fill="url(#stipple)", mask="url(#internal_mask)"))
+    
+    
+    # OUTLINES
     for line in lines:
         copied_line = deepcopy(line)
         for i in range(len(line)):
             copied_line[i] = [scale_factor*(line[i][0]-x_min), scale_factor*(line[i][1]-y_min)]
         dwg.add(dwg.polyline(points=copied_line, stroke='black', stroke_width=stroke_width, fill="none"))
     
+
+
+
     dwg.save()
 
 def sample_edge(edge, view, num_samples=20):
@@ -224,19 +308,202 @@ def plot_regions(polygons):
     ax.set_aspect('equal')
     plt.show()
 
-def is_face_centroid_inside_solid(face, solid, use_convex=False):
+def sample_points_in_polygon(polygon, n_points):
+    minx, miny, maxx, maxy = polygon.bounds
+    points = []
+    while len(points) < n_points:
+        random_point = Point(np.random.uniform(minx, maxx),
+                             np.random.uniform(miny, maxy))
+        if polygon.contains(random_point):
+            points.append(random_point)
+    return points
+
+def angles_with_z(vectors):
+    norms = np.linalg.norm(vectors, axis=1)
+    vectors_unit = vectors / norms[:, np.newaxis]
+    z = np.array([0, 0, 1])
+
+    cos_theta = vectors_unit @ z 
+    cos_theta = np.clip(cos_theta, -1.0, 1.0)
+    angles_rad = np.arccos(cos_theta)
+
+    angles_deg = np.degrees(angles_rad)
+
+    return angles_deg
+
+def is_face_visible(face, shape, VERBOSE=False):
+
+    if os.path.exists("solid.stl"):
+        os.remove("solid.stl")  # silently remove
+    if os.path.exists("face.stl"):
+        os.remove("face.stl")  # silently remove
+    write_stl_file(face, "face.stl", linear_deflection=0.001)
+    face_mesh = trimesh.load_mesh("face.stl")
+    write_stl_file(shape, "solid.stl", linear_deflection=0.001)
+    solid = trimesh.load_mesh("solid.stl")
+  
+    vertices, face_ids = trimesh.sample.sample_surface_even(face_mesh, count=1000)
+    normals = face_mesh.face_normals[face_ids]
+    
+    # Select vertices that are "reachable" from the ground
+    # create some rays
+    ray_origins = np.array([v + [0,0,+1e-5] for v in vertices])
+    ray_directions = np.zeros([len(vertices), 3])
+    ray_directions[:, 2] = +1
+    
+    # Get the intersections
+    hits = solid.ray.intersects_any(ray_origins=ray_origins, ray_directions=ray_directions)
+    #valid_angles = angles_with_z(normals) > 0
+    if VERBOSE:
+        ps.init()
+        ps.remove_all_structures()
+        ps.register_surface_mesh("face", face_mesh.vertices, face_mesh.faces)
+        ps.register_surface_mesh("solid", solid.vertices, solid.faces)
+        nodes = np.array([[p, p+np.array([0, 0, +1])] for i, p in enumerate(ray_origins)]).reshape(-1, 3)
+        ps.register_curve_network("rays", nodes, np.array([[2*i, 2*i+1] for i in range(int(len(nodes)/2))]))
+        ps.show()
+
+    #reachable_vertices = vertices[hits == False]
+    #reachable_vertices_normals = normals[hits == False]
+    #reachable_faces = face_ids[hits == False]
+
+    # reject vertices whose normals are almost parallel to the ground
+
+    #return np.sum(np.logical_and(hits == False, valid_angles)) > 0
+    return np.sum(hits == False) > 50
+    #reachable_vertices = vertices[np.logical_and(hits == False, valid_angles)]
+
+
+    #sampled_points = sample_points_in_polygon(region, 100)
+    #sampled_points_3d = np.array([[p.x, p.y, -2] for p in sampled_points])
+    #ray_directions = np.array([[0, 0, 1] for i in range(len(sampled_points))])
+    #any_point_visible = False
+    #for p in sampled_points_3d:
+    #    locations, index_ray, index_tri = solid.ray.intersects_location(
+    #        ray_origins=[p],
+    #        ray_directions=[[0,0,1]]
+    #    )
+
+    #    face_locations, _, _ = face_mesh.ray.intersects_location(
+    #        ray_origins=[p],
+    #        ray_directions=[[0,0,1]]
+    #    )
+
+    #    if len(locations) == 0 or len(face_locations) == 0:
+    #        continue
+
+
+    #    min_intersection_loc = np.min(locations[:, -1])
+    #    min_intersection_loc_face = np.min(face_locations[:, -1])
+    #    if np.isclose(min_intersection_loc, min_intersection_loc_face, atol=1e-2):
+    #        any_point_visible = True
+    #        break
+
+    #    #print(min_intersection_loc, min_intersection_loc_face, np.abs(min_intersection_loc-min_intersection_loc_face))
+    #    #print(locations)
+    #    #print(face_locations)
+    #return any_point_visible
+
+def is_region_visible(region, face, shape):
+
+    if os.path.exists("solid.stl"):
+        os.remove("solid.stl")  # silently remove
+    if os.path.exists("face.stl"):
+        os.remove("face.stl")  # silently remove
+    write_stl_file(face, "face.stl", linear_deflection=0.1)
+    face_mesh = trimesh.load_mesh("face.stl")
+    write_stl_file(shape, "solid.stl", linear_deflection=0.1)
+    solid = trimesh.load_mesh("solid.stl")
+    sampled_points = sample_points_in_polygon(region, 100)
+    sampled_points_3d = np.array([[p.x, p.y, -2] for p in sampled_points])
+    ray_directions = np.array([[0, 0, 1] for i in range(len(sampled_points))])
+    any_point_visible = False
+    for p in sampled_points_3d:
+        locations, index_ray, index_tri = solid.ray.intersects_location(
+            ray_origins=[p],
+            ray_directions=[[0,0,1]]
+        )
+
+        face_locations, _, _ = face_mesh.ray.intersects_location(
+            ray_origins=[p],
+            ray_directions=[[0,0,1]]
+        )
+
+        if len(locations) == 0 or len(face_locations) == 0:
+            continue
+
+
+        min_intersection_loc = np.min(locations[:, -1])
+        min_intersection_loc_face = np.min(face_locations[:, -1])
+        if np.isclose(min_intersection_loc, min_intersection_loc_face, atol=1e-2):
+            any_point_visible = True
+            break
+
+        #print(min_intersection_loc, min_intersection_loc_face, np.abs(min_intersection_loc-min_intersection_loc_face))
+        #print(locations)
+        #print(face_locations)
+    return any_point_visible
+
+    #if len(locations) == 0:
+
+    #ps.init()
+    #ps.register_surface_mesh("face", face_mesh.vertices, face_mesh.faces)
+    #nodes = np.array([[p, p+np.array([0, 0, 4])] for p in sampled_points_3d]).reshape(-1, 3)
+    #ps.register_curve_network("rays", nodes, np.array([[2*i, 2*i+1] for i in range(int(len(nodes)/2))]))
+    #ps.show()
+
+def render_face_region(face_region, face):
+
+    ps.init()
+    write_stl_file(face, "face.stl", linear_deflection=0.1)
+    face_mesh = trimesh.load_mesh("face.stl")
+    ps.register_surface_mesh("face", face_mesh.vertices, face_mesh.faces)
+    sampled_points = sample_points_in_polygon(face_region, 10)
+    sampled_points_3d = np.array([[p.x, p.y, -2] for p in sampled_points])
+    nodes = np.array([[p, p+np.array([0, 0, 4])] for p in sampled_points_3d]).reshape(-1, 3)
+    ps.register_curve_network("rays", nodes, np.array([[2*i, 2*i+1] for i in range(int(len(nodes)/2))]))
+    ps.show()
+
+def render_faces(faces, solid):
+    write_stl_file(solid, "solid.stl", linear_deflection=0.1)
+    solid_mesh = trimesh.load_mesh("solid.stl")
+    ps.init()
+    ps.remove_all_structures()
+    ps.register_surface_mesh("solid", solid_mesh.vertices, solid_mesh.faces)
+    for i, face in enumerate(faces):
+        write_stl_file(face, "face.stl", linear_deflection=0.1)
+        face_mesh = trimesh.load_mesh("face.stl")
+        ps.register_surface_mesh("face_"+str(i), face_mesh.vertices, face_mesh.faces)
+    ps.show()
+
+def is_face_centroid_inside_solid(face, solid, use_convex=False, VERBOSE=False):
     props = GProp_GProps()
     #brepgprop_SurfaceProperties(face, props)
     brepgprop.SurfaceProperties(face, props)
-    centroid = props.CentreOfMass()
+    #centroid = props.CentreOfMass()
+    centroid = get_surface_point_on_face(face)
 
 
     if use_convex:
         cvx_solid = compute_convex_hull_shape(solid)
-        classifier = BRepClass3d_SolidClassifier(cvx_solid, centroid, 1e-1)
+        classifier = BRepClass3d_SolidClassifier(cvx_solid, centroid, 1e-7)
     else:
-        classifier = BRepClass3d_SolidClassifier(solid, centroid, 1e-1)
+        classifier = BRepClass3d_SolidClassifier(solid, centroid, 1e-7)
     #print(classifier.State(), classifier.State() == TopAbs_ON)
+    #if VERBOSE or classifier.State() == TopAbs_IN:
+    if VERBOSE:
+        if use_convex:
+            write_stl_file(cvx_solid, "solid.stl", linear_deflection=0.1)
+        else:
+            write_stl_file(solid, "solid.stl", linear_deflection=0.1)
+        solid_mesh = trimesh.load_mesh("solid.stl")
+        write_stl_file(face, "face.stl", linear_deflection=0.1)
+        face_mesh = trimesh.load_mesh("face.stl")
+        ps.init()
+        ps.register_surface_mesh("solid", solid_mesh.vertices, solid_mesh.faces)
+        ps.register_surface_mesh("face", face_mesh.vertices, face_mesh.faces)
+        ps.register_point_cloud("centroid", np.array([[centroid.X(), centroid.Y(), centroid.Z()]]))
+        ps.show()
     return classifier.State() == TopAbs_IN
 
 def compute_convex_hull_shape(shape):
@@ -260,29 +527,46 @@ def compute_convex_hull_shape(shape):
         builder.Add(compound, face.Face())
     return compound
 
-def is_face_centroid_hidden(line_3d, face, solid):
+def get_surface_point_on_face(face):
+    umin, umax, vmin, vmax = breptools.UVBounds(face)
+    u = (umin + umax) / 2.0
+    v = (vmin + vmax) / 2.0
 
-    origin_pnt = line_3d.Location()
-    direction_vec = line_3d.Direction()
-    ray_origin = [origin_pnt.X(), origin_pnt.Y(), origin_pnt.Z()]
-    ray_direction = [direction_vec.X(), direction_vec.Y(), direction_vec.Z()]
-    print(ray_origin)
-    print(ray_direction)
+    surf = BRepAdaptor_Surface(face)
+    pnt = surf.Value(u, v)  # this point is guaranteed to be on the surface
+    return pnt
+
+def is_face_centroid_hidden(face, solid):
+
     write_stl_file(face, "face.stl", linear_deflection=0.1)
     write_stl_file(solid, "solid.stl", linear_deflection=0.1)
+    props = GProp_GProps()
+    brepgprop.SurfaceProperties(face, props)
+    centroid = props.CentreOfMass()
     face_mesh = trimesh.load_mesh("face.stl")
+    ray_origin = np.array([centroid.X(), centroid.Y(), centroid.Z()])
+
+    dists = np.linalg.norm(face_mesh.vertices - ray_origin, axis=1)
+    closest_index = np.argmin(dists)
+    ray_origin = deepcopy(face_mesh.vertices[closest_index])
+    ray_origin[-1] -= 0.1
+    #centroid = get_surface_point_on_face(face)
+    ray_direction = np.array([0, 0, -1.0])
+
     #print(face_mesh.vertices)
     solid_mesh = trimesh.load_mesh("solid.stl")
     locations, index_ray, index_tri = solid_mesh.ray.intersects_location(
         ray_origins=[ray_origin],
         ray_directions=[ray_direction]
     )
-    ps.init()
-    ps.register_surface_mesh("solid", solid_mesh.vertices, solid_mesh.faces)
-    ps.register_surface_mesh("face", face_mesh.vertices, face_mesh.faces)
-    ps.register_point_cloud("intersections", locations)
-    ps.register_point_cloud("origin", np.array([ray_origin]))
-    ps.show()
+    if len(locations) > 0:
+        ps.init()
+        ps.register_surface_mesh("solid", solid_mesh.vertices, solid_mesh.faces)
+        ps.register_surface_mesh("face", face_mesh.vertices, face_mesh.faces)
+        ps.register_point_cloud("intersections", locations)
+        ps.register_point_cloud("origin", np.array([ray_origin]))
+        ps.show()
+    return len(locations) > 0
 
 def is_face_centroid_inside_solid_mesh(face, solid):
     write_stl_file(face, "face.stl", linear_deflection=0.1)
@@ -355,31 +639,59 @@ def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
         face_regions = {}
         face_counter = 0
         all_face_polys = []
+
+        #plot_regions(shape_regions)
+        visible_faces = []
+        # DEBUG: assess visible faces
         while exp.More():
             face = apply_location_to_shape(topods.Face(exp.Current()))
-
-            #face_global = apply_location_to_shape(face)
+            if is_face_visible(face, myshape):
+                visible_faces.append(face)
+            else:
+                exp.Next()
+                continue
             projected_edges, _ = project_shape(face)
+            polys = get_regions(projected_edges)
             all_edges += projected_edges
 
-            polys = get_regions(projected_edges)
             all_face_polys += polys
             face_regions[face_counter] = [face, polys]
             face_counter += 1
-            #plot_regions(polys)
             exp.Next()
+        #render_faces(visible_faces, myshape)
+
+        #while exp.More():
+        #    face = apply_location_to_shape(topods.Face(exp.Current()))
+
+        #    #face_global = apply_location_to_shape(face)
+        #    projected_edges, _ = project_shape(face)
+        #    all_edges += projected_edges
+
+        #    polys = get_regions(projected_edges)
+        #    all_face_polys += polys
+        #    face_regions[face_counter] = [face, polys]
+        #    face_counter += 1
+        #    #plot_regions(polys)
+        #    exp.Next()
         
         print(len(shape_regions))
-        plot_regions(shape_regions)
+        best_faces = []
+        region_dicts = []
         for shape_region in shape_regions:
             if shape_region.area < 0.01:
                 continue
-            plot_regions([shape_region])
+            #plot_regions([shape_region])
             best_poly = [-1, -1]
             best_iou = -1
             for face_id in face_regions.keys():
                 for i, face_region in enumerate(face_regions[face_id][1]):
                     iou = face_region.intersection(shape_region).area / face_region.union(shape_region).area
+                    #if view_key == "side":
+                    #    plot_regions([face_region])
+                    #    render_face_region(face_region, face_regions[face_id][0])
+                    #hidden_face = is_face_centroid_hidden(face_regions[face_id][0], orig_shape)
+                    #if hidden_face:
+                    #    continue
                     #print(iou)
                     #plot_regions([shape_region, face_region])
                     if iou > best_iou:
@@ -388,26 +700,72 @@ def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
             #print(shape_region.area)
             #print(best_iou, best_poly)
             #print(face_regions[best_poly[0]][1][best_poly[1]])
-            center_2d = face_regions[best_poly[0]][1][best_poly[1]].representative_point()
-            print(center_2d)
-            internal_face = is_face_centroid_inside_solid(face_regions[best_poly[0]][0], orig_shape)
-            cvx_internal_face = is_face_centroid_inside_solid(face_regions[best_poly[0]][0], orig_shape, use_convex=True)
-            hidden_face = (not internal_face) and cvx_internal_face
-            #internal_face = is_face_centroid_hidden(projector.Shoot(center_2d.x, center_2d.y), 
-            #                                        face_regions[best_poly[0]][0], orig_shape)
-            print("internal_face", internal_face)
+            #center_2d = face_regions[best_poly[0]][1][best_poly[1]].representative_point()
             #plot_regions([shape_region, face_regions[best_poly[0]][1][best_poly[1]]])
+            visible_face = True
+            internal_face = is_face_centroid_inside_solid(face_regions[best_poly[0]][0], orig_shape, VERBOSE=False)
+            hidden_face = not is_face_visible(face_regions[best_poly[0]][0], orig_shape)
+            #if not hidden_face:
+            #    is_face_visible(face_regions[best_poly[0]][0], orig_shape, VERBOSE=True)
+            best_faces.append(face_regions[best_poly[0]][0])
+            region_dicts.append({
+                "region": shape_region,
+                "face": face_regions[best_poly[0]][0],
+                "iou": best_iou,
+                "visible_face": visible_face,
+                "internal_face": internal_face,
+                "hidden_face": hidden_face
+            })
 
+            #cvx_internal_face = is_face_centroid_inside_solid(face_regions[best_poly[0]][0], orig_shape, use_convex=True, VERBOSE=True)
+            #hidden_face = is_face_centroid_hidden(face_regions[best_poly[0]][0], orig_shape)
+            #print("internal_face", internal_face)
+            #print("hidden_face", hidden_face)
+            #hidden_face = (not internal_face) and hidden_face
+            #print("hidden_face", hidden_face)
+        #render_faces(best_faces, orig_shape)
+
+        fig, ax = plt.subplots()
+        region_dicts = list(sorted(region_dicts, key= lambda r: r["region"].area))
+        # TODO: subtract intersections from each other. Start with smallest and subtract it from all others
+        for i in range(len(region_dicts)):
+            for j in range(i+1, len(region_dicts)):
+                region_dicts[j]["region"] = region_dicts[j]["region"] - region_dicts[j]["region"].intersection(region_dicts[i]["region"])
+
+        # TODO: use as hatching mask
+        #for region_entry in reversed(region_dicts):
+        #    if isinstance(region_entry["region"], MultiPolygon):
+        #        for poly in region_entry["region"].geoms:
+        #            x, y = poly.exterior.xy
+        #            ax.plot(x, y, c="black")
+        #            if region_entry["internal_face"]:
+        #                ax.fill(x, y, c="#d95f02")  # alpha for transparency, optional
+        #            elif region_entry["hidden_face"]:
+        #                ax.fill(x, y, c="#7570b3")  # alpha for transparency, optional
+        #            else:
+        #                ax.fill(x, y, c="#1b9e77")  # alpha for transparency, optional
+        #    else:
+        #        x, y = region_entry["region"].exterior.xy
+        #        ax.plot(x, y, c="black")
+        #        if region_entry["internal_face"]:
+        #            ax.fill(x, y, c="#d95f02")  # alpha for transparency, optional
+        #        elif region_entry["hidden_face"]:
+        #            ax.fill(x, y, c="#7570b3")  # alpha for transparency, optional
+        #        else:
+        #            ax.fill(x, y, c="#1b9e77")  # alpha for transparency, optional
+
+        #ax.set_aspect('equal')
+        #plt.show()
 
         write_svg_lines(os.path.join("svg_views", 
                         os.path.basename(step_file).split(".")[0]+"_"+str(cut_depth)+"_"+str(hatch_step)+"_"+view_key+".svg"),
-                        all_shape_edges, width=800, height=800)
+                        all_shape_edges, width=800, height=800, regions=region_dicts)
 
 if __name__ == '__main__':
     # check for pyqt5
     #if not load_pyqt5():
     #    raise IOError("pyqt5 required to run this test")
-    create_orthographic_views(os.path.join("..", "models", "brep", "lighter.step"), cut_depth=0.9, hatch_step=0.10)
+    create_orthographic_views(os.path.join("..", "models", "brep", "cup.step"), cut_depth=0.5, hatch_step=0.10)
     #display, start_display, add_menu, add_function_to_menu = init_display("pyqt5")
     #display.DisplayShape(edges_projected["visible"], color=Quantity_NOC_BLACK, update=True)
     #display.DisplayShape(myshape, color=Quantity_NOC_BLACK, update=True)
