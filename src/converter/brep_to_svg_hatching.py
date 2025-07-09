@@ -176,18 +176,6 @@ def sample_all_edges_projected(shape, view, num_samples=20):
 
     return all_edge_polylines
 
-def project_face(face, proj, num_samples=20):
-    exp = TopExp_Explorer(face, TopAbs_EDGE)
-    all_edges_projected = []
-    while exp.More():
-        edge = topods.Edge(exp.Current())
-        sampled_edge = plane_intersection_utils.sample_edge(edge)
-        projected_edge = [proj.Project(p)[:2] for p in sampled_edge]
-        all_edges_projected.append(projected_edge)
-        exp.Next()
-
-    return all_edges_projected
-
 def project_shape(shape):
 
     algo = HLRBRep_Algo()
@@ -219,37 +207,6 @@ def project_shape(shape):
     #print(all_edges)
     algo.OutLinedShapeNullify()  # clears internal face data (safe to call both)
     return all_edges, projector
-
-def snap_point(pt, tol=1e-5):
-    return (round(pt[0] / tol) * tol, round(pt[1] / tol) * tol)
-
-def remove_consecutive_duplicates(points):
-    cleaned = [points[0]]
-    for pt in points[1:]:
-        if pt != cleaned[-1]:
-            cleaned.append(pt)
-    return cleaned
-
-def build_valid_polygon(loop):
-    loop = remove_consecutive_duplicates(loop)
-    if len(loop) < 3:
-        return None
-    poly = Polygon(loop)
-    if not poly.is_valid:
-        print("Repairing invalid polygon:", explain_validity(poly))
-        poly = poly.buffer(0)
-    return poly if poly.is_valid and poly.area > 1e-6 else None
-
-def handle_polygon(poly):
-    if isinstance(poly, Polygon):
-        return [poly]
-    elif isinstance(poly, MultiPolygon):
-        return list(poly.geoms)
-    else:
-        return []
-
-def quantize_point(p, q=1e-1):
-    return (round(p[0] / q) * q, round(p[1] / q) * q)
 
 def scale_point(p, bounds, resolution):
     xmin, xmax, ymin, ymax = bounds
@@ -318,19 +275,6 @@ def sample_points_in_polygon(polygon, n_points):
             points.append(random_point)
     return points
 
-def angles_with_z(vectors):
-    norms = np.linalg.norm(vectors, axis=1)
-    vectors_unit = vectors / norms[:, np.newaxis]
-    z = np.array([0, 0, 1])
-
-    cos_theta = vectors_unit @ z 
-    cos_theta = np.clip(cos_theta, -1.0, 1.0)
-    angles_rad = np.arccos(cos_theta)
-
-    angles_deg = np.degrees(angles_rad)
-
-    return angles_deg
-
 def is_face_visible(face, shape, VERBOSE=False):
 
     if os.path.exists("solid.stl"):
@@ -343,9 +287,7 @@ def is_face_visible(face, shape, VERBOSE=False):
     solid = trimesh.load_mesh("solid.stl")
   
     vertices, face_ids = trimesh.sample.sample_surface_even(face_mesh, count=1000)
-    normals = face_mesh.face_normals[face_ids]
     
-    # Select vertices that are "reachable" from the ground
     # create some rays
     ray_origins = np.array([v + [0,0,+1e-5] for v in vertices])
     ray_directions = np.zeros([len(vertices), 3])
@@ -353,7 +295,6 @@ def is_face_visible(face, shape, VERBOSE=False):
     
     # Get the intersections
     hits = solid.ray.intersects_any(ray_origins=ray_origins, ray_directions=ray_directions)
-    #valid_angles = angles_with_z(normals) > 0
     if VERBOSE:
         ps.init()
         ps.remove_all_structures()
@@ -363,94 +304,7 @@ def is_face_visible(face, shape, VERBOSE=False):
         ps.register_curve_network("rays", nodes, np.array([[2*i, 2*i+1] for i in range(int(len(nodes)/2))]))
         ps.show()
 
-    #reachable_vertices = vertices[hits == False]
-    #reachable_vertices_normals = normals[hits == False]
-    #reachable_faces = face_ids[hits == False]
-
-    # reject vertices whose normals are almost parallel to the ground
-
-    #return np.sum(np.logical_and(hits == False, valid_angles)) > 0
     return np.sum(hits == False) > 50
-    #reachable_vertices = vertices[np.logical_and(hits == False, valid_angles)]
-
-
-    #sampled_points = sample_points_in_polygon(region, 100)
-    #sampled_points_3d = np.array([[p.x, p.y, -2] for p in sampled_points])
-    #ray_directions = np.array([[0, 0, 1] for i in range(len(sampled_points))])
-    #any_point_visible = False
-    #for p in sampled_points_3d:
-    #    locations, index_ray, index_tri = solid.ray.intersects_location(
-    #        ray_origins=[p],
-    #        ray_directions=[[0,0,1]]
-    #    )
-
-    #    face_locations, _, _ = face_mesh.ray.intersects_location(
-    #        ray_origins=[p],
-    #        ray_directions=[[0,0,1]]
-    #    )
-
-    #    if len(locations) == 0 or len(face_locations) == 0:
-    #        continue
-
-
-    #    min_intersection_loc = np.min(locations[:, -1])
-    #    min_intersection_loc_face = np.min(face_locations[:, -1])
-    #    if np.isclose(min_intersection_loc, min_intersection_loc_face, atol=1e-2):
-    #        any_point_visible = True
-    #        break
-
-    #    #print(min_intersection_loc, min_intersection_loc_face, np.abs(min_intersection_loc-min_intersection_loc_face))
-    #    #print(locations)
-    #    #print(face_locations)
-    #return any_point_visible
-
-def is_region_visible(region, face, shape):
-
-    if os.path.exists("solid.stl"):
-        os.remove("solid.stl")  # silently remove
-    if os.path.exists("face.stl"):
-        os.remove("face.stl")  # silently remove
-    write_stl_file(face, "face.stl", linear_deflection=0.1)
-    face_mesh = trimesh.load_mesh("face.stl")
-    write_stl_file(shape, "solid.stl", linear_deflection=0.1)
-    solid = trimesh.load_mesh("solid.stl")
-    sampled_points = sample_points_in_polygon(region, 100)
-    sampled_points_3d = np.array([[p.x, p.y, -2] for p in sampled_points])
-    ray_directions = np.array([[0, 0, 1] for i in range(len(sampled_points))])
-    any_point_visible = False
-    for p in sampled_points_3d:
-        locations, index_ray, index_tri = solid.ray.intersects_location(
-            ray_origins=[p],
-            ray_directions=[[0,0,1]]
-        )
-
-        face_locations, _, _ = face_mesh.ray.intersects_location(
-            ray_origins=[p],
-            ray_directions=[[0,0,1]]
-        )
-
-        if len(locations) == 0 or len(face_locations) == 0:
-            continue
-
-
-        min_intersection_loc = np.min(locations[:, -1])
-        min_intersection_loc_face = np.min(face_locations[:, -1])
-        if np.isclose(min_intersection_loc, min_intersection_loc_face, atol=1e-2):
-            any_point_visible = True
-            break
-
-        #print(min_intersection_loc, min_intersection_loc_face, np.abs(min_intersection_loc-min_intersection_loc_face))
-        #print(locations)
-        #print(face_locations)
-    return any_point_visible
-
-    #if len(locations) == 0:
-
-    #ps.init()
-    #ps.register_surface_mesh("face", face_mesh.vertices, face_mesh.faces)
-    #nodes = np.array([[p, p+np.array([0, 0, 4])] for p in sampled_points_3d]).reshape(-1, 3)
-    #ps.register_curve_network("rays", nodes, np.array([[2*i, 2*i+1] for i in range(int(len(nodes)/2))]))
-    #ps.show()
 
 def render_face_region(face_region, face):
 
@@ -476,7 +330,7 @@ def render_faces(faces, solid):
         ps.register_surface_mesh("face_"+str(i), face_mesh.vertices, face_mesh.faces)
     ps.show()
 
-def is_face_centroid_inside_solid(face, solid, use_convex=False, VERBOSE=False):
+def is_face_centroid_inside_solid(face, solid, VERBOSE=False):
     props = GProp_GProps()
     #brepgprop_SurfaceProperties(face, props)
     brepgprop.SurfaceProperties(face, props)
@@ -484,18 +338,11 @@ def is_face_centroid_inside_solid(face, solid, use_convex=False, VERBOSE=False):
     centroid = get_surface_point_on_face(face)
 
 
-    if use_convex:
-        cvx_solid = compute_convex_hull_shape(solid)
-        classifier = BRepClass3d_SolidClassifier(cvx_solid, centroid, 1e-7)
-    else:
-        classifier = BRepClass3d_SolidClassifier(solid, centroid, 1e-7)
+    classifier = BRepClass3d_SolidClassifier(solid, centroid, 1e-7)
     #print(classifier.State(), classifier.State() == TopAbs_ON)
     #if VERBOSE or classifier.State() == TopAbs_IN:
     if VERBOSE:
-        if use_convex:
-            write_stl_file(cvx_solid, "solid.stl", linear_deflection=0.1)
-        else:
-            write_stl_file(solid, "solid.stl", linear_deflection=0.1)
+        write_stl_file(solid, "solid.stl", linear_deflection=0.1)
         solid_mesh = trimesh.load_mesh("solid.stl")
         write_stl_file(face, "face.stl", linear_deflection=0.1)
         face_mesh = trimesh.load_mesh("face.stl")
@@ -505,27 +352,6 @@ def is_face_centroid_inside_solid(face, solid, use_convex=False, VERBOSE=False):
         ps.register_point_cloud("centroid", np.array([[centroid.X(), centroid.Y(), centroid.Z()]]))
         ps.show()
     return classifier.State() == TopAbs_IN
-
-def compute_convex_hull_shape(shape):
-    write_stl_file(shape, "solid.stl", linear_deflection=0.1)
-    solid_mesh = trimesh.load_mesh("solid.stl")
-    pts = solid_mesh.vertices
-    hull = ConvexHull(pts)
-
-    # Create OCC faces from hull simplices (triangles)
-    builder = TopoDS_Builder()
-    compound = TopoDS_Compound()
-    builder.MakeCompound(compound)
-
-    for simplex in hull.simplices:
-        tri_pts = [pts[i] for i in simplex]
-        # Create a triangular face
-        p1, p2, p3 = [gp_Pnt(*p) for p in tri_pts]
-
-        poly = BRepBuilderAPI_MakePolygon(p1, p2, p3, True)
-        face = BRepBuilderAPI_MakeFace(poly.Wire())
-        builder.Add(compound, face.Face())
-    return compound
 
 def get_surface_point_on_face(face):
     umin, umax, vmin, vmax = breptools.UVBounds(face)
@@ -567,17 +393,6 @@ def is_face_centroid_hidden(face, solid):
         ps.register_point_cloud("origin", np.array([ray_origin]))
         ps.show()
     return len(locations) > 0
-
-def is_face_centroid_inside_solid_mesh(face, solid):
-    write_stl_file(face, "face.stl", linear_deflection=0.1)
-    write_stl_file(solid, "solid.stl", linear_deflection=0.1)
-    face_mesh = trimesh.load_mesh("face.stl")
-    #print(face_mesh.vertices)
-    solid_mesh = trimesh.load_mesh("solid.stl")
-    ps.init()
-    ps.register_surface_mesh("solid", solid_mesh.vertices, solid_mesh.faces)
-    ps.register_surface_mesh("face", face_mesh.vertices, face_mesh.faces)
-    ps.show()
 
 def apply_location_to_shape(shape):
     loc = shape.Location()
@@ -640,9 +455,8 @@ def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
         face_counter = 0
         all_face_polys = []
 
-        #plot_regions(shape_regions)
+        # collect all visible faces
         visible_faces = []
-        # DEBUG: assess visible faces
         while exp.More():
             face = apply_location_to_shape(topods.Face(exp.Current()))
             if is_face_visible(face, myshape):
@@ -660,20 +474,6 @@ def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
             exp.Next()
         #render_faces(visible_faces, myshape)
 
-        #while exp.More():
-        #    face = apply_location_to_shape(topods.Face(exp.Current()))
-
-        #    #face_global = apply_location_to_shape(face)
-        #    projected_edges, _ = project_shape(face)
-        #    all_edges += projected_edges
-
-        #    polys = get_regions(projected_edges)
-        #    all_face_polys += polys
-        #    face_regions[face_counter] = [face, polys]
-        #    face_counter += 1
-        #    #plot_regions(polys)
-        #    exp.Next()
-        
         print(len(shape_regions))
         best_faces = []
         region_dicts = []
@@ -716,14 +516,6 @@ def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
                 "internal_face": internal_face,
                 "hidden_face": hidden_face
             })
-
-            #cvx_internal_face = is_face_centroid_inside_solid(face_regions[best_poly[0]][0], orig_shape, use_convex=True, VERBOSE=True)
-            #hidden_face = is_face_centroid_hidden(face_regions[best_poly[0]][0], orig_shape)
-            #print("internal_face", internal_face)
-            #print("hidden_face", hidden_face)
-            #hidden_face = (not internal_face) and hidden_face
-            #print("hidden_face", hidden_face)
-        #render_faces(best_faces, orig_shape)
 
         fig, ax = plt.subplots()
         region_dicts = list(sorted(region_dicts, key= lambda r: r["region"].area))
