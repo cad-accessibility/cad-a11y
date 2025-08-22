@@ -94,6 +94,43 @@ def cut_shape_with_plane(shape, plane_origin, plane_normal):
 
     return cut_result.Shape(), True
 
+def get_bbox_from_shapes(shapes):
+    bbox = Bnd_Box()
+    #brepbndlib_Add(shape, bbox)
+    brepbndlib.Add(shapes[0], bbox)
+    xmin_0, ymin_0, zmin_0, xmax_0, ymax_0, zmax_0 = bbox.Get()
+    brepbndlib.Add(shapes[1], bbox)
+    xmin_1, ymin_1, zmin_1, xmax_1, ymax_1, zmax_1 = bbox.Get()
+    xmin = min(xmin_0, xmin_1)
+    ymin = min(ymin_0, ymin_1)
+    zmin = min(zmin_0, zmin_1)
+    xmax = max(xmax_0, xmax_1)
+    ymax = max(ymax_0, ymax_1)
+    zmax = max(zmax_0, zmax_1)
+
+    return xmin, ymin, zmin, xmax, ymax, zmax
+
+def normalize_shapes_diagonal(shapes):
+    # Step 1: Compute bounding box
+    xmin, ymin, zmin, xmax, ymax, zmax = get_bbox_from_shapes(shapes)
+    
+    # Step 2: Compute diagonal length
+    pmin = gp_Pnt(xmin, ymin, zmin)
+    pmax = gp_Pnt(xmax, ymax, zmax)
+    diagonal = pmin.Distance(pmax)
+    
+    if diagonal == 0:
+        raise ValueError("Bounding box has zero diagonal. Cannot normalize.")
+
+    # Step 3: Compute scaling transformation
+    scale_factor = 1.0 / diagonal
+    trsf = gp_Trsf()
+    trsf.SetScale(pmin, scale_factor)  # scale about the lower corner (or use center if you prefer)
+
+    # Step 4: Apply transformation
+    transformed = [BRepBuilderAPI_Transform(shape, trsf, True).Shape() for shape in shapes]
+    return transformed
+
 def normalize_shape_diagonal(shape):
     # Step 1: Compute bounding box
     bbox = Bnd_Box()
@@ -117,6 +154,33 @@ def normalize_shape_diagonal(shape):
     # Step 4: Apply transformation
     transformed = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
     return transformed
+
+def depth_peeling_single_depth_shapes(shapes, normal_dir: gp_Dir, depth: float):
+
+    xmin, ymin, zmin, xmax, ymax, zmax = get_bbox_from_shapes(shapes)
+
+    # Step 2: Project bounding box corners onto the normal vector to get min/max along normal
+    corners = [
+        gp_Pnt(x, y, z)
+        for x in (xmin, xmax)
+        for y in (ymin, ymax)
+        for z in (zmin, zmax)
+    ]
+    normal_vec = gp_Vec(normal_dir)
+    projections = [gp_Vec(gp_Pnt(0, 0, 0), pnt).Dot(normal_vec) for pnt in corners]
+    min_proj = min(projections)
+    max_proj = max(projections)
+
+    # Step 3: Iterate along the normal
+    d = min_proj+depth*(max_proj-min_proj)
+    origin = gp_Pnt(normal_vec.Scaled(d).X(), normal_vec.Scaled(d).Y(), normal_vec.Scaled(d).Z())
+
+    cut_shape_0, success_0 = cut_shape_with_plane(shapes[0], origin, normal_dir)
+    cut_shape_1, success_1 = cut_shape_with_plane(shapes[1], origin, normal_dir)
+    if success_0 and compute_volume(cut_shape_0) > 0.0 and success_1 and compute_volume(cut_shape_1) > 0.0:
+        return [cut_shape_0, cut_shape_1]
+
+    return shapes
 
 def depth_peeling_single_depth(shape, normal_dir: gp_Dir, depth: float):
     # Step 1: Compute bounding box
