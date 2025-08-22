@@ -1,4 +1,5 @@
 import numpy as np
+from render_low_res import low_res_render
 import shapely
 import polyscope as ps
 import trimesh
@@ -84,6 +85,46 @@ def polygon_to_path(polygon: Polygon):
         codes.extend([Path.MOVETO] + [Path.LINETO] * (len(points) - 2) + [Path.CLOSEPOLY])
 
     return Path(vertices, codes)
+
+def polygon_to_path_multi(polygon_or_multipolygon):
+    """Convert Polygon or MultiPolygon to a Matplotlib Path."""
+    if isinstance(polygon_or_multipolygon, Polygon):
+        polygons = [polygon_or_multipolygon]
+    elif isinstance(polygon_or_multipolygon, MultiPolygon):
+        polygons = list(polygon_or_multipolygon.geoms)
+    else:
+        raise ValueError("Input must be a Polygon or MultiPolygon")
+
+    all_vertices = []
+    all_codes = []
+
+    for poly in polygons:
+        exterior = np.array(poly.exterior.coords)
+        vertices = np.concatenate([
+            exterior,
+            [[0, 0]]  # Dummy for CLOSEPOLY
+        ])
+        codes = [Path.MOVETO] + [Path.LINETO] * (len(exterior) - 1) + [Path.CLOSEPOLY]
+
+        all_vertices.append(vertices)
+        all_codes.append(codes)
+
+        # Add interior holes (optional)
+        for interior in poly.interiors:
+            ring = np.array(interior.coords)
+            ring_vertices = np.concatenate([
+                ring,
+                [[0, 0]]  # Dummy for CLOSEPOLY
+            ])
+            ring_codes = [Path.MOVETO] + [Path.LINETO] * (len(ring) - 1) + [Path.CLOSEPOLY]
+
+            all_vertices.append(ring_vertices)
+            all_codes.append(ring_codes)
+
+    vertices = np.concatenate(all_vertices)
+    codes = np.concatenate(all_codes)
+    return Path(vertices, codes)
+
 
 def get_bbox(lines):
     pts = []
@@ -314,10 +355,39 @@ def plot_regions(polygons):
     ax.set_aspect('equal')
     plt.show()
 
+def plot_juxtaposition_low_res(lines_0, shape_regions_0, lines_1, shape_regions_1, inter_regions, diff_regions_0, diff_regions_1, filename="low_res"):
+    multi_0 = MultiPolygon(shape_regions_0)
+    multi_0_path = polygon_to_path_multi(multi_0)
+    multi_0_patch = PathPatch(multi_0_path, facecolor='none', edgecolor='black', linewidth=0)
+    multi_1 = MultiPolygon(shape_regions_1)
+    bounds = multi_0.union(multi_1).bounds
+    shape_regions_0_patches = []
+    shape_regions_1_patches = []
+    for i, poly in enumerate(shape_regions_0):
+        shape_regions_0[i] = shapely.affinity.translate(poly, 1.2*(bounds[2]-bounds[0]), 0)
+        path = polygon_to_path(poly)
+        patch = PathPatch(path, color="#1b9e77", edgecolor='black', alpha=0.5)
+        shape_regions_0_patches.append(patch)
+    lines_0 = deepcopy(lines_0)
+    for i, line in enumerate(lines_0):
+        line = np.array(line)
+        line[:, 0] += + 1.2*(bounds[2]-bounds[0])
+        lines_0[i] = line
+    for poly in shape_regions_1:
+        path = polygon_to_path(poly)
+        patch = PathPatch(path, color="#7570b3", edgecolor='black', alpha=0.5)
+        shape_regions_1_patches.append(patch)
+    for i, line in enumerate(lines_1):
+        line = np.array(line)
+        lines_1[i] = line
+
+    low_res_render(lines_0, lines_1, [multi_0_patch], bounds=bounds, filename=filename)
+
 def plot_juxtaposition(lines_0, shape_regions_0, lines_1, shape_regions_1, inter_regions, diff_regions_0, diff_regions_1):
     fig, ax = plt.subplots()
     multi_0 = MultiPolygon(shape_regions_0)
     multi_1 = MultiPolygon(shape_regions_1)
+
     bounds = multi_0.union(multi_1).bounds
     for poly in shape_regions_0:
         poly = shapely.affinity.translate(poly, 1.1*(bounds[2]-bounds[0]), 0)
@@ -352,6 +422,31 @@ def plot_single(lines, shape_regions, color):
     ax.autoscale()
     ax.set_aspect('equal')
     plt.show()
+
+def plot_superposition_low_res(lines_0, shape_regions_0, lines_1, shape_regions_1, inter_regions, diff_regions_0, diff_regions_1, filename="low_res"):
+    diff_regions_0_patches = []
+    diff_regions_1_patches = []
+    inter_regions_patches = []
+    for poly in diff_regions_0:
+        path = polygon_to_path(poly)
+        patch = PathPatch(path, color="#1b9e77", edgecolor='black', alpha=0.5)
+        diff_regions_0_patches.append(patch)
+    for poly in diff_regions_1:
+        path = polygon_to_path(poly)
+        patch = PathPatch(path, color="#7570b3", edgecolor='black', alpha=0.5)
+        diff_regions_1_patches.append(patch)
+    for poly in inter_regions:
+        path = polygon_to_path(poly)
+        patch = PathPatch(path, color="#d95f02", edgecolor='black', alpha=0.5)
+        inter_regions_patches.append(patch)
+    for i, line in enumerate(lines_0):
+        line = np.array(line)
+        lines_0[i] = line
+    for i, line in enumerate(lines_1):
+        line = np.array(line)
+        lines_1[i] = line
+
+    low_res_render(lines_0, lines_1, shape_regions_0, filename=filename)
 
 def plot_superposition(lines_0, shape_regions_0, lines_1, shape_regions_1, inter_regions, diff_regions_0, diff_regions_1):
     fig, ax = plt.subplots()
@@ -659,6 +754,18 @@ def create_orthographic_views(step_file_0, step_file_1, cut_depth=0.9):
         #plot_regions(diff_regions_1)
 
         # 5) create different layouts: juxtaposition, superposition, only intersection
+        plot_juxtaposition_low_res(all_shape_edges_0, shape_regions_0, all_shape_edges_1, shape_regions_1, 
+                                   region_intersections, diff_regions_0, diff_regions_1,
+                                   filename="juxtaposition_"+view_key)
+        all_shape_edges_0 = np.array([l for l in all_shape_edges_0])
+        all_shape_edges_1 = np.array([l for l in all_shape_edges_1])
+        low_res_render(all_shape_edges_0, [], [], filename="low_res_0_"+view_key)
+        low_res_render([], all_shape_edges_1, [], filename="low_res_1_"+view_key)
+        plot_superposition_low_res(all_shape_edges_0, shape_regions_0, all_shape_edges_1, shape_regions_1, 
+                                   region_intersections, diff_regions_0, diff_regions_1,
+                                   filename="superposition_"+view_key)
+        continue
+        exit()
         plot_juxtaposition(all_shape_edges_0, shape_regions_0, all_shape_edges_1, shape_regions_1, region_intersections, diff_regions_0, diff_regions_1)
         plot_superposition(all_shape_edges_0, shape_regions_0, all_shape_edges_1, shape_regions_1, region_intersections, diff_regions_0, diff_regions_1)
         plot_single(all_shape_edges_0, shape_regions_0, "#1b9e77")
