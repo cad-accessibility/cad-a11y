@@ -1,10 +1,13 @@
 import os
 from time import time
 from OCC.Core.BRepFeat import BRepFeat_SplitShape
+from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Section
 from OCC.Core.gp import gp_Pnt, gp_Dir, gp_Vec, gp_Pln, gp_Trsf
 from OCC.Core.GProp import GProp_GProps
 from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform, BRepBuilderAPI_MakeFace
+from OCC.Core.BRep import BRep_Builder
+from OCC.Core.TopAbs import TopAbs_FACE
 from OCC.Core.STEPControl import STEPControl_Reader
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 from OCC.Display.SimpleGui import init_display
@@ -14,6 +17,8 @@ from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCC.Core.BOPAlgo import BOPAlgo_Builder, BOPAlgo_GlueFull, BOPAlgo_Splitter
 from OCC.Core.TopExp import TopExp_Explorer
 from OCC.Core.TopAbs import TopAbs_SOLID
+from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
+from OCC.Core.GeomAbs import GeomAbs_Plane
 from OCC.Core.TopoDS import TopoDS_Edge, TopoDS_Face, TopoDS_Iterator, TopoDS_Compound
 from OCC.Core.TopoDS import topods
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
@@ -182,6 +187,67 @@ def depth_peeling_single_depth_shapes(shapes, normal_dir: gp_Dir, depth: float):
 
     return shapes
 
+def faces_on_plane(shape, plane_origin: gp_Pnt, plane_normal: gp_Dir, tol=1e-7):
+    """
+    Returns a new OCC shape composed of all faces of `shape` that lie on the plane
+    defined by `plane_origin` and `plane_normal`.
+    """
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+
+    exp = TopExp_Explorer(shape, TopAbs_FACE)
+    while exp.More():
+        face = topods.Face(exp.Current())
+        adaptor = BRepAdaptor_Surface(face)
+        if adaptor.GetType() == GeomAbs_Plane:
+            plane = adaptor.Plane()
+            # Compare normals
+            n = plane.Axis().Direction()
+            origin = plane.Location()
+            if n.IsParallel(plane_normal, tol) and origin.Distance(plane_origin) < tol:
+                builder.Add(compound, face)
+        print(face)
+        exp.Next()
+    
+    return compound
+
+def depth_peeling_single_depth_with_bbox(shape, normal_dir: gp_Dir, depth: float, bbox):
+
+    xmin, ymin, zmin, xmax, ymax, zmax = bbox
+
+    # Step 2: Project bounding box corners onto the normal vector to get min/max along normal
+    corners = [
+        gp_Pnt(x, y, z)
+        for x in (xmin, xmax)
+        for y in (ymin, ymax)
+        for z in (zmin, zmax)
+    ]
+    normal_vec = gp_Vec(normal_dir)
+    projections = [gp_Vec(gp_Pnt(0, 0, 0), pnt).Dot(normal_vec) for pnt in corners]
+    min_proj = min(projections)
+    max_proj = max(projections)
+
+    # Step 3: Iterate along the normal
+    d = min_proj+depth*(max_proj-min_proj)
+    origin = gp_Pnt(normal_vec.Scaled(d).X(), normal_vec.Scaled(d).Y(), normal_vec.Scaled(d).Z())
+    cut_shape, success = cut_shape_with_plane(shape, origin, normal_dir)
+
+    #plane = gp_Pln(origin, normal_dir)
+
+    #if get_section_only:
+    #    # Compute section (intersection)
+    #    #section = BRepAlgoAPI_Section(shape, plane, True)
+    #    #section.ComputePCurveOn1(True)
+    #    #section.Build()
+    #    #return section.Shape()
+    #    return faces_on_plane(cut_shape, origin, normal_dir)
+
+    if success and compute_volume(cut_shape) > 0.0:
+        return cut_shape, origin
+
+    return shape, origin
+
 def depth_peeling_single_depth(shape, normal_dir: gp_Dir, depth: float):
     # Step 1: Compute bounding box
     bbox = Bnd_Box()
@@ -205,6 +271,7 @@ def depth_peeling_single_depth(shape, normal_dir: gp_Dir, depth: float):
     d = min_proj+depth*(max_proj-min_proj)
     origin = gp_Pnt(normal_vec.Scaled(d).X(), normal_vec.Scaled(d).Y(), normal_vec.Scaled(d).Z())
     cut_shape, success = cut_shape_with_plane(shape, origin, normal_dir)
+
     if success and compute_volume(cut_shape) > 0.0:
         return cut_shape
 

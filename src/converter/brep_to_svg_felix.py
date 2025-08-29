@@ -3,6 +3,7 @@ import create_hatch_lines_single_depth
 import os
 from copy import deepcopy
 import svgwrite
+from render_low_res import low_res_render
 
 from OCC.Core.BRepBndLib import brepbndlib
 from OCC.Core.Bnd import Bnd_Box
@@ -84,7 +85,7 @@ def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
     views = {
         "top": {
             "eye": gp_Pnt(0, 0, -1000),
-            "dir": gp_Dir(1, 0, 1)
+            "dir": gp_Dir(0, 0, 1)
         },
         "front": {
             "eye": gp_Pnt(0, -1000, 0),
@@ -101,7 +102,7 @@ def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
 
         trsf = gp_Trsf()
         axis = gp_Ax1(gp_Pnt(0, 0, 0), views[view_key]["dir"])  # Y-axis
-        trsf.SetRotation(axis, 0.25 * 3.141592653589793)  # -90 degrees in radians
+        trsf.SetRotation(axis, -0.5 * 3.141592653589793)  # -90 degrees in radians
         myshape = BRepBuilderAPI_Transform(myshape, trsf, True).Shape()
 
         bbox = Bnd_Box()
@@ -126,6 +127,7 @@ def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
             "visible_seam": hlr.RgNLineVCompound(),
             "visible_outlines": hlr.OutLineVCompound(),
             "visible_iso": hlr.IsoLineVCompound(),
+
             #"hidden": hlr.HCompound(),
             #"hidden_smooth": hlr.Rg1LineHCompound(),
             #"hidden_seam": hlr.RgNLineHCompound(),
@@ -141,14 +143,16 @@ def create_orthographic_views(step_file, cut_depth=0.9, hatch_step=0.012):
                 edges_2d = []
             all_edges += edges_2d
         
-        write_svg_lines(os.path.join("svg_views", os.path.basename(step_file).split(".")[0]+"_"+str(cut_depth)+"_"+str(hatch_step)+"_"+view_key+".svg"), 
+        file_name = os.path.join("svg_views", os.path.basename(step_file).split(".")[0]+"_"+str(cut_depth)+"_"+str(hatch_step)+"_"+view_key)
+        write_svg_lines(file_name+".svg", 
                         all_edges, width=800, height=800)
+        low_res_render(all_edges, [], [], filename=file_name)
 
 if __name__ == '__main__':
     # check for pyqt5
     #if not load_pyqt5():
     #    raise IOError("pyqt5 required to run this test")
-    create_orthographic_views(os.path.join("..", "models", "brep", "lighter.step"), cut_depth=0.9, hatch_step=0.10)
+    create_orthographic_views(os.path.join("..", "models", "brep", "lighter.step"), cut_depth=0.9, hatch_step=2.00)
     #display, start_display, add_menu, add_function_to_menu = init_display("pyqt5")
     #display.DisplayShape(edges_projected["visible"], color=Quantity_NOC_BLACK, update=True)
     #display.DisplayShape(myshape, color=Quantity_NOC_BLACK, update=True)

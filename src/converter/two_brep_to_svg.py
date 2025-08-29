@@ -1,5 +1,6 @@
 import numpy as np
-from render_low_res import low_res_render
+from .render_low_res import low_res_render
+from .plane_intersection_utils import depth_peeling_single_depth_with_bbox
 import shapely
 import polyscope as ps
 import trimesh
@@ -9,12 +10,10 @@ from shapely.ops import polygonize, unary_union
 from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely.validation import explain_validity
 import random
-import create_hatch_lines_single_depth
 import matplotlib.pyplot as plt
 from matplotlib.patches import PathPatch
 from matplotlib.path import Path
 import networkx as nx
-import plane_intersection_utils
 import os
 from copy import deepcopy
 import svgwrite
@@ -371,7 +370,7 @@ def plot_juxtaposition_low_res(lines_0, shape_regions_0, lines_1, shape_regions_
     lines_0 = deepcopy(lines_0)
     for i, line in enumerate(lines_0):
         line = np.array(line)
-        line[:, 0] += + 1.2*(bounds[2]-bounds[0])
+        line[:, 0] += - 1.2*(bounds[2]-bounds[0])
         lines_0[i] = line
     for poly in shape_regions_1:
         path = polygon_to_path(poly)
@@ -381,7 +380,7 @@ def plot_juxtaposition_low_res(lines_0, shape_regions_0, lines_1, shape_regions_
         line = np.array(line)
         lines_1[i] = line
 
-    low_res_render(lines_0, lines_1, [multi_0_patch], bounds=bounds, filename=filename)
+    return low_res_render(lines_0, lines_1, [], bounds=bounds, save_file=False)
 
 def plot_juxtaposition(lines_0, shape_regions_0, lines_1, shape_regions_1, inter_regions, diff_regions_0, diff_regions_1):
     fig, ax = plt.subplots()
@@ -626,6 +625,229 @@ views = {
         "dir": gp_Dir(1, 0, 0)
     }
 }
+
+def get_juxtaposition_view(shapes, bbox, cut_depth=0.9, view_key="top", rendering_mode="brep", imposed_ax_limits=[],
+                           superposition_key="intersection"):
+
+    normal_dir = views[view_key]["dir"]
+
+    # 1) get cute shapes
+    shape_0 = depth_peeling_single_depth_with_bbox(shapes[0], gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
+                                                                  depth=cut_depth, bbox=bbox)
+    shape_1 = depth_peeling_single_depth_with_bbox(shapes[1], gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
+                                                                  depth=cut_depth, bbox=bbox)
+    cut_shapes = [shape_0, shape_1]
+    for i,k in enumerate(views.keys()):
+        trsf = gp_Trsf()
+        axis = gp_Ax1(gp_Pnt(0, 0, 0), views[k]["dir"])
+        trsf.SetRotation(axis, -0.5 * 3.141592653589793)  # -90 degrees in radians
+        cut_shapes[0] = BRepBuilderAPI_Transform(cut_shapes[0], trsf, True).Shape()
+        cut_shapes[1] = BRepBuilderAPI_Transform(cut_shapes[1], trsf, True).Shape()
+        if k == view_key:
+            break
+                                                                  
+    # 2) get shape regions
+
+    all_shape_edges_0, projector = project_shape(cut_shapes[0])
+    all_shape_edges_1, projector = project_shape(cut_shapes[1])
+
+    shape_regions_0 = get_regions(all_shape_edges_0)
+    shape_regions_1 = get_regions(all_shape_edges_1)
+    #plot_regions(shape_regions_0+shape_regions_1)
+    #plot_regions(shape_regions_1)
+
+    # 3) create region intersections
+    #multi_0 = MultiPolygon([poly for poly in shape_regions_0 if poly.is_valid])
+    #multi_1 = MultiPolygon([poly for poly in shape_regions_1 if poly.is_valid])
+    #region_intersections = multi_0.intersection(multi_1)
+    region_intersections = []
+    for poly_0 in shape_regions_0:
+        for poly_1 in shape_regions_1:
+            inter = poly_0.intersection(poly_1)
+            if inter.area > 0.0:
+                region_intersections.append(inter)
+    #plot_regions(region_intersections)
+    # 4) create diff: substract region intersections from shape regions
+    diff_regions_0 = []
+    for poly_0 in shape_regions_0:
+        for inter in region_intersections:
+            if poly_0.intersects(inter):
+                poly_0 = shapely.difference(poly_0, inter)
+        diff = poly_0
+        if diff.area > 0.0:
+            if isinstance(diff, MultiPolygon):
+                for poly in diff.geoms:
+                    diff_regions_0.append(poly)
+            else:
+                diff_regions_0.append(diff)
+    diff_regions_1 = []
+    for poly_1 in shape_regions_1:
+        for inter in region_intersections:
+            if poly_1.intersects(inter):
+                poly_1 = shapely.difference(poly_1, inter)
+
+        diff = poly_1
+        if diff.area > 0.0:
+            if isinstance(diff, MultiPolygon):
+                for poly in diff.geoms:
+                    diff_regions_1.append(poly)
+            else:
+                diff_regions_1.append(diff)
+    #plot_regions([diff])
+    #    # label what is left of shape regions. that is the diff
+    shape_regions_0 = remove_overlaps(shape_regions_0)
+    shape_regions_1 = remove_overlaps(shape_regions_1)
+    #plot_regions(shape_regions_0)
+    region_intersections = remove_overlaps(region_intersections)
+    #plot_regions(region_intersections)
+    diff_regions_0 = remove_overlaps(diff_regions_0)
+    #plot_regions(diff_regions_0)
+    diff_regions_1 = remove_overlaps(diff_regions_1)
+    #plot_regions(diff_regions_1)
+
+    # 5) create different layouts: juxtaposition, superposition, only intersection
+    brep, outline, filled, ax_limits = plot_juxtaposition_low_res(all_shape_edges_0, shape_regions_0, all_shape_edges_1, shape_regions_1, 
+                               region_intersections, diff_regions_0, diff_regions_1,
+                               filename="juxtaposition_"+view_key)
+    if rendering_mode == "brep":
+        return brep, ax_limits
+    if rendering_mode == "outline":
+        return outline, ax_limits
+    if rendering_mode == "filled":
+        return filled, ax_limits
+    
+    #all_shape_edges_0 = np.array([l for l in all_shape_edges_0])
+    #all_shape_edges_1 = np.array([l for l in all_shape_edges_1])
+    #low_res_render(all_shape_edges_0, [], [], filename="low_res_0_"+view_key)
+    #low_res_render([], all_shape_edges_1, [], filename="low_res_1_"+view_key)
+    #brep_0, outline_0, filled_0, ax_limits = low_res_render(all_shape_edges_0, 
+    #                                                        [], [], save_file=False, 
+    #                                                        imposed_ax_limits=imposed_ax_limits)
+    #brep_1, outline_1, filled_1, ax_limits = low_res_render(all_shape_edges_1, 
+    #                                                        [], [], save_file=False, 
+    #                                                        imposed_ax_limits=imposed_ax_limits)
+
+def get_superposition_view(shapes, bbox, cut_depth=0.9, view_key="top", rendering_mode="brep", imposed_ax_limits=[],
+                           superposition_key="intersection"):
+
+    normal_dir = views[view_key]["dir"]
+
+    # 1) get cute shapes
+    shape_0, origin_0 = depth_peeling_single_depth_with_bbox(shapes[0], gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
+                                                                  depth=cut_depth, bbox=bbox)
+    shape_1, origin_1 = depth_peeling_single_depth_with_bbox(shapes[1], gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
+                                                                  depth=cut_depth, bbox=bbox)
+    cut_shapes = [shape_0, shape_1]
+    print(cut_shapes)
+    for i,k in enumerate(views.keys()):
+        trsf = gp_Trsf()
+        axis = gp_Ax1(gp_Pnt(0, 0, 0), views[k]["dir"])
+        trsf.SetRotation(axis, -0.5 * 3.141592653589793)  # -90 degrees in radians
+        cut_shapes[0] = BRepBuilderAPI_Transform(cut_shapes[0], trsf, True).Shape()
+        cut_shapes[1] = BRepBuilderAPI_Transform(cut_shapes[1], trsf, True).Shape()
+        if k == view_key:
+            break
+                                                                  
+    # 2) get shape regions
+
+    all_shape_edges_0, projector = project_shape(cut_shapes[0])
+    all_shape_edges_1, projector = project_shape(cut_shapes[1])
+
+    shape_regions_0 = get_regions(all_shape_edges_0)
+    shape_regions_1 = get_regions(all_shape_edges_1)
+    #plot_regions(shape_regions_0+shape_regions_1)
+    #plot_regions(shape_regions_1)
+
+    # 3) create region intersections
+    #multi_0 = MultiPolygon([poly for poly in shape_regions_0 if poly.is_valid])
+    #multi_1 = MultiPolygon([poly for poly in shape_regions_1 if poly.is_valid])
+    #region_intersections = multi_0.intersection(multi_1)
+    region_intersections = []
+    for poly_0 in shape_regions_0:
+        for poly_1 in shape_regions_1:
+            inter = poly_0.intersection(poly_1)
+            if inter.area > 0.0:
+                region_intersections.append(inter)
+    #plot_regions(region_intersections)
+    # 4) create diff: substract region intersections from shape regions
+    diff_regions_0 = []
+    for poly_0 in shape_regions_0:
+        for inter in region_intersections:
+            if poly_0.intersects(inter):
+                poly_0 = shapely.difference(poly_0, inter)
+        diff = poly_0
+        if diff.area > 0.0:
+            if isinstance(diff, MultiPolygon):
+                for poly in diff.geoms:
+                    diff_regions_0.append(poly)
+            else:
+                diff_regions_0.append(diff)
+    diff_regions_1 = []
+    for poly_1 in shape_regions_1:
+        for inter in region_intersections:
+            if poly_1.intersects(inter):
+                poly_1 = shapely.difference(poly_1, inter)
+
+        diff = poly_1
+        if diff.area > 0.0:
+            if isinstance(diff, MultiPolygon):
+                for poly in diff.geoms:
+                    diff_regions_1.append(poly)
+            else:
+                diff_regions_1.append(diff)
+    #plot_regions([diff])
+    #    # label what is left of shape regions. that is the diff
+    shape_regions_0 = remove_overlaps(shape_regions_0)
+    shape_regions_1 = remove_overlaps(shape_regions_1)
+    #plot_regions(shape_regions_0)
+    region_intersections = remove_overlaps(region_intersections)
+    #plot_regions(region_intersections)
+    diff_regions_0 = remove_overlaps(diff_regions_0)
+    #plot_regions(diff_regions_0)
+    diff_regions_1 = remove_overlaps(diff_regions_1)
+    #plot_regions(diff_regions_1)
+
+    # 5) create different layouts: juxtaposition, superposition, only intersection
+    #plot_juxtaposition_low_res(all_shape_edges_0, shape_regions_0, all_shape_edges_1, shape_regions_1, 
+    #                           region_intersections, diff_regions_0, diff_regions_1,
+    #                           filename="juxtaposition_"+view_key)
+    all_shape_edges_0 = np.array([l for l in all_shape_edges_0])
+    all_shape_edges_1 = np.array([l for l in all_shape_edges_1])
+    #low_res_render(all_shape_edges_0, [], [], filename="low_res_0_"+view_key)
+    #low_res_render([], all_shape_edges_1, [], filename="low_res_1_"+view_key)
+    brep_0, outline_0, filled_0, ax_limits = low_res_render(all_shape_edges_0, 
+                                                            [], [], save_file=False, 
+                                                            imposed_ax_limits=imposed_ax_limits)
+    brep_1, outline_1, filled_1, ax_limits = low_res_render(all_shape_edges_1, 
+                                                            [], [], save_file=False, 
+                                                            imposed_ax_limits=imposed_ax_limits)
+    # TODO: plot patch
+    if superposition_key == "intersection":
+        intersection_map, outline_n, filled_n, ax_limits = low_res_render([],[],region_intersections, save_file=False, imposed_ax_limits=imposed_ax_limits)
+    elif superposition_key == "difference before":
+        diff_0_map, outline_n, filled_n, ax_limits = low_res_render([],[],diff_regions_0, save_file=False, imposed_ax_limits=imposed_ax_limits)
+    elif superposition_key == "difference after":
+        diff_1_map, outline_n, filled_n, ax_limits = low_res_render([],[],diff_regions_1, save_file=False, imposed_ax_limits=imposed_ax_limits)
+    # Merge maps
+    merged_map = outline_0.copy()
+    for i in range(outline_0.shape[0]):
+        for j in range(outline_0.shape[1]):
+            #print(outline_1[i][j][0])
+            if np.all(outline_1[i][j] == [0,0,0,255]):
+                merged_map[i][j] = [0,0,0,255]
+            if superposition_key == "intersection":
+                if np.all(intersection_map[i][j] == [0,0,0,255]) and (np.all(filled_0[i][j] == [0,0,0,255]) or np.all(filled_1[i][j] == [0,0,0,255])):
+                    merged_map[i][j] = [0,0,0,255]
+            elif superposition_key == "difference before":
+                if np.all(diff_0_map[i][j] == [0,0,0,255]) and np.all(filled_0[i][j] == [0,0,0,255]):
+                    merged_map[i][j] = [0,0,0,255]
+            elif superposition_key == "difference after":
+                if np.all(diff_1_map[i][j] == [0,0,0,255]) and np.all(filled_1[i][j] == [0,0,0,255]):
+                    merged_map[i][j] = [0,0,0,255]
+    return merged_map
+    #plot_superposition_low_res(all_shape_edges_0, shape_regions_0, all_shape_edges_1, shape_regions_1, 
+    #                           region_intersections, diff_regions_0, diff_regions_1,
+    #                           filename="superposition_"+view_key)
 
 
 def create_orthographic_views(step_file_0, step_file_1, cut_depth=0.9):
