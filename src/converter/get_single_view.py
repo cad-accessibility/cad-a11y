@@ -207,6 +207,58 @@ def closed_linestrings_from_groups(groups):
             closed_loops.append(LineString(poly.exterior.coords))
     return closed_loops
 
+def get_cut_out_polygon_from_face_edges(face_edges):
+    biggest_poly_i = 0
+    biggest_area = -1
+    #for line in face_edges:
+    #     line = np.array(line)
+    #     plt.plot(line[:,0], line[:,1])
+    ##ax.set_aspect('equal')
+    #plt.show()
+    # get intersecting lines
+    groups = group_lines_by_buffer([LineString(line) for line in face_edges])
+    print(groups)
+    polygons = []
+    for group in groups:
+        polygons.append(unary_union(get_regions([face_edges[i] for i in group])))
+    #polygons = polygonize([line_merge(group) for group in groups])
+    #fig, ax = plt.subplots()
+    #for poly in polygons:
+    #    print("poly")
+    #    path = polygon_to_path_multi(poly)
+    #    patch = PathPatch(path, edgecolor='black', alpha=0.5)
+    #    ax.add_patch(patch)
+    #    x, y = poly.exterior.xy
+    #    ax.plot(x, y)
+    #    #for line in projected_edges:
+    #    #    ax.plot(np.array(line)[:, 0], np.array(line)[:, 1])
+    #    #ax.fill(x, y, alpha=0.5)  # alpha for transparency, optional
+
+    #    ax.set_aspect('equal')
+    #    plt.show()
+
+    #polygons, dangles, cuts, invalids = polygonize_full([LineString(round_line(line)).buffer(0.001) for line in face_edges])
+    #polygons = list(polygons.geoms)
+    print("polygons")
+    print(polygons)
+    for i, poly in enumerate(polygons):
+        if poly.area > biggest_area:
+            biggest_poly_i = i
+            print(biggest_poly_i)
+            biggest_area = poly.area
+    # everything else are holes
+    face_poly = polygons[biggest_poly_i]
+    #print(biggest_area)
+    for i, line in enumerate(polygons):
+        if i == biggest_poly_i:
+            continue
+        print("diff")
+        print(face_poly.contains(line))
+        print(line.contains(face_poly))
+        face_poly = face_poly.difference(line)
+    #polygons[biggest_poly_i] = face_poly
+    return face_poly
+
 def project_shape_section_faces(myshape, plane_origin, normal_dir):
 
     all_shape_edges = []
@@ -249,41 +301,42 @@ def project_shape_section_faces(myshape, plane_origin, normal_dir):
             all_shape_edges += face_edges
             if len(face_edges) > 0:
                 # identify outermost line
-                biggest_poly_i = 0
-                biggest_area = -1
-                #for line in face_edges:
-                #     line = np.array(line)
-                #     plt.plot(line[:,0], line[:,1])
-                ##ax.set_aspect('equal')
-                #plt.show()
-                # get intersecting lines
-                groups = group_lines_by_buffer([LineString(line) for line in face_edges])
-                print(groups)
-                polygons = []
-                for group in groups:
-                    polygons.append(unary_union(get_regions([face_edges[i] for i in group])))
-                #polygons = polygonize([line_merge(group) for group in groups])
-
-                #polygons, dangles, cuts, invalids = polygonize_full([LineString(round_line(line)).buffer(0.001) for line in face_edges])
-                #polygons = list(polygons.geoms)
-                print("polygons")
-                print(polygons)
-                for i, poly in enumerate(polygons):
-                    if poly.area > biggest_area:
-                        biggest_poly_i = i
-                        print(biggest_poly_i)
-                        biggest_area = poly.area
-                # everything else are holes
-                face_poly = polygons[biggest_poly_i]
-                #print(biggest_area)
-                for i, line in enumerate(polygons):
-                    if i == biggest_poly_i:
-                        continue
-                    print("diff")
-                    print(face_poly.contains(line))
-                    print(line.contains(face_poly))
-                    face_poly = face_poly.difference(line)
+#                biggest_poly_i = 0
+#                biggest_area = -1
+#                #for line in face_edges:
+#                #     line = np.array(line)
+#                #     plt.plot(line[:,0], line[:,1])
+#                ##ax.set_aspect('equal')
+#                #plt.show()
+#                # get intersecting lines
+#                groups = group_lines_by_buffer([LineString(line) for line in face_edges])
+#                print(groups)
+#                polygons = []
+#                for group in groups:
+#                    polygons.append(unary_union(get_regions([face_edges[i] for i in group])))
+#                #polygons = polygonize([line_merge(group) for group in groups])
+#
+#                #polygons, dangles, cuts, invalids = polygonize_full([LineString(round_line(line)).buffer(0.001) for line in face_edges])
+#                #polygons = list(polygons.geoms)
+#                print("polygons")
+#                print(polygons)
+#                for i, poly in enumerate(polygons):
+#                    if poly.area > biggest_area:
+#                        biggest_poly_i = i
+#                        print(biggest_poly_i)
+#                        biggest_area = poly.area
+#                # everything else are holes
+#                face_poly = polygons[biggest_poly_i]
+#                #print(biggest_area)
+#                for i, line in enumerate(polygons):
+#                    if i == biggest_poly_i:
+#                        continue
+#                    print("diff")
+#                    print(face_poly.contains(line))
+#                    print(line.contains(face_poly))
+#                    face_poly = face_poly.difference(line)
                 #polygons[biggest_poly_i] = face_poly
+                face_poly = get_cut_out_polygon_from_face_edges(face_edges)
                 regions.append(face_poly)
 
                 #fig, ax = plt.subplots()
@@ -424,6 +477,184 @@ def plot_regions(polygons):
     ax.set_aspect('equal')
     plt.show()
 
+def cut_hole_from_face(face, face_edges, normal_dir):
+    # TODO: make this more robust by sampling multiple times and getting a consensus mask
+    #face = apply_location_to_shape(topods.Face(exp.Current()))
+    write_stl_file(face, "face.stl", linear_deflection=0.1)
+    face_mesh = trimesh.load_mesh("face.stl")
+    potential_face_polys = []
+    for i in range(10):
+        vertices, face_ids = trimesh.sample.sample_surface_even(face_mesh, count=10)
+        #if np.isclose(normal_dir.X(), 1.0):
+        #    vertices_2d = [[v[1], v[2]] for v in vertices]
+        #elif np.isclose(normal_dir.Y(), 1.0):
+        #    vertices_2d = [[v[0], v[1]] for v in vertices]
+        #elif np.isclose(normal_dir.Z(), 1.0):
+        #    print(vertices)
+            #vertices_2d = [[v[0], v[2]] for v in vertices]
+        vertices_2d = [[v[0], v[1]] for v in vertices]
+
+        vertices_2d = np.array(vertices_2d)
+
+        W, H = 1000, 1000
+
+        all_pts = [pt for edge in face_edges for pt in edge]
+        xmin = min(p[0] for p in all_pts)
+        xmax = max(p[0] for p in all_pts)
+        ymin = min(p[1] for p in all_pts)
+        ymax = max(p[1] for p in all_pts)
+        bounds = (xmin, xmax, ymin, ymax)
+        if np.isclose(xmax-xmin, 0.0) or np.isclose(ymax-ymin, 0.0):
+            return []
+
+        # Step 1: Rasterize all edges to binary canvas
+        canvas = np.zeros((H, W), dtype=np.uint8)
+
+        for edge in face_edges:
+            int_pts = [scale_point(p, bounds, W) for p in edge]
+            #plt.plot(np.array(int_pts)[:, 0], np.array(int_pts)[:,1])
+            cv2.polylines(canvas, [np.array(int_pts, dtype=np.int32)], isClosed=False, color=255, thickness=3)
+        for v in vertices_2d:
+            p = np.array(scale_point(v, bounds, W), dtype=np.int32)
+            p[0] = max(0, p[0])
+            p[0] = min(W-1, p[0])
+            p[1] = max(0, p[1])
+            p[1] = min(H-1, p[1])
+            #print(p)
+            #cv2.circle(canvas, center=(p[0], p[1]), radius=1, color=255, thickness=1)
+            cv2.floodFill(canvas, None, p, 255)
+        #cv2.imshow("canvas", canvas)
+        #cv2.waitKey(0)
+
+        # Step 2: Find contours
+        contours, hierarchy = cv2.findContours(canvas, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+        new_img = np.zeros((H, W, 3), dtype=np.uint8)
+        #cv2.drawContours(new_img, contours, -1, (0,255,0), 3)
+        #cv2.imshow("new_img", new_img)
+        #cv2.waitKey(0)
+        exteriors = []
+        holes_dict = {}
+
+        for i, cnt in enumerate(contours):
+            # Flatten contour to (x, y) pairs
+            pts = cnt[:, 0, :]
+            pts = [unscale_point(p[0], p[1], bounds, W) for p in pts]
+
+            if hierarchy[0][i][3] == -1:  
+                # No parent → it's an exterior
+                exteriors.append((i, pts))
+            else:
+                # Has a parent → it's a hole
+                parent = hierarchy[0][i][3]
+                holes_dict.setdefault(parent, []).append(pts)
+
+        # Build shapely polygons
+        polygons = []
+        for idx, ext in exteriors:
+            holes = holes_dict.get(idx, [])
+            poly = Polygon(ext, holes)
+            polygons.append(poly)
+
+        # If you expect just one main shape:
+        poly = polygons[0]
+        potential_face_polys.append(poly)
+
+
+    areas = [poly.area for poly in potential_face_polys]
+    votes = {}
+    max_key = 0
+    max_votes = 0
+    for i in range(len(areas)):
+        key = np.round(areas[i],5)
+        if not key in votes.keys():
+            votes[key] = 0
+        votes[key] += 1
+        if votes[key] > max_votes:
+            max_votes = votes[key]
+            max_key = i
+    #print(votes)
+    #print(max_key)
+    #all_edges += projected_edges
+    face_poly = potential_face_polys[max_key]
+    #fig, ax = plt.subplots()
+    ##for poly in faces:
+    #path = polygon_to_path_multi(poly)
+    #patch = PathPatch(path, edgecolor='black', alpha=0.5)
+    #ax.add_patch(patch)
+    #x, y = poly.exterior.xy
+    #ax.plot(x, y)
+    ##ax.fill(x, y, alpha=0.5)  # alpha for transparency, optional
+    ##ax.scatter(vertices_2d[:, 0], vertices_2d[:,1])
+
+    #ax.set_aspect('equal')
+    #plt.show()
+    return face_poly
+    #exit()
+
+def has_neighbor(i, j, array):
+    return 
+        
+def shrink_filled_faces(filled_faces, brep):
+    filled_faces_np = np.zeros([filled_faces.shape[0], filled_faces.shape[1]], dtype=int)
+    brep_np = np.zeros([filled_faces.shape[0], filled_faces.shape[1]], dtype=int)
+    for i in range(filled_faces.shape[0]):
+        for j in range(filled_faces.shape[1]):
+            if np.all(filled_faces[i][j] == [0,0,0,255]):
+                filled_faces_np[i][j] = 1
+            if brep[i][j][0] == 0:
+                brep_np[i][j] = 1
+
+    change = True
+    #plt.imshow(filled_faces_np)
+    #plt.show()
+    #exit()
+    while change:
+        change = False
+        for i in range(filled_faces.shape[0]):
+            for j in range(filled_faces.shape[1]):
+                if filled_faces_np[i][j] == 0 or brep_np[i][j] == 1:
+                    continue
+                #print(i, j, filled_faces_np[i][j], brep_np[i][j])
+                before_value = filled_faces_np[i][j]
+                filled_faces_np[i][j] = np.min([
+                    filled_faces_np[max(i-1,0)][max(0, j-1)],
+                    filled_faces_np[max(i-1,0)][j],
+                    filled_faces_np[max(i-1,0)][min(brep_np.shape[1]-1, j+1)],
+                    filled_faces_np[i][max(0, j-1)],
+                    filled_faces_np[i][j],
+                    filled_faces_np[i][min(brep_np.shape[1]-1, j+1)],
+                    filled_faces_np[min(brep_np.shape[0]-1, i+1)][max(0, j-1)],
+                    filled_faces_np[min(brep_np.shape[0]-1, i+1)][j],
+                    filled_faces_np[min(brep_np.shape[0]-1, i+1)][min(brep_np.shape[1]-1, j+1)]])
+                #print(i, j, filled_faces_np[i][j])
+                change = change or (filled_faces_np[i][j] != before_value)
+        #print(change)
+        #plt.imshow(filled_faces_np)
+        #plt.show()
+
+    filled_rgba = np.zeros((filled_faces_np.shape[0], filled_faces_np.shape[1], 4), dtype=np.uint8)
+    mask = filled_faces_np == 1
+    filled_rgba[mask] = [0, 0, 0, 255]
+
+    outline = filled_rgba.copy()
+    for i in range(outline.shape[0]):
+        for j in range(outline.shape[1]):
+            if np.all(filled_rgba[i][j] == [0,0,0,255]):
+                if not np.min([
+                    filled_faces_np[max(i-1,0)][max(0, j-1)],
+                    filled_faces_np[max(i-1,0)][j],
+                    filled_faces_np[max(i-1,0)][min(brep_np.shape[1]-1, j+1)],
+                    filled_faces_np[i][max(0, j-1)],
+                    filled_faces_np[i][j],
+                    filled_faces_np[i][min(brep_np.shape[1]-1, j+1)],
+                    filled_faces_np[min(brep_np.shape[0]-1, i+1)][max(0, j-1)],
+                    filled_faces_np[min(brep_np.shape[0]-1, i+1)][j],
+                    filled_faces_np[min(brep_np.shape[0]-1, i+1)][min(brep_np.shape[1]-1, j+1)]]) == 0:
+                    outline[i][j] = [255,255,255,255]
+    #plt.imshow(filled_rgba)
+    #plt.show()
+    return filled_rgba, outline
+
 def sort_face_hole_polygons(myshape, shape_regions, plane_origin, normal_dir):
     faces = []
     holes = []
@@ -434,24 +665,15 @@ def sort_face_hole_polygons(myshape, shape_regions, plane_origin, normal_dir):
         face = topods.Face(exp.Current())
         adaptor = BRepAdaptor_Surface(face)
         if adaptor.GetType() == GeomAbs_Plane:
-            print(face)
             plane = adaptor.Plane()
             # Compare normals
             n = plane.Axis().Direction()
             origin = plane.Location()
-            print("normals")
-            print(n.X(), n.Y(), n.Z())
-            print(normal_dir.X(), normal_dir.Y(), normal_dir.Z())
-            print("origins")
-            print(origin.X(), origin.Y(), origin.Z())
-            print(plane_origin.X(), plane_origin.Y(), plane_origin.Z())
             if np.isclose(normal_dir.X(), 1.0):
                 if np.isclose(n.X(), 1.0) and np.isclose(origin.X(), plane_origin.X()):
-                    print(face)
                     write_stl_file(face, "face.stl", linear_deflection=0.1)
                     face_mesh = trimesh.load_mesh("face.stl")
                     vertices, face_ids = trimesh.sample.sample_surface_even(face_mesh, count=10)
-                    print(vertices)
                     vertices_2d += [[v[1], v[2]] for v in vertices]
             elif np.isclose(normal_dir.Y(), 1.0):
                 if np.isclose(n.Z(), 1.0) and np.isclose(origin.Z(), plane_origin.Y()):
@@ -468,18 +690,14 @@ def sort_face_hole_polygons(myshape, shape_regions, plane_origin, normal_dir):
         exp.Next()
 
     vertices_2d = np.array(vertices_2d)
-    print(vertices_2d)
     if len(vertices_2d) == 0:
         return faces
     for poly in shape_regions:
-        print(np.sum([poly.contains(Point(v)) for v in vertices_2d])/len(vertices_2d))
         if np.sum([poly.contains(Point(v)) for v in vertices_2d])/len(vertices_2d) < 0.5:
             holes.append(poly)
         else:
             faces.append(poly)
     # subtract holes from faces
-    print(faces)
-    print(holes)
     for i, f in enumerate(faces):
         for h in holes:
             faces[i] = faces[i].difference(h)
@@ -521,7 +739,6 @@ def sort_face_hole_polygons(myshape, shape_regions, plane_origin, normal_dir):
 
 def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="brep", imposed_ax_limits=[]):
 
-    #print("cut_depth", cut_depth)
     normal_dir = views[view_key]["dir"]
     get_section_only = rendering_mode=="slice"
     myshape, plane_origin = depth_peeling_single_depth_with_bbox(shape, gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
@@ -565,39 +782,63 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
         #"hidden_iso": hlr.IsoLineHCompound(),
     }
 
-    face_regions = {}
     face_counter = 0
     all_face_polys = []
+    #face_regions = project_faces(myshape)
+
 
     if get_section_only:
-        print(myshape)
         all_face_edges, regions = project_shape_section_faces(myshape, plane_origin, normal_dir)
         #if len(all_shape_edges) > 0:
         #    shape_regions = get_regions(all_shape_edges)
         #    faces, holes = sort_face_hole_polygons(myshape, shape_regions, plane_origin, normal_dir)
         #    exit()
-        #    print(shape_regions)
         #    plot_regions(shape_regions)
     # collect all visible faces
-    #visible_faces = []
-    #exp = TopExp_Explorer(myshape, TopAbs_FACE)
-    #while exp.More():
-    #    face = apply_location_to_shape(topods.Face(exp.Current()))
-    #    #if is_face_visible(face, myshape):
-    #    #    visible_faces.append(face)
-    #    #else:
-    #    #    exp.Next()
-    #    #    continue
-    #    projected_edges, _ = project_shape(face)
-    #    polys = get_regions(projected_edges)
-    #    all_edges += projected_edges
+    if rendering_mode in ["outline", "filled"]:
+        visible_faces = []
+        exp = TopExp_Explorer(myshape, TopAbs_FACE)
+        while exp.More():
+            face = apply_location_to_shape(topods.Face(exp.Current()))
+            #if is_face_visible(face, myshape):
+            #    visible_faces.append(face)
+            #else:
+            #    exp.Next()
+            #    continue
+            projected_edges, _ = project_shape(face)
+            #polys = get_regions(projected_edges)
+            face_poly = cut_hole_from_face(face, projected_edges, normal_dir)
+            #fig, ax = plt.subplots()
+            ##for poly in faces:
+            #path = polygon_to_path_multi(face_poly)
+            #patch = PathPatch(path, edgecolor='black', alpha=0.5)
+            #ax.add_patch(patch)
+            #x, y = face_poly.exterior.xy
+            #ax.plot(x, y)
+            #ax.set_aspect('equal')
+            #plt.show()
 
-    #    all_face_polys += polys
-    #    face_regions[face_counter] = [face, polys]
-    #    face_counter += 1
-    #    exp.Next()
-    #render_faces(shape_regions, myshape)
+            all_face_polys.append(face_poly)
+            #face_regions[face_counter] = [face, polys]
+            face_counter += 1
+            exp.Next()
+            #fig, ax = plt.subplots()
+            ##for poly in all_face_polys:
+            #path = polygon_to_path_multi(face_poly)
+            #patch = PathPatch(path, edgecolor='black', alpha=0.5)
+            #ax.add_patch(patch)
+            #x, y = face_poly.exterior.xy
+            ##ax.plot(x, y)
+            #for line in projected_edges:
+            #    ax.plot(np.array(line)[:, 0], np.array(line)[:, 1])
+            ##ax.fill(x, y, alpha=0.5)  # alpha for transparency, optional
 
+            #ax.set_aspect('equal')
+            #plt.show()
+        #render_faces(shape_regions, myshape)
+        #exit()
+        brep_faces, outline_faces, filled_faces, _ = low_res_render([], [], all_face_polys, save_file=False, 
+                                                                            imposed_ax_limits=imposed_ax_limits, VERBOSE=False)
     all_edges = []
     for edge_type_key in edges_projected.keys():
         if not edges_projected[edge_type_key] is None:
@@ -610,6 +851,8 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
     #write_svg_lines(file_name+".svg", 
     #                all_edges, width=800, height=800)
     brep, outline, filled, ax_limits = low_res_render(all_edges, [], [], save_file=False, imposed_ax_limits=imposed_ax_limits)
+    if rendering_mode in ["outline", "filled"]:
+        filled_faces, outline_faces = shrink_filled_faces(brep_faces, brep)
     if get_section_only:
         brep, outline_0, filled_0, ax_limits = low_res_render(all_face_edges, [], [], save_file=False, imposed_ax_limits=imposed_ax_limits)
         brep_1, outline_1, filled_1, ax_limits = low_res_render([], [], regions, save_file=False, imposed_ax_limits=imposed_ax_limits)
@@ -624,8 +867,9 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
     if rendering_mode == "brep":
         return brep, ax_limits
     if rendering_mode == "outline":
-        return outline, ax_limits
+        return outline_faces, ax_limits
     if rendering_mode == "filled":
+        return filled_faces, ax_limits
         return filled, ax_limits
 
 if __name__ == '__main__':

@@ -7,6 +7,8 @@ from src.converter.two_brep_to_svg import get_superposition_view, get_juxtaposit
 from src.converter.render_low_res import save_binary_array_as_vector_pdf
 from OCC.Core.STEPControl import STEPControl_Reader
 
+#before_model = os.path.join("src", "models", "brep", "vase_pattern_circle_low_before.step")
+#after_model = os.path.join("src", "models", "brep", "vase_pattern_circle_low_after.step")
 before_model = os.path.join("src", "models", "brep", "cup.step")
 after_model = os.path.join("src", "models", "brep", "cup_higher.step")
 
@@ -38,7 +40,7 @@ superposition = False
 juxtaposition = False
 
 rendering_modes = ["outline", "filled", "brep", "slice"]
-rendering_mode_i = 0
+rendering_mode_i = 2
 
 view_keys = ["top", "front", "side"]
 view_key_i = 0
@@ -65,6 +67,7 @@ for i, view_key in enumerate(view_keys):
     view_limits[i][1][1] = max(ax_limits_before[1][1], ax_limits_after[1][1])
 print(view_limits)
 view_key_i = 0
+rendering_mode_i = 0
 img_array, ax_limits_before = get_single_view(shape_before, bbox, 1.0-cut_depth, 
                             view_keys[view_key_i], 
                             rendering_modes[rendering_mode_i])
@@ -198,3 +201,6 @@ def on_key(event):
 fig.canvas.mpl_connect("key_press_event", on_key)
 
 plt.show()
+
+# TODO:
+# 2) fix filled

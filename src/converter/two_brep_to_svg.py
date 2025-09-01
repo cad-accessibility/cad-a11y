@@ -1,6 +1,6 @@
 import numpy as np
 from .render_low_res import low_res_render
-from .plane_intersection_utils import depth_peeling_single_depth_with_bbox
+from .plane_intersection_utils import depth_peeling_single_depth_with_bbox, boolean_diff
 import shapely
 import polyscope as ps
 import trimesh
@@ -632,9 +632,9 @@ def get_juxtaposition_view(shapes, bbox, cut_depth=0.9, view_key="top", renderin
     normal_dir = views[view_key]["dir"]
 
     # 1) get cute shapes
-    shape_0 = depth_peeling_single_depth_with_bbox(shapes[0], gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
+    shape_0, origin_0 = depth_peeling_single_depth_with_bbox(shapes[0], gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
                                                                   depth=cut_depth, bbox=bbox)
-    shape_1 = depth_peeling_single_depth_with_bbox(shapes[1], gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
+    shape_1, origin_1 = depth_peeling_single_depth_with_bbox(shapes[1], gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
                                                                   depth=cut_depth, bbox=bbox)
     cut_shapes = [shape_0, shape_1]
     for i,k in enumerate(views.keys()):
@@ -738,7 +738,17 @@ def get_superposition_view(shapes, bbox, cut_depth=0.9, view_key="top", renderin
     shape_1, origin_1 = depth_peeling_single_depth_with_bbox(shapes[1], gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
                                                                   depth=cut_depth, bbox=bbox)
     cut_shapes = [shape_0, shape_1]
-    print(cut_shapes)
+
+    #diff_0_shape, _ = boolean_diff(shape_0, shape_1)
+    #diff_1_shape, _ = boolean_diff(shape_0, shape_1)
+    #inter_shape, _ = boolean_diff(shape_0, diff_0_shape)
+    #inter_shape, _ = boolean_diff(inter_shape, diff_1_shape)
+    #write_stl_file(diff_0_shape, "diff_0_shape.stl", linear_deflection=0.001)
+    #write_stl_file(diff_1_shape, "diff_1_shape.stl", linear_deflection=0.001)
+    #write_stl_file(inter_shape, "inter_shape.stl", linear_deflection=0.001)
+
+    #print(cut_shapes)
+
     for i,k in enumerate(views.keys()):
         trsf = gp_Trsf()
         axis = gp_Ax1(gp_Pnt(0, 0, 0), views[k]["dir"])

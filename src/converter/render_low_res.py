@@ -29,6 +29,45 @@ def polygon_to_path(polygon: Polygon):
 
     return Path(vertices, codes)
 
+def polygon_to_path_multi(polygon_or_multipolygon):
+    """Convert Polygon or MultiPolygon to a Matplotlib Path."""
+    if isinstance(polygon_or_multipolygon, Polygon):
+        polygons = [polygon_or_multipolygon]
+    elif isinstance(polygon_or_multipolygon, MultiPolygon):
+        polygons = list(polygon_or_multipolygon.geoms)
+    else:
+        raise ValueError("Input must be a Polygon or MultiPolygon")
+
+    all_vertices = []
+    all_codes = []
+
+    for poly in polygons:
+        exterior = np.array(poly.exterior.coords)
+        vertices = np.concatenate([
+            exterior,
+            [[0, 0]]  # Dummy for CLOSEPOLY
+        ])
+        codes = [Path.MOVETO] + [Path.LINETO] * (len(exterior) - 1) + [Path.CLOSEPOLY]
+
+        all_vertices.append(vertices)
+        all_codes.append(codes)
+
+        # Add interior holes (optional)
+        for interior in poly.interiors:
+            ring = np.array(interior.coords)
+            ring_vertices = np.concatenate([
+                ring,
+                [[0, 0]]  # Dummy for CLOSEPOLY
+            ])
+            ring_codes = [Path.MOVETO] + [Path.LINETO] * (len(ring) - 1) + [Path.CLOSEPOLY]
+
+            all_vertices.append(ring_vertices)
+            all_codes.append(ring_codes)
+
+    vertices = np.concatenate(all_vertices)
+    codes = np.concatenate(all_codes)
+    return Path(vertices, codes)
+
 def draw_custom_hatching(ax, clip_path, spacing=0.1, angle=45, linewidth=0.1, color='black'):
     """
     Draws manually spaced, angled hatch lines and clips them to clip_path.
@@ -126,7 +165,7 @@ def save_array_as_pdf(array, filename="low_res.pdf", dpi=100):
         plt.close(fig)
 
 def low_res_render(lines_0, lines_1, shape_regions_0, bounds=[0,0,1,1], filename="low_res", save_file=True, 
-                   imposed_ax_limits=[]):
+                   imposed_ax_limits=[], VERBOSE=False):
     with mpl.rc_context({
         "lines.antialiased": False,
         "patch.antialiased": False,
@@ -161,9 +200,12 @@ def low_res_render(lines_0, lines_1, shape_regions_0, bounds=[0,0,1,1], filename
         #if len(shape_regions_0) > 0:
         for shape_region in shape_regions_0:
             #draw_custom_hatching(ax, shape_regions_0[0], spacing=0.1, linewidth=0.05)
-            path = polygon_to_path(shape_region)
+            #path = polygon_to_path(shape_region)
+            path = polygon_to_path_multi(shape_region)
             patch = PathPatch(path, color="black", edgecolor='black', alpha=1.0)
             ax.add_patch(patch)
+            x, y = shape_region.exterior.coords.xy
+            ax.plot(x, y, c="black")
             #ax.add_patch(shape_regions_0[0])
             #hatch_rect = Rectangle((bounds[0], bounds[1]), bounds[2]-bounds[0], bounds[3]-bounds[1], 
             #                       facecolor='none', edgecolor='black',
@@ -171,6 +213,8 @@ def low_res_render(lines_0, lines_1, shape_regions_0, bounds=[0,0,1,1], filename
             ##for region in shape_regions_0:
             #hatch_rect.set_clip_path(shape_regions_0[0])
             #ax.add_patch(hatch_rect)
+        #if len(shape_regions_0) > 0:
+        #    plt.show()
         ax.set_aspect('equal')
         ax = plt.gca()
         #print("ax limits")
@@ -183,6 +227,8 @@ def low_res_render(lines_0, lines_1, shape_regions_0, bounds=[0,0,1,1], filename
         #print(ax_limits)
         #print(ax.get_xlim())
         #print(ax.get_ylim())
+        if VERBOSE:
+            plt.show()
 
         #fig.savefig("low_res.pdf", dpi=dpi, bbox_inches='tight', pad_inches=0)
         buf = io.BytesIO()

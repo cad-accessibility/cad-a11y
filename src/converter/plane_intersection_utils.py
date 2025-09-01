@@ -82,6 +82,18 @@ def compute_volume(shape):
     brepgprop.VolumeProperties(shape, props)
     return props.Mass()
 
+def boolean_diff(shape_0, shape_1):
+    # Create the cutting plane face
+
+    print(shape_0, shape_1)
+    cut_result = BRepAlgoAPI_Cut(shape_0, shape_1)
+    cut_result.Build()
+    
+    if not cut_result.IsDone():
+        return shape_0, False
+
+    return cut_result.Shape(), True
+
 def cut_shape_with_plane(shape, plane_origin, plane_normal):
     # Create the cutting plane face
     plane = gp_Pln(plane_origin, plane_normal)
