@@ -82,6 +82,11 @@ def compute_volume(shape):
     brepgprop.VolumeProperties(shape, props)
     return props.Mass()
 
+def compute_area(shape):
+    props = GProp_GProps()
+    brepgprop.SurfaceProperties(shape, props)
+    return props.Mass()
+
 def boolean_diff(shape_0, shape_1):
     # Create the cutting plane face
 
@@ -217,9 +222,13 @@ def faces_on_plane(shape, plane_origin: gp_Pnt, plane_normal: gp_Dir, tol=1e-7):
             # Compare normals
             n = plane.Axis().Direction()
             origin = plane.Location()
-            if n.IsParallel(plane_normal, tol) and origin.Distance(plane_origin) < tol:
-                builder.Add(compound, face)
-        print(face)
+            if n.IsParallel(plane_normal, tol):
+                if np.isclose(n.X(), 1.0) and np.abs(origin.X() - plane_origin.X()) < tol:
+                    builder.Add(compound, face)
+                if np.isclose(n.Y(), 1.0) and np.abs(origin.Y() - plane_origin.Y()) < tol:
+                    builder.Add(compound, face)
+                if np.isclose(n.Z(), 1.0) and np.abs(origin.Z() - plane_origin.Z()) < tol:
+                    builder.Add(compound, face)
         exp.Next()
     
     return compound

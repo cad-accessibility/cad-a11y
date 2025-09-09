@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import io, PIL
 import numpy as np
-from matplotlib.patches import Rectangle
+from matplotlib.patches import Rectangle, Circle
 from matplotlib.lines import Line2D
 from matplotlib.collections import LineCollection
 import matplotlib as mpl
@@ -139,8 +139,9 @@ def save_binary_array_as_vector_pdf(array, filename="low_res.pdf"):
     # Draw black pixels only
     for y in range(height):
         for x in range(width):
-            if array[y, x, 3] == 255:
-                ax.add_patch(Rectangle((x, height - y - 1), 1, 1, facecolor='black'))
+            if np.all(array[y, x] == [0,0,0,255]):
+                #ax.add_patch(Rectangle((x, height - y - 1), 1, 1, facecolor='black'))
+                ax.add_patch(Circle((x, height - y - 1), 0.3, facecolor='black'))
 
     fig.savefig(filename, format='pdf', bbox_inches='tight', pad_inches=0)
     plt.close(fig)
@@ -256,6 +257,41 @@ def low_res_render(lines_0, lines_1, shape_regions_0, bounds=[0,0,1,1], filename
         #img_rgba[mask] = [0, 0, 0, 255]
         return img_np, outlines_np, filled_np, ax_limits
 
+def get_outlines(img_np):
+    outline_pixels = np.zeros(img_np.shape[:2], dtype=int)
+    for i in range(img_np.shape[0]):
+        for j in range(img_np.shape[1]):
+            if np.all(img_np[i][j] == [0,0,0,255]):
+                # check if there's a white_pixel neighbor
+                neighbors = [[i-1, j-1],
+                             [i-1, j],
+                             [i-1, j+1],
+                             [i, j-1],
+                             [i, j+1],
+                             [i+1, j-1],
+                             [i+1, j],
+                             [i+1, j+1]]
+                for n in neighbors:
+                    if n[0] >= 0 and n[0] < img_np.shape[0] and n[1] >= 0 and n[1] < img_np.shape[1]:
+                        if np.all(img_np[n[0]][n[1]] == [255,255,255,255]): 
+                            outline_pixels[i][j] = 1
+
+    #for i in range(img_np.shape[0]):
+    #    if img_np[i][0][0] == 0:
+    #        outline_pixels[i][0] = 1
+    #    if img_np[i][-1][0] == 0:
+    #        outline_pixels[i][-1] = 1
+    #for j in range(img_np.shape[1]):
+    #    if img_np[0][j][0] == 0:
+    #        outline_pixels[0][j] = 1
+    #    if img_np[-1][j][0] == 0:
+    #        outline_pixels[-1][j] = 1
+
+    outline_pixels_rgba = np.zeros((img_np.shape[0], img_np.shape[1], 4), dtype=np.uint8)
+    mask = outline_pixels == 1
+    outline_pixels_rgba[mask] = [0, 0, 0, 255]
+    return outline_pixels_rgba
+
 def get_outlines_and_filled(img_np):
     # fill from four corners
     outline_pixels = np.zeros(img_np.shape[:2], dtype=int)
@@ -291,8 +327,8 @@ def get_outlines_and_filled(img_np):
                             already_seen.add((n[0], n[1]))
     #plt.imshow(img_np)
     #plt.imshow(white_pixels)
-
     #plt.show()
+
     for i in range(img_np.shape[0]):
         for j in range(img_np.shape[1]):
             if img_np[i][j][0] == 0:

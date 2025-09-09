@@ -1,19 +1,20 @@
 import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use("Qt5Agg")   # or "TkAgg"
 from pybraille import convertText
 import numpy as np
 import os
 import src.converter.plane_intersection_utils as plane_inter_utils
-from src.converter.get_single_view import get_single_view
-from src.converter.two_brep_to_svg import get_superposition_view, get_juxtaposition_view
+from src.converter.single_view_stl import get_single_view
+from src.converter.juxtaposition_view_stl import get_juxtaposition_view
+from src.converter.superposition_view_stl import get_superposition_view
 from src.converter.render_low_res import save_binary_array_as_vector_pdf
 from OCC.Core.STEPControl import STEPControl_Reader
 
-#before_model = os.path.join("src", "models", "brep", "vase_pattern_circle_low_before.step")
-#after_model = os.path.join("src", "models", "brep", "vase_pattern_circle_low_after.step")
 before_model = os.path.join("src", "models", "brep", "cup.step")
 after_model = os.path.join("src", "models", "brep", "cup_higher.step")
-#before_model = os.path.join("src", "models", "brep", "mug_before.step")
-#after_model = os.path.join("src", "models", "brep", "mug_after.step")
+before_model = os.path.join("src", "models", "brep", "mug_before.step")
+after_model = os.path.join("src", "models", "brep", "mug_after.step")
 
 def char_to_braille_array(char):
     """Convert a single character to a 6-dot boolean Braille array."""
@@ -57,8 +58,8 @@ cut_depth = 0.0
 superposition = False
 juxtaposition = False
 
-rendering_modes = ["outline", "filled", "brep", "slice"]
-rendering_mode_i = 2
+rendering_modes = ["outline", "filled", "slice"]
+rendering_mode_i = 1
 
 view_keys = ["top", "front", "side"]
 view_key_i = 0
@@ -73,16 +74,17 @@ superposition_key_i = 0
 
 # get axis limits for all views for both shapes
 for i, view_key in enumerate(view_keys):
-    img_array, ax_limits_before = get_single_view(shape_before, bbox, 1.0-cut_depth, 
+    img_array, ax_limits_before = get_single_view(shape_before, bbox, 1.0, 
                                 view_keys[i], 
                                 rendering_modes[rendering_mode_i])
-    img_array, ax_limits_after = get_single_view(shape_after, bbox, 1.0-cut_depth, 
+    img_array, ax_limits_after = get_single_view(shape_after, bbox, 1.0, 
                                 view_keys[i], 
                                 rendering_modes[rendering_mode_i])
     view_limits[i][0][0] = min(ax_limits_before[0][0], ax_limits_after[0][0])
     view_limits[i][0][1] = max(ax_limits_before[0][1], ax_limits_after[0][1])
     view_limits[i][1][0] = min(ax_limits_before[1][0], ax_limits_after[1][0])
     view_limits[i][1][1] = max(ax_limits_before[1][1], ax_limits_after[1][1])
+view_limits = np.array(view_limits)
 print(view_limits)
 view_key_i = 0
 rendering_mode_i = 0
@@ -124,7 +126,7 @@ def set_legend(ax):
         "r: toggle shape "+str(selected_shape),
         "g: de/activate superposition [True, False]",
         "h: toggle superposition mode "+str(superposition_keys),
-        "g: de/activate juxtaposition [True, False]",
+        "j: de/activate juxtaposition [True, False]",
         "v: toggle view point "+str(view_keys),
         "up/down: +/- 0.1 slice depth",
         "p: save as PDF in renders folder",
@@ -163,9 +165,13 @@ def update_plot():
         print("get_juxtaposition")
         img, ax_limits = get_juxtaposition_view(shapes, bbox, 1.0-cut_depth, view_keys[view_key_i], 
                                                rendering_modes[rendering_mode_i], 
-                                               imposed_ax_limits=view_limits[view_key_i],
+                                               imposed_ax_limits=[],
+                                               #imposed_ax_limits=view_limits[view_key_i],
                                                superposition_key=superposition_keys[superposition_key_i])
     img_array = img
+    braille_mask = string_to_braille_array(convertText(view_keys[view_key_i]))
+    for i in range(len(braille_mask)):
+        img_array[1:4,i*3+1:i*3+3][braille_mask[i].astype(bool)] = [0,0,0,255]
     ax.imshow(img)
     fig.canvas.draw_idle()  # refresh the plot
 
@@ -207,8 +213,6 @@ def on_key(event):
             if ".pdf" in x:
                 max_num = max(max_num, int(x.split(".pdf")[0]))
 
-        for i in range(len(braille_mask)):
-            img_array[1:4,i*3+1:i*3+3][braille_mask[i].astype(bool)] = [0,0,0,255]
         save_binary_array_as_vector_pdf(img_array, "renders/"+str(max_num+1)+".pdf")
 
 # Connect key press event
