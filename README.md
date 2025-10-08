@@ -51,11 +51,21 @@ cad-a11y/
 
 ### Running the Command-line Tool
 
+#### Converting BREP to SVG
 To convert a BREP file to SVG from the command line:
 
 ```
 python src/converter/brep_to_svg.py path/to/your/file.brep -o output_directory
 ```
+
+#### Converting OpenSCAD to STEP
+To convert OpenSCAD files to STEP format (new feature):
+
+```
+python scripts/scad_to_step.py input.scad [output.step]
+```
+
+For more options and detailed usage, see `scripts/README_scad_to_step.md`.
 
 ### Running the Web Application
 

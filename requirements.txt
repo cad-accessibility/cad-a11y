@@ -1,0 +1,16 @@
+# Requirements for the Python HIDAPI test script
+hidapi>=0.14.0
+
+# Web server dependencies for accessible-3d-viewer
+Flask>=2.3.0
+flask-cors>=4.0.0
+
+# CAD rendering server dependencies
+Pillow>=9.0.0
+numpy>=1.21.0
+requests>=2.28.0  # For testing
+
+# CAD library dependencies (already in environment)
+# pythonocc-core
+# pybraille
+# matplotlib

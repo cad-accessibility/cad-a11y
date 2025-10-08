@@ -1,3 +1,5 @@
+import matplotlib
+matplotlib.use('Agg')  # Use non-GUI backend for thread safety
 import numpy as np
 import io, PIL
 from PIL import Image

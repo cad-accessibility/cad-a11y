@@ -1,3 +1,5 @@
+import matplotlib
+matplotlib.use('Agg')  # Use non-GUI backend for thread safety
 import numpy as np
 import networkx as nx
 from shapely import polygonize, polygonize_full, unary_union, line_merge

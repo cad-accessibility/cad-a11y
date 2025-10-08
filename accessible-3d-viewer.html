@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Accessible 3D Model Viewer</title>
+    <meta name="description" content="An accessible interface for viewing and interacting with 3D models, optimized for screen readers and keyboard navigation">
+    
+    <style>
+        /* Reset and base styles */
+        * {
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f8f9fa;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+        
+        /* Typography */
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 30px;
+            font-size: 2.2em;
+            font-weight: 600;
+        }
+        
+        h2 {
+            margin-top: 0;
+            color: #34495e;
+            font-size: 1.3em;
+            font-weight: 500;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 8px;
+        }
+        
+        /* Section styling */
+        .section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #e1e8ed;
+            border-radius: 8px;
+            background-color: #fafbfc;
+            transition: border-color 0.3s ease;
+        }
+        
+        .section:hover {
+            border-color: #3498db;
+        }
+        
+        /* Screen reader only content */
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+        
+        /* Help text styling */
+        .help-text {
+            font-size: 0.9em;
+            color: #6c757d;
+            margin-top: 8px;
+            font-style: italic;
+        }
+        
+        /* Slider styling */
+        #slice-depth-slider {
+            width: 100%;
+            height: 8px;
+            border-radius: 4px;
+            background: #ddd;
+            outline: none;
+            margin: 15px 0;
+            cursor: pointer;
+        }
+        
+        #slice-depth-slider::-webkit-slider-thumb {
+            appearance: none;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: #3498db;
+            cursor: pointer;
+            border: 2px solid white;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        }
+        
+        #slice-depth-slider::-moz-range-thumb {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: #3498db;
+            cursor: pointer;
+            border: 2px solid white;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        }
+        
+        /* Slice percentage display */
+        #slice-percentage {
+            font-weight: bold;
+            color: #2980b9;
+            font-size: 1.1em;
+        }
+        
+        /* Button styling */
+        button {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            margin: 5px;
+            min-width: 160px;
+        }
+        
+        button:hover {
+            background: #2980b9;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(52, 152, 219, 0.3);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        /* Toggle button specific styling */
+        #render-mode-toggle {
+            background: #95a5a6;
+        }
+        
+        #render-mode-toggle[aria-pressed="true"] {
+            background: #27ae60;
+        }
+        
+        #render-mode-toggle:hover {
+            background: #7f8c8d;
+        }
+        
+        #render-mode-toggle[aria-pressed="true"]:hover {
+            background: #229954;
+        }
+        
+        /* Button group layout */
+        .button-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        
+        /* Keyboard shortcuts list styling */
+        .shortcuts-list {
+            list-style-type: none;
+            padding: 0;
+            margin: 15px 0;
+            background: #f8f9fa;
+            border-radius: 6px;
+            padding: 15px;
+        }
+        
+        .shortcuts-list li {
+            margin-bottom: 8px;
+            padding: 4px 0;
+            border-bottom: 1px solid #e9ecef;
+        }
+        
+        .shortcuts-list li:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+        }
+        
+        .shortcuts-list strong {
+            color: #495057;
+            background: #e9ecef;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            margin-right: 8px;
+        }
+        
+        /* Label styling */
+        label {
+            display: block;
+            font-weight: 500;
+            margin-bottom: 8px;
+            color: #2c3e50;
+        }
+        
+        /* Info display styling */
+        #view-info div {
+            margin-bottom: 10px;
+            padding: 8px 0;
+        }
+        
+        #view-info strong {
+            color: #2c3e50;
+            margin-right: 8px;
+        }
+        
+        #current-view, #current-axis {
+            color: #2980b9;
+            font-weight: 500;
+        }
+        
+        /* Focus indicators for accessibility */
+        button:focus,
+        input:focus,
+        [tabindex]:focus {
+            outline: 3px solid #e74c3c;
+            outline-offset: 2px;
+        }
+        
+        button:focus {
+            outline-color: #f39c12;
+        }
+        
+        /* High contrast mode support */
+        @media (prefers-contrast: high) {
+            .section {
+                border: 2px solid #000;
+            }
+            
+            button {
+                border: 2px solid #000;
+            }
+        }
+        
+        /* Reduced motion support */
+        @media (prefers-reduced-motion: reduce) {
+            button, .section {
+                transition: none;
+            }
+            
+            button:hover {
+                transform: none;
+            }
+        }
+        
+        /* Mobile responsive design */
+        @media (max-width: 768px) {
+            .container {
+                padding: 20px;
+                margin: 10px;
+            }
+            
+            .button-group {
+                flex-direction: column;
+            }
+            
+            button {
+                width: 100%;
+                margin: 5px 0;
+            }
+            
+            h1 {
+                font-size: 1.8em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1 id="page-title" tabindex="-1">Accessible 3D Model Viewer</h1>
+            <p>Navigate and explore 3D models with screen reader support and keyboard controls.</p>
+        </header>
+
+        <main>
+            <!-- Live region for announcements -->
+            <div id="announcements" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
+            <!-- Secondary live region for status information -->
+            <div id="status-announcements" aria-live="polite" aria-atomic="false" class="sr-only"></div>
+
+            <!-- Model Description Section -->
+            <section class="section" aria-labelledby="model-desc-heading">
+                <h2 id="model-desc-heading">Model Description</h2>
+                <div id="model-description" aria-describedby="model-desc-heading">
+                    Coffee mug with a cylindrical handle and rounded base. The model features smooth curves and a traditional mug shape with approximately 300ml capacity.
+                </div>
+            </section>
+
+            <!-- View and Axis Information Section -->
+            <section class="section" aria-labelledby="view-info-heading">
+                <h2 id="view-info-heading">View and Axis Information</h2>
+                <div id="view-info" aria-describedby="view-info-heading">
+                    <div>
+                        <strong>Current View:</strong> <span id="current-view">Front</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Slice Depth Section -->
+            <section class="section" aria-labelledby="slice-heading">
+                <h2 id="slice-heading">Slice Depth Control</h2>
+                <div aria-describedby="slice-heading">
+                    <label for="slice-depth-slider">
+                        Slice Depth: <span id="slice-percentage">50</span>%
+                    </label>
+                    <input 
+                        type="range" 
+                        id="slice-depth-slider"
+                        min="0" 
+                        max="100" 
+                        value="50" 
+                        step="1"
+                        aria-valuemin="0"
+                        aria-valuemax="100"
+                        aria-valuenow="50"
+                        aria-valuetext="50 percent depth"
+                        aria-describedby="slice-help"
+                    >
+                    <div id="slice-help" class="help-text">
+                        Use arrow keys or drag to adjust the slice depth from 0% (surface) to 100% (full depth)
+                    </div>
+                </div>
+            </section>
+
+            <!-- Rendering Mode Section -->
+            <section class="section" aria-labelledby="render-heading">
+                <h2 id="render-heading">Rendering Mode</h2>
+                <div aria-describedby="render-help">
+                    <fieldset role="radiogroup" aria-labelledby="render-heading">
+                        <legend class="sr-only">Rendering Mode Options</legend>
+                        <label>
+                            <input type="radio" name="render-mode" id="render-mode-shaded" value="Shaded" checked>
+                            Shaded
+                        </label>
+                        <label>
+                            <input type="radio" name="render-mode" id="render-mode-outline" value="Outline">
+                            Outline
+                        </label>
+                        <label>
+                            <input type="radio" name="render-mode" id="render-mode-cut" value="Cut">
+                            Cut
+                        </label>
+                    </fieldset>
+                    <div id="render-help" class="help-text">
+                        Choose between Shaded (filled surfaces), Outline (wireframe edges), and Cut (cross-section)
+                    </div>
+                </div>
+            </section>
+
+            <!-- Control Buttons Section -->
+            <section class="section" aria-labelledby="controls-heading">
+                <h2 id="controls-heading">Model Controls</h2>
+                <div class="button-group" aria-describedby="controls-heading">
+                    <button 
+                        type="button" 
+                        id="deeper-btn"
+                        aria-describedby="deeper-help"
+                    >
+                        Deeper: Loading...
+                    </button>
+                    <div id="deeper-help" class="help-text sr-only">
+                        Increase slice depth by 10% to see deeper into the model
+                    </div>
+
+                    <button 
+                        type="button" 
+                        id="shallower-btn"
+                        aria-describedby="shallower-help"
+                    >
+                        Shallower: Loading...
+                    </button>
+                    <div id="shallower-help" class="help-text sr-only">
+                        Decrease slice depth by 10% to see closer to the surface
+                    </div>
+                </div>
+
+                <div aria-labelledby="view-select-heading" style="margin-top: 16px;">
+                    <h3 id="view-select-heading" style="margin: 0 0 8px; font-size: 1.1em; color: #34495e;">View Selection</h3>
+                    <fieldset role="radiogroup" aria-labelledby="view-select-heading">
+                        <legend class="sr-only">Model Views</legend>
+                        <label>
+                            <input type="radio" name="view-select" id="view-front" value="Front" checked>
+                            Front
+                        </label>
+                        <label>
+                            <input type="radio" name="view-select" id="view-back" value="Back">
+                            Back
+                        </label>
+                        <label>
+                            <input type="radio" name="view-select" id="view-left" value="Left">
+                            Left
+                        </label>
+                        <label>
+                            <input type="radio" name="view-select" id="view-right" value="Right">
+                            Right
+                        </label>
+                        <label>
+                            <input type="radio" name="view-select" id="view-top" value="Top">
+                            Top
+                        </label>
+                        <label>
+                            <input type="radio" name="view-select" id="view-bottom" value="Bottom">
+                            Bottom
+                        </label>
+                    </fieldset>
+                    <div class="help-text sr-only" id="switch-help">
+                        Select Front, Back, Left, Right, Top, or Bottom view of the model
+                    </div>
+                </div>
+            </section>
+
+            <!-- Keyboard Shortcuts Section -->
+            <section class="section" aria-labelledby="shortcuts-heading">
+                <h2 id="shortcuts-heading">Keyboard Shortcuts</h2>
+                <div aria-describedby="shortcuts-heading">
+                    <p class="help-text">Use these keyboard shortcuts from anywhere on the page:</p>
+                    <ul class="shortcuts-list">
+                        <li><strong>D</strong> - Go deeper (increase depth by 10%)</li>
+                        <li><strong>S</strong> - Go shallower (decrease depth by 10%)</li>
+                        <li><strong>V</strong> - Switch view (cycle through Front/Back/Left/Right/Top/Bottom views)</li>
+                        <li><strong>F</strong> - Switch to filled/shaded view</li>
+                        <li><strong>O</strong> - Switch to outline view</li>
+                        <li><strong>C</strong> - Switch to cut view</li>
+                        <li><strong>0</strong> - Jump to surface (0% depth)</li>
+                        <li><strong>1-9</strong> - Jump to depth percentage (1=10%, 2=20%, ..., 9=90%)</li>
+                        <li><strong>A</strong> - Get current status (view, depth, mode)</li>
+                        <li><strong>?</strong> - Shortcut reminder</li>
+                        <li><strong>Escape</strong> - Clear focus from current element</li>
+                    </ul>
+                    <p class="help-text">
+                        <em>Note: These shortcuts are optimized for Braille displays and screen readers. 
+                        They work globally without needing to focus on specific elements first.</em>
+                    </p>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        // Configuration
+        const SERVER_URL = 'http://localhost:6969';
+        
+        // Function to send current state to the server
+        async function sendStateToServer() {
+            try {
+                const state = {
+                    view: currentView,
+                    depth: currentSliceDepth,
+                    renderMode: currentRenderMode
+                };
+                
+                // Send to server without blocking the UI
+                fetch(`${SERVER_URL}/render`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(state),
+                    mode: 'cors'
+                }).catch(error => {
+                    // Silently fail - don't interrupt user experience
+                    console.warn('Failed to send state to server:', error);
+                });
+                
+            } catch (error) {
+                console.warn('Error sending state:', error);
+            }
+        }
+        
+        // State management
+        let currentSliceDepth = 50;
+        let currentView = 'Front';
+        let currentRenderMode = 'Shaded';
+        const renderModes = ['Shaded', 'Outline', 'Cut'];
+        
+        const views = ['Front', 'Back', 'Left', 'Right', 'Top', 'Bottom'];
+        const axisInfo = {
+            'Front': 'X-axis: left-right, Y-axis: up-down, Z-axis: forward-back (viewing from front)',
+            'Back': 'X-axis: right-left, Y-axis: up-down, Z-axis: back-forward (viewing from back)',
+            'Left': 'Z-axis: left-right, Y-axis: up-down, X-axis: back-forward (viewing from left side)',
+            'Right': 'Z-axis: right-left, Y-axis: up-down, X-axis: forward-back (viewing from right side)',
+            'Top': 'X-axis: left-right, Z-axis: up-down, Y-axis: forward-back (viewing from above)',
+            'Bottom': 'X-axis: left-right, Z-axis: down-up, Y-axis: back-forward (viewing from below)'
+        };
+        
+        // DOM elements
+        const sliceSlider = document.getElementById('slice-depth-slider');
+        const slicePercentage = document.getElementById('slice-percentage');
+        const currentViewSpan = document.getElementById('current-view');
+        const announcements = document.getElementById('announcements');
+        const statusAnnouncements = document.getElementById('status-announcements');
+        const deeperBtn = document.getElementById('deeper-btn');
+        const shallowerBtn = document.getElementById('shallower-btn');
+
+        // New radio group references
+        const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
+        const viewRadios = () => document.querySelectorAll('input[name="view-select"]');
+        // ...existing code...
+
+        // Consistent depth announcement formatter
+        function depthAnnouncement(pct) {
+            if (pct === 0) return 'surface';
+            if (pct === 100) return 'full depth';
+            return `depth ${pct}%`;
+        }
+
+        // Update button labels with current state information
+        function updateButtonLabels() {
+            const depthText = `${currentSliceDepth}%`;
+            deeperBtn.textContent = `Deeper: Currently ${depthText}`;
+            deeperBtn.setAttribute('aria-label', `Go deeper. Current depth: ${depthText}. Will increase to ${Math.min(100, currentSliceDepth + 10)}%`);
+            shallowerBtn.textContent = `Shallower: Currently ${depthText}`;
+            shallowerBtn.setAttribute('aria-label', `Go shallower. Current depth: ${depthText}. Will decrease to ${Math.max(0, currentSliceDepth - 10)}%`);
+        }
+        
+        // Update slice depth display and announce changes
+        function updateSliceDepth(newDepth, shouldAnnounce = true) {
+            const oldDepth = currentSliceDepth;
+            currentSliceDepth = Math.max(0, Math.min(100, newDepth));
+            sliceSlider.value = currentSliceDepth;
+            slicePercentage.textContent = currentSliceDepth;
+            
+            // Update ARIA attributes
+            sliceSlider.setAttribute('aria-valuenow', currentSliceDepth);
+            sliceSlider.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
+            
+            // Update button labels with new state
+            updateButtonLabels();
+            
+            if (shouldAnnounce) {
+                announce(depthAnnouncement(currentSliceDepth));
+            }
+            
+            // Send state to server if changed
+            if (oldDepth !== currentSliceDepth) {
+                sendStateToServer();
+            }
+        }
+        
+        // Helper to sync radios with current state
+        function syncRadios() {
+            renderModeRadios().forEach(r => { r.checked = (r.value === currentRenderMode); });
+            viewRadios().forEach(r => { r.checked = (r.value === currentView); });
+        }
+
+        // Update view information
+        function updateView(newView) {
+            const oldView = currentView;
+            currentView = newView;
+            currentViewSpan.textContent = currentView;
+            updateButtonLabels();
+            syncRadios();
+            announce(`${currentView.toLowerCase()} view`);
+            
+            // Send state to server if changed
+            if (oldView !== currentView) {
+                sendStateToServer();
+            }
+        }
+        
+        // Switch to a specific render mode
+        function switchToRenderMode(targetMode) {
+            if (currentRenderMode === targetMode) {
+                announceStatus(`already ${targetMode.toLowerCase()}`);
+                return;
+            }
+            const previousMode = currentRenderMode;
+            currentRenderMode = targetMode;
+            updateButtonLabels();
+            syncRadios();
+            announce(`${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
+            
+            // Send state to server
+            sendStateToServer();
+        }
+        
+        // Cycle to next render mode (used if needed)
+        function cycleRenderMode() {
+            const currentIndex = renderModes.indexOf(currentRenderMode);
+            const nextIndex = (currentIndex + 1) % renderModes.length;
+            switchToRenderMode(renderModes[nextIndex]);
+        }
+
+        // Enhanced announcement system
+        function announce(message, isUrgent = true) {
+            const targetElement = isUrgent ? announcements : statusAnnouncements;
+            
+            // Clear previous announcement first
+            targetElement.textContent = '';
+            
+            // Add the new announcement after a brief delay to ensure screen readers notice the change
+            setTimeout(() => {
+                targetElement.textContent = message;
+            }, 10);
+            
+            // Clear after appropriate delay based on urgency
+            setTimeout(() => {
+                targetElement.textContent = '';
+            }, isUrgent ? 3000 : 1500);
+        }
+        
+        // Announce status information that should be less intrusive
+        function announceStatus(message) {
+            announce(message, false);
+        }
+        
+        // Event listeners
+        
+        // Slice depth slider with enhanced feedback
+        let sliderUpdateTimeout = null;
+        
+        sliceSlider.addEventListener('input', function() {
+            const newValue = parseInt(this.value);
+            currentSliceDepth = newValue;
+            slicePercentage.textContent = currentSliceDepth;
+            
+            // Update ARIA attributes immediately
+            this.setAttribute('aria-valuenow', currentSliceDepth);
+            this.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
+            
+            // Update button labels immediately
+            updateButtonLabels();
+            
+            // Debounce the announcement during dragging
+            clearTimeout(sliderUpdateTimeout);
+            sliderUpdateTimeout = setTimeout(() => {
+                announceStatus(depthAnnouncement(currentSliceDepth));
+            }, 150);
+        });
+        
+        sliceSlider.addEventListener('change', function() {
+            clearTimeout(sliderUpdateTimeout);
+            announce(depthAnnouncement(currentSliceDepth));
+            // Send state to server
+            sendStateToServer();
+        });
+        
+        // Keyboard support for slider
+        sliceSlider.addEventListener('keydown', function(e) {
+            let newValue = currentSliceDepth;
+            
+            switch(e.key) {
+                case 'ArrowUp':
+                case 'ArrowRight':
+                    newValue += 1;
+                    break;
+                case 'ArrowDown':
+                case 'ArrowLeft':
+                    newValue -= 1;
+                    break;
+                case 'PageUp':
+                    newValue += 10;
+                    break;
+                case 'PageDown':
+                    newValue -= 10;
+                    break;
+                case 'Home':
+                    newValue = 0;
+                    break;
+                case 'End':
+                    newValue = 100;
+                    break;
+                default:
+                    return; // Don't prevent default for other keys
+            }
+            
+            e.preventDefault();
+            updateSliceDepth(newValue, true);
+        });
+        
+        // Render mode radios
+        document.addEventListener('change', function(e) {
+            if (e.target && e.target.matches('input[name="render-mode"]')) {
+                if (e.target.checked) {
+                    switchToRenderMode(e.target.value);
+                }
+            }
+        });
+
+        // View selection radios
+        document.addEventListener('change', function(e) {
+            if (e.target && e.target.matches('input[name="view-select"]')) {
+                if (e.target.checked) {
+                    updateView(e.target.value);
+                }
+            }
+        });
+        
+        // Deeper depth button
+        deeperBtn.addEventListener('click', function() {
+            updateSliceDepth(currentSliceDepth + 10, true);
+        });
+        
+        // Shallower depth button
+        shallowerBtn.addEventListener('click', function() {
+            updateSliceDepth(currentSliceDepth - 10, true);
+        });
+        
+        // Global keyboard navigation support for accessibility
+        document.addEventListener('keydown', function(e) {
+            // Skip if user is typing in an input field or textarea
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+                return;
+            }
+            const key = e.key.toLowerCase();
+            switch(key) {
+                case 'd':
+                    // Go deeper (increase depth by 10%)
+                    e.preventDefault();
+                    const newDeeperDepth = Math.min(100, currentSliceDepth + 10);
+                    updateSliceDepth(newDeeperDepth, true);
+                    break;
+                    
+                case 's':
+                    // Go shallower (decrease depth by 10%)
+                    e.preventDefault();
+                    const newShallowerDepth = Math.max(0, currentSliceDepth - 10);
+                    updateSliceDepth(newShallowerDepth, true);
+                    break;
+                    
+                case 'v':
+                    // Switch view (cycle through views)
+                    e.preventDefault();
+                    {
+                        const currentIndex = views.indexOf(currentView);
+                        const nextIndex = (currentIndex + 1) % views.length;
+                        updateView(views[nextIndex]);
+                    }
+                    break;
+                    
+                case 'f':
+                    // Switch to filled/shaded view
+                    e.preventDefault();
+                    switchToRenderMode('Shaded');
+                    break;
+                    
+                case 'o':
+                    // Switch to outline view
+                    e.preventDefault();
+                    switchToRenderMode('Outline');
+                    break;
+                    
+                case 'c':
+                    // Switch to cut view
+                    e.preventDefault();
+                    switchToRenderMode('Cut');
+                    break;
+                    
+                case '0':
+                    // Jump to 0% depth (surface)
+                    e.preventDefault();
+                    updateSliceDepth(0, true);
+                    break;
+                    
+                case '1':
+                case '2':
+                case '3':
+                case '4':
+                case '5':
+                case '6':
+                case '7':
+                case '8':
+                case '9':
+                    // Jump to percentage depth (1=10%, 2=20%, etc.)
+                    e.preventDefault();
+                    const percentage = parseInt(key) * 10;
+                    updateSliceDepth(percentage, true);
+                    break;
+                    
+                case 'escape':
+                    // Allow Escape key to remove focus from any element
+                    document.activeElement.blur();
+                    announceStatus('Focus cleared');
+                    break;
+                    
+                case 'a':
+                    // Concise current status
+                    e.preventDefault();
+                    {
+                        const depthState = depthAnnouncement(currentSliceDepth).replace('depth ', '');
+                        const statusMsg = `state: ${currentView}, ${depthState}, ${currentRenderMode.toLowerCase()}`;
+                        announce(statusMsg);
+                    }
+                    break;
+                case '?':
+                    // Shortcut reminder
+                    e.preventDefault();
+                    announce('shortcuts: D deeper, S shallower, V view, F shaded, O outline, C cut, 0 surface, 1-9 set depth, Esc clear focus, A status');
+                    break;
+                default:
+                    return;
+            }
+        });
+        
+        // Initialize the interface
+        document.addEventListener('DOMContentLoaded', function() {
+            // Move focus to the top element (page title) on load
+            const pageTitle = document.getElementById('page-title');
+            if (pageTitle) pageTitle.focus();
+            
+            // Set initial values
+            updateSliceDepth(50, false);
+            updateView('Front');
+            syncRadios();
+            updateButtonLabels();
+            
+            // Send initial state to server
+            sendStateToServer();
+            
+            // Add initial announcement
+            setTimeout(() => {
+                announce('viewer loaded — Front, 50%, shaded');
+            }, 500);
+        });
+        
+        // Additional accessibility features
+        
+        // Handle focus management for better screen reader experience
+        function manageFocus() {
+            // Ensure focus is visible and properly announced
+            const focusableElements = document.querySelectorAll(
+                'button, input[type="range"], [tabindex]:not([tabindex="-1"])'
+            );
+            
+            focusableElements.forEach(element => {
+                element.addEventListener('focus', function() {
+                    // Add a slight delay to ensure screen readers announce the element
+                    setTimeout(() => {
+                        this.setAttribute('aria-describedby', this.getAttribute('aria-describedby') || '');
+                    }, 100);
+                });
+            });
+        }
+        
+        // Initialize focus management
+        document.addEventListener('DOMContentLoaded', manageFocus);
+        
+        // Handle browser zoom and text scaling
+        function handleZoomChanges() {
+            // Ensure the interface remains usable at different zoom levels
+            const container = document.querySelector('.container');
+            
+            function checkZoom() {
+                const devicePixelRatio = window.devicePixelRatio || 1;
+                if (devicePixelRatio !== 1) {
+                    container.style.maxWidth = '95vw';
+                } else {
+                    container.style.maxWidth = '900px';
+                }
+            }
+            
+            window.addEventListener('resize', checkZoom);
+            checkZoom();
+        }
+        
+        // Initialize zoom handling
+        document.addEventListener('DOMContentLoaded', handleZoomChanges);
+    </script>
+</body>
+</html>
