@@ -36,7 +36,8 @@ def get_single_view(shape_brep, bbox, cut_depth=0.9, view_key="top", rendering_m
     if rendering_mode == "slice":
         shape_brep = faces_on_plane(shape_brep, plane_origin, normal_dir)
 
-    width_px, height_px = 64, 40
+    # Target pixel resolution
+    width_px, height_px = 97, 40
     dpi = 100 
     fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
     ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure

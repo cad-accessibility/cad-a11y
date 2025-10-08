@@ -179,7 +179,7 @@ def low_res_render(lines_0, lines_1, shape_regions_0, bounds=[0,0,1,1], filename
     }):
 
         # Target pixel resolution
-        width_px, height_px = 64, 40 
+        width_px, height_px = 97, 40
         dpi = 100  # Dots per inch
 
         # Create figure with correct size in inches
