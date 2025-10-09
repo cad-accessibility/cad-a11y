@@ -20,13 +20,13 @@ views = {
         "eye": gp_Pnt(0, -1000, 0),
         "dir": gp_Dir(0, 1, 0)
     },
-    "side": {
+    "right": {
         "eye": gp_Pnt(-1000, 0, 0),
         "dir": gp_Dir(1, 0, 0)
     }
 }
 
-def get_single_view(shape_brep, bbox, cut_depth=0.9, view_key="top", rendering_mode="filled", imposed_ax_limits=[]):
+def get_single_view(shape_brep, bbox, cut_depth=0.9, view_key="top", rendering_mode="shaded", imposed_ax_limits=[]):
 
     normal_dir = views[view_key]["dir"]
     shape_brep, plane_origin = depth_peeling_single_depth_with_bbox(shape_brep, gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
@@ -34,7 +34,7 @@ def get_single_view(shape_brep, bbox, cut_depth=0.9, view_key="top", rendering_m
     if rendering_mode == "slice":
         shape_brep = faces_on_plane(shape_brep, plane_origin, normal_dir)
 
-    width_px, height_px = 64, 40
+    width_px, height_px = 96, 40
     dpi = 100 
     fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
     ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
@@ -49,7 +49,7 @@ def get_single_view(shape_brep, bbox, cut_depth=0.9, view_key="top", rendering_m
         coords = shape.vertices[:,[0,1]]
         if view_key == "front":
             coords = shape.vertices[:,[0,2]]
-        if view_key == "side":
+        if view_key == "right":
             coords = shape.vertices[:,[1,2]]
         ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape.faces)
 
@@ -74,7 +74,7 @@ def get_single_view(shape_brep, bbox, cut_depth=0.9, view_key="top", rendering_m
 
     # extract outline
     #print(img_np)
-    if rendering_mode in ["filled", "slice"]:
+    if rendering_mode in ["shaded", "slice"]:
         return img_np, ax_limits
     if rendering_mode == "outline":
         outlines_np = get_outlines(img_np)
@@ -92,4 +92,4 @@ if __name__ == '__main__':
     get_single_view(shape, shape.bounds, view_key="top")
     exit()
     get_single_view(shape, shape.bounds, view_key="front")
-    get_single_view(shape, shape.bounds, view_key="side")
+    get_single_view(shape, shape.bounds, view_key="right")

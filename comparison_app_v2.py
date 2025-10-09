@@ -7,6 +7,7 @@ import os
 import src.converter.plane_intersection_utils as plane_inter_utils
 from src.converter.single_view_stl import get_single_view
 from src.converter.juxtaposition_view_stl import get_juxtaposition_view
+from src.converter.side_top_view import get_side_top_view
 from src.converter.superposition_view_stl import get_superposition_view
 from src.converter.render_low_res import save_binary_array_as_vector_pdf
 from OCC.Core.STEPControl import STEPControl_Reader
@@ -30,6 +31,30 @@ def char_to_braille_array(char):
 def string_to_braille_array(s):
     """Convert a string of Braille Unicode characters into boolean arrays."""
     return np.array([char_to_braille_array(c) for c in s])
+
+def depth_to_str(cut_depth):
+    if np.isclose(cut_depth, 0.0):
+        return "0"
+    if np.isclose(cut_depth, 0.1):
+        return "10"
+    if np.isclose(cut_depth, 0.2):
+        return "20"
+    if np.isclose(cut_depth, 0.3):
+        return "30"
+    if np.isclose(cut_depth, 0.4):
+        return "40"
+    if np.isclose(cut_depth, 0.5):
+        return "50"
+    if np.isclose(cut_depth, 0.6):
+        return "60"
+    if np.isclose(cut_depth, 0.7):
+        return "70"
+    if np.isclose(cut_depth, 0.8):
+        return "80"
+    if np.isclose(cut_depth, 0.9):
+        return "90"
+    if np.isclose(cut_depth, 1.0):
+        return "100"
 
 # load both models
 shapes = []
@@ -58,10 +83,10 @@ cut_depth = 0.0
 superposition = False
 juxtaposition = False
 
-rendering_modes = ["outline", "filled", "slice"]
+rendering_modes = ["outline", "shaded", "slice"]
 rendering_mode_i = 1
 
-view_keys = ["top", "front", "side"]
+view_keys = ["top", "front", "right"]
 view_key_i = 0
 view_limits = [
     [[xmin, xmax], [ymin, ymax]], #top
@@ -100,9 +125,19 @@ img_array, ax_limits_before = get_single_view(shape_before, bbox, 1.0-cut_depth,
 #
 fig, ax = plt.subplots()
 #line, = ax.plot(x, y, label="sin(x)")
-braille_mask = string_to_braille_array(convertText("side"))
+braille_mask = string_to_braille_array(convertText("top"))
 for i in range(len(braille_mask)):
     img_array[1:4,i*3+1:i*3+3][braille_mask[i].astype(bool)] = [0,0,0,255]
+
+braille_mask = string_to_braille_array(convertText("outline"))
+for i in range(len(braille_mask)):
+    img_array[6:9,i*3+1:i*3+3][braille_mask[i].astype(bool)] = [0,0,0,255]
+
+
+braille_mask = string_to_braille_array(convertText(depth_to_str(cut_depth)))
+for i in range(len(braille_mask)):
+    img_array[11:14,i*3+1:i*3+3][braille_mask[i].astype(bool)] = [0,0,0,255]
+
 ax.imshow(img_array)
 #print(string_to_braille_array(convertText("hello")))
 if not os.path.exists("renders"):
@@ -133,7 +168,7 @@ def set_legend(ax):
         "q: quit"
     ]
     control_texts = [plt.Line2D([0], [0], color="none")] * len(controls)
-    control_legend = ax.legend(control_texts, controls, loc="upper center", bbox_to_anchor=(1.0, 1.10))
+    control_legend = ax.legend(control_texts, controls, loc="upper center", bbox_to_anchor=(1.10, 1.20))
     ax.add_artist(control_legend)  # keep both legends
 
 # State variable
@@ -150,8 +185,11 @@ def update_plot():
     global shape_key_i
     global juxtaposition
     global superposition
+    global cut_depth
     ax.cla()
     set_legend(ax)
+    if view_keys[view_key_i] == "front":
+        cut_depth = 1.0 - cut_depth
     if not superposition and not juxtaposition:
         img, ax_limits = get_single_view(shapes[shape_key_i], bbox, 1.0-cut_depth, view_keys[view_key_i], rendering_modes[rendering_mode_i], 
                               imposed_ax_limits=view_limits[view_key_i])
@@ -163,15 +201,35 @@ def update_plot():
                                                superposition_key=superposition_keys[superposition_key_i])
     elif juxtaposition:
         print("get_juxtaposition")
-        img, ax_limits = get_juxtaposition_view(shapes, bbox, 1.0-cut_depth, view_keys[view_key_i], 
+        #img, ax_limits = get_juxtaposition_view(shapes, bbox, 1.0-cut_depth, view_keys[view_key_i], 
+        #                                       rendering_modes[rendering_mode_i], 
+        #                                       imposed_ax_limits=[],
+        #                                       #imposed_ax_limits=view_limits[view_key_i],
+        #                                       superposition_key=superposition_keys[superposition_key_i])
+        imposed_ax_limits = [[-32.4790008,  -31.1939632 ],
+                             [ -0.20081487,   0.35382712]]
+
+        img, ax_limits = get_side_top_view(shapes[shape_key_i], bbox, 1.0-cut_depth, view_keys[view_key_i], 
                                                rendering_modes[rendering_mode_i], 
-                                               imposed_ax_limits=[],
+                                               imposed_ax_limits=imposed_ax_limits,
                                                #imposed_ax_limits=view_limits[view_key_i],
                                                superposition_key=superposition_keys[superposition_key_i])
+    if view_keys[view_key_i] == "front":
+        cut_depth = 1.0 - cut_depth
+
     img_array = img
     braille_mask = string_to_braille_array(convertText(view_keys[view_key_i]))
     for i in range(len(braille_mask)):
         img_array[1:4,i*3+1:i*3+3][braille_mask[i].astype(bool)] = [0,0,0,255]
+
+    braille_mask = string_to_braille_array(convertText(rendering_modes[rendering_mode_i]))
+    for i in range(len(braille_mask)):
+        img_array[6:9,i*3+1:i*3+3][braille_mask[i].astype(bool)] = [0,0,0,255]
+
+    braille_mask = string_to_braille_array(convertText(depth_to_str(cut_depth)))
+    for i in range(len(braille_mask)):
+        img_array[11:14,i*3+1:i*3+3][braille_mask[i].astype(bool)] = [0,0,0,255]
+
     ax.imshow(img)
     fig.canvas.draw_idle()  # refresh the plot
 
@@ -187,9 +245,9 @@ def on_key(event):
     global juxtaposition
     print(f"Key pressed: {event.key}")
     if event.key == "up":
-        cut_depth = min(cut_depth+0.05, 1.0)
+        cut_depth = min(cut_depth+0.1, 1.0)
     if event.key == "down":
-        cut_depth = max(cut_depth-0.05, 0.0)
+        cut_depth = max(cut_depth-0.1, 0.0)
     elif event.key == "t":
         rendering_mode_i = (rendering_mode_i+1)%len(rendering_modes)
     elif event.key == "v":

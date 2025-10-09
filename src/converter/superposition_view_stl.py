@@ -3,11 +3,11 @@ import numpy as np
 
 def get_superposition_view(shapes, bbox, cut_depth=0.9, view_key="top", rendering_mode="brep", imposed_ax_limits=[],
                            superposition_key="intersection"):
-    filled_before, ax_limits = get_single_view(shapes[0], bbox, cut_depth, view_key, "filled", 
+    filled_before, ax_limits = get_single_view(shapes[0], bbox, cut_depth, view_key, "shaded", 
                           imposed_ax_limits=imposed_ax_limits)
     outlines_before, ax_limits = get_single_view(shapes[0], bbox, cut_depth, view_key, "outline", 
                           imposed_ax_limits=imposed_ax_limits)
-    filled_after, ax_limits = get_single_view(shapes[1], bbox, cut_depth, view_key, "filled",  
+    filled_after, ax_limits = get_single_view(shapes[1], bbox, cut_depth, view_key, "shaded",  
                           imposed_ax_limits=imposed_ax_limits)
     outlines_after, ax_limits = get_single_view(shapes[1], bbox, cut_depth, view_key, "outline", 
                           imposed_ax_limits=imposed_ax_limits)

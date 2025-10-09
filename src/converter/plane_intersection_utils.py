@@ -251,6 +251,7 @@ def depth_peeling_single_depth_with_bbox(shape, normal_dir: gp_Dir, depth: float
 
     # Step 3: Iterate along the normal
     d = min_proj+depth*(max_proj-min_proj)
+
     origin = gp_Pnt(normal_vec.Scaled(d).X(), normal_vec.Scaled(d).Y(), normal_vec.Scaled(d).Z())
     cut_shape, success = cut_shape_with_plane(shape, origin, normal_dir)
 

@@ -20,7 +20,7 @@ views = {
         "eye": gp_Pnt(0, -1000, 0),
         "dir": gp_Dir(0, 1, 0)
     },
-    "side": {
+    "right": {
         "eye": gp_Pnt(-1000, 0, 0),
         "dir": gp_Dir(1, 0, 0)
     }
@@ -40,7 +40,7 @@ def get_juxtaposition_view(shapes, bbox, cut_depth=0.9, view_key="top", renderin
     #    shape_brep_0 = faces_on_plane(shape_brep_0, plane_origin_0, normal_dir)
     #    shape_brep_1 = faces_on_plane(shape_brep_1, plane_origin_1, normal_dir)
 
-    width_px, height_px = 64, 40
+    width_px, height_px = 96, 40
     dpi = 100 
     fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
     ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
@@ -63,7 +63,7 @@ def get_juxtaposition_view(shapes, bbox, cut_depth=0.9, view_key="top", renderin
         coords_0 = shape.vertices[:,[0,1]]
         if view_key == "front":
             coords_0 = shape.vertices[:,[0,2]]
-        if view_key == "side":
+        if view_key == "right":
             coords_0 = shape.vertices[:,[1,2]]
 
     if not np.isclose(area_1, 0.0):
@@ -75,7 +75,7 @@ def get_juxtaposition_view(shapes, bbox, cut_depth=0.9, view_key="top", renderin
         coords_1 = shape.vertices[:,[0,1]]
         if view_key == "front":
             coords_1 = shape.vertices[:,[0,2]]
-        if view_key == "side":
+        if view_key == "right":
             coords_1 = shape.vertices[:,[1,2]]
 
     bounds_0 = [np.min(coords_0[:, 0]), np.max(coords_0[:, 0])]
@@ -108,7 +108,7 @@ def get_juxtaposition_view(shapes, bbox, cut_depth=0.9, view_key="top", renderin
 
     # extract outline
     #print(img_np)
-    if rendering_mode in ["filled", "slice"]:
+    if rendering_mode in ["shaded", "slice"]:
         return img_np, ax_limits
     if rendering_mode == "outline":
         outlines_np = get_outlines(img_np)

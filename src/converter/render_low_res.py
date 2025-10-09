@@ -128,6 +128,13 @@ def draw_custom_hatching(ax, clip_path, spacing=0.1, angle=45, linewidth=0.1, co
 def save_binary_array_as_vector_pdf(array, filename="low_res.pdf"):
     height, width, _ = array.shape
     fig = plt.figure(figsize=(width / 100, height / 100), dpi=100)
+    #print(fig.get_figwidth())
+    #print(fig.get_figheight())
+    # scale to 10 x 4 inches
+    #scale_factor = 10.0/fig.get_figwidth()
+    scale_factor = 4.00/fig.get_figheight()
+    fig.set_size_inches(w=fig.get_figwidth()*scale_factor, h=4.00)
+    #exit()
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, width)
     ax.set_ylim(0, height)
@@ -179,7 +186,7 @@ def low_res_render(lines_0, lines_1, shape_regions_0, bounds=[0,0,1,1], filename
     }):
 
         # Target pixel resolution
-        width_px, height_px = 64, 40 
+        width_px, height_px = 96, 40 
         dpi = 100  # Dots per inch
 
         # Create figure with correct size in inches
