@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use("Qt5Agg")   # or "TkAgg"
 from pybraille import convertText
+import time
 import numpy as np
 import os
 import src.converter.plane_intersection_utils as plane_inter_utils
@@ -11,11 +12,98 @@ from src.converter.side_top_view import get_side_top_view
 from src.converter.superposition_view_stl import get_superposition_view
 from src.converter.render_low_res import save_binary_array_as_vector_pdf
 from OCC.Core.STEPControl import STEPControl_Reader
+import math
+
+import asyncio
+import threading
+import bleak
+import godice
+import serial
+
+cut_depth = 0.0
+
+serial_rate_limit = 1.0
+
+#exit()
 
 before_model = os.path.join("src", "models", "brep", "cup.step")
 after_model = os.path.join("src", "models", "brep", "cup_higher.step")
 before_model = os.path.join("src", "models", "brep", "mug_before.step")
 after_model = os.path.join("src", "models", "brep", "mug_after.step")
+
+dice = None
+
+def start_dice_loop():
+    async def dice_main():
+        while True:
+        #await asyncio.sleep(3)
+            await asyncio.sleep(3)
+            print("hello")
+    asyncio.run(dice_main())
+
+async def every_10_sec():
+
+    while True:
+    #await asyncio.sleep(3)
+        await asyncio.sleep(3)
+        print("hello")
+    
+async def background_main():
+
+    asyncio.create_task(every_10_sec())
+    await asyncio.Event().wait()
+
+
+
+async def notification_callback(number, stability_descr):
+    global view_key_i
+    """
+    GoDice number notification callback.
+    Called each time GoDice is flipped, receiving flip event data:
+    :param number: a rolled number
+    :param stability_descr: an additional value clarifying device movement state, ie stable, rolling...
+    """
+    if stability_descr in [godice.StabilityDescriptor.MOVE_STABLE, godice.StabilityDescriptor.STABLE]:
+        print(f"Number: {number}, stability descriptor: {stability_descr}")
+        if number in [6, 1]:
+            view_key_i = 0
+        elif number in [3, 4]:
+            view_key_i = 1
+        elif number in [2, 5]:
+            view_key_i = 2
+        update_plot()
+
+
+def filter_godice_devices(dev_advdata_tuples):
+    """
+    Receives all discovered devices and returns only GoDice devices
+    """
+    return [
+        (dev, adv_data)
+        for dev, adv_data in dev_advdata_tuples
+        if (dev.name and dev.name.startswith("GoDice"))
+    ]
+
+
+def select_closest_device(dev_advdata_tuples):
+    """
+    Finds the closest device based on RSSI are returns it
+    """
+    def _rssi_as_key(dev_advdata):
+        _, adv_data = dev_advdata
+        return adv_data.rssi
+
+    return max(dev_advdata_tuples, key=_rssi_as_key)
+
+
+def print_device_info(devices):
+    """
+    Prints short summary of discovered devices
+    """
+    for dev, adv_data in devices:
+        print(f"Name: {dev.name}, address: {dev.address}, rssi: {adv_data.rssi}")
+
+
 
 def char_to_braille_array(char):
     """Convert a single character to a 6-dot boolean Braille array."""
@@ -79,7 +167,6 @@ current_model = shape_after
 selected_shape = ["before edit", "after edit"]
 shape_key_i = 0
 view_key = "top"
-cut_depth = 0.0
 superposition = False
 juxtaposition = False
 
@@ -218,17 +305,18 @@ def update_plot():
         cut_depth = 1.0 - cut_depth
 
     img_array = img
-    braille_mask = string_to_braille_array(convertText(view_keys[view_key_i]))
+    #braille_mask = string_to_braille_array(convertText(view_keys[view_key_i]))
+    braille_mask = string_to_braille_array(convertText("2"))
     for i in range(len(braille_mask)):
         img_array[1:4,i*3+1:i*3+3][braille_mask[i].astype(bool)] = [0,0,0,255]
 
-    braille_mask = string_to_braille_array(convertText(rendering_modes[rendering_mode_i]))
-    for i in range(len(braille_mask)):
-        img_array[6:9,i*3+1:i*3+3][braille_mask[i].astype(bool)] = [0,0,0,255]
+    #braille_mask = string_to_braille_array(convertText(rendering_modes[rendering_mode_i]))
+    #for i in range(len(braille_mask)):
+    #    img_array[6:9,i*3+1:i*3+3][braille_mask[i].astype(bool)] = [0,0,0,255]
 
-    braille_mask = string_to_braille_array(convertText(depth_to_str(cut_depth)))
-    for i in range(len(braille_mask)):
-        img_array[11:14,i*3+1:i*3+3][braille_mask[i].astype(bool)] = [0,0,0,255]
+    #braille_mask = string_to_braille_array(convertText(depth_to_str(cut_depth)))
+    #for i in range(len(braille_mask)):
+    #    img_array[11:14,i*3+1:i*3+3][braille_mask[i].astype(bool)] = [0,0,0,255]
 
     ax.imshow(img)
     fig.canvas.draw_idle()  # refresh the plot
@@ -262,6 +350,7 @@ def on_key(event):
         superposition_key_i = (superposition_key_i+1)%len(superposition_keys)
     elif event.key == "q":
         plt.close(fig)
+        #dice.disconnect()
         return
     update_plot()
 
@@ -276,6 +365,94 @@ def on_key(event):
 # Connect key press event
 fig.canvas.mpl_connect("key_press_event", on_key)
 
+current_arduino_dist = -10.0
+first_dist = -10.0
+last_dist = -100.0
+USE_DISTANCE_SENSOR = False
+ser = serial.Serial('/dev/cu.usbmodemB43A4536EC582', 9600, timeout=1)
+line = ser.readline().decode('utf-8').strip()
+if line:
+    USE_DISTANCE_SENSOR = True
+
+def start_arduino_loop():
+    global cut_depth
+    global current_arduino_dist
+    last_time_serialized = time.time()
+    while True:
+        line = ser.readline().decode('utf-8').strip()
+        if time.time() - last_time_serialized < serial_rate_limit:
+            continue
+        last_time_serialized = time.time()
+        if line:
+            try:
+                current_arduino_dist = float(line)
+                #print(current_arduino_dist)
+                if first_dist < 0.0 or last_dist < 0.0:
+                    continue
+                slice_distance = (current_arduino_dist - first_dist)/(last_dist-first_dist)
+                #print("slice_distance", slice_distance)
+                if slice_distance < 0.0 or slice_distance > 1.0:
+                    continue
+                new_cut_depth = math.ceil(slice_distance*10)/10
+                #print(slice_distance)
+                #print(new_cut_depth, cut_depth)
+                if np.isclose(new_cut_depth, cut_depth):
+                    continue
+                cut_depth = new_cut_depth
+                update_plot()
+            except ValueError:
+                pass  # ignore malformed lines
+
+if USE_DISTANCE_SENSOR:
+    threading.Thread(target=start_arduino_loop, daemon=True).start()
+
+
+    print("Distance calibration ...")
+    print("Put slider to first position. Then press the enter key ...")
+    pressed_key = False
+    input()
+    first_dist = current_arduino_dist
+    print("Put slider to last position. Then press the enter key ...")
+    input()
+    last_dist = current_arduino_dist
+
+    print("Distance limits")
+    print(first_dist)
+    print(last_dist)
+
+async def godice_main():
+    global dice
+    #print("Discovering GoDice devices...")
+    print("Discovering  devices...")
+    discovery_res = await bleak.BleakScanner.discover(timeout=10, return_adv=True)
+    device_advdata_tuples = discovery_res.values()
+    device_advdata_tuples = filter_godice_devices(device_advdata_tuples)
+
+    print("Discovered devices...")
+    print_device_info(device_advdata_tuples)
+
+    print("Connecting to a closest device...")
+    device, _adv_data = select_closest_device(device_advdata_tuples)
+
+    async with godice.create(device.address, godice.Shell.D6) as dice:
+        print(f"Connected to {device.name}")
+
+        color = await dice.get_color()
+        battery_lvl = await dice.get_battery_level()
+        print(f"Color: {color}")
+        print(f"Battery: {battery_lvl}")
+
+        print("Listening to position updates. Flip your dice")
+        await dice.subscribe_number_notification(notification_callback)
+        while True:
+            await asyncio.sleep(30)  # sleep to keep callbacks alive
+    print("end godice")
+
+def dice_main_thread():
+    asyncio.run(godice_main())
+    
+
+threading.Thread(target=dice_main_thread, daemon=True).start()
 plt.show()
 
 # TODO:
