@@ -400,10 +400,6 @@
                             Front
                         </label>
                         <label>
-                            <input type="radio" name="view-select" id="view-back" value="Back">
-                            Back
-                        </label>
-                        <label>
                             <input type="radio" name="view-select" id="view-left" value="Left">
                             Left
                         </label>
@@ -421,7 +417,7 @@
                         </label>
                     </fieldset>
                     <div class="help-text sr-only" id="switch-help">
-                        Select Front, Back, Left, Right, Top, or Bottom view of the model
+                        Select Front, Left, Right, Top, or Bottom view of the model
                     </div>
                 </div>
             </section>
@@ -434,14 +430,18 @@
                     <ul class="shortcuts-list">
                         <li><strong>D</strong> - Go deeper (increase depth by 10%)</li>
                         <li><strong>S</strong> - Go shallower (decrease depth by 10%)</li>
-                        <li><strong>V</strong> - Switch view (cycle through Front/Back/Left/Right/Top/Bottom views)</li>
+                        <li><strong>V</strong> - Switch view (cycle through Front/Left/Right/Top/Bottom views)</li>
+                        <li><strong>L</strong> - Switch to Left view</li>
+                        <li><strong>R</strong> - Switch to Right view</li>
+                        <li><strong>T</strong> - Switch to Top view</li>
+                        <li><strong>B</strong> - Switch to Bottom view</li>
                         <li><strong>F</strong> - Switch to filled/shaded view</li>
                         <li><strong>O</strong> - Switch to outline view</li>
                         <li><strong>C</strong> - Switch to cut view</li>
                         <li><strong>0</strong> - Jump to surface (0% depth)</li>
                         <li><strong>1-9</strong> - Jump to depth percentage (1=10%, 2=20%, ..., 9=90%)</li>
                         <li><strong>A</strong> - Get current status (view, depth, mode)</li>
-                        <li><strong>?</strong> - Shortcut reminder</li>
+                        <li><strong>H</strong> - Shortcut reminder</li>
                         <li><strong>Escape</strong> - Clear focus from current element</li>
                     </ul>
                     <p class="help-text">
@@ -490,10 +490,11 @@
         let currentRenderMode = 'Shaded';
         const renderModes = ['Shaded', 'Outline', 'Cut'];
         
-        const views = ['Front', 'Back', 'Left', 'Right', 'Top', 'Bottom'];
+        // Remove "Back" from available views
+        const views = ['Front', 'Left', 'Right', 'Top', 'Bottom'];
+
         const axisInfo = {
             'Front': 'X-axis: left-right, Y-axis: up-down, Z-axis: forward-back (viewing from front)',
-            'Back': 'X-axis: right-left, Y-axis: up-down, Z-axis: back-forward (viewing from back)',
             'Left': 'Z-axis: left-right, Y-axis: up-down, X-axis: back-forward (viewing from left side)',
             'Right': 'Z-axis: right-left, Y-axis: up-down, X-axis: forward-back (viewing from right side)',
             'Top': 'X-axis: left-right, Z-axis: up-down, Y-axis: forward-back (viewing from above)',
@@ -745,6 +746,24 @@
                     }
                     break;
                     
+                // View shortcuts (first letter where available)
+                case 'l':
+                    e.preventDefault();
+                    updateView('Left');
+                    break;
+                case 'r':
+                    e.preventDefault();
+                    updateView('Right');
+                    break;
+                case 't':
+                    e.preventDefault();
+                    updateView('Top');
+                    break;
+                case 'b':
+                    e.preventDefault();
+                    updateView('Bottom');
+                    break;
+                    
                 case 'f':
                     // Switch to filled/shaded view
                     e.preventDefault();
@@ -799,10 +818,10 @@
                         announce(statusMsg);
                     }
                     break;
-                case '?':
+                case 'h':
                     // Shortcut reminder
                     e.preventDefault();
-                    announce('shortcuts: D deeper, S shallower, V view, F shaded, O outline, C cut, 0 surface, 1-9 set depth, Esc clear focus, A status');
+                    announce('shortcuts: D deeper, S shallower, V view cycle, L left, R right, T top, B bottom, F shaded, O outline, C cut, 0 surface, 1-9 set depth, Esc clear focus, A status');
                     break;
                 default:
                     return;

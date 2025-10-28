@@ -30,6 +30,7 @@ views = {
 
 def get_single_view(shape_brep, bbox, cut_depth=0.9, view_key="top", rendering_mode="filled", imposed_ax_limits=[]):
 
+    print("rendering mode", rendering_mode)
     normal_dir = views[view_key]["dir"]
     shape_brep, plane_origin = depth_peeling_single_depth_with_bbox(shape_brep, gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
                                                                   depth=cut_depth, bbox=bbox)
@@ -70,6 +71,14 @@ def get_single_view(shape_brep, bbox, cut_depth=0.9, view_key="top", rendering_m
 
     img = Image.open(buf)
     img_np = np.array(img)
+    # for i in range(img_np.shape[0]):
+    #     for j in range(img_np.shape[1]):
+    #         if img_np[i,j,0] == 255:
+    #             print(1, end='')
+    #         else:
+    #             print(0, end='')
+    #     print()
+
     #plt.imshow(img_np)
     #plt.show()
     if plt.fignum_exists(fig.number):

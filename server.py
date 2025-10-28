@@ -22,14 +22,28 @@ CORS(app)  # Enable CORS to allow requests from the HTML file
 # Store commands in memory (could be replaced with database)
 commands_log = []
 
-# Initialize CAD renderer with default models
-# You can change these paths to your desired models
-before_model = os.path.join("src", "models", "brep", "cup.step")
-after_model = os.path.join("src", "models", "brep", "cup_higher.step")
+# Determine repo root and resolve default coffee mug model path
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+_coffee_candidates = [
+    os.path.join(REPO_ROOT, "Mug_after.step"),
+]
+_default_model = next((p for p in _coffee_candidates if os.path.exists(p)), _coffee_candidates[0])
+
+# Initialize CAD renderer with default models (use the same file for before/after by default)
+before_model = _default_model
+after_model = _default_model
+print(f"Default model set to: {before_model}")
 
 # Global renderer instance (initialized on first use to avoid startup delay)
 renderer = None
 current_render = None  # Store the last rendered image
+
+# Default render parameters for startup
+DEFAULT_RENDER_PARAMS = {
+    'view': 'Front',
+    'depth': 0,
+    'renderMode': 'Outline'
+}
 
 def get_or_create_renderer():
     """Lazy initialization of renderer to avoid startup delay."""
@@ -53,6 +67,30 @@ def _format_img_data_repr(arr2d: np.ndarray) -> str:
     preview = (a[:h, :w] > 0)
     lines = [''.join('#' if v else '.' for v in row) for row in preview]
     return stats + ("\n" + "\n".join(lines) if lines else "")
+
+def initialize_default_braille_render():
+    """Render once at startup with default params and send to braille display."""
+    global current_render
+    try:
+        print("\n" + "=" * 60)
+        print("INITIAL DEFAULT RENDER TO BRAILLE DISPLAY")
+        print("=" * 60)
+        print(f"Default params: {json.dumps(DEFAULT_RENDER_PARAMS)}")
+        r = get_or_create_renderer()
+        img_array = r.render(DEFAULT_RENDER_PARAMS)
+        current_render = img_array
+        print(f"Rendered image shape: {img_array.shape}")
+        try:
+            img_data = img_array[:, :, 3]
+            bytes_written = send_to_braille_display(img_data)
+            print(f"Braille write: {bytes_written} bytes")
+            print("img_data summary:\n" + _format_img_data_repr(img_data))
+        except BrailleDisplayError as e:
+            print(f"Braille send failed: {e}")
+        print("Default render complete.")
+        print("=" * 60 + "\n")
+    except Exception as e:
+        print(f"Default render failed: {e}")
 
 @app.route('/')
 def home():
@@ -93,7 +131,14 @@ def render_view():
         print(f"Rendered image shape: {img_array.shape}")
         # Send only the fourth axis (channel index 3) to the braille display, no resizing
         try:
-            img_data = img_array[:, :, 3]
+            img_data = ~img_array[:, :, 0]
+            for i in range(img_data.shape[0]):
+                for j in range(img_data.shape[1]):
+                    if img_data[i,j] == 255:
+                        print(1, end='')
+                    else:
+                        print(0, end='')
+                print()
             bytes_written = send_to_braille_display(img_data)
             print(f"Braille write: {bytes_written} bytes")
             print("img_data summary:\n" + _format_img_data_repr(img_data))
@@ -231,9 +276,24 @@ def receive_command():
                 img_array = r.render(render_params)
                 current_render = img_array
 
+                # for i in range(img_array.shape[0]):
+                #     for j in range(img_array.shape[1]):
+                #         if img_array[i,j,0] == 255:
+                #             print(1, end='')
+                #         else:
+                #             print(0, end='')
+                #     print()
+
                 # Send only the fourth axis (channel index 3) to the braille display, no resizing
                 try:
                     img_data = img_array[:, :, 3]
+                    for i in range(img_data.shape[0]):
+                        for j in range(img_data.shape[1]):
+                            if img_data[i,j,0] == 255:
+                                print(1, end='')
+                            else:
+                                print(0, end='')
+                        print()
                     bytes_written = send_to_braille_display(img_data)
                     print(f"Braille write: {bytes_written} bytes")
                     print("img_data summary:\n" + _format_img_data_repr(img_data))
@@ -395,6 +455,9 @@ if __name__ == '__main__':
     print("  - GET  /commands/stats    - View command statistics")
     print("  - POST /models            - Change before/after model files")
     print("=" * 70)
+
+    # Render once on startup and send to braille display
+    # initialize_default_braille_render()
+
     print("\nWaiting for commands...\n")
-    
     app.run(debug=True, host='0.0.0.0', port=6969)

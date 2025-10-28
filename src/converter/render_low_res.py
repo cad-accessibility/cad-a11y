@@ -290,6 +290,7 @@ def get_outlines(img_np):
     outline_pixels_rgba = np.zeros((img_np.shape[0], img_np.shape[1], 4), dtype=np.uint8)
     mask = outline_pixels == 1
     outline_pixels_rgba[mask] = [0, 0, 0, 255]
+    outline_pixels_rgba[~mask] = [255, 255, 255, 255]
     return outline_pixels_rgba
 
 def get_outlines_and_filled(img_np):
