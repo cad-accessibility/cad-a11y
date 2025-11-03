@@ -396,28 +396,58 @@
                     <fieldset role="radiogroup" aria-labelledby="view-select-heading">
                         <legend class="sr-only">Model Views</legend>
                         <label>
-                            <input type="radio" name="view-select" id="view-front" value="Front" checked>
-                            Front
+                            <input type="radio" name="view-select" id="view-front" value="y-" checked>
+                            y-
                         </label>
                         <label>
-                            <input type="radio" name="view-select" id="view-left" value="Left">
-                            Left
+                            <input type="radio" name="view-select" id="view-left" value="x-">
+                            x-
                         </label>
                         <label>
-                            <input type="radio" name="view-select" id="view-right" value="Right">
-                            Right
+                            <input type="radio" name="view-select" id="view-right" value="z+">
+                            z+
                         </label>
                         <label>
-                            <input type="radio" name="view-select" id="view-top" value="Top">
-                            Top
+                            <input type="radio" name="view-select" id="view-front" value="y+">
+                            y+
                         </label>
                         <label>
-                            <input type="radio" name="view-select" id="view-bottom" value="Bottom">
-                            Bottom
+                            <input type="radio" name="view-select" id="view-left" value="x+">
+                            x+
+                        </label>
+                        <label>
+                            <input type="radio" name="view-select" id="view-right" value="z-">
+                            z-
                         </label>
                     </fieldset>
                     <div class="help-text sr-only" id="switch-help">
-                        Select Front, Left, Right, Top, or Bottom view of the model
+                        Select front, side or top
+                    </div>
+                </div>
+
+                <div aria-labelledby="zoom-select-heading" style="margin-top: 16px;">
+                    <h3 id="zoom-select-heading" style="margin: 0 0 8px; font-size: 1.1em; color: #34495e;">Zoom level selection</h3>
+                    <fieldset role="radiogroup" aria-labelledby="zoom-select-heading">
+                        <legend class="sr-only">Zoom levels</legend>
+                        <label>
+                            <input type="radio" name="zoom-select" id="zoom_0" value="0" checked>
+                            No zoom
+                        </label>
+                        <label>
+                            <input type="radio" name="zoom-select" id="zoom_1" value="1">
+                            Coarse
+                        </label>
+                        <label>
+                            <input type="radio" name="zoom-select" id="zoom_2" value="2">
+                            Medium
+                        </label>
+                        <label>
+                            <input type="radio" name="zoom-select" id="zoom_2" value="3">
+                            High
+                        </label>
+                    </fieldset>
+                    <div class="help-text sr-only" id="switch-help">
+                        Select No zoom, coarse, medium or high
                     </div>
                 </div>
             </section>
@@ -455,14 +485,15 @@
 
     <script>
         // Configuration
-        //const SERVER_URL = 'http://localhost:6969';
-        const SERVER_URL = 'http://10.19.181.67:6969';
+        const SERVER_URL = 'http://localhost:6969';
+        //const SERVER_URL = 'http://10.19.181.67:6969';
         
         // Function to send current state to the server
         async function sendStateToServer() {
             try {
                 const state = {
                     view: currentView,
+                    zoom: currentZoom,
                     depth: currentSliceDepth,
                     renderMode: currentRenderMode
                 };
@@ -488,11 +519,14 @@
         // State management
         let currentSliceDepth = 50;
         let currentView = 'Front';
+        let currentZoom = '0';
         let currentRenderMode = 'Shaded';
         const renderModes = ['Shaded', 'Outline', 'Cut'];
         
         // Remove "Back" from available views
-        const views = ['Front', 'Left', 'Right', 'Top', 'Bottom'];
+        //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
+        const views = ['y-', 'x-', 'z+', 'z-', 'x+', 'y+'];
+        //const views = ['front', 'side', 'top'];
 
         const axisInfo = {
             'Front': 'X-axis: left-right, Y-axis: up-down, Z-axis: forward-back (viewing from front)',
@@ -514,6 +548,7 @@
         // New radio group references
         const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
         const viewRadios = () => document.querySelectorAll('input[name="view-select"]');
+        const zoomRadios = () => document.querySelectorAll('input[name="zoom-select"]');
         // ...existing code...
 
         // Consistent depth announcement formatter
@@ -560,6 +595,7 @@
         function syncRadios() {
             renderModeRadios().forEach(r => { r.checked = (r.value === currentRenderMode); });
             viewRadios().forEach(r => { r.checked = (r.value === currentView); });
+            zoomRadios().forEach(r => { r.checked = (r.value === currentZoom); });
         }
 
         // Update view information
@@ -573,6 +609,21 @@
             
             // Send state to server if changed
             if (oldView !== currentView) {
+                sendStateToServer();
+            }
+        }
+
+        // Update zoom information
+        function updateZoom(newZoom) {
+            const oldZoom = currentZoom;
+            currentZoom = newZoom;
+            //currentViewSpan.textContent = currentView;
+            updateButtonLabels();
+            syncRadios();
+            announce(`${currentZoom.toLowerCase()} view`);
+            
+            // Send state to server if changed
+            if (oldZoom !== currentZoom) {
                 sendStateToServer();
             }
         }
@@ -704,6 +755,15 @@
                 }
             }
         });
+
+        // Zoom selection radios
+        document.addEventListener('change', function(e) {
+            if (e.target && e.target.matches('input[name="zoom-select"]')) {
+                if (e.target.checked) {
+                    updateZoom(e.target.value);
+                }
+            }
+        });
         
         // Deeper depth button
         deeperBtn.addEventListener('click', function() {
@@ -718,9 +778,13 @@
         // Global keyboard navigation support for accessibility
         document.addEventListener('keydown', function(e) {
             // Skip if user is typing in an input field or textarea
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
-                return;
-            }
+            //if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+            //    return;
+            //}
+            //console.log(e.target.tagName);
+            //if (e.target.tagName === 'INPUT') {
+            //    return;
+            //}
             const key = e.key.toLowerCase();
             switch(key) {
                 case 'd':
@@ -750,19 +814,27 @@
                 // View shortcuts (first letter where available)
                 case 'l':
                     e.preventDefault();
-                    updateView('Left');
+                    updateView('x-');
                     break;
                 case 'r':
                     e.preventDefault();
-                    updateView('Right');
+                    updateView('x+');
                     break;
                 case 't':
                     e.preventDefault();
-                    updateView('Top');
+                    updateView('z+');
                     break;
                 case 'b':
                     e.preventDefault();
-                    updateView('Bottom');
+                    updateView('z-');
+                    break;
+                case 'u':
+                    e.preventDefault();
+                    updateView('y-');
+                    break;
+                case 'i':
+                    e.preventDefault();
+                    updateView('y+');
                     break;
                     
                 case 'f':
@@ -837,7 +909,7 @@
             
             // Set initial values
             updateSliceDepth(50, false);
-            updateView('Front');
+            updateView('front');
             syncRadios();
             updateButtonLabels();
             

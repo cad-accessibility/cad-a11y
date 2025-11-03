@@ -15,6 +15,11 @@ from PIL import Image
 import numpy as np
 from cad_comparison_lib import CADComparisonRenderer
 from braille_display import send_to_braille_display, BrailleDisplayError
+from utils_dice import dice_main_thread
+
+# Dice setup
+import threading
+threading.Thread(target=dice_main_thread, daemon=True).start()
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS to allow requests from the HTML file
@@ -457,7 +462,7 @@ if __name__ == '__main__':
     print("=" * 70)
 
     # Render once on startup and send to braille display
-    initialize_default_braille_render()
+    # initialize_default_braille_render()
 
     print("\nWaiting for commands...\n")
-    app.run(debug=False, host='0.0.0.0', port=6969)
+    app.run(debug=True, host='0.0.0.0', port=6969)

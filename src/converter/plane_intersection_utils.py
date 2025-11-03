@@ -55,15 +55,15 @@ def make_cutting_box_from_plane(plane_origin, plane_normal, bbox, extra_margin=2
     dy = (ymax - ymin + extra_margin)
     dz = (zmax - zmin + extra_margin)
 
-    if np.isclose(plane_normal.X(), 1.0):
+    if np.isclose(np.abs(plane_normal.X()), 1.0):
         dx -= extra_margin
         center.SetX(plane_origin.X())
         translation_vec = gp_Vec(gp_Pnt(0, dy/2, dz/2), center)
-    if np.isclose(plane_normal.Y(), 1.0):
+    if np.isclose(np.abs(plane_normal.Y()), 1.0):
         dy -= extra_margin
         center.SetY(plane_origin.Y())
         translation_vec = gp_Vec(gp_Pnt(dx/2, 0, dz/2), center)
-    if np.isclose(plane_normal.Z(), 1.0):
+    if np.isclose(np.abs(plane_normal.Z()), 1.0):
         dz -= extra_margin
         center.SetZ(plane_origin.Z())
         translation_vec = gp_Vec(gp_Pnt(dx/2, dy/2, 0), center)
@@ -252,6 +252,7 @@ def depth_peeling_single_depth_with_bbox(shape, normal_dir: gp_Dir, depth: float
     # Step 3: Iterate along the normal
     d = min_proj+depth*(max_proj-min_proj)
     origin = gp_Pnt(normal_vec.Scaled(d).X(), normal_vec.Scaled(d).Y(), normal_vec.Scaled(d).Z())
+    print(origin.X(), origin.Y(), origin.Z())
     cut_shape, success = cut_shape_with_plane(shape, origin, normal_dir)
 
     #plane = gp_Pln(origin, normal_dir)

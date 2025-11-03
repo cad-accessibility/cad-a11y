@@ -60,7 +60,8 @@ class CADComparisonRenderer:
     
     def _calculate_view_limits(self):
         """Calculate axis limits for all views for both shapes."""
-        view_keys = ["top", "front", "side"]
+        #view_keys = ["top", "front", "side"]
+        view_keys = ["top", "front", "left", "bottom", "back", "right"]
         rendering_modes = ["outline", "filled", "slice"]
         
         xmin, ymin, zmin, xmax, ymax, zmax = self.bbox
@@ -69,11 +70,15 @@ class CADComparisonRenderer:
             [[xmin, xmax], [ymin, ymax]],  # top
             [[xmin, xmax], [ymin, ymax]],  # front
             [[xmin, xmax], [ymin, ymax]],  # side
+            [[xmin, xmax], [ymin, ymax]],  # top
+            [[xmin, xmax], [ymin, ymax]],  # front
+            [[xmin, xmax], [ymin, ymax]],  # side
         ]
         
         shape_before, shape_after = self.shapes
         
         for i, view_key in enumerate(view_keys):
+            print("view_key", view_key)
             _, ax_limits_before = get_single_view(
                 shape_before, self.bbox, 1.0, view_key, "filled"
             )
@@ -86,14 +91,35 @@ class CADComparisonRenderer:
             view_limits[i][1][1] = max(ax_limits_before[1][1], ax_limits_after[1][1])
         
         self.view_limits = np.array(view_limits)
+        print("view_limits")
+        print(np.array(view_limits))
+        #exit()
     
     def _map_view_name(self, view_name):
         """Map view name from JSON format to internal format."""
         view_mapping = {
             "top": "top",
             "front": "front",
-            "side": "side",
-            "right": "side",
+            "left": "left",
+            "right": "right",
+            "back": "back",
+            "bottom": "bottom",
+        }
+        view_mapping = {
+            "top": "z+",
+            "front": "y-",
+            "left": "x-",
+            "right": "x+",
+            "back": "y+",
+            "bottom": "z-",
+        }
+        view_mapping = {
+            "z+": "top",
+            "y-": "front",
+            "x-": "left",
+            "x+": "right",
+            "y+": "back",
+            "z-": "bottom",
         }
         return view_mapping.get(view_name.lower(), "top")
     
@@ -104,13 +130,18 @@ class CADComparisonRenderer:
             "filled": "filled",
             "shaded": "filled",
             "slice": "slice",
+            "cut": "slice",
         }
         return mode_mapping.get(render_mode.lower(), "outline")
     
     def _get_view_index(self, view_key):
         """Get the index for view limits array."""
-        view_keys = ["top", "front", "side"]
+        #view_keys = ["top", "front", "side"]
+        view_keys = ["top", "front", "left", "bottom", "back", "right"]
         return view_keys.index(view_key) if view_key in view_keys else 0
+
+    def _linear_interpolation(self, a, b, param):
+        return (a+ param*(b-a))
     
     def render(self, params):
         """
@@ -119,6 +150,7 @@ class CADComparisonRenderer:
         Args:
             params: Dictionary containing:
                 - view: "Top", "Front", or "Side" (case-insensitive)
+                - zoom: "0", "1", "2", "3"
                 - depth: Integer 0-100 representing depth percentage
                 - renderMode: "Outline", "Filled"/"Shaded", or "Slice" (case-insensitive)
                 - shape: (optional) "before" or "after", defaults to "after"
@@ -140,9 +172,15 @@ class CADComparisonRenderer:
         view_name = self._map_view_name(params.get("view", "Top"))
         depth_percent = params.get("depth", 0)
         render_mode = self._map_render_mode(params.get("renderMode", "Outline"))
+        print(params)
+        print(params.get("renderMode", "Outline"))
         shape_choice = params.get("shape", "after").lower()
         comparison_mode = params.get("mode", "single").lower()
         superposition_mode = params.get("superpositionMode", "outline").lower()
+
+        zoom_quadrant = 1
+        zoom_level = int(params.get("zoom", "0"))
+        imposed_zoom_ax_limits = [[0, 0.4], [0, 0.4]]
         
         # Convert depth from 0-100 to 0.0-1.0 ratio
         cut_depth = depth_percent / 100.0
@@ -178,13 +216,23 @@ class CADComparisonRenderer:
                 superposition_key=superposition_mode
             )
         else:  # single mode
+            print(self.view_limits[view_index])
+            print(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0])
+            print(
+                    [self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0]),
+                     self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][1])]
+            )
             img_array, _ = get_single_view(
                 self.shapes[shape_index],
                 self.bbox,
                 1.0 - cut_depth,
                 view_name,
                 render_mode,
-                imposed_ax_limits=self.view_limits[view_index]
+                imposed_ax_limits=[
+                    [self._linear_interpolation(self.view_limits[view_index][0][0], self.view_limits[view_index][0][1], imposed_zoom_ax_limits[0][0]),
+                     self._linear_interpolation(self.view_limits[view_index][0][0], self.view_limits[view_index][0][1], imposed_zoom_ax_limits[0][1])],
+                    [self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0]),
+                     self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][1])]]
             )
         
         return img_array

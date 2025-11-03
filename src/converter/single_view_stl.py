@@ -22,19 +22,31 @@ views = {
         "eye": gp_Pnt(0, -1000, 0),
         "dir": gp_Dir(0, 1, 0)
     },
-    "side": {
+    "left": {
         "eye": gp_Pnt(-1000, 0, 0),
         "dir": gp_Dir(1, 0, 0)
+    },
+    "bottom": {
+        "eye": gp_Pnt(0, 0, 1000),
+        "dir": gp_Dir(0, 0, -1)
+    },
+    "back": {
+        "eye": gp_Pnt(0, 1000, 0),
+        "dir": gp_Dir(0, -1, 0)
+    },
+    "right": {
+        "eye": gp_Pnt(1000, 0, 0),
+        "dir": gp_Dir(-1, 0, 0)
     }
 }
 
 def get_single_view(shape_brep, bbox, cut_depth=0.9, view_key="top", rendering_mode="filled", imposed_ax_limits=[]):
 
-    print("rendering mode", rendering_mode)
+    print("rendering mode", rendering_mode, "view key", view_key)
     normal_dir = views[view_key]["dir"]
-    shape_brep, plane_origin = depth_peeling_single_depth_with_bbox(shape_brep, gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
-                                                                  depth=cut_depth, bbox=bbox)
     if rendering_mode == "slice":
+        shape_brep, plane_origin = depth_peeling_single_depth_with_bbox(shape_brep, gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
+                                                                      depth=cut_depth, bbox=bbox)
         shape_brep = faces_on_plane(shape_brep, plane_origin, normal_dir)
 
     # Target pixel resolution
@@ -50,11 +62,22 @@ def get_single_view(shape_brep, bbox, cut_depth=0.9, view_key="top", rendering_m
         shape = trimesh.load_mesh("model.stl")
 
         colors = [0.0 for i in range(len(shape.faces))]
-        coords = shape.vertices[:,[0,1]]
+        if view_key == "top":
+            coords = shape.vertices[:,[0,1]]
         if view_key == "front":
             coords = shape.vertices[:,[0,2]]
-        if view_key == "side":
+        if view_key == "left":
             coords = shape.vertices[:,[1,2]]
+        if view_key == "bottom":
+            coords = shape.vertices[:,[0,1]]
+            coords[:,0] *= -1
+            coords[:,1] *= -1
+        if view_key == "back":
+            coords = shape.vertices[:,[0,2]]
+            coords[:,0] *= -1
+        if view_key == "right":
+            coords = shape.vertices[:,[1,2]]
+            coords[:,0] *= -1
         ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape.faces)
 
     ax.set_aspect('equal')
@@ -63,6 +86,7 @@ def get_single_view(shape_brep, bbox, cut_depth=0.9, view_key="top", rendering_m
         ax.set_xlim(imposed_ax_limits[0])
         ax.set_ylim(imposed_ax_limits[1])
     ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
+    print(ax_limits)
 
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=dpi, pad_inches=0)
