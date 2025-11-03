@@ -495,7 +495,8 @@
                     view: currentView,
                     zoom: currentZoom,
                     depth: currentSliceDepth,
-                    renderMode: currentRenderMode
+                    renderMode: currentRenderMode,
+                    move_camera_center: currentMoveCamera,
                 };
                 
                 // Send to server without blocking the UI
@@ -521,6 +522,7 @@
         let currentView = 'Front';
         let currentZoom = '0';
         let currentRenderMode = 'Shaded';
+        let currentMoveCamera = "none";
         const renderModes = ['Shaded', 'Outline', 'Cut'];
         
         // Remove "Back" from available views
@@ -861,6 +863,27 @@
                     updateSliceDepth(0, true);
                     break;
                     
+                case '1':
+                    currentMoveCamera = "up";
+                    sendStateToServer();
+                    currentMoveCamera = "none";
+                    break
+                case '4':
+                    currentMoveCamera = "right";
+                    sendStateToServer();
+                    currentMoveCamera = "none";
+                    break
+                case '2':
+                    currentMoveCamera = "down";
+                    sendStateToServer();
+                    currentMoveCamera = "none";
+                    break
+                case '3':
+                    currentMoveCamera = "left";
+                    sendStateToServer();
+                    currentMoveCamera = "none";
+                    break
+
                 case '1':
                 case '2':
                 case '3':

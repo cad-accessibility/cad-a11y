@@ -32,6 +32,7 @@ class CADComparisonRenderer:
         self.shapes = []
         self.bbox = None
         self.view_limits = None
+        self.view_current_camera_center = []
         
         # Load and normalize shapes
         self._load_models()
@@ -74,6 +75,14 @@ class CADComparisonRenderer:
             [[xmin, xmax], [ymin, ymax]],  # front
             [[xmin, xmax], [ymin, ymax]],  # side
         ]
+        self.view_current_camera_center = [
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+        ]
         
         shape_before, shape_after = self.shapes
         
@@ -89,8 +98,11 @@ class CADComparisonRenderer:
             view_limits[i][0][1] = max(ax_limits_before[0][1], ax_limits_after[0][1])
             view_limits[i][1][0] = min(ax_limits_before[1][0], ax_limits_after[1][0])
             view_limits[i][1][1] = max(ax_limits_before[1][1], ax_limits_after[1][1])
+            self.view_current_camera_center[i][0] = (view_limits[i][0][0] + view_limits[i][0][1])/2.0
+            self.view_current_camera_center[i][1] = (view_limits[i][1][0] + view_limits[i][1][1])/2.0
         
         self.view_limits = np.array(view_limits)
+        self.view_current_camera_center = np.array(self.view_current_camera_center)
         print("view_limits")
         print(np.array(view_limits))
         #exit()
@@ -178,9 +190,6 @@ class CADComparisonRenderer:
         comparison_mode = params.get("mode", "single").lower()
         superposition_mode = params.get("superpositionMode", "outline").lower()
 
-        zoom_quadrant = 1
-        zoom_level = int(params.get("zoom", "0"))
-        imposed_zoom_ax_limits = [[0, 0.4], [0, 0.4]]
         
         # Convert depth from 0-100 to 0.0-1.0 ratio
         cut_depth = depth_percent / 100.0
@@ -190,6 +199,53 @@ class CADComparisonRenderer:
         
         # Get view index for limits
         view_index = self._get_view_index(view_name)
+
+        zoom_quadrant = 1
+        zoom_level = int(params.get("zoom", "0"))
+        camera_move = params.get("move_camera_center", "none")
+        imposed_zoom_ax_limits = [[0.3, 0.7], [0.3, 0.7]]
+        imposed_zoom_ax_limits = [[0, 1.0], [0, 1.0]]
+        imposed_zoom_ax_limits = [[0, 1.0], [0.3, 0.7]]
+
+        horizontal_dist = np.abs((self.view_limits[view_index][0][1] - self.view_limits[view_index][0][0]))
+        vertical_dist = np.abs((self.view_limits[view_index][1][1] - self.view_limits[view_index][1][0]))
+        # arrow-key stepping
+        #self.view_current_camera_center[view_index][1] -= (0.5**(zoom_level+2))*vertical_dist
+        if camera_move == "left":
+            self.view_current_camera_center[view_index][0] -= (0.5**(zoom_level+2))*horizontal_dist
+        if camera_move == "right":
+            self.view_current_camera_center[view_index][0] += (0.5**(zoom_level+2))*horizontal_dist
+        if camera_move == "up":
+            self.view_current_camera_center[view_index][1] += (0.5**(zoom_level+2))*vertical_dist
+        if camera_move == "down":
+            self.view_current_camera_center[view_index][1] -= (0.5**(zoom_level+2))*vertical_dist
+
+        imposed_zoom_ax_limits = [
+            [self.view_current_camera_center[view_index][0] - 0.5**(zoom_level+1)*horizontal_dist,
+            self.view_current_camera_center[view_index][0] + 0.5**(zoom_level+1)*horizontal_dist],
+            [self.view_current_camera_center[view_index][1] - 0.5**(zoom_level+1)*vertical_dist,
+            self.view_current_camera_center[view_index][1] + 0.5**(zoom_level+1)*vertical_dist],
+            ]
+        # This needs to account for the aspect ratio of the monarch
+        monarch_aspect_ratio = 97.0/40.0
+        if horizontal_dist/vertical_dist < monarch_aspect_ratio:
+            horizontal_scale_factor = monarch_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
+            #imposed_zoom_ax_limits[0][0] = max(self.view_limits[view_index][0][0], self.view_current_camera_center[view_index][0] - horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist)
+            imposed_zoom_ax_limits[0][0] = self.view_current_camera_center[view_index][0] - horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist
+            #imposed_zoom_ax_limits[0][1] = min(self.view_limits[view_index][0][1], self.view_current_camera_center[view_index][0] + horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist)
+            imposed_zoom_ax_limits[0][1] = self.view_current_camera_center[view_index][0] + horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist
+        if horizontal_dist/vertical_dist > monarch_aspect_ratio:
+            vertical_scale_factor = monarch_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
+            vertical_scale_factor = 1.0/vertical_scale_factor
+            #imposed_zoom_ax_limits[1][0] = max(self.view_limits[view_index][1][0], self.view_current_camera_center[view_index][1] - vertical_scale_factor*0.5**(zoom_level+1)*vertical_dist)
+            #imposed_zoom_ax_limits[1][1] = min(self.view_limits[view_index][1][1], self.view_current_camera_center[view_index][1] + vertical_scale_factor*0.5**(zoom_level+1)*vertical_dist)
+            imposed_zoom_ax_limits[1][0] = self.view_current_camera_center[view_index][1] - vertical_scale_factor*0.5**(zoom_level+1)*vertical_dist
+            imposed_zoom_ax_limits[1][1] = self.view_current_camera_center[view_index][1] + vertical_scale_factor*0.5**(zoom_level+1)*vertical_dist
+        print("zoom_level", zoom_level, + 0.5**(zoom_level+1))
+        print("imposed_zoom_ax_limits")
+        print(imposed_zoom_ax_limits)
+        print("self.view_limits[view_index]")
+        print(self.view_limits[view_index])
         
         # Render based on comparison mode
         if comparison_mode == "superposition":
@@ -216,23 +272,24 @@ class CADComparisonRenderer:
                 superposition_key=superposition_mode
             )
         else:  # single mode
-            print(self.view_limits[view_index])
-            print(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0])
-            print(
-                    [self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0]),
-                     self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][1])]
-            )
+            #print(self.view_limits[view_index])
+            #print(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0])
+            #print(
+            #        [self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0]),
+            #         self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][1])]
+            #)
             img_array, _ = get_single_view(
                 self.shapes[shape_index],
                 self.bbox,
                 1.0 - cut_depth,
                 view_name,
                 render_mode,
-                imposed_ax_limits=[
-                    [self._linear_interpolation(self.view_limits[view_index][0][0], self.view_limits[view_index][0][1], imposed_zoom_ax_limits[0][0]),
-                     self._linear_interpolation(self.view_limits[view_index][0][0], self.view_limits[view_index][0][1], imposed_zoom_ax_limits[0][1])],
-                    [self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0]),
-                     self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][1])]]
+                imposed_ax_limits=
+                    imposed_zoom_ax_limits
+                    #[self._linear_interpolation(self.view_limits[view_index][0][0], self.view_limits[view_index][0][1], imposed_zoom_ax_limits[0][0]),
+                    # self._linear_interpolation(self.view_limits[view_index][0][0], self.view_limits[view_index][0][1], imposed_zoom_ax_limits[0][1])],
+                    #[self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0]),
+                    # self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][1])]]
             )
         
         return img_array
