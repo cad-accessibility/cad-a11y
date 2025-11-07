@@ -342,6 +342,9 @@
             <!-- Rendering Mode Section -->
             <section class="section" aria-labelledby="render-heading">
                 <h2 id="render-heading">Rendering Mode</h2>
+                <div id="render-help" class="help-text">
+                    Choose between Shaded (filled surfaces), Outline (wireframe edges), and Cut (cross-section)
+                </div>
                 <div aria-describedby="render-help">
                     <fieldset role="radiogroup" aria-labelledby="render-heading">
                         <legend class="sr-only">Rendering Mode Options</legend>
@@ -358,9 +361,23 @@
                             Cut
                         </label>
                     </fieldset>
-                    <div id="render-help" class="help-text">
-                        Choose between Shaded (filled surfaces), Outline (wireframe edges), and Cut (cross-section)
-                    </div>
+                </div>
+
+                <div id="render-help" class="help-text">
+                    Choose between Single or Side-by-Side 
+                </div>
+                <div aria-describedby="representation-help">
+                    <fieldset role="radiogroup" aria-labelledby="render-heading">
+                        <legend class="sr-only">Representation Mode Options</legend>
+                        <label>
+                            <input type="radio" name="representation-mode" id="representation-mode-single" value="single" checked>
+                            Single
+                        </label>
+                        <label>
+                            <input type="radio" name="representation-mode" id="representation-mode-side-by-side" value="side-by-side" checked>
+                            Side-by-Side
+                        </label>
+                    </fieldset>
                 </div>
             </section>
 
@@ -442,7 +459,7 @@
                             Medium
                         </label>
                         <label>
-                            <input type="radio" name="zoom-select" id="zoom_2" value="3">
+                            <input type="radio" name="zoom-select" id="zoom_3" value="3">
                             High
                         </label>
                     </fieldset>
@@ -458,18 +475,33 @@
                 <div aria-describedby="shortcuts-heading">
                     <p class="help-text">Use these keyboard shortcuts from anywhere on the page:</p>
                     <ul class="shortcuts-list">
-                        <li><strong>D</strong> - Go deeper (increase depth by 10%)</li>
-                        <li><strong>S</strong> - Go shallower (decrease depth by 10%)</li>
+                        <li><strong>1</strong> - Go shallower (decrease depth by 10%)</li>
+                        <li><strong>2</strong> - Go deeper (increase depth by 10%)</li>
                         <li><strong>V</strong> - Switch view (cycle through Front/Left/Right/Top/Bottom views)</li>
-                        <li><strong>L</strong> - Switch to Left view</li>
-                        <li><strong>R</strong> - Switch to Right view</li>
-                        <li><strong>T</strong> - Switch to Top view</li>
-                        <li><strong>B</strong> - Switch to Bottom view</li>
+
+                        <li><strong>4</strong> - Zoom out</li>
+                        <li><strong>5</strong> - Zoom in</li>
+
+                        <li><strong>7</strong> - Switch to x- view</li>
+                        <li><strong>8</strong> - Switch to x+ view</li>
+                        <li><strong>9</strong> - Switch to z+ view</li>
+                        <li><strong>0</strong> - Switch to z- view</li>
+                        <li><strong>-</strong> - Switch to y- view</li>
+                        <li><strong>=</strong> - Switch to y+ view</li>
+
                         <li><strong>F</strong> - Switch to filled/shaded view</li>
                         <li><strong>O</strong> - Switch to outline view</li>
                         <li><strong>C</strong> - Switch to cut view</li>
-                        <li><strong>0</strong> - Jump to surface (0% depth)</li>
-                        <li><strong>1-9</strong> - Jump to depth percentage (1=10%, 2=20%, ..., 9=90%)</li>
+
+                        <li><strong>R</strong> - Switch render mode (cycle through filled, outline, cut)</li>
+                        <li><strong>T</strong> - Switch representation mode (cycle through single and side-by-side)</li>
+
+                        <li><strong>W</strong> - Move camera up</li>
+                        <li><strong>A</strong> - Move camera left</li>
+                        <li><strong>S</strong> - Move camera down</li>
+                        <li><strong>D</strong> - Move camera right</li>
+
+
                         <li><strong>A</strong> - Get current status (view, depth, mode)</li>
                         <li><strong>H</strong> - Shortcut reminder</li>
                         <li><strong>Escape</strong> - Clear focus from current element</li>
@@ -485,8 +517,8 @@
 
     <script>
         // Configuration
-        const SERVER_URL = 'http://localhost:6969';
-        //const SERVER_URL = 'http://10.19.181.67:6969';
+        //const SERVER_URL = 'http://localhost:6969';
+        const SERVER_URL = 'http://10.18.193.149:6969';
         
         // Function to send current state to the server
         async function sendStateToServer() {
@@ -496,6 +528,7 @@
                     zoom: currentZoom,
                     depth: currentSliceDepth,
                     renderMode: currentRenderMode,
+                    mode: currentRepresentationMode,
                     move_camera_center: currentMoveCamera,
                 };
                 
@@ -522,12 +555,15 @@
         let currentView = 'Front';
         let currentZoom = '0';
         let currentRenderMode = 'Shaded';
+        let currentRepresentationMode = 'single';
         let currentMoveCamera = "none";
         const renderModes = ['Shaded', 'Outline', 'Cut'];
+        const representationModes = ['single', 'side-by-side'];
         
         // Remove "Back" from available views
         //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
         const views = ['y-', 'x-', 'z+', 'z-', 'x+', 'y+'];
+        const zooms = ["0", "1", "2", "3"];
         //const views = ['front', 'side', 'top'];
 
         const axisInfo = {
@@ -549,6 +585,7 @@
 
         // New radio group references
         const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
+        const representationModeRadios = () => document.querySelectorAll('input[name="representation-mode"]');
         const viewRadios = () => document.querySelectorAll('input[name="view-select"]');
         const zoomRadios = () => document.querySelectorAll('input[name="zoom-select"]');
         // ...existing code...
@@ -596,6 +633,7 @@
         // Helper to sync radios with current state
         function syncRadios() {
             renderModeRadios().forEach(r => { r.checked = (r.value === currentRenderMode); });
+            representationModeRadios().forEach(r => { r.checked = (r.value === currentRepresentationMode); });
             viewRadios().forEach(r => { r.checked = (r.value === currentView); });
             zoomRadios().forEach(r => { r.checked = (r.value === currentZoom); });
         }
@@ -614,6 +652,17 @@
                 sendStateToServer();
             }
         }
+
+        setInterval(() => {
+          fetch(`${SERVER_URL}/get_data`)
+            .then(res => res.json())
+            .then(data => {
+                console.log(data.cube_value);
+                updateView(data.cube_value);
+                updateSliceDepth(data.slider_value);
+              //document.getElementById("msg").innerText = data.value;
+            });
+        }, 500);
 
         // Update zoom information
         function updateZoom(newZoom) {
@@ -651,6 +700,27 @@
             const currentIndex = renderModes.indexOf(currentRenderMode);
             const nextIndex = (currentIndex + 1) % renderModes.length;
             switchToRenderMode(renderModes[nextIndex]);
+        }
+
+        function switchToRepresentationMode(targetMode) {
+            if (currentRepresentationMode === targetMode) {
+                announceStatus(`already ${targetMode.toLowerCase()}`);
+                return;
+            }
+            const previousMode = currentRepresentationMode;
+            currentRepresentationMode = targetMode;
+            updateButtonLabels();
+            syncRadios();
+            announce(`${previousMode.toLowerCase()} to ${currentRepresentationMode.toLowerCase()}`);
+            
+            // Send state to server
+            sendStateToServer();
+        }
+
+        function cycleRepresentationMode() {
+            const currentIndex = representationModes.indexOf(currentRepresentationMode);
+            const nextIndex = (currentIndex + 1) % representationModes.length;
+            switchToRepresentationMode(representationModes[nextIndex]);
         }
 
         // Enhanced announcement system
@@ -749,6 +819,14 @@
             }
         });
 
+        document.addEventListener('change', function(e) {
+            if (e.target && e.target.matches('input[name="representation-mode"]')) {
+                if (e.target.checked) {
+                    switchToRepresentationMode(e.target.value);
+                }
+            }
+        });
+
         // View selection radios
         document.addEventListener('change', function(e) {
             if (e.target && e.target.matches('input[name="view-select"]')) {
@@ -789,14 +867,14 @@
             //}
             const key = e.key.toLowerCase();
             switch(key) {
-                case 'd':
+                case '2':
                     // Go deeper (increase depth by 10%)
                     e.preventDefault();
                     const newDeeperDepth = Math.min(100, currentSliceDepth + 10);
                     updateSliceDepth(newDeeperDepth, true);
                     break;
                     
-                case 's':
+                case '1':
                     // Go shallower (decrease depth by 10%)
                     e.preventDefault();
                     const newShallowerDepth = Math.max(0, currentSliceDepth - 10);
@@ -814,27 +892,27 @@
                     break;
                     
                 // View shortcuts (first letter where available)
-                case 'l':
+                case '7':
                     e.preventDefault();
                     updateView('x-');
                     break;
-                case 'r':
+                case '8':
                     e.preventDefault();
                     updateView('x+');
                     break;
-                case 't':
+                case '9':
                     e.preventDefault();
                     updateView('z+');
                     break;
-                case 'b':
+                case '0':
                     e.preventDefault();
                     updateView('z-');
                     break;
-                case 'u':
+                case '-':
                     e.preventDefault();
                     updateView('y-');
                     break;
-                case 'i':
+                case '=':
                     e.preventDefault();
                     updateView('y+');
                     break;
@@ -843,6 +921,18 @@
                     // Switch to filled/shaded view
                     e.preventDefault();
                     switchToRenderMode('Shaded');
+                    break;
+
+                case 'r':
+                    // Switch to filled/shaded view
+                    e.preventDefault();
+                    cycleRenderMode();
+                    break;
+
+                case 't':
+                    // Switch to filled/shaded view
+                    e.preventDefault();
+                    cycleRepresentationMode();
                     break;
                     
                 case 'o':
@@ -857,38 +947,49 @@
                     switchToRenderMode('Cut');
                     break;
                     
-                case '0':
-                    // Jump to 0% depth (surface)
-                    e.preventDefault();
-                    updateSliceDepth(0, true);
-                    break;
-                    
-                case '1':
+                //case '0':
+                //    // Jump to 0% depth (surface)
+                //    e.preventDefault();
+                //    updateSliceDepth(0, true);
+                //    break;
+                //    
+                case 'w':
                     currentMoveCamera = "up";
                     sendStateToServer();
                     currentMoveCamera = "none";
                     break
-                case '4':
+                case 'd':
                     currentMoveCamera = "right";
                     sendStateToServer();
                     currentMoveCamera = "none";
                     break
-                case '2':
+                case 's':
                     currentMoveCamera = "down";
                     sendStateToServer();
                     currentMoveCamera = "none";
                     break
-                case '3':
+                case 'a':
                     currentMoveCamera = "left";
                     sendStateToServer();
                     currentMoveCamera = "none";
                     break
 
-                case '1':
-                case '2':
-                case '3':
                 case '4':
+                    e.preventDefault();
+                    {
+                        const currentIndex = zooms.indexOf(currentZoom);
+                        const nextIndex = Math.max((currentIndex - 1), 0);
+                        updateZoom(zooms[nextIndex]);
+                    }
+                    break;
                 case '5':
+                    e.preventDefault();
+                    {
+                        const currentIndex = zooms.indexOf(currentZoom);
+                        const nextIndex = Math.min((currentIndex + 1), zooms.length-1);
+                        updateZoom(zooms[nextIndex]);
+                    }
+                    break;
                 case '6':
                 case '7':
                 case '8':

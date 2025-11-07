@@ -7,6 +7,7 @@ from pyautogui import press
 # Question for Carlos: How to modify the website status from here without hotkey?
 # Maybe with requests.post ?
 
+@app.route('/get_data')
 async def notification_callback(number, stability_descr):
     #global view_key_i
     """
@@ -34,6 +35,7 @@ async def notification_callback(number, stability_descr):
             press("i")
             #view_key_i = 2
         #update_plot()
+    return {'cube_value': "top"}
 
 def filter_godice_devices(dev_advdata_tuples):
     """

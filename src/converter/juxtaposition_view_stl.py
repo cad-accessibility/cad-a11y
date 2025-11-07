@@ -43,7 +43,7 @@ def get_juxtaposition_view(shapes, bbox, cut_depth=0.9, view_key="top", renderin
     #    shape_brep_1 = faces_on_plane(shape_brep_1, plane_origin_1, normal_dir)
 
     # Target pixel resolution
-    width_px, height_px = 97, 40
+    width_px, height_px = 96, 40
     dpi = 100 
     fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
     ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure

@@ -94,16 +94,34 @@ def stl_to_step_with_pythonocc(stl_file, step_file):
         # Try to import PythonOCC modules
         from OCC.Extend.DataExchange import read_stl_file, write_step_file
         
-        # Read the STL file
-        mesh_shape = read_stl_file(stl_file)
-        if mesh_shape is None:
-            print("Error: Could not read STL file with PythonOCC")
-            return False
+        ## Read the STL file
+        #mesh_shape = read_stl_file(stl_file)
+        #if mesh_shape is None:
+        #    print("Error: Could not read STL file with PythonOCC")
+        #    return False
+        ## Write the STEP file directly from the mesh shape
+        #success = write_step_file(mesh_shape, step_file)
         
-        print("STL file loaded successfully with PythonOCC")
+        #print("STL file loaded successfully with PythonOCC")
+        from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
+        from OCC.Core.StlAPI import StlAPI_Reader
+        from OCC.Core.TopoDS import TopoDS_Compound
+        from OCC.Core.BRep import BRep_Builder
+        from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
+        from OCC.Core.STEPControl import STEPControl_Writer, STEPControl_AsIs
         
-        # Write the STEP file directly from the mesh shape
-        success = write_step_file(mesh_shape, step_file)
+        reader = StlAPI_Reader()
+        shape = TopoDS_Compound()
+        builder = BRep_Builder()
+        reader.Read(shape, stl_file)
+
+        # Optionally mesh or heal the shape
+        BRepMesh_IncrementalMesh(shape, 0.1)
+
+        # Write to STEP
+        step_writer = STEPControl_Writer()
+        step_writer.Transfer(shape, STEPControl_AsIs)
+        success = step_writer.Write(step_file)
         
         # Sometimes PythonOCC returns False even when the file is created successfully
         # Check if the file actually exists and has reasonable size

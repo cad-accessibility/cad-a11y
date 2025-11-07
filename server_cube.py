@@ -15,11 +15,16 @@ from PIL import Image
 import numpy as np
 from cad_comparison_lib import CADComparisonRenderer
 from braille_display import send_to_braille_display, BrailleDisplayError
-from utils_dice import dice_main_thread
+#from utils_dice import dice_main_thread
+
+import asyncio
+import bleak
+import threading
+import godice
 
 # Dice setup
-import threading
-threading.Thread(target=dice_main_thread, daemon=True).start()
+#import threading
+#threading.Thread(target=dice_main_thread, daemon=True).start()
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS to allow requests from the HTML file
@@ -228,6 +233,8 @@ def get_render_base64():
 def receive_command():
     """Receive and log a command from the 3D viewer, and trigger render if applicable"""
     global current_render
+    global cube_value
+
     try:
         data = request.get_json()
         
@@ -258,6 +265,8 @@ def receive_command():
                 'depth': data.get('depth', 0),
                 'renderMode': data.get('renderMode', 'Outline')
             }
+            cube_value = data.get("view")
+            print(cube_value)
             
             # Add optional params if present
             if 'shape' in data:
@@ -442,6 +451,97 @@ def change_models():
             'message': str(e)
         }), 400
 
+view_cube_mapping = {
+    3: "x-",
+    4: "x+",
+    2: "y-",
+    5: "y+",
+    1: "z-",
+    6: "z+"
+}
+
+cube_value = view_cube_mapping[6]
+
+async def notification_callback(number, stability_descr):
+    global cube_value
+    """
+    GoDice number notification callback.
+    Called each time GoDice is flipped, receiving flip event data:
+    :param number: a rolled number
+    :param stability_descr: an additional value clarifying device movement state, ie stable, rolling...
+    """
+    if stability_descr in [godice.StabilityDescriptor.MOVE_STABLE, godice.StabilityDescriptor.STABLE]:
+        print(f"Number: {number}, stability descriptor: {stability_descr}")
+        cube_value = view_cube_mapping[number]
+        #return {'cube_value': view_cube_mapping[number]}
+
+def filter_godice_devices(dev_advdata_tuples):
+    """
+    Receives all discovered devices and returns only GoDice devices
+    """
+    return [
+        (dev, adv_data)
+        for dev, adv_data in dev_advdata_tuples
+        if (dev.name and dev.name.startswith("GoDice"))
+    ]
+
+
+def select_closest_device(dev_advdata_tuples):
+    """
+    Finds the closest device based on RSSI are returns it
+    """
+    def _rssi_as_key(dev_advdata):
+        _, adv_data = dev_advdata
+        return adv_data.rssi
+
+    return max(dev_advdata_tuples, key=_rssi_as_key)
+
+
+def print_device_info(devices):
+    """
+    Prints short summary of discovered devices
+    """
+    for dev, adv_data in devices:
+        print(f"Name: {dev.name}, address: {dev.address}, rssi: {adv_data.rssi}")
+
+async def godice_main():
+    global dice
+    #print("Discovering GoDice devices...")
+    print("Discovering  devices...")
+    discovery_res = await bleak.BleakScanner.discover(timeout=10, return_adv=True)
+    device_advdata_tuples = discovery_res.values()
+    device_advdata_tuples = filter_godice_devices(device_advdata_tuples)
+
+    print("Discovered devices...")
+    print_device_info(device_advdata_tuples)
+
+    print("Connecting to a closest device...")
+    device, _adv_data = select_closest_device(device_advdata_tuples)
+
+    async with godice.create(device.address, godice.Shell.D6) as dice:
+        print(f"Connected to {device.name}")
+
+        color = await dice.get_color()
+        battery_lvl = await dice.get_battery_level()
+        print(f"Color: {color}")
+        print(f"Battery: {battery_lvl}")
+
+        print("Listening to position updates. Flip your dice")
+        await dice.subscribe_number_notification(notification_callback)
+        while True:
+            await asyncio.sleep(30)  # sleep to keep callbacks alive
+    print("end godice")
+
+def dice_main_thread():
+    asyncio.run(godice_main())
+
+@app.route('/get_data')
+def get_data():
+    return jsonify({
+        'status': 'success',
+        'cube_value': cube_value
+    })
+
 if __name__ == '__main__':
     print("=" * 70)
     print("Accessible 3D Viewer Command Server with CAD Rendering")
@@ -462,7 +562,10 @@ if __name__ == '__main__':
     print("=" * 70)
 
     # Render once on startup and send to braille display
-    # initialize_default_braille_render()
+    initialize_default_braille_render()
+    import logging
+    logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
     print("\nWaiting for commands...\n")
-    app.run(debug=True, host='0.0.0.0', port=6969)
+    threading.Thread(target=dice_main_thread, daemon=True).start()
+    app.run(debug=False, host='0.0.0.0', port=6969)

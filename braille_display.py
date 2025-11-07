@@ -60,10 +60,12 @@ def send_to_braille_display(array):
     
     # Connect to device and send data
     try:
+        print("try to connect")
         device = hid.device()
         device.open(TARGET_VENDOR_ID, TARGET_PRODUCT_ID)
         
         try:
+            print("DEVICE", device)
             bytes_written = device.write(bytes(buf))
             if bytes_written <= 0:
                 raise BrailleDisplayError("Failed to write data to device")
@@ -96,7 +98,7 @@ def _convert_pixels_to_braille(buf, array_2d):
         line_offset = 1 + display_line * 48  # Each line starts at offset 1, 49, 97, etc.
         
         # Process each braille cell in the line (40 cells per line)
-        for cell_col in range(40):
+        for cell_col in range(48):
             # Calculate the starting pixel position for this 4×2 block
             pixel_row_start = display_line * 4
             pixel_col_start = cell_col * 2

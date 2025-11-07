@@ -50,7 +50,7 @@ def get_single_view(shape_brep, bbox, cut_depth=0.9, view_key="top", rendering_m
         shape_brep = faces_on_plane(shape_brep, plane_origin, normal_dir)
 
     # Target pixel resolution
-    width_px, height_px = 97, 40
+    width_px, height_px = 96, 40
     dpi = 100 
     fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
     ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
@@ -95,13 +95,13 @@ def get_single_view(shape_brep, bbox, cut_depth=0.9, view_key="top", rendering_m
 
     img = Image.open(buf)
     img_np = np.array(img)
-    # for i in range(img_np.shape[0]):
-    #     for j in range(img_np.shape[1]):
-    #         if img_np[i,j,0] == 255:
-    #             print(1, end='')
-    #         else:
-    #             print(0, end='')
-    #     print()
+    for i in range(img_np.shape[0]):
+        for j in range(img_np.shape[1]):
+            if img_np[i,j,0] == 255:
+                print(1, end='')
+            else:
+                print(0, end='')
+        print()
 
     #plt.imshow(img_np)
     #plt.show()

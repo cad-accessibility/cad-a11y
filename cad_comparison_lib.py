@@ -12,6 +12,7 @@ import src.converter.plane_intersection_utils as plane_inter_utils
 from src.converter.single_view_stl import get_single_view
 from src.converter.juxtaposition_view_stl import get_juxtaposition_view
 from src.converter.superposition_view_stl import get_superposition_view
+from src.converter.side_by_side_view import get_side_view
 
 
 class CADComparisonRenderer:
@@ -190,6 +191,20 @@ class CADComparisonRenderer:
         comparison_mode = params.get("mode", "single").lower()
         superposition_mode = params.get("superpositionMode", "outline").lower()
 
+        view_legend = params.get("view", "top")
+        view_cut = "x+"
+        if view_legend == "x+":
+            view_cut = "y+"
+        if view_legend == "y+":
+            view_cut = "z+"
+        if view_legend == "x-":
+            view_cut = "y-"
+        if view_legend == "y-":
+            view_cut = "z-"
+        if view_legend == "z-":
+            view_cut = "x-"
+        view_name_legend = self._map_view_name(view_legend)
+        view_name_cut = self._map_view_name(view_cut)
         
         # Convert depth from 0-100 to 0.0-1.0 ratio
         cut_depth = depth_percent / 100.0
@@ -199,6 +214,8 @@ class CADComparisonRenderer:
         
         # Get view index for limits
         view_index = self._get_view_index(view_name)
+        if comparison_mode == "side-by-side":
+            view_index = self._get_view_index(view_name_cut)
 
         zoom_quadrant = 1
         zoom_level = int(params.get("zoom", "0"))
@@ -227,7 +244,9 @@ class CADComparisonRenderer:
             self.view_current_camera_center[view_index][1] + 0.5**(zoom_level+1)*vertical_dist],
             ]
         # This needs to account for the aspect ratio of the monarch
-        monarch_aspect_ratio = 97.0/40.0
+        monarch_aspect_ratio = 96.0/40.0
+        if comparison_mode == "side-by-side":
+            monarch_aspect_ratio = 48.0/40.0
         if horizontal_dist/vertical_dist < monarch_aspect_ratio:
             horizontal_scale_factor = monarch_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
             #imposed_zoom_ax_limits[0][0] = max(self.view_limits[view_index][0][0], self.view_current_camera_center[view_index][0] - horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist)
@@ -270,6 +289,18 @@ class CADComparisonRenderer:
                 render_mode,
                 imposed_ax_limits=[],
                 superposition_key=superposition_mode
+            )
+        if comparison_mode == "side-by-side":
+            img_array, _ = get_side_view(
+                self.shapes[shape_index],
+                self.bbox,
+                1.0 - cut_depth,
+                view_name_legend,
+                view_name_cut,
+                render_mode,
+                imposed_ax_limits_legend=self.view_limits[self._get_view_index(view_name_legend)],
+                #imposed_ax_limits_cut=self.view_limits[self._get_view_index(view_name_cut)]
+                imposed_ax_limits_cut=imposed_zoom_ax_limits
             )
         else:  # single mode
             #print(self.view_limits[view_index])
