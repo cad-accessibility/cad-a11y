@@ -517,8 +517,8 @@
 
     <script>
         // Configuration
-        //const SERVER_URL = 'http://localhost:6969';
-        const SERVER_URL = 'http://10.18.193.149:6969';
+        const SERVER_URL = 'http://localhost:6969';
+        //const SERVER_URL = 'http://10.18.193.149:6969';
         
         // Function to send current state to the server
         async function sendStateToServer() {
@@ -653,6 +653,7 @@
             }
         }
 
+        // Just commented for debugging
         setInterval(() => {
           fetch(`${SERVER_URL}/get_data`)
             .then(res => res.json())

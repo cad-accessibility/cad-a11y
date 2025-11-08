@@ -8,6 +8,9 @@ It processes STEP files and returns rendered image arrays based on specified par
 import numpy as np
 import os
 from OCC.Core.STEPControl import STEPControl_Reader
+from trimesh.exchange.stl import load_stl
+from trimesh import Trimesh
+from trimesh.repair import stitch, fill_holes, fix_inversion, fix_winding
 import src.converter.plane_intersection_utils as plane_inter_utils
 from src.converter.single_view_stl import get_single_view
 from src.converter.juxtaposition_view_stl import get_juxtaposition_view
@@ -39,13 +42,19 @@ class CADComparisonRenderer:
         self._load_models()
         
     def _load_models(self):
-        """Load STEP files and prepare shapes."""
+        """Load STL files and prepare shapes."""
         shapes = []
-        for step_file in [self.before_model_path, self.after_model_path]:
-            step_reader = STEPControl_Reader()
-            step_reader.ReadFile(step_file)
-            step_reader.TransferRoot()
-            shapes.append(step_reader.Shape())
+        for stl_file in [self.before_model_path, self.after_model_path]:
+            with open(stl_file, "r") as fp:
+                mesh_dict = load_stl(fp)
+                mesh = Trimesh(mesh_dict["vertices"], mesh_dict["faces"], mesh_dict["face_normals"])
+                print(mesh.is_watertight)
+                print(mesh.is_volume)
+                fill_holes(mesh)
+                fix_inversion(mesh)
+                fix_winding(mesh)
+                #stitch(mesh)
+                shapes.append(mesh)
         
         # Normalize both shapes
         shape_before, shape_after = plane_inter_utils.normalize_shapes_diagonal(shapes)
