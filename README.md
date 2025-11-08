@@ -47,35 +47,49 @@ cad-a11y/
    ```
    conda env create -f environment.yml
    conda activate cad-a11y
+   pip install -r requirements.txt
    ```
 
 ### Running the Command-line Tool
 
-#### Converting BREP to SVG
-To convert a BREP file to SVG from the command line:
+
+#### Converting OpenSCAD to STL
+Example to convert OpenSCAD files to STL format (new feature):
 
 ```
-python src/converter/brep_to_svg.py path/to/your/file.brep -o output_directory
-```
-
-#### Converting OpenSCAD to STEP
-To convert OpenSCAD files to STEP format (new feature):
-
-```
-python scripts/scad_to_step.py input.scad [output.step]
+python scripts/scad_to_stl.py openscad_scripts/vase.scad model/vase.stl
 ```
 
 For more options and detailed usage, see `scripts/README_scad_to_step.md`.
 
+### Connecting devices
+## Connecting the Monarch
+1. Make sure that the Monarch is charged enough to be able to turn it on. If it does not turn on (after clicking for longer than 3 seconds), you can use a laptop charger to charge it.
+2. Turn it off.
+3. Connect it with the accompanying USB-C-to-USB-C cable to your laptop
+4. Turn the Monarch on.
+5. On the Monarch, use the right arrow keys to navigate to "Braille Terminal". For that, press the "up" arrow twice. Then, press the right-most braille keyboard button twice (it sometimes says "USB button" after the first keystroke. This is a good sign.).
+
+## Connecting the Tactile ViewCube
+1. Charge the GoDice with the accompanying charger for around 10 seconds. The "5" face has the charging connectors.
+2. Put the GoDice in the Tactile ViewCube, and make sure that the face "3" points towards the round nubbin and the face "6" points upwards.
+3. Close the Tactile ViewCube.
+
+## Connecting the Adafruit Slider Trinkey
+1. Optional: Put the slider on its plastic bed to be able to more easily manipulate it.
+2. Plug the slider into an USB port or use the adaptor to plug it into an USB-C port. 
+
 ### Running the Web Application
 
-To run the web application:
+After connecting all the devices, as described above, you can now run the web application:
 
 ```
-python app.py
+python server_cube_slider.py
 ```
 
-Then open a browser and navigate to http://localhost:5000
+Then, open accessible-3d-viewer.html in a browser.
+
+You should now be able to interact with the website and your terminal and your monarch should serve as displays.
 
 ## Future Development
 
