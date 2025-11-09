@@ -46,9 +46,14 @@ cad-a11y/
 2. Create and activate the Conda environment:
    ```
    conda env create -f environment.yml
+   conda init zsh
+   [unsure if this is needed] conda create --name cad-a11y
    conda activate cad-a11y
-   pip install -r requirements.txt
-   ```
+   conda install python=3.10
+   conda install pip
+   conda install pythonocc-core
+   [use your package manager] to install freecad
+   pip install -r requirements.txt   ```
 
 ### Running the Command-line Tool
 
