@@ -181,13 +181,13 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
 
     img = Image.open(buf)
     img_np = np.array(img)
-    for i in range(img_np.shape[0]):
-        for j in range(img_np.shape[1]):
-            if img_np[i,j,0] != 255:
-                print(1, end='')
-            else:
-                print(0, end='')
-        print()
+    #for i in range(img_np.shape[0]):
+    #    for j in range(img_np.shape[1]):
+    #        if img_np[i,j,0] != 255:
+    #            print(1, end='')
+    #        else:
+    #            print(0, end='')
+    #    print()
 
     #plt.imshow(img_np)
     #plt.show()
