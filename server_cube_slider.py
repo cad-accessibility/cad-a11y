@@ -601,5 +601,5 @@ if __name__ == '__main__':
 
     print("\nWaiting for commands...\n")
     threading.Thread(target=dice_main_thread, daemon=True).start()
-    threading.Thread(target=start_slider_trinkey, daemon=True).start()
+    #threading.Thread(target=start_slider_trinkey, daemon=True).start()
     app.run(debug=False, host='0.0.0.0', port=6969)
