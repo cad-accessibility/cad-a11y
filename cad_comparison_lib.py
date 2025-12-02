@@ -17,7 +17,6 @@ from src.converter.juxtaposition_view_stl import get_juxtaposition_view
 from src.converter.superposition_view_stl import get_superposition_view
 from src.converter.side_by_side_view import get_side_view
 
-
 class CADComparisonRenderer:
     """
     Renderer for CAD model comparisons.
@@ -324,12 +323,7 @@ class CADComparisonRenderer:
                 1.0 - cut_depth,
                 view_name,
                 render_mode,
-                imposed_ax_limits=
-                    imposed_zoom_ax_limits
-                    #[self._linear_interpolation(self.view_limits[view_index][0][0], self.view_limits[view_index][0][1], imposed_zoom_ax_limits[0][0]),
-                    # self._linear_interpolation(self.view_limits[view_index][0][0], self.view_limits[view_index][0][1], imposed_zoom_ax_limits[0][1])],
-                    #[self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0]),
-                    # self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][1])]]
+                imposed_ax_limits=imposed_zoom_ax_limits
             )
         
         return img_array

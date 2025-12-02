@@ -30,6 +30,33 @@ from OCC.Core.TopoDS import topods
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
 from OCC.Core.GCPnts import GCPnts_TangentialDeflection
 import numpy as np
+import meshlib.mrmeshpy as mrmeshpy
+import meshlib.mrmeshnumpy as mrmeshnumpy
+
+def trimesh_to_meshlib_fast(tm):
+    verts = np.asarray(tm.vertices, dtype=np.float32, order="C")
+    faces = np.asarray(tm.faces, dtype=np.int32, order="C")
+
+    # Create MeshLib mesh
+    return mrmeshnumpy.meshFromFacesVerts(faces, verts)
+    #mesh = mrmeshpy.Mesh(
+    #    mrmeshpy.VertCoords(verts),         # (N,3) float32
+    #    mrmeshpy.FaceVerts(faces)           # (M,3) int32
+    #)
+    #return mesh
+
+def meshlib_to_trimesh_fast(mesh):
+    #verts = mesh.points().toNumpy()      # shape (N,3), float32
+    #faces = mesh.topology().getTriangulation().toNumpy()  # (M,3), int32
+     
+    verts = mrmeshnumpy.getNumpyVerts(mesh)
+    faces = mrmeshnumpy.getNumpyFaces(mesh.topology)
+
+    return Trimesh(
+        vertices=verts,
+        faces=faces,
+        process=False  # critical for speed
+    )
 
 def sample_edge(edge: TopoDS_Edge, deflection=0.01, angle_tol=0.01):
     adaptor = BRepAdaptor_Curve(edge)
@@ -144,7 +171,17 @@ def cut_shape_with_plane(shape, plane_origin, plane_normal):
     ##ps.register_surface_mesh("box", cut_box.vertices, cut_box.faces)
     #ps.register_surface_mesh("shape", shape.vertices, shape.faces)
     #ps.show()
-    diff = difference([shape, cut_box], use_exact=True)
+    start_time = time()
+    # TRIMESH version
+    #diff = difference([shape, cut_box], use_exact=True)
+    # MESHLIB version
+    shape_mrmesh = trimesh_to_meshlib_fast(shape)
+    cut_box_mrmesh = trimesh_to_meshlib_fast(cut_box)
+    diff = meshlib_to_trimesh_fast(
+        mrmeshpy.boolean( shape_mrmesh, cut_box_mrmesh,
+                          
+                         mrmeshpy.BooleanOperation.DifferenceAB).mesh)
+    print("diff_time", time()-start_time)
     #ps.register_surface_mesh("diff", diff.vertices, diff.faces)
     return diff, True
     return slice_mesh_plane(shape, plane_normal, plane_origin), True
@@ -298,6 +335,7 @@ def depth_peeling_single_depth_shapes(shapes, normal_dir: gp_Dir, depth: float):
 #    return compound
 
 def faces_on_plane(shape, plane_origin, plane_normal, tol=1e-3):
+    start_time = time()
 
     plane_face_ids = []
     plane_normal = np.array(plane_normal)
@@ -325,6 +363,60 @@ def faces_on_plane(shape, plane_origin, plane_normal, tol=1e-3):
     
     #ps.register_surface_mesh("submesh", submesh.vertices, submesh.faces)
     #ps.show()
+    print("faces_on_plane time", time()-start_time)
+    return submesh
+
+def faces_on_plane_fast(shape, plane_origin, plane_normal, tol=1e-3):
+    start_time = time()
+
+    V = np.asarray(shape.vertices)
+    F = np.asarray(shape.faces)
+    FN = np.asarray(shape.face_normals)
+
+    # Normalize plane normal
+    n = np.asarray(plane_normal, dtype=np.float64)
+    n /= np.linalg.norm(n)
+    p0 = np.asarray(plane_origin, dtype=np.float64)
+
+    # Normalize face normals
+    FNn = FN / np.linalg.norm(FN, axis=1, keepdims=True)
+
+    # --- 1. Parallel normal test ---
+    parallel = np.abs(FNn @ n) > (1 - tol)
+
+    # --- 2. Triangle centroids ---
+    origins = V[F].mean(axis=1)
+
+    # --- 3. Axis-aligned plane checks (your original logic) ---
+    mask = np.zeros(len(F), dtype=bool)
+
+    # X planes
+    mx = np.isclose(np.abs(FNn[:, 0]), 1.0, atol=tol)
+    mx &= np.abs(origins[:, 0] - p0[0]) < tol
+    mask |= mx
+
+    # Y planes
+    my = np.isclose(np.abs(FNn[:, 1]), 1.0, atol=tol)
+    my &= np.abs(origins[:, 1] - p0[1]) < tol
+    mask |= my
+
+    # Z planes
+    mz = np.isclose(np.abs(FNn[:, 2]), 1.0, atol=tol)
+    mz &= np.abs(origins[:, 2] - p0[2]) < tol
+    mask |= mz
+
+    # Combine with parallelism constraint
+    final_mask = parallel & mask
+
+    plane_face_ids = F[final_mask]
+
+    submesh = Trimesh(
+        vertices=V,
+        faces=plane_face_ids,
+        process=False
+    )
+
+    print("faces_on_plane_fast time", time() - start_time)
     return submesh
 
 def depth_peeling_single_depth_with_bbox(shape, normal_dir, depth: float, bbox):

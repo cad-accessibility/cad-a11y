@@ -1,5 +1,6 @@
 import matplotlib
 from time import time
+from PIL import Image
 from copy import copy
 matplotlib.use('Agg')  # Use non-GUI backend for thread safety
 import numpy as np
@@ -9,7 +10,7 @@ import os, json
 import matplotlib.pyplot as plt
 import trimesh
 from .render_low_res import get_outlines
-from .plane_intersection_utils import depth_peeling_single_depth_with_bbox, faces_on_plane, compute_area
+from .plane_intersection_utils import depth_peeling_single_depth_with_bbox, faces_on_plane, faces_on_plane_fast, compute_area
 
 from OCC.Core.STEPControl import STEPControl_Reader
 from OCC.Extend.DataExchange import write_stl_file
@@ -80,11 +81,12 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
         #                                                              depth=cut_depth, bbox=bbox)
         #shape_brep = faces_on_plane(shape_brep, plane_origin, normal_dir)
         shape, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
-        shape = faces_on_plane(shape, plane_origin, normal_dir)
+        shape = faces_on_plane_fast(shape, plane_origin, normal_dir)
 
     # Target pixel resolution
     width_px, height_px = 96, 40
     dpi = 100 
+
     fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
     ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
     ax.axis('off')
@@ -113,6 +115,8 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
             coords[:,0] *= -1
         ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape.faces)
 
+        # for each pixel, get triangle ID and barycentric coordinates
+
     ax.set_aspect('equal')
     ax = plt.gca()
     if len(imposed_ax_limits) > 0:
@@ -130,7 +134,7 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
     img_np = np.array(img)
     for i in range(img_np.shape[0]):
         for j in range(img_np.shape[1]):
-            if img_np[i,j,0] == 255:
+            if img_np[i,j,0] != 255:
                 print(1, end='')
             else:
                 print(0, end='')
@@ -147,6 +151,8 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
         return img_np, ax_limits
     if rendering_mode == "outline":
         outlines_np = get_outlines(img_np)
+        #im = Image.fromarray(barycentric_coords)
+        #im.save("barycentric_coords.png")
         return outlines_np, ax_limits
 
 if __name__ == '__main__':

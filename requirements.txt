@@ -16,6 +16,7 @@ godice
 trimesh
 polyscope
 shapely
+meshlib
 # pythonocc-core
 # pybraille
 # matplotlib
