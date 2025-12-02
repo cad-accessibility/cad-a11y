@@ -31,14 +31,14 @@ def check_openscad():
         return False
 
 
-def scad_to_stl(scad_file, stl_file, resolution=50):
+def scad_to_stl(scad_file, stl_file, resolution=20):
     """
     Convert OpenSCAD file to STL using the OpenSCAD command line tool.
     
     Args:
         scad_file (str): Path to input .scad file
         stl_file (str): Path to output .stl file
-        resolution (int): Resolution parameter for OpenSCAD ($fn value)
+        resolution (int): Resolution parameter for OpenSCAD ($fn value, lower = smaller file)
     
     Returns:
         bool: True if conversion was successful, False otherwise
@@ -47,6 +47,7 @@ def scad_to_stl(scad_file, stl_file, resolution=50):
         # OpenSCAD command with parameters
         cmd = [
             'openscad',
+            '--render',                # Force CSG rendering for smaller output
             '-o', stl_file,
             '--export-format', 'binstl',  # Binary STL for smaller file size
             '-D', f'$fn={resolution}',    # Set resolution
