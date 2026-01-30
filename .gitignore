@@ -1,3 +1,14 @@
 src/converter/__pycache__/*
 __pycache__/*
 model.stl
+*.stl
+*.step
+*.scad
+scripts/*.stl
+scripts/*.step
+scripts/*.scad
+swell_prints
+model
+renders
+backup_scripts
+.DS_Store
