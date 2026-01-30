@@ -141,9 +141,13 @@ def save_binary_array_as_vector_pdf(array, filename="low_res.pdf"):
         for x in range(width):
             if np.all(array[y, x] == [0,0,0,255]):
                 #ax.add_patch(Rectangle((x, height - y - 1), 1, 1, facecolor='black'))
+                #if y == height-1:
+                #    ax.add_patch(Circle((x, height - y), 0.3, facecolor='black'))
+                #else:
                 ax.add_patch(Circle((x, height - y - 1), 0.3, facecolor='black'))
 
     fig.savefig(filename, format='pdf', bbox_inches='tight', pad_inches=0)
+    #fig.savefig(filename, format='pdf')
     plt.close(fig)
 
 def save_array_as_pdf(array, filename="low_res.pdf", dpi=100):

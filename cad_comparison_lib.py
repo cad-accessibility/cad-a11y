@@ -226,12 +226,8 @@ class CADComparisonRenderer:
         if comparison_mode == "side-by-side":
             view_index = self._get_view_index(view_name_cut)
 
-        zoom_quadrant = 1
         zoom_level = int(params.get("zoom", "0"))
         camera_move = params.get("move_camera_center", "none")
-        imposed_zoom_ax_limits = [[0.3, 0.7], [0.3, 0.7]]
-        imposed_zoom_ax_limits = [[0, 1.0], [0, 1.0]]
-        imposed_zoom_ax_limits = [[0, 1.0], [0.3, 0.7]]
 
         horizontal_dist = np.abs((self.view_limits[view_index][0][1] - self.view_limits[view_index][0][0]))
         vertical_dist = np.abs((self.view_limits[view_index][1][1] - self.view_limits[view_index][1][0]))
@@ -246,12 +242,37 @@ class CADComparisonRenderer:
         if camera_move == "down":
             self.view_current_camera_center[view_index][1] -= (0.5**(zoom_level+2))*vertical_dist
 
+        translational_ax_limits = [
+            [self.view_current_camera_center[view_index][0] - 0.5*horizontal_dist,
+            self.view_current_camera_center[view_index][0] + 0.5*horizontal_dist],
+            [self.view_current_camera_center[view_index][1] - 0.5*vertical_dist,
+            self.view_current_camera_center[view_index][1] + 0.5*vertical_dist],
+            ]
+
         imposed_zoom_ax_limits = [
             [self.view_current_camera_center[view_index][0] - 0.5**(zoom_level+1)*horizontal_dist,
             self.view_current_camera_center[view_index][0] + 0.5**(zoom_level+1)*horizontal_dist],
             [self.view_current_camera_center[view_index][1] - 0.5**(zoom_level+1)*vertical_dist,
             self.view_current_camera_center[view_index][1] + 0.5**(zoom_level+1)*vertical_dist],
             ]
+
+        # compute scrollbar dimensions
+        x_min = self.view_limits[view_index][1][0]
+        x_max = self.view_limits[view_index][1][1]
+        x_zoom_min = imposed_zoom_ax_limits[1][0]
+        x_zoom_max = imposed_zoom_ax_limits[1][1]
+        x_scroll_max = 1.0-(x_zoom_min-x_min)/(x_max-x_min)
+        x_scroll_min = 1.0-(x_zoom_max-x_min)/(x_max-x_min)
+
+        #y_min = translational_ax_limits[1][0]
+        #y_max = translational_ax_limits[1][1]
+        y_min = self.view_limits[view_index][0][0]
+        y_max = self.view_limits[view_index][0][1]
+        y_zoom_min = imposed_zoom_ax_limits[0][0]
+        y_zoom_max = imposed_zoom_ax_limits[0][1]
+        y_scroll_min = (y_zoom_min-y_min)/(y_max-y_min)
+        y_scroll_max = (y_zoom_max-y_min)/(y_max-y_min)
+
         # This needs to account for the aspect ratio of the monarch
         monarch_aspect_ratio = 96.0/40.0
         if comparison_mode == "side-by-side":
@@ -327,6 +348,30 @@ class CADComparisonRenderer:
                 imposed_ax_limits=imposed_zoom_ax_limits
             )
         
+        print("scrollbar dimensions", x_scroll_min, x_scroll_max, y_scroll_min, y_scroll_max)
+
+        img_array[:-1,-2,:] = [255,255,255,0]
+        img_array[-2,:-1,:] = [255,255,255,0]
+        img_array[:,-1,:] = [255,255,255,0]
+        img_array[-1,:,:] = [255,255,255,0]
+        print(int(img_array.shape[0]*x_scroll_min))
+        print(int(img_array.shape[0]*x_scroll_max)+1)
+        img_array[max(0,int(img_array.shape[0]*x_scroll_min)):min(int(img_array.shape[0]*x_scroll_max)+1, img_array.shape[0]),-1,:] = [0,0,0,255]
+        img_array[-1, max(0, int(img_array.shape[1]*y_scroll_min)):min(int(img_array.shape[1]*y_scroll_max)+1, img_array.shape[1]),:] = [0,0,0,255]
+        #img_array[int(img_array.shape[0]*x_scroll_min):int(img_array.shape[0]*x_scroll_max)+1,2,1] = 0
+        #img_array[int(img_array.shape[0]*x_scroll_min):int(img_array.shape[0]*x_scroll_max)+1,2,2] = 0
+        #img_array[int(img_array.shape[0]*x_scroll_min):int(img_array.shape[0]*x_scroll_max)+1,2,3] = 255
+        #img_array[-1, int(img_array.shape[1]*y_scroll_min):int(img_array.shape[1]*y_scroll_max)+1,0] = 255
+        #print(img_array)
+        #for i in range(img_array.shape[0]):
+        #    for j in range(img_array.shape[1]):
+        #        if img_array[i,j,0] != 255:
+        #            print(1, end='')
+        #        else:
+        #            print(0, end='')
+        #    print()
+        #print(img_array)
+
         return img_array
 
 
