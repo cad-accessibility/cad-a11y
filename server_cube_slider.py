@@ -15,6 +15,7 @@ from PIL import Image
 import numpy as np
 from cad_comparison_lib import CADComparisonRenderer
 from braille_display import send_to_braille_display, BrailleDisplayError
+from src.converter.render_low_res import save_binary_array_as_vector_pdf
 
 import asyncio
 import bleak
@@ -167,6 +168,10 @@ def render_view():
         img = Image.fromarray(img_array.astype('uint8'), 'RGBA')
         buffer = io.BytesIO()
         img.save(buffer, format='PNG')
+        if params["print_view"]:
+            save_binary_array_as_vector_pdf(np.array(img), os.path.join("renders", "print_0.pdf"))
+            #img.save(os.path.join("renders", "0.png"), format="PNG")
+
         buffer.seek(0)
         img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
         
