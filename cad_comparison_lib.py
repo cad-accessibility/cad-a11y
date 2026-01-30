@@ -11,6 +11,7 @@ from OCC.Core.STEPControl import STEPControl_Reader
 from trimesh.exchange.stl import load_stl
 from trimesh import Trimesh
 from trimesh.repair import stitch, fill_holes, fix_inversion, fix_winding
+from copy import copy
 import src.converter.plane_intersection_utils as plane_inter_utils
 from src.converter.single_view_stl import get_single_view
 from src.converter.juxtaposition_view_stl import get_juxtaposition_view

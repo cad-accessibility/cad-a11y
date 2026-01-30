@@ -147,6 +147,7 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
 
     # extract outline
     #print(img_np)
+    outlines_np = get_outlines(img_np)
     if rendering_mode in ["filled", "slice"]:
         return img_np, ax_limits
     if rendering_mode == "outline":
