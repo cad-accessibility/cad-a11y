@@ -169,7 +169,19 @@ def render_view():
         buffer = io.BytesIO()
         img.save(buffer, format='PNG')
         if params["print_view"]:
-            save_binary_array_as_vector_pdf(np.array(img), os.path.join("renders", "print_0.pdf"))
+            if not os.path.exists("renders"):
+                os.mkdir("renders")
+            new_file_name_inc = 0
+            # search for current maximal file name
+            for file_name in os.listdir("renders"):
+                if not "print_" in file_name:
+                    continue
+                file_name_inc = int(file_name.split("print_")[1].split(".")[0])
+                if file_name_inc >= new_file_name_inc:
+                    new_file_name_inc = file_name_inc+1
+            save_binary_array_as_vector_pdf(np.array(img), os.path.join("renders", "print_"+str(new_file_name_inc)+".pdf"))
+            with open(os.path.join("renders", "print_"+str(new_file_name_inc)+".npy"), "w") as fp:
+                np.save(img_data)
             #img.save(os.path.join("renders", "0.png"), format="PNG")
 
         buffer.seek(0)
