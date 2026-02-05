@@ -3,7 +3,7 @@ from pybraille import convertText
 import numpy as np
 import os
 import src.converter.plane_intersection_utils as plane_inter_utils
-from src.converter.get_single_view import get_single_view
+from src.converter.single_view_stl import get_single_view
 from src.converter.two_brep_to_svg import get_superposition_view, get_juxtaposition_view
 from src.converter.render_low_res import save_binary_array_as_vector_pdf
 from OCC.Core.STEPControl import STEPControl_Reader

@@ -498,12 +498,13 @@
                         <li><strong>R</strong> - Switch render mode (cycle through filled, outline, cut)</li>
                         <li><strong>T</strong> - Switch representation mode (cycle through single and side-by-side)</li>
 
-                        <li><strong>W</strong> - Move camera up</li>
-                        <li><strong>A</strong> - Move camera left</li>
-                        <li><strong>S</strong> - Move camera down</li>
-                        <li><strong>D</strong> - Move camera right</li>
+                        <li><strong>W</strong> - Move scene up</li>
+                        <li><strong>A</strong> - Move scene left</li>
+                        <li><strong>S</strong> - Move scene down</li>
+                        <li><strong>D</strong> - Move scene right</li>
 
 
+                        <li><strong>P</strong> - Print current render to renders/print_0.pdf</li>
                         <li><strong>A</strong> - Get current status (view, depth, mode)</li>
                         <li><strong>H</strong> - Shortcut reminder</li>
                         <li><strong>Escape</strong> - Clear focus from current element</li>
@@ -532,6 +533,7 @@
                     renderMode: currentRenderMode,
                     mode: currentRepresentationMode,
                     move_camera_center: currentMoveCamera,
+                    print_view: currentPrintView,
                 };
                 
                 // Send to server without blocking the UI
@@ -559,6 +561,7 @@
         let currentRenderMode = 'Shaded';
         let currentRepresentationMode = 'single';
         let currentMoveCamera = "none";
+        let currentPrintView = false;
         const renderModes = ['Shaded', 'Outline', 'Cut'];
         const representationModes = ['single', 'side-by-side'];
         
@@ -608,6 +611,12 @@
             shallowerBtn.setAttribute('aria-label', `Go shallower. Current depth: ${depthText}. Will decrease to ${Math.max(0, currentSliceDepth - 10)}%`);
         }
         
+        function print_view(){
+            currentPrintView = true;
+            sendStateToServer();
+            currentPrintView = !currentPrintView;
+        }
+
         // Update slice depth display and announce changes
         function updateSliceDepth(newDepth, shouldAnnounce = true) {
             const oldDepth = currentSliceDepth;
@@ -967,22 +976,22 @@
                 //    break;
                 //    
                 case 'w':
-                    currentMoveCamera = "up";
-                    sendStateToServer();
-                    currentMoveCamera = "none";
-                    break
-                case 'd':
-                    currentMoveCamera = "right";
-                    sendStateToServer();
-                    currentMoveCamera = "none";
-                    break
-                case 's':
                     currentMoveCamera = "down";
                     sendStateToServer();
                     currentMoveCamera = "none";
                     break
-                case 'a':
+                case 'd':
                     currentMoveCamera = "left";
+                    sendStateToServer();
+                    currentMoveCamera = "none";
+                    break
+                case 's':
+                    currentMoveCamera = "up";
+                    sendStateToServer();
+                    currentMoveCamera = "none";
+                    break
+                case 'a':
+                    currentMoveCamera = "right";
                     sendStateToServer();
                     currentMoveCamera = "none";
                     break
@@ -1033,6 +1042,8 @@
                     e.preventDefault();
                     announce('shortcuts: D deeper, S shallower, V view cycle, L left, R right, T top, B bottom, F shaded, O outline, C cut, 0 surface, 1-9 set depth, Esc clear focus, A status');
                     break;
+                case 'p':
+                    print_view();
                 default:
                     return;
             }

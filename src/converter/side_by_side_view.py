@@ -110,7 +110,7 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
         if view_key_cut == "right":
             coords = shape_cut.vertices[:,[1,2]]
             coords[:,0] *= -1
-        ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape_cut.faces)
+        ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape_cut.faces, aa=True)
 
     ax.set_aspect('equal')
     ax = plt.gca()
@@ -183,7 +183,7 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
         if view_key_legend == "right":
             coords = shape.vertices[:,[1,2]]
             coords[:,0] *= -1
-        ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape.faces)
+        ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape.faces, aa=True)
 
 
     ax.set_aspect('equal')
