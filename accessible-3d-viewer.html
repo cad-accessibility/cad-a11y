@@ -313,6 +313,34 @@
                 </div>
             </section>
 
+            <!-- Bounding Box Information Section -->
+            <section class="section" aria-labelledby="bbox-heading">
+                <h2 id="bbox-heading">Bounding Box Dimensions</h2>
+                <div id="bbox-info" aria-describedby="bbox-heading">
+                    <div class="help-text" style="margin-bottom: 10px;">
+                        The bounding box defines the 3D space occupied by the model.
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <strong>X-axis range:</strong> 
+                        <span id="bbox-x-min" aria-label="X minimum">--</span> to 
+                        <span id="bbox-x-max" aria-label="X maximum">--</span>
+                        <span class="help-text" style="margin-left: 8px;">(width: <span id="bbox-x-width">--</span>)</span>
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <strong>Y-axis range:</strong> 
+                        <span id="bbox-y-min" aria-label="Y minimum">--</span> to 
+                        <span id="bbox-y-max" aria-label="Y maximum">--</span>
+                        <span class="help-text" style="margin-left: 8px;">(height: <span id="bbox-y-height">--</span>)</span>
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <strong>Z-axis range:</strong> 
+                        <span id="bbox-z-min" aria-label="Z minimum">--</span> to 
+                        <span id="bbox-z-max" aria-label="Z maximum">--</span>
+                        <span class="help-text" style="margin-left: 8px;">(depth: <span id="bbox-z-depth">--</span>)</span>
+                    </div>
+                </div>
+            </section>
+
             <!-- Slice Depth Section -->
             <section class="section" aria-labelledby="slice-heading">
                 <h2 id="slice-heading">Slice Depth Control</h2>
@@ -536,7 +564,7 @@
                     print_view: currentPrintView,
                 };
                 
-                // Send to server without blocking the UI
+                // Send to server and process response
                 fetch(`${SERVER_URL}/render`, {
                     method: 'POST',
                     headers: {
@@ -544,7 +572,15 @@
                     },
                     body: JSON.stringify(state),
                     mode: 'cors'
-                }).catch(error => {
+                })
+                .then(res => res.json())
+                .then(data => {
+                    // Update bounding box if available in response
+                    if (data.bbox) {
+                        updateBoundingBox(data.bbox);
+                    }
+                })
+                .catch(error => {
                     // Silently fail - don't interrupt user experience
                     console.warn('Failed to send state to server:', error);
                 });
@@ -664,6 +700,33 @@
             }
         }
 
+        // Update bounding box display
+        function updateBoundingBox(bbox) {
+            if (!bbox || bbox.length !== 6) {
+                return;
+            }
+            
+            const [xmin, ymin, zmin, xmax, ymax, zmax] = bbox;
+            
+            // Format numbers to 2 decimal places
+            const format = (num) => typeof num === 'number' ? num.toFixed(2) : '--';
+            
+            // Update X-axis
+            document.getElementById('bbox-x-min').textContent = format(xmin);
+            document.getElementById('bbox-x-max').textContent = format(xmax);
+            document.getElementById('bbox-x-width').textContent = format(xmax - xmin);
+            
+            // Update Y-axis
+            document.getElementById('bbox-y-min').textContent = format(ymin);
+            document.getElementById('bbox-y-max').textContent = format(ymax);
+            document.getElementById('bbox-y-height').textContent = format(ymax - ymin);
+            
+            // Update Z-axis
+            document.getElementById('bbox-z-min').textContent = format(zmin);
+            document.getElementById('bbox-z-max').textContent = format(zmax);
+            document.getElementById('bbox-z-depth').textContent = format(zmax - zmin);
+        }
+
         // Just commented for debugging
         setInterval(() => {
           fetch(`${SERVER_URL}/get_data`)
@@ -671,6 +734,11 @@
             .then(data => {
                 console.log(data.cube_value);
                 updateView(data.cube_value);
+                
+                // Update bounding box if available
+                if (data.bbox) {
+                    updateBoundingBox(data.bbox);
+                }
                 //updateSliceDepth(data.slider_value);
               //document.getElementById("msg").innerText = data.value;
             });

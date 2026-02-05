@@ -192,6 +192,7 @@ def render_view():
             'status': 'success',
             'message': 'Render complete',
             'image_shape': img_array.shape,
+            'bbox': r.bbox,
             'image_base64': img_base64
         }), 200
         
@@ -618,6 +619,6 @@ if __name__ == '__main__':
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
     print("\nWaiting for commands...\n")
-    threading.Thread(target=dice_main_thread, daemon=True).start()
+    # threading.Thread(target=dice_main_thread, daemon=True).start()
     #threading.Thread(target=start_slider_trinkey, daemon=True).start()
     app.run(debug=False, host='0.0.0.0', port=6969)
