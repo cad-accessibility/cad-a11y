@@ -177,11 +177,15 @@ def render_view():
             for file_name in os.listdir("renders"):
                 if not "print_" in file_name:
                     continue
-                file_name_inc = int(file_name.split("print_")[1].split(".")[0])
+                second_part = file_name.split("print_")[1]
+                if not "_" in second_part:
+                    continue
+                file_name_inc = int(second_part.split("_")[0])
                 if file_name_inc >= new_file_name_inc:
                     new_file_name_inc = file_name_inc+1
-            save_binary_array_as_vector_pdf(img_data, os.path.join("renders", "print_"+str(new_file_name_inc)+".pdf"))
-            with open(os.path.join("renders", "print_"+str(new_file_name_inc)+".npy"), "wb") as fp:
+            print_file_name = "print_"+str(new_file_name_inc)+"_"+str(r.current_render_mode)+"_"+str(r.current_cut_depth)+"_"+str(r.view_current_axis)+"_"+str(np.array(r.view_current_view_limits).tolist())
+            save_binary_array_as_vector_pdf(img_data, os.path.join("renders", print_file_name+".pdf"))
+            with open(os.path.join("renders", print_file_name+".npy"), "wb") as fp:
                 np.save(fp, img_data)
             #img.save(os.path.join("renders", "0.png"), format="PNG")
 
