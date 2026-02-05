@@ -348,29 +348,18 @@ class CADComparisonRenderer:
                 imposed_ax_limits=imposed_zoom_ax_limits
             )
         
-        print("scrollbar dimensions", x_scroll_min, x_scroll_max, y_scroll_min, y_scroll_max)
+        compose_scrollbar = True
+        if compose_scrollbar:
+            print("scrollbar dimensions", x_scroll_min, x_scroll_max, y_scroll_min, y_scroll_max)
 
-        img_array[:-1,-2,:] = [255,255,255,0]
-        img_array[-2,:-1,:] = [255,255,255,0]
-        img_array[:,-1,:] = [255,255,255,0]
-        img_array[-1,:,:] = [255,255,255,0]
-        print(int(img_array.shape[0]*x_scroll_min))
-        print(int(img_array.shape[0]*x_scroll_max)+1)
-        img_array[max(0,int(img_array.shape[0]*x_scroll_min)):min(int(img_array.shape[0]*x_scroll_max)+1, img_array.shape[0]),-1,:] = [0,0,0,255]
-        img_array[-1, max(0, int(img_array.shape[1]*y_scroll_min)):min(int(img_array.shape[1]*y_scroll_max)+1, img_array.shape[1]),:] = [0,0,0,255]
-        #img_array[int(img_array.shape[0]*x_scroll_min):int(img_array.shape[0]*x_scroll_max)+1,2,1] = 0
-        #img_array[int(img_array.shape[0]*x_scroll_min):int(img_array.shape[0]*x_scroll_max)+1,2,2] = 0
-        #img_array[int(img_array.shape[0]*x_scroll_min):int(img_array.shape[0]*x_scroll_max)+1,2,3] = 255
-        #img_array[-1, int(img_array.shape[1]*y_scroll_min):int(img_array.shape[1]*y_scroll_max)+1,0] = 255
-        #print(img_array)
-        #for i in range(img_array.shape[0]):
-        #    for j in range(img_array.shape[1]):
-        #        if img_array[i,j,0] != 255:
-        #            print(1, end='')
-        #        else:
-        #            print(0, end='')
-        #    print()
-        #print(img_array)
+            img_array[:-1,-2,:] = [255,255,255,0]
+            img_array[-2,:-1,:] = [255,255,255,0]
+            img_array[:,-1,:] = [255,255,255,0]
+            img_array[-1,:,:] = [255,255,255,0]
+            print(int(img_array.shape[0]*x_scroll_min))
+            print(int(img_array.shape[0]*x_scroll_max)+1)
+            img_array[max(0,int(img_array.shape[0]*x_scroll_min)):min(int(img_array.shape[0]*x_scroll_max)+1, img_array.shape[0]),-1,:] = [0,0,0,255]
+            img_array[-1, max(0, int(img_array.shape[1]*y_scroll_min)):min(int(img_array.shape[1]*y_scroll_max)+1, img_array.shape[1]),:] = [0,0,0,255]
 
         return img_array
 

@@ -126,7 +126,7 @@ def draw_custom_hatching(ax, clip_path, spacing=0.1, angle=45, linewidth=0.1, co
 
 
 def save_binary_array_as_vector_pdf(array, filename="low_res.pdf"):
-    height, width, _ = array.shape
+    height, width = array.shape
     fig = plt.figure(figsize=(width / 100, height / 100), dpi=100)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, width)
@@ -139,7 +139,7 @@ def save_binary_array_as_vector_pdf(array, filename="low_res.pdf"):
     # Draw black pixels only
     for y in range(height):
         for x in range(width):
-            if np.all(array[y, x] == [0,0,0,255]):
+            if array[y, x] == 255:
                 #ax.add_patch(Rectangle((x, height - y - 1), 1, 1, facecolor='black'))
                 #if y == height-1:
                 #    ax.add_patch(Circle((x, height - y), 0.3, facecolor='black'))

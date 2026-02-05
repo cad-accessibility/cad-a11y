@@ -87,8 +87,8 @@ def get_juxtaposition_view(shapes, bbox, cut_depth=0.9, view_key="top", renderin
     coords_0[:, 0] -= 1.1*0.5*offset_dist
     coords_1[:, 0] += 1.1*0.5*offset_dist
 
-    ax.tripcolor(coords_0[:,0], coords_0[:, 1], facecolors=colors_0, cmap="gray", triangles=triangles_0)
-    ax.tripcolor(coords_1[:,0], coords_1[:, 1], facecolors=colors_1, cmap="gray", triangles=triangles_1)
+    ax.tripcolor(coords_0[:,0], coords_0[:, 1], facecolors=colors_0, cmap="gray", triangles=triangles_0, aa=True)
+    ax.tripcolor(coords_1[:,0], coords_1[:, 1], facecolors=colors_1, cmap="gray", triangles=triangles_1, aa=True)
 
     ax.set_aspect('equal')
     ax = plt.gca()

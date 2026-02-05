@@ -113,7 +113,7 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
         if view_key == "right":
             coords = shape.vertices[:,[1,2]]
             coords[:,0] *= -1
-        ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape.faces)
+        ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape.faces, aa=True, edgecolor="b", shading="flat")
 
         # for each pixel, get triangle ID and barycentric coordinates
 
@@ -124,6 +124,7 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
         ax.set_ylim(imposed_ax_limits[1])
     ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
     print(ax_limits)
+    fig.savefig('test.png', dpi=dpi, pad_inches=0)
 
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=dpi, pad_inches=0)
@@ -134,7 +135,7 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
     img_np = np.array(img)
     for i in range(img_np.shape[0]):
         for j in range(img_np.shape[1]):
-            if img_np[i,j,0] != 255:
+            if ~img_np[i,j,0] > 0:
                 print(1, end='')
             else:
                 print(0, end='')

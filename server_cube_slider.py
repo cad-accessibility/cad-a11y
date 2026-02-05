@@ -152,11 +152,12 @@ def render_view():
             img_data = ~img_array[:, :, 0]
             for i in range(img_data.shape[0]):
                 for j in range(img_data.shape[1]):
-                    if img_data[i,j] == 255:
+                    if img_data[i,j] > 0:
                         print(1, end='')
                     else:
                         print(0, end='')
                 print()
+            img_data[img_data > 0] = 255
             bytes_written = send_to_braille_display(img_data)
             print(f"Braille write: {bytes_written} bytes")
             print("img_data summary:\n" + _format_img_data_repr(img_data))
@@ -179,9 +180,9 @@ def render_view():
                 file_name_inc = int(file_name.split("print_")[1].split(".")[0])
                 if file_name_inc >= new_file_name_inc:
                     new_file_name_inc = file_name_inc+1
-            save_binary_array_as_vector_pdf(np.array(img), os.path.join("renders", "print_"+str(new_file_name_inc)+".pdf"))
-            with open(os.path.join("renders", "print_"+str(new_file_name_inc)+".npy"), "w") as fp:
-                np.save(img_data)
+            save_binary_array_as_vector_pdf(img_data, os.path.join("renders", "print_"+str(new_file_name_inc)+".pdf"))
+            with open(os.path.join("renders", "print_"+str(new_file_name_inc)+".npy"), "wb") as fp:
+                np.save(fp, img_data)
             #img.save(os.path.join("renders", "0.png"), format="PNG")
 
         buffer.seek(0)
