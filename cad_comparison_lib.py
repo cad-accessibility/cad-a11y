@@ -37,6 +37,9 @@ class CADComparisonRenderer:
         self.bbox = None
         self.view_limits = None
         self.view_current_camera_center = []
+        self.view_current_axis = -1
+        self.view_current_view_limits = -1
+        self.current_render_mode = None
         
         # Load and normalize shapes
         self._load_models()
@@ -347,6 +350,10 @@ class CADComparisonRenderer:
                 render_mode,
                 imposed_ax_limits=imposed_zoom_ax_limits
             )
+            self.current_cut_depth = 1.0-cut_depth
+            self.view_current_axis = view_name
+            self.current_render_mode = render_mode
+            self.view_current_view_limits = imposed_zoom_ax_limits
         
         compose_scrollbar = True
         if compose_scrollbar:
