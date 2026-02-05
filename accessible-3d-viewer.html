@@ -477,6 +477,8 @@
                     <ul class="shortcuts-list">
                         <li><strong>1</strong> - Go shallower (decrease depth by 10%)</li>
                         <li><strong>2</strong> - Go deeper (increase depth by 10%)</li>
+                        <li><strong>Q</strong> - Go shallower (decrease depth by 1%)</li>
+                        <li><strong>E</strong> - Go deeper (increase depth by 1%)</li>
                         <li><strong>V</strong> - Switch view (cycle through Front/Left/Right/Top/Bottom views)</li>
 
                         <li><strong>4</strong> - Zoom out</li>
@@ -868,6 +870,16 @@
             //}
             const key = e.key.toLowerCase();
             switch(key) {
+                case 'e':
+                    // Go deeper (increase depth by 1%)
+                    e.preventDefault();
+                    updateSliceDepth(Math.min(100, currentSliceDepth + 1), true);
+                    break;
+                case 'q':
+                    // Go shallower (decrease depth by 1%)
+                    e.preventDefault();
+                    updateSliceDepth(Math.max(0, currentSliceDepth - 1), true);
+                    break;
                 case '2':
                     // Go deeper (increase depth by 10%)
                     e.preventDefault();
