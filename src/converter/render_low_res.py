@@ -265,7 +265,8 @@ def get_outlines(img_np):
     outline_pixels = np.zeros(img_np.shape[:2], dtype=int)
     for i in range(img_np.shape[0]):
         for j in range(img_np.shape[1]):
-            if np.all(img_np[i][j] == [0,0,0,255]):
+            #if np.all(img_np[i][j] == [0,0,0,255]):
+            if img_np[i][j][0] < 255:
                 # check if there's a white_pixel neighbor
                 neighbors = [[i-1, j-1],
                              [i-1, j],
