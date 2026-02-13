@@ -6,6 +6,9 @@ pyserial
 Flask>=2.3.0
 flask-cors>=4.0.0
 
+# DotPad BLE (Python port of the Web SDK)
+bleak>=0.22.0
+
 # CAD rendering server dependencies
 Pillow>=9.0.0
 numpy>=1.21.0

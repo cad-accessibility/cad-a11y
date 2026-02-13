@@ -27,7 +27,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from typing import Iterable, Optional, Protocol, Tuple, runtime_checkable
+from typing import Any, Iterable, Optional, Protocol, Tuple, runtime_checkable
 
 import numpy as np
 
@@ -129,37 +129,53 @@ def _normalize_array(array: np.ndarray) -> np.ndarray:
 def _connect(*, scan_timeout: float, prefer_dotpad: bool) -> _ConnectedDevice:
     """Pick whichever supported device is available.
 
-    Monarch is detected via HID enumeration.
-    DotPad is detected via BLE advertisement scan.
+    Connection order:
+    1) Try DotPad BLE (existing connection first, then scan)
+    2) If no DotPad is present, try Monarch via HID enumeration filtering
+       manufacturer == Humanware, then open using discovered VID/PID.
     """
 
-    # If the caller is asking for DotPad-only features (text area), prefer DotPad.
-    if prefer_dotpad:
-        existing = _dotpad_manager_if_connected()
-        if existing is not None:
-            return _ConnectedDevice(kind="dotpad", handle=existing.address)
-        address = _dotpad_best_address(scan_timeout=scan_timeout)
-        if address is not None:
-            return _ConnectedDevice(kind="dotpad", handle=address)
-
-    # Prefer Monarch if it's physically present as a USB HID device (original behavior).
-    for dev in hid.enumerate():
-        if dev.get("vendor_id") == _MONARCH_VENDOR_ID and dev.get("product_id") == _MONARCH_PRODUCT_ID:
-            h = hid.device()
-            h.open(_MONARCH_VENDOR_ID, _MONARCH_PRODUCT_ID)
-            return _ConnectedDevice(kind="monarch", handle=h)
-
-    # Otherwise attempt DotPad BLE discovery.
+    # 1) Try DotPad as usual.
     existing = _dotpad_manager_if_connected()
     if existing is not None:
         return _ConnectedDevice(kind="dotpad", handle=existing.address)
+
     address = _dotpad_best_address(scan_timeout=scan_timeout)
     if address is not None:
         return _ConnectedDevice(kind="dotpad", handle=address)
 
+    # If DotPad-only features were requested and no DotPad was found, fail early.
+    if prefer_dotpad:
+        raise BrailleDisplayError(
+            "dot_text_hex_data requested but no DotPad was found."
+        )
+
+    # 2) If no DotPad, find Monarch by HID manufacturer and connect with discovered IDs.
+    monarch = _find_humanware_hid_device()
+    if monarch is not None:
+        vendor_id = monarch.get("vendor_id")
+        product_id = monarch.get("product_id")
+        if vendor_id is None or product_id is None:
+            raise BrailleDisplayError(
+                "Found Humanware HID device but vendor_id/product_id are missing"
+            )
+        h = hid.device()
+        h.open(int(vendor_id), int(product_id))
+        return _ConnectedDevice(kind="monarch", handle=h)
+
     raise BrailleDisplayError(
-        "No supported braille display detected. Expected either Monarch (USB HID) or DotPad (BLE)."
+        "No supported braille display detected. Expected DotPad (BLE) or Humanware HID device."
     )
+
+
+def _find_humanware_hid_device() -> dict | None:
+    """Return the first HID device whose manufacturer string contains 'humanware'."""
+
+    for dev in hid.enumerate():
+        manufacturer = (dev.get("manufacturer_string") or "").strip().lower()
+        if "humanware" in manufacturer:
+            return dev
+    return None
 
 
 def _send_to_monarch(device: hid.device, array_2d: np.ndarray) -> int:
@@ -473,7 +489,7 @@ class _DotPadBleConnection:
             pass
         self._client = None
 
-    def _on_notify(self, _sender: int, data: bytearray) -> None:
+    def _on_notify(self, _sender: Any, data: bytearray) -> None:
         hx = bytes(data).hex()
         m = self._ack_re.search(hx)
         if not m:
