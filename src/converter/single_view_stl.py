@@ -124,7 +124,6 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
         ax.set_ylim(imposed_ax_limits[1])
     ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
     print(ax_limits)
-    fig.savefig('test.png', dpi=dpi, pad_inches=0)
 
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=dpi, pad_inches=0)

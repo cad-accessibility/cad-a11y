@@ -1,463 +1,404 @@
 #!/usr/bin/env python3
-"""
-Web server to receive commands/changes from the accessible 3D viewer.
-This server logs all user interactions from the HTML interface.
+"""Accessible 3D viewer server.
+
+Features:
+- Receives render state from the viewer and renders with CADComparisonRenderer.
+- Sends rendered output to a connected braille display using braille_display.py.
+- Optionally reads GoDice orientation and Slider Trinkey position if hardware is present.
+- Opens accessible-3d-viewer.html in the default browser at startup.
 """
 
-from flask import Flask, request, jsonify, send_file
-from flask_cors import CORS
-from datetime import datetime
-import json
-import os
-import io
+from __future__ import annotations
+
+import asyncio
 import base64
-from PIL import Image
+import contextlib
+import io
+import json
+import logging
+import os
+import threading
+import time
+import webbrowser
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
 import numpy as np
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+from PIL import Image
+
+from braille_display import BrailleDisplayError, send_to_braille_display
 from cad_comparison_lib import CADComparisonRenderer
-from braille_display import send_to_braille_display, BrailleDisplayError
+from src.converter.render_low_res import save_binary_array_as_vector_pdf
+
+try:
+    import bleak  # type: ignore
+except Exception:
+    bleak = None
+
+try:
+    import godice  # type: ignore
+except Exception:
+    godice = None
+
+try:
+    import serial  # type: ignore
+    from serial.tools import list_ports  # type: ignore
+except Exception:
+    serial = None
+    list_ports = None
+
+
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS to allow requests from the HTML file
+CORS(app)
 
-# Store commands in memory (could be replaced with database)
-commands_log = []
 
-# Determine repo root and resolve default coffee mug model path
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
-_coffee_candidates = [
-    os.path.join(REPO_ROOT, "Mug_after.step"),
-]
-_default_model = next((p for p in _coffee_candidates if os.path.exists(p)), _coffee_candidates[0])
+@dataclass
+class RuntimeState:
+    cube_value: str = "z+"
+    slider_value: int = 0
 
-# Initialize CAD renderer with default models (use the same file for before/after by default)
-before_model = _default_model
-after_model = _default_model
-print(f"Default model set to: {before_model}")
 
-# Global renderer instance (initialized on first use to avoid startup delay)
-renderer = None
-current_render = None  # Store the last rendered image
+REPO_ROOT = Path(__file__).resolve().parent
+MODEL_DIR = REPO_ROOT / "model"
+RENDERS_DIR = REPO_ROOT / "renders"
 
-# Default render parameters for startup
-DEFAULT_RENDER_PARAMS = {
-    'view': 'Front',
-    'depth': 0,
-    'renderMode': 'Outline'
+DEFAULT_RENDER_PARAMS: dict[str, Any] = {
+    "view": "y-",
+    "zoom": "0",
+    "depth": 0,
+    "renderMode": "Outline",
+    "mode": "single",
+    "move_camera_center": "none",
+    "print_view": False,
 }
 
-def get_or_create_renderer():
-    """Lazy initialization of renderer to avoid startup delay."""
+VIEW_CUBE_MAPPING = {
+    1: "z-",
+    2: "y-",
+    3: "x-",
+    4: "x+",
+    5: "y+",
+    6: "z+",
+}
+
+state = RuntimeState()
+renderer: CADComparisonRenderer | None = None
+current_render: np.ndarray | None = None
+state_lock = threading.Lock()
+last_render_fingerprint: str | None = None
+last_render_response: dict[str, Any] | None = None
+
+# Quiet-by-default: set SERVER_VERBOSE=1 to see detailed logs.
+QUIET_MODE = os.getenv("SERVER_VERBOSE", "0").lower() not in {"1", "true", "yes", "on"}
+
+
+def _log(message: str, *, force: bool = False) -> None:
+    if force or not QUIET_MODE:
+        print(message)
+
+
+def _renderer_stdio_guard():
+    if QUIET_MODE:
+        sink = io.StringIO()
+        return contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink)
+    return contextlib.nullcontext(), contextlib.nullcontext()
+
+
+def _find_default_model() -> Path:
+    stl_files = sorted(MODEL_DIR.glob("*.stl"))
+    if stl_files:
+        return stl_files[0]
+
+    step_files = sorted(MODEL_DIR.glob("*.step")) + sorted(MODEL_DIR.glob("*.STEP"))
+    if step_files:
+        return step_files[0]
+
+    raise FileNotFoundError(f"No .stl/.step model found in {MODEL_DIR}")
+
+
+DEFAULT_MODEL = _find_default_model()
+
+
+def get_or_create_renderer() -> CADComparisonRenderer:
     global renderer
     if renderer is None:
-        print("Initializing CAD renderer...")
-        renderer = CADComparisonRenderer(before_model, after_model)
-        print("Renderer initialized successfully!")
+        _log(f"Initializing CAD renderer with: {DEFAULT_MODEL}")
+        out_guard, err_guard = _renderer_stdio_guard()
+        with out_guard, err_guard:
+            renderer = CADComparisonRenderer(str(DEFAULT_MODEL), str(DEFAULT_MODEL))
     return renderer
 
-def _format_img_data_repr(arr2d: np.ndarray) -> str:
-    # Ensure 2D
-    a = np.asarray(arr2d)
-    if a.ndim == 3 and a.shape[-1] == 1:
-        a = a.squeeze(-1)
-    # Stats
-    nz = int((a > 0).sum())
-    stats = f"shape={a.shape}, dtype={a.dtype}, min={int(a.min())}, max={int(a.max())}, mean={float(a.mean()):.2f}, nonzero={nz}"
-    # Tiny preview (thresholded), '#'=raised, '.'=flat
-    h, w = min(8, a.shape[0]), min(16, a.shape[1])
-    preview = (a[:h, :w] > 0)
-    lines = [''.join('#' if v else '.' for v in row) for row in preview]
-    return stats + ("\n" + "\n".join(lines) if lines else "")
 
-def initialize_default_braille_render():
-    """Render once at startup with default params and send to braille display."""
+def _to_braille_payload(rendered_rgba: np.ndarray) -> np.ndarray:
+    # Existing flow from previous server: invert first channel and convert to 0/255.
+    payload = np.bitwise_not(rendered_rgba[:, :, 0])
+    return np.where(payload > 0, 255, 0).astype(np.uint8)
+
+
+def _render_and_send(params: dict[str, Any]) -> tuple[np.ndarray, list[float] | None, np.ndarray]:
     global current_render
-    try:
-        print("\n" + "=" * 60)
-        print("INITIAL DEFAULT RENDER TO BRAILLE DISPLAY")
-        print("=" * 60)
-        print(f"Default params: {json.dumps(DEFAULT_RENDER_PARAMS)}")
-        r = get_or_create_renderer()
-        img_array = r.render(DEFAULT_RENDER_PARAMS)
-        current_render = img_array
-        print(f"Rendered image shape: {img_array.shape}")
-        try:
-            img_data = img_array[:, :, 3]
-            bytes_written = send_to_braille_display(img_data)
-            print(f"Braille write: {bytes_written} bytes")
-            print("img_data summary:\n" + _format_img_data_repr(img_data))
-        except BrailleDisplayError as e:
-            print(f"Braille send failed: {e}")
-        print("Default render complete.")
-        print("=" * 60 + "\n")
-    except Exception as e:
-        print(f"Default render failed: {e}")
 
-@app.route('/')
+    engine = get_or_create_renderer()
+    out_guard, err_guard = _renderer_stdio_guard()
+    with out_guard, err_guard:
+        rendered = engine.render(params)
+    current_render = rendered
+
+    braille_payload = _to_braille_payload(rendered)
+    try:
+        bytes_written = send_to_braille_display(braille_payload)
+        _log(f"Braille write: {bytes_written} bytes")
+    except BrailleDisplayError as error:
+        _log(f"Braille send failed: {error}", force=True)
+
+    bbox = getattr(engine, "bbox", None)
+    return rendered, bbox, braille_payload
+
+
+def _save_print_if_requested(params: dict[str, Any], engine: CADComparisonRenderer, img_data: np.ndarray) -> None:
+    if not params.get("print_view"):
+        return
+
+    RENDERS_DIR.mkdir(parents=True, exist_ok=True)
+    next_index = 0
+    for file_path in RENDERS_DIR.glob("print_*.pdf"):
+        parts = file_path.stem.split("_")
+        if len(parts) < 2:
+            continue
+        try:
+            idx = int(parts[1])
+            next_index = max(next_index, idx + 1)
+        except ValueError:
+            continue
+
+    stem = (
+        f"print_{next_index}_"
+        f"{engine.current_render_mode}_"
+        f"{engine.current_cut_depth}_"
+        f"{engine.view_current_axis}_"
+        f"{np.array(engine.view_current_view_limits).tolist()}"
+    )
+    pdf_path = RENDERS_DIR / f"{stem}.pdf"
+    npy_path = RENDERS_DIR / f"{stem}.npy"
+    save_binary_array_as_vector_pdf(img_data, str(pdf_path))
+    with npy_path.open("wb") as handle:
+        np.save(handle, img_data)
+
+
+def _img_to_base64_png(img_array: np.ndarray) -> str:
+    image = Image.fromarray(img_array.astype("uint8"))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
+def initialize_default_braille_render() -> None:
+    _log("Preparing initial render...", force=True)
+
+    try:
+        rendered, _, _ = _render_and_send(dict(DEFAULT_RENDER_PARAMS))
+        _log(f"Initial render ready: shape={tuple(rendered.shape)}", force=True)
+    except Exception as error:
+        _log(f"Initial render failed: {error}", force=True)
+
+
+def open_viewer_in_browser() -> None:
+    html_path = REPO_ROOT / "accessible-3d-viewer.html"
+    if not html_path.exists():
+        _log(f"Viewer file not found: {html_path}", force=True)
+        return
+
+    try:
+        webbrowser.open(html_path.as_uri(), new=1)
+        _log(f"Opened viewer: {html_path}", force=True)
+    except Exception as error:
+        _log(f"Could not open viewer in browser: {error}", force=True)
+
+
+def _filter_godice_devices(dev_advdata_tuples):
+    return [
+        (device, adv_data)
+        for device, adv_data in dev_advdata_tuples
+        if device.name and device.name.startswith("GoDice")
+    ]
+
+
+def _select_closest_device(dev_advdata_tuples):
+    return max(dev_advdata_tuples, key=lambda item: item[1].rssi)
+
+
+async def _godice_notification_callback(number, stability_descr):
+    if godice is None:
+        return
+    if stability_descr not in [godice.StabilityDescriptor.MOVE_STABLE, godice.StabilityDescriptor.STABLE]:
+        return
+    if number not in VIEW_CUBE_MAPPING:
+        return
+    with state_lock:
+        state.cube_value = VIEW_CUBE_MAPPING[number]
+    _log(f"GoDice stable face {number} -> view {state.cube_value}")
+
+
+async def _godice_worker() -> None:
+    if bleak is None or godice is None:
+        _log("GoDice dependencies unavailable; cube input disabled.", force=True)
+        return
+
+    _log("Searching for GoDice devices...")
+    discovery = await bleak.BleakScanner.discover(timeout=8, return_adv=True)
+    candidates = _filter_godice_devices(discovery.values())
+    if not candidates:
+        _log("No GoDice found; cube input disabled.", force=True)
+        return
+
+    device, _ = _select_closest_device(candidates)
+    _log(f"Connecting GoDice: {device.name} ({device.address})", force=True)
+
+    async with godice.create(device.address, godice.Shell.D6) as dice:
+        _log("GoDice connected.", force=True)
+        await dice.subscribe_number_notification(_godice_notification_callback)
+        while True:
+            await asyncio.sleep(30)
+
+
+def _run_godice_thread() -> None:
+    try:
+        asyncio.run(_godice_worker())
+    except Exception as error:
+        _log(f"GoDice integration disabled after error: {error}", force=True)
+
+
+def _slider_worker() -> None:
+    if serial is None or list_ports is None:
+        _log("Serial dependencies unavailable; slider input disabled.", force=True)
+        return
+
+    while True:
+        trinkey_port = None
+        for port in list_ports.comports(include_links=False):
+            if getattr(port, "pid", None) == 0x8102:
+                trinkey_port = port
+                break
+
+        if trinkey_port is None:
+            _log("Slider Trinkey not found; slider input disabled.", force=True)
+            return
+
+        _log(f"Slider Trinkey found at {trinkey_port.device}", force=True)
+        try:
+            with serial.Serial(trinkey_port.device, timeout=1) as trinkey:
+                while True:
+                    line = trinkey.readline().decode("utf-8", errors="ignore").strip()
+                    if not line.startswith("Slider: "):
+                        continue
+                    try:
+                        value = int(float(line.split(": ", maxsplit=1)[1]))
+                    except ValueError:
+                        continue
+                    with state_lock:
+                        state.slider_value = value
+        except Exception as error:
+            _log(f"Slider disconnected ({error}); retrying in 3s...", force=True)
+            time.sleep(3)
+
+
+def start_optional_hardware_watchers() -> None:
+    threading.Thread(target=_run_godice_thread, daemon=True).start()
+    threading.Thread(target=_slider_worker, daemon=True).start()
+
+
+@app.route("/", methods=["GET"])
 def home():
-    """Home endpoint with server status"""
-    return jsonify({
-        'status': 'running',
-        'message': 'Accessible 3D Viewer Command Server with CAD Rendering',
-        'endpoints': {
-            '/command': 'POST - Send commands from the viewer (triggers render)',
-            '/render': 'POST - Render CAD view with parameters',
-            '/render/image': 'GET - Get last rendered image as PNG',
-            '/render/base64': 'GET - Get last rendered image as base64',
-            '/commands': 'GET - Retrieve all logged commands',
-            '/commands/clear': 'POST - Clear all logged commands',
-            '/models': 'POST - Change the before/after model files'
+    return jsonify(
+        {
+            "status": "running",
+            "message": "Accessible 3D Viewer server",
+            "endpoints": {
+                "/render": "POST - Render CAD view with parameters",
+                "/get_data": "GET - Optional cube/slider state",
+            },
         }
-    })
+    )
 
-@app.route('/render', methods=['POST'])
+
+@app.route("/render", methods=["POST"])
 def render_view():
-    """Render CAD view with given parameters"""
-    global current_render
-    try:
-        params = request.get_json()
-        
-        print("\n" + "=" * 60)
-        print("RENDERING CAD VIEW")
-        print("=" * 60)
-        print(f"Parameters: {json.dumps(params, indent=2)}")
-        
-        # Get or create renderer
-        r = get_or_create_renderer()
-        
-        # Render the view
-        img_array = r.render(params)
-        current_render = img_array
-        
-        print(f"Rendered image shape: {img_array.shape}")
-        # Send only the fourth axis (channel index 3) to the braille display, no resizing
-        try:
-            img_data = ~img_array[:, :, 0]
-            for i in range(img_data.shape[0]):
-                for j in range(img_data.shape[1]):
-                    if img_data[i,j] == 255:
-                        print(1, end='')
-                    else:
-                        print(0, end='')
-                print()
-            bytes_written = send_to_braille_display(img_data)
-            print(f"Braille write: {bytes_written} bytes")
-            print("img_data summary:\n" + _format_img_data_repr(img_data))
-        except BrailleDisplayError as e:
-            print(f"Braille send failed: {e}")
-        print("=" * 60 + "\n")
-        
-        # Convert to base64 for easy transmission
-        img = Image.fromarray(img_array.astype('uint8'), 'RGBA')
-        buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
-        buffer.seek(0)
-        img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-        
-        return jsonify({
-            'status': 'success',
-            'message': 'Render complete',
-            'image_shape': img_array.shape,
-            'image_base64': img_base64
-        }), 200
-        
-    except Exception as e:
-        print(f"Error rendering: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 400
+    global last_render_fingerprint, last_render_response
 
-@app.route('/render/image', methods=['GET'])
-def get_render_image():
-    """Get the last rendered image as PNG file"""
-    global current_render
-    if current_render is None:
-        return jsonify({
-            'status': 'error',
-            'message': 'No image has been rendered yet'
-        }), 404
-    
     try:
-        img = Image.fromarray(current_render.astype('uint8'), 'RGBA')
-        buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
-        buffer.seek(0)
-        return send_file(buffer, mimetype='image/png')
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 400
+        params = request.get_json(silent=True) or {}
+        merged_params = dict(DEFAULT_RENDER_PARAMS)
+        merged_params.update(params)
+        merged_params["view"] = str(merged_params.get("view", "")).lower()
 
-@app.route('/render/base64', methods=['GET'])
-def get_render_base64():
-    """Get the last rendered image as base64 string"""
-    global current_render
-    if current_render is None:
-        return jsonify({
-            'status': 'error',
-            'message': 'No image has been rendered yet'
-        }), 404
-    
-    try:
-        img = Image.fromarray(current_render.astype('uint8'), 'RGBA')
-        buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
-        buffer.seek(0)
-        img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-        
-        return jsonify({
-            'status': 'success',
-            'image_base64': img_base64,
-            'image_shape': current_render.shape
-        }), 200
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 400
+        fingerprint = json.dumps(merged_params, sort_keys=True, default=str)
 
-@app.route('/command', methods=['POST'])
-def receive_command():
-    """Receive and log a command from the 3D viewer, and trigger render if applicable"""
-    global current_render
-    try:
-        data = request.get_json()
-        
-        # Add timestamp to the command
-        command_entry = {
-            'timestamp': datetime.now().isoformat(),
-            'data': data
+        with state_lock:
+            if (
+                merged_params.get("print_view") is not True
+                and last_render_fingerprint == fingerprint
+                and last_render_response is not None
+            ):
+                return jsonify(last_render_response), 200
+
+        with state_lock:
+            view = merged_params.get("view")
+            if isinstance(view, str) and view:
+                state.cube_value = view
+        _log(f"Render request: {merged_params}")
+
+        rendered, bbox, braille_payload = _render_and_send(merged_params)
+        engine = get_or_create_renderer()
+        _save_print_if_requested(merged_params, engine, braille_payload)
+
+        response = {
+            "status": "success",
+            "message": "Render complete",
+            "image_shape": list(rendered.shape),
+            "bbox": bbox,
+            "image_base64": _img_to_base64_png(rendered),
         }
-        
-        commands_log.append(command_entry)
-        
-        # Print to console for debugging - Enhanced output
-        print("\n" + "=" * 60)
-        print(f"[{command_entry['timestamp']}] COMMAND RECEIVED #{len(commands_log)}")
-        print("=" * 60)
-        print(f"Type: {data.get('type', 'unknown')}")
-        print(f"Action: {data.get('action', 'N/A')}")
-        print("\nFull Data:")
-        print(json.dumps(data, indent=2))
-        print("=" * 60 + "\n")
-        
-        # Check if this command contains render parameters
-        render_params = None
-        if 'view' in data or 'renderMode' in data or 'depth' in data:
-            # This looks like a render command, extract params
-            render_params = {
-                'view': data.get('view', 'Front'),
-                'depth': data.get('depth', 0),
-                'renderMode': data.get('renderMode', 'Outline')
-            }
-            
-            # Add optional params if present
-            if 'shape' in data:
-                render_params['shape'] = data['shape']
-            if 'mode' in data:
-                render_params['mode'] = data['mode']
-            if 'superpositionMode' in data:
-                render_params['superpositionMode'] = data['superpositionMode']
-        
-        response_data = {
-            'status': 'success',
-            'message': 'Command received',
-            'command_id': len(commands_log)
+        with state_lock:
+            if merged_params.get("print_view") is not True:
+                last_render_fingerprint = fingerprint
+                last_render_response = response
+        return jsonify(response), 200
+    except Exception as error:
+        _log(f"Error rendering: {error}", force=True)
+        return jsonify({"status": "error", "message": str(error)}), 400
+
+
+@app.route("/get_data", methods=["GET"])
+def get_data():
+    with state_lock:
+        payload = {
+            "status": "success",
+            "cube_value": state.cube_value,
+            "slider_value": state.slider_value,
         }
-        
-        # If we have render params, automatically render
-        if render_params:
-            try:
-                print("Auto-rendering based on command parameters...")
-                r = get_or_create_renderer()
-                img_array = r.render(render_params)
-                current_render = img_array
+    return jsonify(payload), 200
 
-                # for i in range(img_array.shape[0]):
-                #     for j in range(img_array.shape[1]):
-                #         if img_array[i,j,0] == 255:
-                #             print(1, end='')
-                #         else:
-                #             print(0, end='')
-                #     print()
 
-                # Send only the fourth axis (channel index 3) to the braille display, no resizing
-                try:
-                    img_data = img_array[:, :, 3]
-                    for i in range(img_data.shape[0]):
-                        for j in range(img_data.shape[1]):
-                            if img_data[i,j,0] == 255:
-                                print(1, end='')
-                            else:
-                                print(0, end='')
-                        print()
-                    bytes_written = send_to_braille_display(img_data)
-                    print(f"Braille write: {bytes_written} bytes")
-                    print("img_data summary:\n" + _format_img_data_repr(img_data))
-                except BrailleDisplayError as e:
-                    print(f"Braille send failed: {e}")
-                
-                # Convert to base64
-                img = Image.fromarray(img_array.astype('uint8'), 'RGBA')
-                buffer = io.BytesIO()
-                img.save(buffer, format='PNG')
-                buffer.seek(0)
-                img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-                
-                response_data['render'] = {
-                    'status': 'success',
-                    'image_shape': img_array.shape,
-                    'image_base64': img_base64
-                }
-                print(f"Auto-render complete! Image shape: {img_array.shape}")
-            except Exception as render_error:
-                print(f"Auto-render failed: {str(render_error)}")
-                response_data['render'] = {
-                    'status': 'error',
-                    'message': str(render_error)
-                }
-        
-        return jsonify(response_data), 200
-        
-    except Exception as e:
-        print(f"Error processing command: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 400
+def main() -> int:
+    _log("Server starting on http://localhost:6969", force=True)
+    _log(f"Model: {DEFAULT_MODEL}", force=True)
+    _log("Endpoints: POST /render, GET /get_data", force=True)
+    if QUIET_MODE:
+        _log("Output mode: quiet (set SERVER_VERBOSE=1 for debug logs)", force=True)
 
-@app.route('/commands', methods=['GET'])
-def get_commands():
-    """Retrieve all logged commands"""
-    return jsonify({
-        'status': 'success',
-        'total_commands': len(commands_log),
-        'commands': commands_log
-    })
-
-@app.route('/commands/clear', methods=['POST'])
-def clear_commands():
-    """Clear all logged commands"""
-    global commands_log
-    count = len(commands_log)
-    commands_log = []
-    return jsonify({
-        'status': 'success',
-        'message': f'Cleared {count} commands'
-    })
-
-@app.route('/commands/stats', methods=['GET'])
-def get_stats():
-    """Get statistics about logged commands"""
-    if not commands_log:
-        return jsonify({
-            'status': 'success',
-            'total_commands': 0,
-            'stats': {}
-        })
-    
-    # Count commands by type
-    type_counts = {}
-    action_counts = {}
-    
-    for entry in commands_log:
-        data = entry['data']
-        cmd_type = data.get('type', 'unknown')
-        action = data.get('action', 'unknown')
-        
-        type_counts[cmd_type] = type_counts.get(cmd_type, 0) + 1
-        action_counts[action] = action_counts.get(action, 0) + 1
-    
-    return jsonify({
-        'status': 'success',
-        'total_commands': len(commands_log),
-        'stats': {
-            'by_type': type_counts,
-            'by_action': action_counts,
-            'first_command': commands_log[0]['timestamp'],
-            'last_command': commands_log[-1]['timestamp']
-        }
-    })
-
-@app.route('/models', methods=['POST'])
-def change_models():
-    """Change the before/after model files"""
-    global renderer, before_model, after_model, current_render
-    try:
-        data = request.get_json()
-        new_before = data.get('before')
-        new_after = data.get('after')
-        
-        if not new_before or not new_after:
-            return jsonify({
-                'status': 'error',
-                'message': 'Both "before" and "after" model paths are required'
-            }), 400
-        
-        # Validate files exist
-        if not os.path.exists(new_before):
-            return jsonify({
-                'status': 'error',
-                'message': f'Before model not found: {new_before}'
-            }), 400
-        
-        if not os.path.exists(new_after):
-            return jsonify({
-                'status': 'error',
-                'message': f'After model not found: {new_after}'
-            }), 400
-        
-        # Update models
-        before_model = new_before
-        after_model = new_after
-        
-        # Reset renderer to force reload
-        renderer = None
-        current_render = None
-        
-        print(f"\nModel files updated:")
-        print(f"  Before: {before_model}")
-        print(f"  After: {after_model}\n")
-        
-        return jsonify({
-            'status': 'success',
-            'message': 'Model files updated',
-            'before': before_model,
-            'after': after_model
-        }), 200
-        
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 400
-
-if __name__ == '__main__':
-    print("=" * 70)
-    print("Accessible 3D Viewer Command Server with CAD Rendering")
-    print("=" * 70)
-    print("Server starting on http://localhost:6969")
-    print("\nCurrent Models:")
-    print(f"  Before: {before_model}")
-    print(f"  After:  {after_model}")
-    print("\nEndpoints:")
-    print("  - POST /command           - Receive commands (auto-renders if params present)")
-    print("  - POST /render            - Explicitly render with parameters")
-    print("  - GET  /render/image      - Get last rendered image as PNG")
-    print("  - GET  /render/base64     - Get last rendered image as base64")
-    print("  - GET  /commands          - View all logged commands")
-    print("  - POST /commands/clear    - Clear command log")
-    print("  - GET  /commands/stats    - View command statistics")
-    print("  - POST /models            - Change before/after model files")
-    print("=" * 70)
-
-    # Render once on startup and send to braille display
     initialize_default_braille_render()
+    start_optional_hardware_watchers()
+    open_viewer_in_browser()
 
-    print("\nWaiting for commands...\n")
-    app.run(debug=False, host='0.0.0.0', port=6969)
+    _log("Ready.", force=True)
+    app.run(debug=False, host="0.0.0.0", port=6969)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -5,7 +5,8 @@ dependencies:
   - python=3.9
   - pythonocc-core
   - pip
+  - numpy
+  - matplotlib
+  - pillow
   - pip:
-    - svgwrite
-    - flask
-    - flask-cors
+    - -r requirements.txt

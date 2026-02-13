@@ -357,14 +357,10 @@ class CADComparisonRenderer:
         
         compose_scrollbar = True
         if compose_scrollbar:
-            print("scrollbar dimensions", x_scroll_min, x_scroll_max, y_scroll_min, y_scroll_max)
-
             img_array[:-1,-2,:] = [255,255,255,0]
             img_array[-2,:-1,:] = [255,255,255,0]
             img_array[:,-1,:] = [255,255,255,0]
             img_array[-1,:,:] = [255,255,255,0]
-            print(int(img_array.shape[0]*x_scroll_min))
-            print(int(img_array.shape[0]*x_scroll_max)+1)
             img_array[max(0,int(img_array.shape[0]*x_scroll_min)):min(int(img_array.shape[0]*x_scroll_max)+1, img_array.shape[0]),-1,:] = [0,0,0,255]
             img_array[-1, max(0, int(img_array.shape[1]*y_scroll_min)):min(int(img_array.shape[1]*y_scroll_max)+1, img_array.shape[1]),:] = [0,0,0,255]
 

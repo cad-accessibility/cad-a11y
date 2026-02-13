@@ -1,25 +1,28 @@
-# Requirements for the Python HIDAPI test script
-hidapi>=0.14.0
-pyserial
-
-# Web server dependencies for accessible-3d-viewer
+# Core web server
 Flask>=2.3.0
 flask-cors>=4.0.0
 
-# DotPad BLE (Python port of the Web SDK)
-bleak>=0.22.0
-
-# CAD rendering server dependencies
-Pillow>=9.0.0
+# Numeric + image stack
 numpy>=1.21.0
-requests>=2.28.0  # For testing
+Pillow>=9.0.0
+matplotlib>=3.5.0
 
-godice
-# CAD library dependencies (already in environment)
-trimesh
-polyscope
-shapely
+# CAD / geometry stack
+trimesh>=3.20.0
+shapely>=2.0.0
 meshlib
-# pythonocc-core
-# pybraille
-# matplotlib
+polyscope
+svgwrite
+
+# Braille / hardware integrations
+hidapi>=0.14.0
+pyserial>=3.5
+bleak>=0.22.0
+godice
+
+# Utility / testing helpers
+requests>=2.28.0
+
+# NOTE:
+# pythonocc-core is required by the renderer but is typically installed via conda
+# (see environment.yml) rather than pip.
