@@ -14,7 +14,7 @@ import base64
 from PIL import Image
 import numpy as np
 from cad_comparison_lib import CADComparisonRenderer
-from braille_display import send_to_braille_display, BrailleDisplayError
+from braille_display import send_to_braille_display, BrailleDisplayError, _connect
 from src.converter.render_low_res import save_binary_array_as_vector_pdf
 
 import asyncio
@@ -51,6 +51,7 @@ print(f"Default model set to: {before_model}")
 # Global renderer instance (initialized on first use to avoid startup delay)
 renderer = None
 current_render = None  # Store the last rendered image
+device = None
 
 # Default render parameters for startup
 DEFAULT_RENDER_PARAMS = {
@@ -65,6 +66,7 @@ def get_or_create_renderer():
     if renderer is None:
         print("Initializing CAD renderer...")
         renderer = CADComparisonRenderer(before_model, after_model)
+        renderer.init_device(device)
         print("Renderer initialized successfully!")
     return renderer
 
@@ -617,6 +619,7 @@ if __name__ == '__main__':
     print("  - POST /models            - Change before/after model files")
     print("=" * 70)
 
+    device = _connect(scan_timeout=6.0, prefer_dotpad=True)
     # Render once on startup and send to braille display
     initialize_default_braille_render()
     import logging

@@ -40,6 +40,7 @@ class CADComparisonRenderer:
         self.view_current_axis = -1
         self.view_current_view_limits = -1
         self.current_render_mode = None
+        self.screen_size = [96,40]
         
         # Load and normalize shapes
         self._load_models()
@@ -102,10 +103,10 @@ class CADComparisonRenderer:
         for i, view_key in enumerate(view_keys):
             print("view_key", view_key)
             _, ax_limits_before = get_single_view(
-                shape_before, self.bbox, 1.0, view_key, "filled"
+                shape_before, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
             )
             _, ax_limits_after = get_single_view(
-                shape_after, self.bbox, 1.0, view_key, "filled"
+                shape_after, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
             )
             view_limits[i][0][0] = min(ax_limits_before[0][0], ax_limits_after[0][0])
             view_limits[i][0][1] = max(ax_limits_before[0][1], ax_limits_after[0][1])
@@ -277,17 +278,17 @@ class CADComparisonRenderer:
         y_scroll_max = (y_zoom_max-y_min)/(y_max-y_min)
 
         # This needs to account for the aspect ratio of the monarch
-        monarch_aspect_ratio = 96.0/40.0
+        current_aspect_ratio = self.screen_size[0]/self.screen_size[1]
         if comparison_mode == "side-by-side":
-            monarch_aspect_ratio = 48.0/40.0
-        if horizontal_dist/vertical_dist < monarch_aspect_ratio:
-            horizontal_scale_factor = monarch_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
+            current_aspect_ratio = 0.5*self.screen_size[0]/self.screen_size[1]
+        if horizontal_dist/vertical_dist < current_aspect_ratio:
+            horizontal_scale_factor = current_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
             #imposed_zoom_ax_limits[0][0] = max(self.view_limits[view_index][0][0], self.view_current_camera_center[view_index][0] - horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist)
             imposed_zoom_ax_limits[0][0] = self.view_current_camera_center[view_index][0] - horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist
             #imposed_zoom_ax_limits[0][1] = min(self.view_limits[view_index][0][1], self.view_current_camera_center[view_index][0] + horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist)
             imposed_zoom_ax_limits[0][1] = self.view_current_camera_center[view_index][0] + horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist
-        if horizontal_dist/vertical_dist > monarch_aspect_ratio:
-            vertical_scale_factor = monarch_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
+        if horizontal_dist/vertical_dist > current_aspect_ratio:
+            vertical_scale_factor = current_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
             vertical_scale_factor = 1.0/vertical_scale_factor
             #imposed_zoom_ax_limits[1][0] = max(self.view_limits[view_index][1][0], self.view_current_camera_center[view_index][1] - vertical_scale_factor*0.5**(zoom_level+1)*vertical_dist)
             #imposed_zoom_ax_limits[1][1] = min(self.view_limits[view_index][1][1], self.view_current_camera_center[view_index][1] + vertical_scale_factor*0.5**(zoom_level+1)*vertical_dist)
@@ -348,7 +349,8 @@ class CADComparisonRenderer:
                 1.0 - cut_depth,
                 view_name,
                 render_mode,
-                imposed_ax_limits=imposed_zoom_ax_limits
+                imposed_ax_limits=imposed_zoom_ax_limits,
+                screen_size=self.screen_size
             )
             self.current_cut_depth = 1.0-cut_depth
             self.view_current_axis = view_name
@@ -369,6 +371,12 @@ class CADComparisonRenderer:
             img_array[-1, max(0, int(img_array.shape[1]*y_scroll_min)):min(int(img_array.shape[1]*y_scroll_max)+1, img_array.shape[1]),:] = [0,0,0,255]
 
         return img_array
+
+    def init_device(self, device):
+        if device.kind == "monarch":
+            self.screen_size = [96, 40]
+        if device.kind == "dotpad":
+            self.screen_size = [60, 40]
 
 
 # Convenience function for simple usage

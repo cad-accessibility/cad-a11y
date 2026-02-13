@@ -273,6 +273,52 @@ async def _dotpad_best_address_async(*, scan_timeout: float) -> str | None:
 
 # --- Shared pixel->braille conversion ---
 
+def _pixels_to_braille_cells_dotpad(array_2d: np.ndarray, *, lines: int, cols: int) -> bytes:
+    """Convert a pixel array into packed braille-cell bytes.
+
+    Each cell is a 4x2 block mapped to 8-dot braille bits:
+      (0,0)->bit0, (1,0)->bit1, (2,0)->bit2,
+      (0,1)->bit3, (1,1)->bit4, (2,1)->bit5,
+      (3,0)->bit6, (3,1)->bit7
+    """
+
+    out = bytearray(lines * cols)
+    height, width = array_2d.shape
+
+    for line in range(lines):
+        pixel_row_start = line * 4
+        if pixel_row_start + 3 >= height:
+            break
+        for col in range(cols):
+            pixel_col_start = col * 2
+            if pixel_col_start + 1 >= width:
+                break
+
+            b = 0
+
+            # column 0
+            if array_2d[pixel_row_start + 0, pixel_col_start + 0] > 0:
+                b |= 1 << 0
+            if array_2d[pixel_row_start + 1, pixel_col_start + 0] > 0:
+                b |= 1 << 1
+            if array_2d[pixel_row_start + 2, pixel_col_start + 0] > 0:
+                b |= 1 << 2
+            if array_2d[pixel_row_start + 3, pixel_col_start + 0] > 0:
+                b |= 1 << 3
+            # column 1
+            if array_2d[pixel_row_start + 0, pixel_col_start + 1] > 0:
+                b |= 1 << 4
+            if array_2d[pixel_row_start + 1, pixel_col_start + 1] > 0:
+                b |= 1 << 5
+            if array_2d[pixel_row_start + 2, pixel_col_start + 1] > 0:
+                b |= 1 << 6
+            if array_2d[pixel_row_start + 3, pixel_col_start + 1] > 0:
+                b |= 1 << 7
+
+            out[line * cols + col] = b
+
+    return bytes(out)
+
 
 def _pixels_to_braille_cells(array_2d: np.ndarray, *, lines: int, cols: int) -> bytes:
     """Convert a pixel array into packed braille-cell bytes.
@@ -521,7 +567,7 @@ class _DotPadBleConnection:
         bytes_written = 0
 
         # Graphic area (10x30 cells = 300 bytes)
-        graphic_cells = _pixels_to_braille_cells(array_2d, lines=_DOTPAD_LINES, cols=_DOTPAD_COLS)
+        graphic_cells = _pixels_to_braille_cells_dotpad(array_2d, lines=_DOTPAD_LINES, cols=_DOTPAD_COLS)
         body = graphic_cells[:_DOTPAD_GRAPHIC_CELLS].ljust(_DOTPAD_GRAPHIC_CELLS, b"\x00")
         frames = _DotPadData.request_frames(body, is_text_mode=False)
 
