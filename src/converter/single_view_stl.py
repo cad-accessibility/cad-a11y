@@ -69,7 +69,7 @@ views = {
     }
 }
 
-def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="filled", imposed_ax_limits=[]):
+def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="filled", imposed_ax_limits=[], screen_size=[96,40]):
 
     shape = copy(shape)
     print("rendering mode", rendering_mode, "view key", view_key)
@@ -84,7 +84,7 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
         shape = faces_on_plane_fast(shape, plane_origin, normal_dir)
 
     # Target pixel resolution
-    width_px, height_px = 96, 40
+    width_px, height_px = screen_size[0], screen_size[1]
     dpi = 100 
 
     fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
