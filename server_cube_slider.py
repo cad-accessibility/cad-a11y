@@ -626,10 +626,6 @@ if __name__ == '__main__':
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
     print("\nWaiting for commands...\n")
-<<<<<<< HEAD
-    # threading.Thread(target=dice_main_thread, daemon=True).start()
-=======
     #threading.Thread(target=dice_main_thread, daemon=True).start()
->>>>>>> 5d2223e (save triangle ids and barycentric coordinates per pixel)
     #threading.Thread(target=start_slider_trinkey, daemon=True).start()
     app.run(debug=False, host='0.0.0.0', port=6969)

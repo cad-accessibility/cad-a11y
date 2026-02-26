@@ -424,11 +424,7 @@ class CADComparisonRenderer:
             #        [self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0]),
             #         self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][1])]
             #)
-            if not self.current_render is None and (camera_move != "none" or self.current_zoom_level != zoom_level):
-                tracked_points, ndc_points = get_tracked_points(self.current_outline, self.current_ax_limits)
-                if len(tracked_points) > 0:
-                    diff_line_img = get_new_positions(tracked_points, ndc_points, imposed_zoom_ax_limits)
-            img_array, _, outline = get_single_view(
+            img_array, _ = get_single_view(
                 self.shapes[shape_index],
                 self.bbox,
                 1.0 - cut_depth,

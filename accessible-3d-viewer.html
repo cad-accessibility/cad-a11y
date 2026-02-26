@@ -728,7 +728,6 @@
         }
 
         // Just commented for debugging
-<<<<<<< HEAD
         setInterval(() => {
           fetch(`${SERVER_URL}/get_data`)
             .then(res => res.json())
@@ -744,18 +743,6 @@
               //document.getElementById("msg").innerText = data.value;
             });
         }, 500);
-=======
-        //setInterval(() => {
-        //  fetch(`${SERVER_URL}/get_data`)
-        //    .then(res => res.json())
-        //    .then(data => {
-        //        console.log(data.cube_value);
-        //        updateView(data.cube_value);
-        //        updateSliceDepth(data.slider_value);
-        //      //document.getElementById("msg").innerText = data.value;
-        //    });
-        //}, 500);
->>>>>>> 5d2223e (save triangle ids and barycentric coordinates per pixel)
 
         // Update zoom information
         function updateZoom(newZoom) {
