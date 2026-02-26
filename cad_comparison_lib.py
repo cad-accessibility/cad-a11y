@@ -81,7 +81,7 @@ class CADComparisonRenderer:
         
         # Calculate view limits for all views
         self._calculate_view_limits()
-        self._compute_slice_graphs()
+        #self._compute_slice_graphs()
     
     def _calculate_view_limits(self):
         """Calculate axis limits for all views for both shapes."""
@@ -445,7 +445,7 @@ class CADComparisonRenderer:
             img_array[max(0,int(img_array.shape[0]*x_scroll_min)):min(int(img_array.shape[0]*x_scroll_max)+1, img_array.shape[0]),-1,:] = [0,0,0,255]
             img_array[-1, max(0, int(img_array.shape[1]*y_scroll_min)):min(int(img_array.shape[1]*y_scroll_max)+1, img_array.shape[1]),:] = [0,0,0,255]
 
-        compose_slice_graph = True
+        compose_slice_graph = False
         if compose_slice_graph:
             # take correct view_diff_mat
             cut_position_int = int(100.0*(1.0-cut_depth))

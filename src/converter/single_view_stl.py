@@ -124,6 +124,8 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
 
         # for each pixel, get triangle ID and barycentric coordinates
 
+        # for each pixel, get triangle ID and barycentric coordinates
+
     ax.set_aspect('equal')
     ax = plt.gca()
     if len(imposed_ax_limits) > 0:
@@ -147,6 +149,84 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
             else:
                 print(0, end='')
         print()
+
+    #plt.imshow(img_np)
+    #plt.show()
+    if plt.fignum_exists(fig.number):
+        plt.close(fig.number)
+
+    # triangle IDs
+    fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
+    ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
+    ax.axis('off')
+
+    if type(shape) != list and len(shape.faces) > 0 and not np.isclose(shape.area, 0.0):
+        colors = [(i+1)/(len(shape.faces)+2) for i in range(len(shape.faces))]
+        ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape.faces, antialiased=False)
+
+    ax.set_aspect('equal')
+    ax = plt.gca()
+    if len(imposed_ax_limits) > 0:
+        ax.set_xlim(imposed_ax_limits[0])
+        ax.set_ylim(imposed_ax_limits[1])
+    ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
+    print(ax_limits)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=dpi, pad_inches=0)
+    fig.clear()
+    buf.seek(0)
+
+    img = Image.open(buf)
+    triangle_ids_np = np.array(img)
+    #for i in range(triangle_ids_np.shape[0]):
+    #    for j in range(triangle_ids_np.shape[1]):
+    #            print(str(triangle_ids_np[i,j,0])+" ", end='')
+    #    print()
+
+    im = Image.fromarray(triangle_ids_np[:,:,:3])
+    im.save("triangle_ids.png")
+
+    #plt.imshow(img_np)
+    #plt.show()
+    if plt.fignum_exists(fig.number):
+        plt.close(fig.number)
+
+    # barycentric coordinates
+    fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
+    ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
+    ax.axis('off')
+
+    rgb = [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]]
+    rgb = [0.0, 0.5, 1.0]
+    if type(shape) != list and len(shape.faces) > 0 and not np.isclose(shape.area, 0.0):
+        colors = [0.0 for i in range(len(shape.vertices))]
+        for face in shape.faces:
+            #print(face)
+            for i, v in enumerate(face):
+                #print(v)
+                #exit()
+                colors[v] = rgb[i]
+        ax.tripcolor(coords[:, 0], coords[:, 1], colors, shading="gouraud", cmap="brg", triangles=shape.faces, antialiased=False)
+
+    ax.set_aspect('equal')
+    ax = plt.gca()
+    if len(imposed_ax_limits) > 0:
+        ax.set_xlim(imposed_ax_limits[0])
+        ax.set_ylim(imposed_ax_limits[1])
+    ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=dpi, pad_inches=0)
+    fig.clear()
+    buf.seek(0)
+
+    img = Image.open(buf)
+    barycentric_coords = np.array(img)
+    #for i in range(barycentric_coords.shape[0]):
+    #    for j in range(barycentric_coords.shape[1]):
+    #            print(str(barycentric_coords[i,j,0])+" ", end='')
+    #    print()
 
     #plt.imshow(img_np)
     #plt.show()
