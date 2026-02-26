@@ -341,6 +341,19 @@
                 </div>
             </section>
 
+            <section class="section" aria-labelledby="model-list-heading">
+                <h2 id="model-list-heading">Model list</h2>
+                <div id="model-list-info" aria-describedby="model-list-heading">
+                    <div class="help-text" style="margin-bottom: 10px;">
+                        The 3D models to choose from.
+                    </div>
+                    <select id="model-list-dropdown" method="GET" action="/">
+                        <option value="0" selected>"mug"</option>
+                        <option value="1">"gamepad"</option>
+                    </select>
+                </div>
+            </section>
+
             <!-- Slice Depth Section -->
             <section class="section" aria-labelledby="slice-heading">
                 <h2 id="slice-heading">Slice Depth Control</h2>
@@ -562,6 +575,7 @@
                     mode: currentRepresentationMode,
                     move_camera_center: currentMoveCamera,
                     print_view: currentPrintView,
+                    current_model: currentModel,
                 };
                 
                 // Send to server and process response
@@ -578,6 +592,9 @@
                     // Update bounding box if available in response
                     if (data.bbox) {
                         updateBoundingBox(data.bbox);
+                    }
+                    if (data.model_list) {
+                        updateModelList(data.model_list);
                     }
                 })
                 .catch(error => {
@@ -600,6 +617,7 @@
         let currentPrintView = false;
         const renderModes = ['Shaded', 'Outline', 'Cut'];
         const representationModes = ['single', 'side-by-side'];
+        let currentModel = "none";
         
         // Remove "Back" from available views
         //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
@@ -726,6 +744,31 @@
             document.getElementById('bbox-z-max').textContent = format(zmax);
             document.getElementById('bbox-z-depth').textContent = format(zmax - zmin);
         }
+
+        function updateModelList(model_list) {
+            const dropdown = document.getElementById("model-list-dropdown");
+            dropdown.innerHTML = '<option value="">--Select--</option>';
+
+            var i=0;
+            model_list.forEach(item => {
+                let option = document.createElement("option");
+                option.value = i;
+                if(i == currentModel){
+                    option.selected = true;
+                }
+                option.text = item;
+                dropdown.appendChild(option);
+                i = i+1;
+                }
+            );
+        }
+
+        document.getElementById("model-list-dropdown").addEventListener("change", function() {
+            const selectedItem = this.value;
+            currentModel = selectedItem;
+            sendStateToServer();
+            }
+        );
 
         // Just commented for debugging
         setInterval(() => {
@@ -1044,22 +1087,22 @@
                 //    break;
                 //    
                 case 'w':
-                    currentMoveCamera = "down";
-                    sendStateToServer();
-                    currentMoveCamera = "none";
-                    break
-                case 'd':
-                    currentMoveCamera = "left";
-                    sendStateToServer();
-                    currentMoveCamera = "none";
-                    break
-                case 's':
                     currentMoveCamera = "up";
                     sendStateToServer();
                     currentMoveCamera = "none";
                     break
-                case 'a':
+                case 'd':
                     currentMoveCamera = "right";
+                    sendStateToServer();
+                    currentMoveCamera = "none";
+                    break
+                case 's':
+                    currentMoveCamera = "down";
+                    sendStateToServer();
+                    currentMoveCamera = "none";
+                    break
+                case 'a':
+                    currentMoveCamera = "left";
                     sendStateToServer();
                     currentMoveCamera = "none";
                     break

@@ -313,6 +313,7 @@ class CADComparisonRenderer:
 
         zoom_level = int(params.get("zoom", "0"))
         camera_move = params.get("move_camera_center", "none")
+        print(camera_move)
 
         horizontal_dist = np.abs((self.view_limits[view_index][0][1] - self.view_limits[view_index][0][0]))
         vertical_dist = np.abs((self.view_limits[view_index][1][1] - self.view_limits[view_index][1][0]))
