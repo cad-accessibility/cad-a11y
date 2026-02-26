@@ -17,6 +17,7 @@ from src.converter.single_view_stl import get_single_view, get_cut_faces
 from src.converter.juxtaposition_view_stl import get_juxtaposition_view
 from src.converter.superposition_view_stl import get_superposition_view
 from src.converter.side_by_side_view import get_side_view
+<<<<<<< HEAD
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
 from shapely import union_all
@@ -25,6 +26,10 @@ from shapely import symmetric_difference
 import matplotlib.pyplot as plt
 import io, PIL
 from PIL import Image
+=======
+from src.converter.associate_pixels import associate_pixels
+
+>>>>>>> 5d2223e (save triangle ids and barycentric coordinates per pixel)
 
 class CADComparisonRenderer:
     """
@@ -45,11 +50,16 @@ class CADComparisonRenderer:
         self.bbox = None
         self.view_limits = None
         self.view_current_camera_center = []
+<<<<<<< HEAD
         self.view_current_axis = -1
         self.view_current_view_limits = -1
         self.current_render_mode = None
         self.screen_size = [96,40]
         self.view_diff_mats = {}
+=======
+        self.current_triangle_ids = None
+        self.current_barycentric_coords = None
+>>>>>>> 5d2223e (save triangle ids and barycentric coordinates per pixel)
         
         # Load and normalize shapes
         self._load_models()
@@ -112,11 +122,19 @@ class CADComparisonRenderer:
         
         for i, view_key in enumerate(view_keys):
             print("view_key", view_key)
+<<<<<<< HEAD
             _, ax_limits_before = get_single_view(
                 shape_before, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
             )
             _, ax_limits_after = get_single_view(
                 shape_after, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
+=======
+            _, ax_limits_before, _, _ = get_single_view(
+                shape_before, self.bbox, 1.0, view_key, "filled"
+            )
+            _, ax_limits_after, _, _ = get_single_view(
+                shape_after, self.bbox, 1.0, view_key, "filled"
+>>>>>>> 5d2223e (save triangle ids and barycentric coordinates per pixel)
             )
             view_limits[i][0][0] = min(ax_limits_before[0][0], ax_limits_after[0][0])
             view_limits[i][0][1] = max(ax_limits_before[0][1], ax_limits_after[0][1])
@@ -421,12 +439,13 @@ class CADComparisonRenderer:
             #        [self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0]),
             #         self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][1])]
             #)
-            img_array, _ = get_single_view(
+            img_array, _, triangle_ids, barycentric_coords = get_single_view(
                 self.shapes[shape_index],
                 self.bbox,
                 1.0 - cut_depth,
                 view_name,
                 render_mode,
+<<<<<<< HEAD
                 imposed_ax_limits=imposed_zoom_ax_limits,
                 screen_size=self.screen_size
             )
@@ -434,6 +453,17 @@ class CADComparisonRenderer:
             self.view_current_axis = view_name
             self.current_render_mode = render_mode
             self.view_current_view_limits = imposed_zoom_ax_limits
+=======
+                imposed_ax_limits=imposed_zoom_ax_limits
+            )
+            # produce diff image
+            # for each pixel, get matching triangle id and closest barycentric coord
+            if not self.current_triangle_ids is None:
+                associate_lines = associate_pixels(self.current_triangle_ids, self.current_barycentric_coords, 
+                                                   triangle_ids, barycentric_coords)
+            self.current_triangle_ids = triangle_ids
+            self.current_barycentric_coords = barycentric_coords
+>>>>>>> 5d2223e (save triangle ids and barycentric coordinates per pixel)
         
         # COMPOSITION STAGE
         compose_scrollbar = True

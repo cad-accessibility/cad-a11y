@@ -164,6 +164,45 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
         colors = [(i+1)/(len(shape.faces)+2) for i in range(len(shape.faces))]
         ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape.faces, antialiased=False)
 
+        # for each pixel, get triangle ID and barycentric coordinates
+
+    ax.set_aspect('equal')
+    ax = plt.gca()
+    if len(imposed_ax_limits) > 0:
+        ax.set_xlim(imposed_ax_limits[0])
+        ax.set_ylim(imposed_ax_limits[1])
+    ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
+    print(ax_limits)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=dpi, pad_inches=0)
+    fig.clear()
+    buf.seek(0)
+
+    img = Image.open(buf)
+    img_np = np.array(img)
+    for i in range(img_np.shape[0]):
+        for j in range(img_np.shape[1]):
+            if img_np[i,j,0] != 255:
+                print(1, end='')
+            else:
+                print(0, end='')
+        print()
+
+    #plt.imshow(img_np)
+    #plt.show()
+    if plt.fignum_exists(fig.number):
+        plt.close(fig.number)
+
+    # triangle IDs
+    fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
+    ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
+    ax.axis('off')
+
+    if type(shape) != list and len(shape.faces) > 0 and not np.isclose(shape.area, 0.0):
+        colors = [(i+1)/(len(shape.faces)+2) for i in range(len(shape.faces))]
+        ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape.faces, antialiased=False)
+
     ax.set_aspect('equal')
     ax = plt.gca()
     if len(imposed_ax_limits) > 0:
@@ -237,7 +276,7 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
     #print(img_np)
     outlines_np = get_outlines(img_np)
     if rendering_mode in ["filled", "slice"]:
-        return img_np, ax_limits
+        return img_np, ax_limits, triangle_ids_np, barycentric_coords
     if rendering_mode == "outline":
         outlines_np = get_outlines(img_np)
         #im = Image.fromarray(barycentric_coords)
