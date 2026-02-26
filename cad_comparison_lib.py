@@ -84,7 +84,7 @@ class CADComparisonRenderer:
         
         # Calculate view limits for all views
         self._calculate_view_limits()
-        #self._compute_slice_graphs()
+        self._compute_slice_graphs()
     
     def _calculate_view_limits(self):
         """Calculate axis limits for all views for both shapes."""
@@ -185,12 +185,12 @@ class CADComparisonRenderer:
                     diff = symmetric_difference(cut_faces_list[i], cut_faces_list[j]).area
                     diff_mat[i][j] = diff
                     diff_mat[j][i] = diff
-            print(diff_mat[10, :])
-            print(len(cut_faces_list))
-            plt.plot(range(len(cut_faces_list)), diff_mat[10,:])
-            plt.ylim(0.0, 1.0)
-            plt.savefig("diff_mat_cut_"+view_key+".png")
-            plt.close()
+            #print(diff_mat[10, :])
+            #print(len(cut_faces_list))
+            #plt.plot(range(len(cut_faces_list)), diff_mat[10,:])
+            #plt.ylim(0.0, 1.0)
+            #plt.savefig("diff_mat_cut_"+view_key+".png")
+            #plt.close()
 
             diff_mat /= np.max(diff_mat)
             self.view_diff_mats[view_key] = diff_mat
@@ -442,7 +442,10 @@ class CADComparisonRenderer:
         self.current_zoom_level = zoom_level
         
         # COMPOSITION STAGE
-        compose_scrollbar = True
+        if "compose_scrollbar" in params.keys():
+            compose_scrollbar = params["compose_scrollbar"]
+        else:
+            compose_scrollbar = False
         if compose_scrollbar:
             img_array[:-1,-2,:] = [255,255,255,0]
             img_array[-2,:-1,:] = [255,255,255,0]
@@ -451,7 +454,10 @@ class CADComparisonRenderer:
             img_array[max(0,int(img_array.shape[0]*x_scroll_min)):min(int(img_array.shape[0]*x_scroll_max)+1, img_array.shape[0]),-1,:] = [0,0,0,255]
             img_array[-1, max(0, int(img_array.shape[1]*y_scroll_min)):min(int(img_array.shape[1]*y_scroll_max)+1, img_array.shape[1]),:] = [0,0,0,255]
 
-        compose_slice_graph = False
+        if "compose_scrollbar" in params.keys():
+            compose_slice_graph = params["compose_slicegraph"]
+        else:
+            compose_slice_graph = False
         if compose_slice_graph:
             # take correct view_diff_mat
             cut_position_int = int(100.0*(1.0-cut_depth))

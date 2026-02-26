@@ -576,6 +576,8 @@
                     move_camera_center: currentMoveCamera,
                     print_view: currentPrintView,
                     current_model: currentModel,
+                    compose_scrollbar: composeScrollbar,
+                    compose_slicegraph: composeSliceGraph,
                 };
                 
                 // Send to server and process response
@@ -618,6 +620,8 @@
         const renderModes = ['Shaded', 'Outline', 'Cut'];
         const representationModes = ['single', 'side-by-side'];
         let currentModel = "none";
+        let composeScrollbar = false;
+        let composeSliceGraph = false;
         
         // Remove "Back" from available views
         //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
@@ -1100,6 +1104,14 @@
                     currentMoveCamera = "down";
                     sendStateToServer();
                     currentMoveCamera = "none";
+                    break
+                case '[':
+                    composeScrollbar = !composeScrollbar;
+                    sendStateToServer();
+                    break
+                case ']':
+                    composeSliceGraph = !composeSliceGraph;
+                    sendStateToServer();
                     break
                 case 'a':
                     currentMoveCamera = "left";
