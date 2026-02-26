@@ -11,18 +11,12 @@ from OCC.Core.STEPControl import STEPControl_Reader
 from trimesh.exchange.stl import load_stl
 from trimesh import Trimesh
 from trimesh.repair import stitch, fill_holes, fix_inversion, fix_winding
-<<<<<<< HEAD
 from copy import copy, deepcopy
-=======
-from copy import copy
->>>>>>> bf24693 (added diff lines for zoom and panning)
 import src.converter.plane_intersection_utils as plane_inter_utils
 from src.converter.single_view_stl import get_single_view, get_cut_faces
 from src.converter.juxtaposition_view_stl import get_juxtaposition_view
 from src.converter.superposition_view_stl import get_superposition_view
 from src.converter.side_by_side_view import get_side_view
-<<<<<<< HEAD
-<<<<<<< HEAD
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
 from shapely import union_all
@@ -31,13 +25,6 @@ from shapely import symmetric_difference
 import matplotlib.pyplot as plt
 import io, PIL
 from PIL import Image
-=======
-from src.converter.associate_pixels import associate_pixels
-
->>>>>>> 5d2223e (save triangle ids and barycentric coordinates per pixel)
-=======
-from src.converter.associate_pixels import associate_pixels, get_tracked_points, get_new_positions
->>>>>>> bf24693 (added diff lines for zoom and panning)
 
 class CADComparisonRenderer:
     """
@@ -58,22 +45,14 @@ class CADComparisonRenderer:
         self.bbox = None
         self.view_limits = None
         self.view_current_camera_center = []
-<<<<<<< HEAD
-<<<<<<< HEAD
         self.view_current_axis = -1
         self.view_current_view_limits = -1
         self.current_render_mode = None
         self.screen_size = [96,40]
         self.view_diff_mats = {}
-=======
-        self.current_triangle_ids = None
-        self.current_barycentric_coords = None
->>>>>>> 5d2223e (save triangle ids and barycentric coordinates per pixel)
-=======
         self.current_render = None
         self.current_ax_limits = []
         self.current_zoom_level = None
->>>>>>> bf24693 (added diff lines for zoom and panning)
         
         # Load and normalize shapes
         self._load_models()
@@ -136,23 +115,11 @@ class CADComparisonRenderer:
         
         for i, view_key in enumerate(view_keys):
             print("view_key", view_key)
-<<<<<<< HEAD
-<<<<<<< HEAD
             _, ax_limits_before = get_single_view(
                 shape_before, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
             )
             _, ax_limits_after = get_single_view(
                 shape_after, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
-=======
-            _, ax_limits_before, _, _ = get_single_view(
-=======
-            _, ax_limits_before, _ = get_single_view(
->>>>>>> bf24693 (added diff lines for zoom and panning)
-                shape_before, self.bbox, 1.0, view_key, "filled"
-            )
-            _, ax_limits_after, _ = get_single_view(
-                shape_after, self.bbox, 1.0, view_key, "filled"
->>>>>>> 5d2223e (save triangle ids and barycentric coordinates per pixel)
             )
             view_limits[i][0][0] = min(ax_limits_before[0][0], ax_limits_after[0][0])
             view_limits[i][0][1] = max(ax_limits_before[0][1], ax_limits_after[0][1])
@@ -467,7 +434,6 @@ class CADComparisonRenderer:
                 1.0 - cut_depth,
                 view_name,
                 render_mode,
-<<<<<<< HEAD
                 imposed_ax_limits=imposed_zoom_ax_limits,
                 screen_size=self.screen_size
             )
@@ -475,40 +441,8 @@ class CADComparisonRenderer:
             self.view_current_axis = view_name
             self.current_render_mode = render_mode
             self.view_current_view_limits = imposed_zoom_ax_limits
-=======
-                imposed_ax_limits=imposed_zoom_ax_limits
-            )
-            # composite diff_line_image with both outline images
-            if not self.current_render is None and (camera_move != "none" or self.current_zoom_level != zoom_level) and len(tracked_points) > 0:
-                for i in range(diff_line_img.shape[0]):
-                    for j in range(diff_line_img.shape[1]):
-                        if outline[i,j,0] != 255:
-                            diff_line_img[i,j,0] = outline[i,j,0]
-                        elif self.current_outline[i,j,0] != 255:
-                            diff_line_img[i,j,0] = self.current_outline[i,j,0]
-                for i in range(diff_line_img.shape[0]):
-                    for j in range(diff_line_img.shape[1]):
-                        if diff_line_img[i,j,0] != 255:
-                            print(1, end='')
-                        else:
-                            print(0, end='')
-                    print()
-                print()
-
-            self.current_render = img_array
-            self.current_outline = outline
-            # for each pixel, get matching triangle id and closest barycentric coord
-<<<<<<< HEAD
-            if not self.current_triangle_ids is None:
-                associate_lines = associate_pixels(self.current_triangle_ids, self.current_barycentric_coords, 
-                                                   triangle_ids, barycentric_coords)
-            self.current_triangle_ids = triangle_ids
-            self.current_barycentric_coords = barycentric_coords
->>>>>>> 5d2223e (save triangle ids and barycentric coordinates per pixel)
-=======
         self.current_ax_limits = copy(imposed_zoom_ax_limits)
         self.current_zoom_level = zoom_level
->>>>>>> bf24693 (added diff lines for zoom and panning)
         
         # COMPOSITION STAGE
         compose_scrollbar = True
