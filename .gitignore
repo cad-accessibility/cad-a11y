@@ -4,6 +4,7 @@ model.stl
 *.stl
 *.step
 *.scad
+*.png
 scripts/*.stl
 scripts/*.step
 scripts/*.scad
