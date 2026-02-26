@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import hashlib
 import io
 import json
 import logging
@@ -25,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from flask import Flask, jsonify, request
+from flask import Flask, has_request_context, jsonify, request
 from flask_cors import CORS
 from PIL import Image
 
@@ -66,6 +67,8 @@ class RuntimeState:
 REPO_ROOT = Path(__file__).resolve().parent
 MODEL_DIR = REPO_ROOT / "model"
 RENDERS_DIR = REPO_ROOT / "renders"
+STUDY_LOG_DIR = REPO_ROOT / "study_logs"
+BRAILLE_LOG_PATH = Path(os.getenv("BRAILLE_LOG_PATH", str(STUDY_LOG_DIR / "braille_send_events.jsonl")))
 
 DEFAULT_RENDER_PARAMS: dict[str, Any] = {
     "view": "y-",
@@ -90,6 +93,8 @@ state = RuntimeState()
 renderer: CADComparisonRenderer | None = None
 current_render: np.ndarray | None = None
 state_lock = threading.Lock()
+braille_log_lock = threading.Lock()
+braille_send_sequence = 0
 last_render_fingerprint: str | None = None
 last_render_response: dict[str, Any] | None = None
 
@@ -140,7 +145,50 @@ def _to_braille_payload(rendered_rgba: np.ndarray) -> np.ndarray:
     return np.where(payload > 0, 255, 0).astype(np.uint8)
 
 
-def _render_and_send(params: dict[str, Any]) -> tuple[np.ndarray, list[float] | None, np.ndarray]:
+def _payload_stats(payload: np.ndarray) -> dict[str, Any]:
+    total_cells = int(payload.size)
+    raised_cells = int(np.count_nonzero(payload > 0))
+    payload_bytes = payload.astype(np.uint8, copy=False).tobytes()
+    return {
+        "shape": list(payload.shape),
+        "dtype": str(payload.dtype),
+        "total_cells": total_cells,
+        "raised_cells": raised_cells,
+        "raised_ratio": float(raised_cells / total_cells) if total_cells else 0.0,
+        "sum": int(np.sum(payload, dtype=np.int64)),
+        "min": int(np.min(payload)) if total_cells else 0,
+        "max": int(np.max(payload)) if total_cells else 0,
+        "sha256": hashlib.sha256(payload_bytes).hexdigest(),
+    }
+
+
+def _collect_request_context() -> dict[str, Any]:
+    if not has_request_context():
+        return {}
+    return {
+        "endpoint": request.path,
+        "method": request.method,
+        "remote_addr": request.remote_addr,
+        "user_agent": request.user_agent.string,
+    }
+
+
+def _write_braille_event(event: dict[str, Any]) -> None:
+    BRAILLE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(event, sort_keys=True, ensure_ascii=False)
+    with braille_log_lock:
+        with BRAILLE_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+
+
+def _next_braille_send_sequence() -> int:
+    global braille_send_sequence
+    with braille_log_lock:
+        braille_send_sequence += 1
+        return braille_send_sequence
+
+
+def _render_and_send(params: dict[str, Any], *, source: str) -> tuple[np.ndarray, list[float] | None, np.ndarray]:
     global current_render
 
     engine = get_or_create_renderer()
@@ -150,10 +198,57 @@ def _render_and_send(params: dict[str, Any]) -> tuple[np.ndarray, list[float] | 
     current_render = rendered
 
     braille_payload = _to_braille_payload(rendered)
+    started_at = time.perf_counter()
+    sequence = _next_braille_send_sequence()
+    with state_lock:
+        state_snapshot = {
+            "cube_value": state.cube_value,
+            "slider_value": state.slider_value,
+        }
+    event: dict[str, Any] = {
+        "event": "braille_send",
+        "sequence": sequence,
+        "source": source,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "model": str(DEFAULT_MODEL),
+        "params": {
+            "view": params.get("view"),
+            "zoom": params.get("zoom"),
+            "depth": params.get("depth"),
+            "renderMode": params.get("renderMode"),
+            "mode": params.get("mode"),
+            "move_camera_center": params.get("move_camera_center"),
+            "print_view": params.get("print_view"),
+        },
+        "state": state_snapshot,
+        "render_shape": list(rendered.shape),
+        "payload": _payload_stats(braille_payload),
+        "request": _collect_request_context(),
+    }
+
     try:
         bytes_written = send_to_braille_display(braille_payload)
+        elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+        event.update(
+            {
+                "status": "success",
+                "bytes_written": int(bytes_written),
+                "send_duration_ms": round(elapsed_ms, 3),
+            }
+        )
+        _write_braille_event(event)
         _log(f"Braille write: {bytes_written} bytes")
     except BrailleDisplayError as error:
+        elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+        event.update(
+            {
+                "status": "error",
+                "error_type": type(error).__name__,
+                "error": str(error),
+                "send_duration_ms": round(elapsed_ms, 3),
+            }
+        )
+        _write_braille_event(event)
         _log(f"Braille send failed: {error}", force=True)
 
     bbox = getattr(engine, "bbox", None)
@@ -201,7 +296,7 @@ def initialize_default_braille_render() -> None:
     _log("Preparing initial render...", force=True)
 
     try:
-        rendered, _, _ = _render_and_send(dict(DEFAULT_RENDER_PARAMS))
+        rendered, _, _ = _render_and_send(dict(DEFAULT_RENDER_PARAMS), source="startup")
         _log(f"Initial render ready: shape={tuple(rendered.shape)}", force=True)
     except Exception as error:
         _log(f"Initial render failed: {error}", force=True)
@@ -352,7 +447,7 @@ def render_view():
                 state.cube_value = view
         _log(f"Render request: {merged_params}")
 
-        rendered, bbox, braille_payload = _render_and_send(merged_params)
+        rendered, bbox, braille_payload = _render_and_send(merged_params, source="http_render")
         engine = get_or_create_renderer()
         _save_print_if_requested(merged_params, engine, braille_payload)
 
@@ -388,6 +483,7 @@ def main() -> int:
     _log("Server starting on http://localhost:6969", force=True)
     _log(f"Model: {DEFAULT_MODEL}", force=True)
     _log("Endpoints: POST /render, GET /get_data", force=True)
+    _log(f"Braille send logs: {BRAILLE_LOG_PATH}", force=True)
     if QUIET_MODE:
         _log("Output mode: quiet (set SERVER_VERBOSE=1 for debug logs)", force=True)
 
