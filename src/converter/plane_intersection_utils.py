@@ -374,8 +374,11 @@ def faces_on_plane_fast(shape, plane_origin, plane_normal, tol=1e-3):
     n /= np.linalg.norm(n)
     p0 = np.asarray(plane_origin, dtype=np.float64)
 
-    # Normalize face normals
-    FNn = FN / np.linalg.norm(FN, axis=1, keepdims=True)
+    # Normalize face normals (handle zero-length normals)
+    norms = np.linalg.norm(FN, axis=1, keepdims=True)
+    # Avoid division by zero by setting zero-length normals to a small value
+    norms = np.where(norms == 0, 1e-10, norms)
+    FNn = FN / norms
 
     # --- 1. Parallel normal test ---
     parallel = np.abs(FNn @ n) > (1 - tol)

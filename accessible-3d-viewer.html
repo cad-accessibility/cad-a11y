@@ -210,6 +210,27 @@
             color: #2c3e50;
         }
         
+        /* Checkbox styling */
+        input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            margin-right: 8px;
+            cursor: pointer;
+            vertical-align: middle;
+        }
+        
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+            cursor: pointer;
+            user-select: none;
+        }
+        
+        .checkbox-label:hover {
+            color: #2980b9;
+        }
+        
         /* Info display styling */
         #view-info div {
             margin-bottom: 10px;
@@ -422,6 +443,40 @@
                 </div>
             </section>
 
+            <!-- Display Options Section -->
+            <section class="section" aria-labelledby="display-options-heading">
+                <h2 id="display-options-heading">Display Options</h2>
+                <div id="display-options-help" class="help-text">
+                    Control additional visualization and interface elements
+                </div>
+                <div aria-describedby="display-options-help">
+                    <label class="checkbox-label">
+                        <input 
+                            type="checkbox" 
+                            id="scrollbar-toggle" 
+                            checked
+                            aria-describedby="scrollbar-help"
+                        >
+                        <span>Enable Scrollbar Visualization</span>
+                    </label>
+                    <div id="scrollbar-help" class="help-text sr-only">
+                        Toggle the scrollbar visualization overlay on the rendered view
+                    </div>
+                    
+                    <label class="checkbox-label">
+                        <input 
+                            type="checkbox" 
+                            id="slicegraph-toggle"
+                            aria-describedby="slicegraph-help"
+                        >
+                        <span>Enable Slice Graph Visualization</span>
+                    </label>
+                    <div id="slicegraph-help" class="help-text sr-only">
+                        Toggle the slice graph visualization showing cross-sectional data
+                    </div>
+                </div>
+            </section>
+
             <!-- Control Buttons Section -->
             <section class="section" aria-labelledby="controls-heading">
                 <h2 id="controls-heading">Model Controls</h2>
@@ -620,7 +675,7 @@
         const renderModes = ['Shaded', 'Outline', 'Cut'];
         const representationModes = ['single', 'side-by-side'];
         let currentModel = "none";
-        let composeScrollbar = false;
+       let composeScrollbar = true;
         let composeSliceGraph = false;
         
         // Remove "Back" from available views
@@ -705,6 +760,12 @@
             representationModeRadios().forEach(r => { r.checked = (r.value === currentRepresentationMode); });
             viewRadios().forEach(r => { r.checked = (r.value === currentView); });
             zoomRadios().forEach(r => { r.checked = (r.value === currentZoom); });
+        }
+        
+        // Helper to sync checkboxes with current state
+        function syncCheckboxes() {
+            document.getElementById('scrollbar-toggle').checked = composeScrollbar;
+            document.getElementById('slicegraph-toggle').checked = composeSliceGraph;
         }
 
         // Update view information
@@ -972,6 +1033,20 @@
             }
         });
         
+        // Scrollbar toggle checkbox
+        document.getElementById('scrollbar-toggle').addEventListener('change', function(e) {
+            composeScrollbar = e.target.checked;
+            announce(composeScrollbar ? 'Scrollbar visualization enabled' : 'Scrollbar visualization disabled');
+            sendStateToServer();
+        });
+        
+        // Slice graph toggle checkbox
+        document.getElementById('slicegraph-toggle').addEventListener('change', function(e) {
+            composeSliceGraph = e.target.checked;
+            announce(composeSliceGraph ? 'Slice graph visualization enabled' : 'Slice graph visualization disabled');
+            sendStateToServer();
+        });
+        
         // Deeper depth button
         deeperBtn.addEventListener('click', function() {
             updateSliceDepth(currentSliceDepth + 10, true);
@@ -1182,6 +1257,7 @@
             updateSliceDepth(50, false);
             updateView('front');
             syncRadios();
+            syncCheckboxes();
             updateButtonLabels();
             
             // Send initial state to server

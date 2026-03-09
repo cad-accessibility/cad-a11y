@@ -159,7 +159,11 @@ def render_view():
         print(f"Parameters: {json.dumps(params, indent=2)}")
         #params["mode"] = "side_by_side"
         print(params["current_model"])
-        current_model_name = int(params["current_model"])
+        # Handle case where current_model is 'none' or invalid
+        if params["current_model"] == "none" or params["current_model"] is None:
+            current_model_name = 0  # Default to first model
+        else:
+            current_model_name = int(params["current_model"])
         print(current_model_name)
         
         # Get or create renderer
