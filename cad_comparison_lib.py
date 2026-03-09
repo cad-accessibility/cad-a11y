@@ -407,6 +407,40 @@ class CADComparisonRenderer:
                 superposition_key=superposition_mode
             )
         if comparison_mode == "side-by-side":
+            # Calculate aspect-ratio-adjusted limits for the legend view
+            # Get the legend view index and base limits
+            legend_view_index = self._get_view_index(view_name_legend)
+            legend_limits = self.view_limits[legend_view_index].copy()
+            
+            # Calculate dimensions for legend view
+            legend_horizontal_dist = np.abs(legend_limits[0][1] - legend_limits[0][0])
+            legend_vertical_dist = np.abs(legend_limits[1][1] - legend_limits[1][0])
+            legend_center_x = (legend_limits[0][0] + legend_limits[0][1]) / 2.0
+            legend_center_y = (legend_limits[1][0] + legend_limits[1][1]) / 2.0
+            
+            # Apply same aspect ratio correction as used for cut view (0.5 aspect ratio for side-by-side)
+            side_by_side_aspect_ratio = 0.5 * self.screen_size[0] / self.screen_size[1]
+            
+            # Adjust legend limits to match the aspect ratio of half-screen
+            if legend_horizontal_dist / legend_vertical_dist < side_by_side_aspect_ratio:
+                # Need to expand horizontal
+                horizontal_scale_factor = side_by_side_aspect_ratio * legend_vertical_dist / legend_horizontal_dist
+                adjusted_horizontal_dist = horizontal_scale_factor * legend_horizontal_dist
+                imposed_legend_ax_limits = [
+                    [legend_center_x - adjusted_horizontal_dist / 2.0,
+                     legend_center_x + adjusted_horizontal_dist / 2.0],
+                    legend_limits[1]
+                ]
+            else:
+                # Need to expand vertical
+                vertical_scale_factor = (legend_horizontal_dist / legend_vertical_dist) / side_by_side_aspect_ratio
+                adjusted_vertical_dist = vertical_scale_factor * legend_vertical_dist
+                imposed_legend_ax_limits = [
+                    legend_limits[0],
+                    [legend_center_y - adjusted_vertical_dist / 2.0,
+                     legend_center_y + adjusted_vertical_dist / 2.0]
+                ]
+            
             img_array, _ = get_side_view(
                 self.shapes[shape_index],
                 self.bbox,
@@ -414,9 +448,10 @@ class CADComparisonRenderer:
                 view_name_legend,
                 view_name_cut,
                 render_mode,
-                imposed_ax_limits_legend=self.view_limits[self._get_view_index(view_name_legend)],
+                imposed_ax_limits_legend=imposed_legend_ax_limits,
                 #imposed_ax_limits_cut=self.view_limits[self._get_view_index(view_name_cut)]
-                imposed_ax_limits_cut=imposed_zoom_ax_limits
+                imposed_ax_limits_cut=imposed_zoom_ax_limits,
+                screen_size=self.screen_size
             )
         else:  # single mode
             #print(self.view_limits[view_index])

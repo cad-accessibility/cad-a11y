@@ -425,55 +425,25 @@
                     </fieldset>
                 </div>
 
-                <div id="render-help" class="help-text">
-                    Choose between Single or Side-by-Side 
+                <div id="view-mode-help" class="help-text">
+                    Choose how to visualize the model
                 </div>
-                <div aria-describedby="representation-help">
+                <div aria-describedby="view-mode-help">
                     <fieldset role="radiogroup" aria-labelledby="render-heading">
-                        <legend class="sr-only">Representation Mode Options</legend>
+                        <legend class="sr-only">View Mode Options</legend>
                         <label>
-                            <input type="radio" name="representation-mode" id="representation-mode-single" value="single" checked>
-                            Single
+                            <input type="radio" name="view-mode" id="view-mode-single" value="single" checked>
+                            Single (with scrollbar)
                         </label>
                         <label>
-                            <input type="radio" name="representation-mode" id="representation-mode-side-by-side" value="side-by-side" checked>
+                            <input type="radio" name="view-mode" id="view-mode-side-by-side" value="side-by-side">
                             Side-by-Side
                         </label>
+                        <label>
+                            <input type="radio" name="view-mode" id="view-mode-slice-graph" value="slice-graph">
+                            Slice Graph (with scrollbar)
+                        </label>
                     </fieldset>
-                </div>
-            </section>
-
-            <!-- Display Options Section -->
-            <section class="section" aria-labelledby="display-options-heading">
-                <h2 id="display-options-heading">Display Options</h2>
-                <div id="display-options-help" class="help-text">
-                    Control additional visualization and interface elements
-                </div>
-                <div aria-describedby="display-options-help">
-                    <label class="checkbox-label">
-                        <input 
-                            type="checkbox" 
-                            id="scrollbar-toggle" 
-                            checked
-                            aria-describedby="scrollbar-help"
-                        >
-                        <span>Enable Scrollbar Visualization</span>
-                    </label>
-                    <div id="scrollbar-help" class="help-text sr-only">
-                        Toggle the scrollbar visualization overlay on the rendered view
-                    </div>
-                    
-                    <label class="checkbox-label">
-                        <input 
-                            type="checkbox" 
-                            id="slicegraph-toggle"
-                            aria-describedby="slicegraph-help"
-                        >
-                        <span>Enable Slice Graph Visualization</span>
-                    </label>
-                    <div id="slicegraph-help" class="help-text sr-only">
-                        Toggle the slice graph visualization showing cross-sectional data
-                    </div>
                 </div>
             </section>
 
@@ -592,7 +562,7 @@
                         <li><strong>C</strong> - Switch to cut view</li>
 
                         <li><strong>R</strong> - Switch render mode (cycle through filled, outline, cut)</li>
-                        <li><strong>T</strong> - Switch representation mode (cycle through single and side-by-side)</li>
+                        <li><strong>T</strong> - Switch view mode (cycle through single, side-by-side, and slice-graph)</li>
 
                         <li><strong>W</strong> - Move scene up</li>
                         <li><strong>A</strong> - Move scene left</li>
@@ -673,7 +643,7 @@
         let currentMoveCamera = "none";
         let currentPrintView = false;
         const renderModes = ['Shaded', 'Outline', 'Cut'];
-        const representationModes = ['single', 'side-by-side'];
+        const representationModes = ['single', 'side-by-side', 'slice-graph'];
         let currentModel = "none";
        let composeScrollbar = true;
         let composeSliceGraph = false;
@@ -703,7 +673,7 @@
 
         // New radio group references
         const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
-        const representationModeRadios = () => document.querySelectorAll('input[name="representation-mode"]');
+        const viewModeRadios = () => document.querySelectorAll('input[name="view-mode"]');
         const viewRadios = () => document.querySelectorAll('input[name="view-select"]');
         const zoomRadios = () => document.querySelectorAll('input[name="zoom-select"]');
         // ...existing code...
@@ -757,15 +727,27 @@
         // Helper to sync radios with current state
         function syncRadios() {
             renderModeRadios().forEach(r => { r.checked = (r.value === currentRenderMode); });
-            representationModeRadios().forEach(r => { r.checked = (r.value === currentRepresentationMode); });
+            viewModeRadios().forEach(r => { r.checked = (r.value === currentRepresentationMode); });
             viewRadios().forEach(r => { r.checked = (r.value === currentView); });
             zoomRadios().forEach(r => { r.checked = (r.value === currentZoom); });
         }
         
-        // Helper to sync checkboxes with current state
-        function syncCheckboxes() {
-            document.getElementById('scrollbar-toggle').checked = composeScrollbar;
-            document.getElementById('slicegraph-toggle').checked = composeSliceGraph;
+        // Helper to update composeScrollbar and composeSliceGraph based on view mode
+        function updateDisplayOptions() {
+            switch (currentRepresentationMode) {
+                case 'single':
+                    composeScrollbar = true;
+                    composeSliceGraph = false;
+                    break;
+                case 'side-by-side':
+                    composeScrollbar = false;
+                    composeSliceGraph = false;
+                    break;
+                case 'slice-graph':
+                    composeScrollbar = true;
+                    composeSliceGraph = true;
+                    break;
+            }
         }
 
         // Update view information
@@ -897,6 +879,7 @@
             }
             const previousMode = currentRepresentationMode;
             currentRepresentationMode = targetMode;
+            updateDisplayOptions();
             updateButtonLabels();
             syncRadios();
             announce(`${previousMode.toLowerCase()} to ${currentRepresentationMode.toLowerCase()}`);
@@ -1007,10 +990,13 @@
             }
         });
 
+        // View mode radios (Single, Side-by-side, Slice graph)
         document.addEventListener('change', function(e) {
-            if (e.target && e.target.matches('input[name="representation-mode"]')) {
+            if (e.target && e.target.matches('input[name="view-mode"]')) {
                 if (e.target.checked) {
                     switchToRepresentationMode(e.target.value);
+                    updateDisplayOptions();
+                    sendStateToServer();
                 }
             }
         });
@@ -1031,20 +1017,6 @@
                     updateZoom(e.target.value);
                 }
             }
-        });
-        
-        // Scrollbar toggle checkbox
-        document.getElementById('scrollbar-toggle').addEventListener('change', function(e) {
-            composeScrollbar = e.target.checked;
-            announce(composeScrollbar ? 'Scrollbar visualization enabled' : 'Scrollbar visualization disabled');
-            sendStateToServer();
-        });
-        
-        // Slice graph toggle checkbox
-        document.getElementById('slicegraph-toggle').addEventListener('change', function(e) {
-            composeSliceGraph = e.target.checked;
-            announce(composeSliceGraph ? 'Slice graph visualization enabled' : 'Slice graph visualization disabled');
-            sendStateToServer();
         });
         
         // Deeper depth button
@@ -1256,8 +1228,8 @@
             // Set initial values
             updateSliceDepth(50, false);
             updateView('front');
+            updateDisplayOptions();
             syncRadios();
-            syncCheckboxes();
             updateButtonLabels();
             
             // Send initial state to server

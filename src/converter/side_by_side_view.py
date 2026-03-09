@@ -68,10 +68,16 @@ views = {
     }
 }
 
-def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cut="left",  rendering_mode="filled", imposed_ax_limits_legend=[], imposed_ax_limits_cut=[]):
+def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cut="left",  rendering_mode="filled", imposed_ax_limits_legend=[], imposed_ax_limits_cut=[], screen_size=[60, 40]):
 
     print("get_side_view: rendering mode", rendering_mode, "view_key_legend", view_key_legend, "view_key_cut", view_key_cut)
     #shape_brep_copy = deepcopy(shape_brep)
+    # Calculate dimensions based on screen_size
+    total_width = screen_size[0]
+    legend_width = int(total_width / 3)
+    cut_width = total_width - legend_width  # Ensures exact fit
+    total_height = screen_size[1]
+    
     # Cut view
     #cut_depth = 0.5
     normal_dir = views[view_key_cut]["dir"]
@@ -80,8 +86,8 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     shape_cut, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
     shape_cut = faces_on_plane(shape_cut, plane_origin, normal_dir)
 
-    # Target pixel resolution
-    width_px, height_px = 48, 40
+    # Target pixel resolution (cut view gets 2/3 of width)
+    width_px, height_px = cut_width, total_height
     dpi = 100 
     fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
     ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
@@ -154,8 +160,8 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
 
     normal_dir = views[view_key_legend]["dir"]
 
-    # Target pixel resolution
-    width_px, height_px = 48, 40
+    # Target pixel resolution (legend view gets 1/3 of width)
+    width_px, height_px = legend_width, total_height
     dpi = 100 
     fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
     ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
@@ -220,8 +226,8 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     if rendering_mode == "outline":
         legend_img = get_outlines(img_np)
 
-    # Line img
-    width_px, height_px = 48, 40
+    # Line img (must match legend width)
+    width_px, height_px = legend_width, total_height
     dpi = 100 
     fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
     ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
@@ -284,9 +290,9 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     if plt.fignum_exists(fig.number):
         plt.close(fig.number)
 
-    combined_view = np.zeros([40, 96, 4], dtype=legend_img.dtype) 
-    combined_view[:, :48] = legend_img
-    combined_view[:, 48:] = cut_img
+    combined_view = np.zeros([total_height, total_width, 4], dtype=legend_img.dtype) 
+    combined_view[:, :legend_width] = legend_img
+    combined_view[:, legend_width:] = cut_img
     #for i in range(combined_view.shape[0]):
     #    for j in range(combined_view.shape[1]):
     #        if combined_view[i,j,0] == 255:
