@@ -431,10 +431,15 @@ def render_view():
         merged_params.update(params)
         merged_params["view"] = str(merged_params.get("view", "")).lower()
 
+        move_camera_center = str(merged_params.get("move_camera_center", "none")).lower()
+        is_pan_request = move_camera_center != "none"
+
         fingerprint = json.dumps(merged_params, sort_keys=True, default=str)
 
         with state_lock:
             if (
+                not is_pan_request
+                and
                 merged_params.get("print_view") is not True
                 and last_render_fingerprint == fingerprint
                 and last_render_response is not None
