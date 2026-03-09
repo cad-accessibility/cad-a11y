@@ -192,6 +192,7 @@ def _render_and_send(params: dict[str, Any], *, source: str) -> tuple[np.ndarray
     global current_render
 
     engine = get_or_create_renderer()
+    print(params)
     out_guard, err_guard = _renderer_stdio_guard()
     with out_guard, err_guard:
         rendered = engine.render(params)

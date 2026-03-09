@@ -69,6 +69,13 @@ views = {
     }
 }
 
+def get_cut_faces(shape, view_key, cut_depth, bbox):
+    normal_dir = views[view_key]["dir"]
+    shape_cut, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
+    shape_faces = faces_on_plane_fast(shape_cut, plane_origin, normal_dir)
+    #print(shape_cut.area, shape_faces.area, plane_origin, bbox)
+    return shape_faces
+
 def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="filled", imposed_ax_limits=[], screen_size=[96,40]):
 
     shape = copy(shape)
@@ -117,13 +124,16 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
 
         # for each pixel, get triangle ID and barycentric coordinates
 
+        # for each pixel, get triangle ID and barycentric coordinates
+
     ax.set_aspect('equal')
     ax = plt.gca()
     if len(imposed_ax_limits) > 0:
         ax.set_xlim(imposed_ax_limits[0])
         ax.set_ylim(imposed_ax_limits[1])
     ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
-    print(ax_limits)
+    #print(ax_limits)
+    #fig.savefig('test.png', dpi=dpi, pad_inches=0)
 
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=dpi, pad_inches=0)
@@ -140,12 +150,9 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
                 print(0, end='')
         print()
 
-    #plt.imshow(img_np)
-    #plt.show()
     if plt.fignum_exists(fig.number):
         plt.close(fig.number)
 
-    # extract outline
     #print(img_np)
     outlines_np = get_outlines(img_np)
     if rendering_mode in ["filled", "slice"]:

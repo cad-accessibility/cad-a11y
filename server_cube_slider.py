@@ -29,24 +29,33 @@ CORS(app)  # Enable CORS to allow requests from the HTML file
 
 # Store commands in memory (could be replaced with database)
 commands_log = []
+model_list = []
+model_name_list = []
+current_model_name = 0
 
 # Determine repo root and resolve default coffee mug model path
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 first_stl_file = ""
 for f in os.listdir(os.path.join(REPO_ROOT, "model")):
     if ".stl" in f:
-        first_stl_file = f
+        #first_stl_file = f
+        model_list.append(os.path.join(REPO_ROOT, "model", f))
+        model_name_list.append(f.split(".stl")[0])
 
-_coffee_candidates = [
-    os.path.join(REPO_ROOT, "model", first_stl_file)
-    #os.path.join(REPO_ROOT, "Mug_after.step"),
-]
-_default_model = next((p for p in _coffee_candidates if os.path.exists(p)), _coffee_candidates[0])
+#model_list = ["coffee", "second cup", "teaparty"]
+renderer_dict = {}
+
+#_coffee_candidates = [
+#    os.path.join(REPO_ROOT, "model", first_stl_file)
+#    #os.path.join(REPO_ROOT, "Mug_after.step"),
+#]
+#_default_model = next((p for p in _coffee_candidates if os.path.exists(p)), _coffee_candidates[0])
 
 # Initialize CAD renderer with default models (use the same file for before/after by default)
-before_model = _default_model
-after_model = _default_model
-print(f"Default model set to: {before_model}")
+#before_model = _default_model
+#after_model = _default_model
+#print(f"Default model set to: {before_model}")
+print(f"Model list: {model_list}")
 
 # Global renderer instance (initialized on first use to avoid startup delay)
 renderer = None
@@ -62,13 +71,22 @@ DEFAULT_RENDER_PARAMS = {
 
 def get_or_create_renderer():
     """Lazy initialization of renderer to avoid startup delay."""
-    global renderer
-    if renderer is None:
-        print("Initializing CAD renderer...")
-        renderer = CADComparisonRenderer(before_model, after_model)
-        renderer.init_device(device)
-        print("Renderer initialized successfully!")
-    return renderer
+    global renderer_dict
+    if len(list(renderer_dict.keys())) == 0:
+        for i, f in enumerate(model_list):
+            print("Initializing CAD renderer...")
+            renderer = CADComparisonRenderer(f, f)
+            renderer.init_device(device)
+            renderer_dict[i] = renderer
+            print("Renderer initialized successfully!")
+    #global renderer
+    #if renderer is None:
+    #    print("Initializing CAD renderer...")
+    #    renderer = CADComparisonRenderer(before_model, after_model)
+    #    renderer.init_device(device)
+    #    print("Renderer initialized successfully!")
+    print(current_model_name)
+    return renderer_dict[current_model_name]
 
 def _format_img_data_repr(arr2d: np.ndarray) -> str:
     # Ensure 2D
@@ -130,6 +148,7 @@ def render_view():
     """Render CAD view with given parameters"""
     global current_render
     global cube_value
+    global current_model_name
     try:
         params = request.get_json()
         cube_value = params["view"]
@@ -139,6 +158,9 @@ def render_view():
         print("=" * 60)
         print(f"Parameters: {json.dumps(params, indent=2)}")
         #params["mode"] = "side_by_side"
+        print(params["current_model"])
+        current_model_name = int(params["current_model"])
+        print(current_model_name)
         
         # Get or create renderer
         r = get_or_create_renderer()
@@ -199,7 +221,8 @@ def render_view():
             'message': 'Render complete',
             'image_shape': img_array.shape,
             'bbox': r.bbox,
-            'image_base64': img_base64
+            'image_base64': img_base64,
+            'model_list': model_name_list
         }), 200
         
     except Exception as e:
@@ -606,8 +629,8 @@ if __name__ == '__main__':
     print("=" * 70)
     print("Server starting on http://localhost:6969")
     print("\nCurrent Models:")
-    print(f"  Before: {before_model}")
-    print(f"  After:  {after_model}")
+    #print(f"  Before: {before_model}")
+    #print(f"  After:  {after_model}")
     print("\nEndpoints:")
     print("  - POST /command           - Receive commands (auto-renders if params present)")
     print("  - POST /render            - Explicitly render with parameters")
@@ -626,6 +649,6 @@ if __name__ == '__main__':
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
     print("\nWaiting for commands...\n")
-    # threading.Thread(target=dice_main_thread, daemon=True).start()
+    #threading.Thread(target=dice_main_thread, daemon=True).start()
     #threading.Thread(target=start_slider_trinkey, daemon=True).start()
     app.run(debug=False, host='0.0.0.0', port=6969)

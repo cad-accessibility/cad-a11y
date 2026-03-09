@@ -11,12 +11,20 @@ from OCC.Core.STEPControl import STEPControl_Reader
 from trimesh.exchange.stl import load_stl
 from trimesh import Trimesh
 from trimesh.repair import stitch, fill_holes, fix_inversion, fix_winding
-from copy import copy
+from copy import copy, deepcopy
 import src.converter.plane_intersection_utils as plane_inter_utils
-from src.converter.single_view_stl import get_single_view
+from src.converter.single_view_stl import get_single_view, get_cut_faces
 from src.converter.juxtaposition_view_stl import get_juxtaposition_view
 from src.converter.superposition_view_stl import get_superposition_view
 from src.converter.side_by_side_view import get_side_view
+from shapely.geometry import Polygon, MultiPolygon
+from shapely.ops import unary_union
+from shapely import union_all
+from shapely.plotting import plot_polygon
+from shapely import symmetric_difference
+import matplotlib.pyplot as plt
+import io, PIL
+from PIL import Image
 
 class CADComparisonRenderer:
     """
@@ -41,6 +49,10 @@ class CADComparisonRenderer:
         self.view_current_view_limits = -1
         self.current_render_mode = None
         self.screen_size = [96,40]
+        self.view_diff_mats = {}
+        self.current_render = None
+        self.current_ax_limits = []
+        self.current_zoom_level = None
         
         # Load and normalize shapes
         self._load_models()
@@ -72,6 +84,7 @@ class CADComparisonRenderer:
         
         # Calculate view limits for all views
         self._calculate_view_limits()
+        self._compute_slice_graphs()
     
     def _calculate_view_limits(self):
         """Calculate axis limits for all views for both shapes."""
@@ -119,6 +132,74 @@ class CADComparisonRenderer:
         self.view_current_camera_center = np.array(self.view_current_camera_center)
         print("view_limits")
         print(np.array(view_limits))
+        #exit()
+
+    def _compute_slice_graphs(self):
+
+        shape = copy(self.shapes[0])
+        cut_depth = 0.0
+        view_keys = ["top", "front", "left", "bottom", "back", "right"]
+        for view_key in ["front", "top", "left"]:
+            cut_percent = 0
+            cut_faces_list = []
+            diff_mat = np.zeros([101, 101])
+            while cut_percent <= 100:
+                #shape = deepcopy(self.shapes[0])
+                cut_depth = cut_percent/100.0
+                cut_faces = get_cut_faces(shape, view_key, cut_depth, self.bbox)
+                coords = shape.vertices[:,[0,1]]
+                if view_key == "top":
+                    coords = cut_faces.vertices[:,[0,1]]
+                if view_key == "front":
+                    coords = cut_faces.vertices[:,[0,2]]
+                if view_key == "left":
+                    coords = cut_faces.vertices[:,[1,2]]
+                if view_key == "bottom":
+                    coords = cut_faces.vertices[:,[0,1]]
+                    coords[:,0] *= -1
+                    coords[:,1] *= -1
+                if view_key == "back":
+                    coords = cut_faces.vertices[:,[0,2]]
+                    coords[:,0] *= -1
+                if view_key == "right":
+                    coords = cut_faces.vertices[:,[1,2]]
+                    coords[:,0] *= -1
+                triangles = [
+                    Polygon(coords[face])
+                    for face in cut_faces.faces
+                ]
+                #print([t.area for t in triangles])
+                merged = unary_union(triangles)
+                cut_faces_list.append(merged)
+                cut_percent += 1
+                #plot_polygon(merged)
+                #plt.axis("equal")
+                #plt.savefig("cut_depth_"+view_key+"_"+str(cut_percent)+".png")
+                #plt.close()
+
+            #print(len(cut_faces_list))
+            # pairwise diff
+            #cut_faces_list = list(reversed(cut_faces_list))
+            for i in range(len(cut_faces_list)):
+                for j in range(i+1, len(cut_faces_list)):
+                    diff = symmetric_difference(cut_faces_list[i], cut_faces_list[j]).area
+                    diff_mat[i][j] = diff
+                    diff_mat[j][i] = diff
+            #print(diff_mat[10, :])
+            #print(len(cut_faces_list))
+            #plt.plot(range(len(cut_faces_list)), diff_mat[10,:])
+            #plt.ylim(0.0, 1.0)
+            #plt.savefig("diff_mat_cut_"+view_key+".png")
+            #plt.close()
+
+            diff_mat /= np.max(diff_mat)
+            self.view_diff_mats[view_key] = diff_mat
+            if view_key == "top":
+                self.view_diff_mats["bottom"] = np.flip(diff_mat)
+            if view_key == "front":
+                self.view_diff_mats["back"] = np.flip(diff_mat)
+            if view_key == "left":
+                self.view_diff_mats["right"] = np.flip(diff_mat)
         #exit()
     
     def _map_view_name(self, view_name):
@@ -232,6 +313,7 @@ class CADComparisonRenderer:
 
         zoom_level = int(params.get("zoom", "0"))
         camera_move = params.get("move_camera_center", "none")
+        print(camera_move)
 
         horizontal_dist = np.abs((self.view_limits[view_index][0][1] - self.view_limits[view_index][0][0]))
         vertical_dist = np.abs((self.view_limits[view_index][1][1] - self.view_limits[view_index][1][0]))
@@ -356,8 +438,14 @@ class CADComparisonRenderer:
             self.view_current_axis = view_name
             self.current_render_mode = render_mode
             self.view_current_view_limits = imposed_zoom_ax_limits
+        self.current_ax_limits = copy(imposed_zoom_ax_limits)
+        self.current_zoom_level = zoom_level
         
-        compose_scrollbar = True
+        # COMPOSITION STAGE
+        if "compose_scrollbar" in params.keys():
+            compose_scrollbar = params["compose_scrollbar"]
+        else:
+            compose_scrollbar = False
         if compose_scrollbar:
             img_array[:-1,-2,:] = [255,255,255,0]
             img_array[-2,:-1,:] = [255,255,255,0]
@@ -365,6 +453,73 @@ class CADComparisonRenderer:
             img_array[-1,:,:] = [255,255,255,0]
             img_array[max(0,int(img_array.shape[0]*x_scroll_min)):min(int(img_array.shape[0]*x_scroll_max)+1, img_array.shape[0]),-1,:] = [0,0,0,255]
             img_array[-1, max(0, int(img_array.shape[1]*y_scroll_min)):min(int(img_array.shape[1]*y_scroll_max)+1, img_array.shape[1]),:] = [0,0,0,255]
+
+        if "compose_scrollbar" in params.keys():
+            compose_slice_graph = params["compose_slicegraph"]
+        else:
+            compose_slice_graph = False
+        if compose_slice_graph:
+            # take correct view_diff_mat
+            cut_position_int = int(100.0*(1.0-cut_depth))
+            view_diff_mat = self.view_diff_mats[view_name][cut_position_int]
+
+            # render line-graph in appropriate dimensions
+            width_px, height_px = self.screen_size[0], self.screen_size[1]
+            dpi = 100 
+
+            fig = plt.figure(figsize=((width_px-6) / dpi, 10 / dpi), dpi=dpi)
+            #fig = plt.figure(figsize=(1080 / dpi, 920 / dpi), dpi=dpi)
+            ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
+            ax.axis('off')
+            ax.plot(range(len(view_diff_mat)), view_diff_mat, aa=True, c="black", lw=0.5)
+            ax.plot([cut_position_int, cut_position_int], [0, 1], aa=True, c="black", lw=0.5)
+            ax = plt.gca()
+            #if len(imposed_ax_limits) > 0:
+
+            ax.set_xlim((0, len(view_diff_mat)))
+            ax.set_ylim((0, 1))
+
+            #ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
+            #print(ax_limits)
+            fig.savefig('test.png', dpi=dpi, pad_inches=0)
+
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', dpi=dpi, pad_inches=0)
+            fig.clear()
+            buf.seek(0)
+
+            img = Image.open(buf)
+            img_np = np.array(img)
+            img_np = np.flip(img_np, axis=1)
+            print("Slice graph")
+            print(view_diff_mat)
+            print(img_np.shape)
+            for i in range(img_np.shape[0]):
+                for j in range(img_np.shape[1]):
+                    if ~img_np[i,j,0] > 0:
+                        print(1, end='')
+                    else:
+                        print(0, end='')
+                print()
+            print()
+
+            # compose onto img_array
+            # left border
+            img_array[img_array.shape[0]-14:img_array.shape[0]-2, 1] = [255,255,255,255]
+            img_array[img_array.shape[0]-14:img_array.shape[0]-2, 2] = [0,0,0,255]
+            # right border
+            img_array[img_array.shape[0]-14:img_array.shape[0]-2, 2+img_np.shape[1]+2] = [255,255,255,255]
+            img_array[img_array.shape[0]-14:img_array.shape[0]-2, 2+img_np.shape[1]+1] = [0,0,0,255]
+            # upper border
+            img_array[img_array.shape[0]-15, 2:2+img_np.shape[1]+2] = [255,255,255,255]
+            img_array[img_array.shape[0]-14, 2:2+img_np.shape[1]+2] = [0,0,0,255]
+            # lower border
+            img_array[img_array.shape[0]-2, 2:2+img_np.shape[1]+2] = [255,255,255,255]
+            img_array[img_array.shape[0]-3, 2:2+img_np.shape[1]+2] = [0,0,0,255]
+            # insert linegraph
+            img_array[img_array.shape[0]-13:img_array.shape[0]-3, 3:2+img_np.shape[1]+1] = img_np
+
+            
 
         return img_array
 

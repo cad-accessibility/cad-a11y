@@ -163,10 +163,6 @@ def cut_shape_with_plane(shape, plane_origin, plane_normal):
         lower_left = bbox[0]
         lower_left[2] = plane_origin[2]
         cut_box = Box(bounds=[lower_left, bbox[1]])
-    print(cut_box.is_volume)
-    print(cut_box.vertices)
-    print(cut_box.faces)
-    print(shape.is_volume)
     #ps.init()
     ##ps.register_surface_mesh("box", cut_box.vertices, cut_box.faces)
     #ps.register_surface_mesh("shape", shape.vertices, shape.faces)
@@ -181,7 +177,7 @@ def cut_shape_with_plane(shape, plane_origin, plane_normal):
         mrmeshpy.boolean( shape_mrmesh, cut_box_mrmesh,
                           
                          mrmeshpy.BooleanOperation.DifferenceAB).mesh)
-    print("diff_time", time()-start_time)
+    #print("diff_time", time()-start_time)
     #ps.register_surface_mesh("diff", diff.vertices, diff.faces)
     return diff, True
     return slice_mesh_plane(shape, plane_normal, plane_origin), True
@@ -416,7 +412,7 @@ def faces_on_plane_fast(shape, plane_origin, plane_normal, tol=1e-3):
         process=False
     )
 
-    print("faces_on_plane_fast time", time() - start_time)
+    #print("faces_on_plane_fast time", time() - start_time)
     return submesh
 
 def depth_peeling_single_depth_with_bbox(shape, normal_dir, depth: float, bbox):
