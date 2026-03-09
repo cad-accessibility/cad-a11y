@@ -608,11 +608,17 @@ def start_slider_trinkey():
                 exit()
     
     while True:
-        x = trinkey.readline().decode('utf-8')
-        if not x.startswith("Slider: "):
-            continue
-        val = int(float(x.split(": ")[1]))
-        slider_value = val
+        avg_value = 0
+        for i in range(10):
+            x = trinkey.readline().decode('utf-8')
+            #print(x)
+            if not x.startswith("Slider: "):
+                continue
+            avg_value += int(float(x.split(": ")[1]))
+        val = int(avg_value/10)
+        if 100 - val != slider_value:
+            slider_value = 100 - val
+        #print(val)
         #print("position", val)
 
 @app.route('/get_data')
