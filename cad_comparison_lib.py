@@ -506,8 +506,9 @@ class CADComparisonRenderer:
             #fig = plt.figure(figsize=(1080 / dpi, 920 / dpi), dpi=dpi)
             ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
             ax.axis('off')
-            ax.plot(range(len(view_diff_mat)), view_diff_mat, aa=True, c="black", lw=0.5)
-            ax.plot([cut_position_int, cut_position_int], [0, 1], aa=True, c="black", lw=0.5)
+            # Render graph strokes as a single pixel (no anti-aliasing expansion).
+            ax.plot(range(len(view_diff_mat)), view_diff_mat, aa=False, c="black", lw=.15)
+            ax.plot([cut_position_int, cut_position_int], [0, 1], aa=False, c="black", lw=.15)
             ax = plt.gca()
             #if len(imposed_ax_limits) > 0:
 
