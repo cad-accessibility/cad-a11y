@@ -22,7 +22,7 @@
         }
         
         .container {
-            max-width: 900px;
+            max-width: 1400px;
             margin: 0 auto;
             background: white;
             padding: 30px;
@@ -281,24 +281,66 @@
             }
         }
         
+        #tactile-display-img {
+            width: 100%;
+            height: auto;
+            border: 1px solid #e1e8ed;
+            border-radius: 4px;
+            image-rendering: pixelated;
+            background: #f0f0f0;
+            display: block;
+            margin-top: 10px;
+        }
+
+        /* Two-column layout */
+        .layout {
+            display: flex;
+            gap: 0;
+            align-items: stretch;
+            min-height: 400px;
+        }
+
+        .left-col {
+            flex: 0 0 auto;
+            width: 60%;
+            min-width: 280px;
+            overflow-y: auto;
+        }
+
+        .col-divider {
+            flex: 0 0 6px;
+            background: #e1e8ed;
+            cursor: col-resize;
+            border-radius: 3px;
+            margin: 0 6px;
+            transition: background 0.2s;
+        }
+
+        .col-divider:hover,
+        .col-divider.dragging {
+            background: #3498db;
+        }
+
+        .right-col {
+            flex: 1 1 auto;
+            min-width: 200px;
+            overflow-y: auto;
+        }
+
         /* Mobile responsive design */
         @media (max-width: 768px) {
+            .layout {
+                flex-direction: column;
+            }
+            .left-col, .right-col {
+                width: 100% !important;
+            }
+            .col-divider {
+                display: none;
+            }
             .container {
                 padding: 20px;
                 margin: 10px;
-            }
-            
-            .button-group {
-                flex-direction: column;
-            }
-            
-            button {
-                width: 100%;
-                margin: 5px 0;
-            }
-            
-            h1 {
-                font-size: 1.8em;
             }
         }
     </style>
@@ -316,7 +358,9 @@
             <!-- Secondary live region for status information -->
             <div id="status-announcements" aria-live="polite" aria-atomic="false" class="sr-only"></div>
 
-            <!-- Model Description Section -->
+            <div class="layout">
+                <!-- LEFT COLUMN: controls -->
+                <div class="left-col" id="left-col">
             <section class="section" aria-labelledby="model-desc-heading">
                 <h2 id="model-desc-heading">Model Description</h2>
                 <div id="model-description" aria-describedby="model-desc-heading">
@@ -550,6 +594,21 @@
                 </div>
             </section>
 
+                </div><!-- end left-col -->
+
+                <!-- DRAG DIVIDER -->
+                <div class="col-divider" id="col-divider" role="separator" aria-label="Resize columns" tabindex="0"></div>
+
+                <!-- RIGHT COLUMN: tactile preview + shortcuts -->
+                <div class="right-col" id="right-col">
+
+                    <!-- Tactile Display Preview Section -->
+                    <section class="section" aria-labelledby="tactile-preview-heading" aria-live="polite">
+                        <h2 id="tactile-preview-heading">Tactile Display Preview</h2>
+                        <img id="tactile-display-img" src="" alt="Current tactile display content">
+                        <div id="tactile-preview-meta" class="help-text">Waiting for render&hellip;</div>
+                    </section>
+
             <!-- Keyboard Shortcuts Section -->
             <section class="section" aria-labelledby="shortcuts-heading">
                 <h2 id="shortcuts-heading">Keyboard Shortcuts</h2>
@@ -598,6 +657,9 @@
                     </p>
                 </div>
             </section>
+
+                </div><!-- end right-col -->
+            </div><!-- end layout -->
         </main>
     </div>
 
@@ -605,7 +667,61 @@
         // Configuration
         const SERVER_URL = 'http://localhost:6969';
         //const SERVER_URL = 'http://10.18.193.149:6969';
-        
+
+        // Drag-to-resize columns
+        (function() {
+            const divider = document.getElementById('col-divider');
+            const leftCol = document.getElementById('left-col');
+            const layout  = divider && divider.parentElement;
+            if (!divider || !leftCol || !layout) return;
+
+            let dragging = false;
+            let startX, startWidth;
+
+            divider.addEventListener('mousedown', function(e) {
+                dragging = true;
+                startX = e.clientX;
+                startWidth = leftCol.getBoundingClientRect().width;
+                divider.classList.add('dragging');
+                document.body.style.cursor = 'col-resize';
+                document.body.style.userSelect = 'none';
+                e.preventDefault();
+            });
+
+            document.addEventListener('mousemove', function(e) {
+                if (!dragging) return;
+                const delta = e.clientX - startX;
+                const layoutWidth = layout.getBoundingClientRect().width;
+                const newWidth = Math.min(Math.max(startWidth + delta, 200), layoutWidth - 200);
+                leftCol.style.width = newWidth + 'px';
+                leftCol.style.flex = '0 0 auto';
+            });
+
+            document.addEventListener('mouseup', function() {
+                if (!dragging) return;
+                dragging = false;
+                divider.classList.remove('dragging');
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            });
+
+            // Keyboard resize support (arrow keys on the divider)
+            divider.addEventListener('keydown', function(e) {
+                const step = e.shiftKey ? 50 : 10;
+                const layoutWidth = layout.getBoundingClientRect().width;
+                const currentWidth = leftCol.getBoundingClientRect().width;
+                if (e.key === 'ArrowLeft') {
+                    e.preventDefault();
+                    leftCol.style.width = Math.max(currentWidth - step, 200) + 'px';
+                    leftCol.style.flex = '0 0 auto';
+                } else if (e.key === 'ArrowRight') {
+                    e.preventDefault();
+                    leftCol.style.width = Math.min(currentWidth + step, layoutWidth - 200) + 'px';
+                    leftCol.style.flex = '0 0 auto';
+                }
+            });
+        })();
+
         // Function to send current state to the server
         async function sendStateToServer() {
             try {
@@ -644,6 +760,10 @@
                     }
                     if (data.model_list) {
                         updateModelList(data.model_list);
+                    }
+                    // Update tactile display preview
+                    if (data.image_base64) {
+                        updateTactilePreview(data.image_base64, data.image_shape);
                     }
                 })
                 .catch(error => {
@@ -834,6 +954,19 @@
             // Send state to server if changed
             if (oldView !== currentView) {
                 sendStateToServer();
+            }
+        }
+
+        // Update the tactile display preview image
+        function updateTactilePreview(base64, shape) {
+            const img = document.getElementById('tactile-display-img');
+            const meta = document.getElementById('tactile-preview-meta');
+            img.src = 'data:image/png;base64,' + base64;
+            img.alt = `Tactile display: ${currentView} view, ${currentSliceDepth}% depth, ${currentRenderMode}`;
+            if (shape) {
+                meta.textContent = `${currentView} \u00b7 ${currentSliceDepth}% \u00b7 ${currentRenderMode} \u00b7 ${shape[1]}\u00d7${shape[0]}px`;
+            } else {
+                meta.textContent = `${currentView} \u00b7 ${currentSliceDepth}% \u00b7 ${currentRenderMode}`;
             }
         }
 
