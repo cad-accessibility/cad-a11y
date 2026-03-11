@@ -957,12 +957,130 @@
             currentPrintView = !currentPrintView;
         }
 
-        function buildInvertedSliceSvgFromImage(imgElement) {
+        function escapeXml(value) {
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&apos;');
+        }
+
+        function textToBrailleCells(text) {
+            const letters = {
+                a: [1], b: [1, 2], c: [1, 4], d: [1, 4, 5], e: [1, 5],
+                f: [1, 2, 4], g: [1, 2, 4, 5], h: [1, 2, 5], i: [2, 4], j: [2, 4, 5],
+                k: [1, 3], l: [1, 2, 3], m: [1, 3, 4], n: [1, 3, 4, 5], o: [1, 3, 5],
+                p: [1, 2, 3, 4], q: [1, 2, 3, 4, 5], r: [1, 2, 3, 5], s: [2, 3, 4], t: [2, 3, 4, 5],
+                u: [1, 3, 6], v: [1, 2, 3, 6], w: [2, 4, 5, 6], x: [1, 3, 4, 6], y: [1, 3, 4, 5, 6], z: [1, 3, 5, 6],
+            };
+            const digits = {
+                '1': [1], '2': [1, 2], '3': [1, 4], '4': [1, 4, 5], '5': [1, 5],
+                '6': [1, 2, 4], '7': [1, 2, 4, 5], '8': [1, 2, 5], '9': [2, 4], '0': [2, 4, 5],
+            };
+            const punctuation = {
+                ' ': [],
+                ':': [2, 5],
+                '-': [3, 6],
+                '+': [3, 4, 6],
+                '.': [2, 5, 6],
+                ',': [2],
+                '%': [4, 6, 3, 5],
+            };
+            const numberSign = [3, 4, 5, 6];
+
+            const cells = [];
+            let inNumber = false;
+            for (const ch of String(text)) {
+                if (Object.prototype.hasOwnProperty.call(digits, ch)) {
+                    if (!inNumber) {
+                        cells.push(numberSign);
+                        inNumber = true;
+                    }
+                    cells.push(digits[ch]);
+                    continue;
+                }
+                inNumber = false;
+                const lower = ch.toLowerCase();
+                if (Object.prototype.hasOwnProperty.call(letters, lower)) {
+                    cells.push(letters[lower]);
+                } else if (Object.prototype.hasOwnProperty.call(punctuation, ch)) {
+                    cells.push(punctuation[ch]);
+                } else {
+                    cells.push([]);
+                }
+            }
+            return cells;
+        }
+
+        function buildBrailleDotsSvg(labels, width, yOffset = 0) {
+            const dotOffsets = {
+                1: [0, 0], 2: [0, 1], 3: [0, 2], 7: [0, 3],
+                4: [1, 0], 5: [1, 1], 6: [1, 2], 8: [1, 3],
+            };
+
+            const dotRadius = 1.25;
+            const colSpacing = 5.2;
+            const rowSpacing = 5.2;
+            const cellAdvance = 12.5;
+            const lineHeight = 26;
+            const startX = 12;
+            const topPadding = 14;
+
+            const circles = [];
+            labels.forEach((label, lineIndex) => {
+                const cells = textToBrailleCells(label);
+                const baseY = yOffset + topPadding + lineIndex * lineHeight;
+                let cursorX = startX;
+                cells.forEach((dots) => {
+                    dots.forEach((dot) => {
+                        const offset = dotOffsets[dot];
+                        if (!offset) {
+                            return;
+                        }
+                        const cx = cursorX + dotRadius + offset[0] * colSpacing;
+                        const cy = baseY + dotRadius + offset[1] * rowSpacing;
+                        if (cx >= 0 && cx <= width) {
+                            circles.push(`<circle cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" r="${dotRadius}" fill="black"/>`);
+                        }
+                    });
+                    cursorX += cellAdvance;
+                });
+            });
+            return circles.join('\n');
+        }
+
+        function getExportSvgLabels() {
+            const labels = [];
+            if (currentRepresentationMode === 'side-by-side') {
+                const rightAxis = currentView;
+                const leftAxis = getLegendAxisForCutAxis(rightAxis);
+                labels.push(`Left view: ${leftAxis}`);
+                labels.push(`Right view: ${rightAxis}`);
+            }
+
+            if (showViewInfoBox) {
+                labels.push(`Axis: ${currentView}`);
+                labels.push(`Zoom: ${Number(currentZoom).toFixed(1)}`);
+                labels.push(`Type: ${currentRepresentationMode}`);
+                labels.push(`Cut: ${currentSliceDepth}%`);
+            }
+
+            return labels;
+        }
+
+        function buildInvertedSliceSvgFromImage(imgElement, options = {}) {
             const width = imgElement.naturalWidth || imgElement.width;
             const height = imgElement.naturalHeight || imgElement.height;
             if (!width || !height) {
                 throw new Error('No tactile preview image available yet.');
             }
+
+            const labels = Array.isArray(options.labels) ? options.labels : [];
+            const labelLineHeight = 26;
+            const labelTopPadding = 14;
+            const labelBandHeight = labels.length > 0 ? (labelTopPadding + labels.length * labelLineHeight) : 0;
+            const totalHeight = height + labelBandHeight;
 
             const canvas = document.createElement('canvas');
             canvas.width = width;
@@ -1013,11 +1131,16 @@
                 }
             }
 
+            const labelSvg = buildBrailleDotsSvg(labels, width, 0);
+
             return [
                 `<?xml version="1.0" encoding="UTF-8"?>`,
-                `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" shape-rendering="crispEdges">`,
+                `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${totalHeight}" viewBox="0 0 ${width} ${totalHeight}" shape-rendering="crispEdges">`,
                 `<rect width="100%" height="100%" fill="white"/>`,
+                labelSvg,
+                `<g transform="translate(0 ${labelBandHeight})">`,
                 `<path fill="black" d="${pathParts.join('')}"/>`,
+                `</g>`,
                 `</svg>`
             ].join('\n');
         }
@@ -1149,7 +1272,8 @@
                     throw new Error(`High-fidelity export width too small: ${exportWidth}px`);
                 }
 
-                const svgContent = buildInvertedSliceSvgFromImage(exportImage);
+                const svgLabels = getExportSvgLabels();
+                const svgContent = buildInvertedSliceSvgFromImage(exportImage, { labels: svgLabels });
                 const blob = new Blob([svgContent], { type: 'image/svg+xml;charset=utf-8' });
                 const downloadUrl = URL.createObjectURL(blob);
                 const sanitizedView = String(currentView).replace(/[^a-zA-Z0-9+-]/g, '_');
