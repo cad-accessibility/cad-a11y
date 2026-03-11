@@ -249,6 +249,97 @@ class CADComparisonRenderer:
 
     def _linear_interpolation(self, a, b, param):
         return (a+ param*(b-a))
+
+    def _draw_braille_cell(self, img_array, x, y, dots):
+        """Draw a 2x4 braille cell (single-pixel dots) in black onto an RGBA image."""
+        dot_positions = {
+            1: (0, 0), 2: (0, 1), 3: (0, 2), 7: (0, 3),
+            4: (1, 0), 5: (1, 1), 6: (1, 2), 8: (1, 3),
+        }
+        h, w = img_array.shape[0], img_array.shape[1]
+        for dot in dots:
+            if dot not in dot_positions:
+                continue
+            dx, dy = dot_positions[dot]
+            px = x + dx
+            py = y + dy
+            if 0 <= px < w and 0 <= py < h:
+                img_array[py, px, 0] = 0
+                img_array[py, px, 1] = 0
+                img_array[py, px, 2] = 0
+                if img_array.shape[2] > 3:
+                    img_array[py, px, 3] = 255
+
+    def _draw_braille_text(self, img_array, text, x, y):
+        """Draw a short braille string using 2x4 cells with 1px spacing."""
+        # Grade-1 letter mappings plus simple symbol approximations for axis tokens.
+        char_to_dots = {
+            "x": [1, 3, 4, 6],
+            "y": [1, 3, 4, 5, 6],
+            "z": [1, 3, 5, 6],
+            "+": [3, 4, 6],
+            "-": [3, 6],
+            " ": [],
+        }
+        cursor_x = x
+        cell_advance = 3  # 2px cell width + 1px spacing
+        for ch in text.lower():
+            dots = char_to_dots.get(ch, [])
+            if len(dots) > 0:
+                self._draw_braille_cell(img_array, cursor_x, y, dots)
+            cursor_x += cell_advance
+
+    def _overlay_side_by_side_view_labels(self, img_array, left_axis, right_axis):
+        """Overlay compact braille axis markers at the top of each side-by-side panel."""
+        if img_array is None or len(img_array.shape) != 3:
+            return
+        h, w = img_array.shape[0], img_array.shape[1]
+        if h < 6 or w < 12:
+            return
+
+        legend_width = int(w / 3)
+        y = 1
+        left_x = 1
+        right_x = legend_width + 1
+        self._draw_braille_text(img_array, left_axis, left_x, y)
+        self._draw_braille_text(img_array, right_axis, right_x, y)
+
+    def _overlay_view_info_box(self, img_array, axis_text):
+        """Overlay a compact 7x5 top-left info box with axis text (e.g., x+)."""
+        if img_array is None or len(img_array.shape) != 3:
+            return
+        h, w = img_array.shape[0], img_array.shape[1]
+        if h < 5 or w < 7:
+            return
+
+        axis_text = (axis_text or "x+").lower()[:2]
+        char_to_dots = {
+            "x": [1, 3, 4, 6],
+            "y": [1, 3, 4, 5, 6],
+            "z": [1, 3, 5, 6],
+            "+": [3, 4, 6],
+            "-": [3, 6],
+        }
+
+        # Fixed size requested by user.
+        box_x0 = 0
+        box_y0 = 0
+        box_w = min(w, 7)
+        box_h = min(h, 5)
+        box_x1 = box_x0 + box_w - 1
+        box_y1 = box_y0 + box_h - 1
+
+        # White background only (no outline).
+        img_array[box_y0:box_y1 + 1, box_x0:box_x1 + 1, 0:3] = 255
+        if img_array.shape[2] > 3:
+            img_array[box_y0:box_y1 + 1, box_x0:box_x1 + 1, 3] = 255
+
+        # Draw exactly two 2x4 glyphs with one blank column between them.
+        # Layout inside 7x5 box: [margin][2px][gap][2px][margin].
+        if len(axis_text) >= 1 and axis_text[0] in char_to_dots:
+            self._draw_braille_cell(img_array, box_x0 + 1, box_y0 + 1, char_to_dots[axis_text[0]])
+        if len(axis_text) >= 2 and axis_text[1] in char_to_dots:
+            self._draw_braille_cell(img_array, box_x0 + 4, box_y0 + 1, char_to_dots[axis_text[1]])
     
     def render(self, params):
         """
@@ -298,16 +389,30 @@ class CADComparisonRenderer:
 
         view_legend = params.get("view", "top")
         view_cut = "x+"
-        if view_legend == "x+":
-            view_cut = "y+"
-        if view_legend == "y+":
-            view_cut = "z+"
-        if view_legend == "x-":
-            view_cut = "y-"
-        if view_legend == "y-":
-            view_cut = "z-"
-        if view_legend == "z-":
-            view_cut = "x-"
+        if comparison_mode == "side-by-side":
+            # In side-by-side mode, keep the current/selected axis on the RIGHT panel.
+            # The left legend panel is chosen as a consistent companion view.
+            view_cut = params.get("view", "x+")
+            legend_from_cut = {
+                "x+": "z+",
+                "y+": "x+",
+                "z+": "y+",
+                "x-": "z-",
+                "y-": "x-",
+                "z-": "y-",
+            }
+            view_legend = legend_from_cut.get(view_cut, "x+")
+        else:
+            if view_legend == "x+":
+                view_cut = "y+"
+            if view_legend == "y+":
+                view_cut = "z+"
+            if view_legend == "x-":
+                view_cut = "y-"
+            if view_legend == "y-":
+                view_cut = "z-"
+            if view_legend == "z-":
+                view_cut = "x-"
         view_name_legend = self._map_view_name(view_legend)
         view_name_cut = self._map_view_name(view_cut)
         
@@ -587,6 +692,14 @@ class CADComparisonRenderer:
             img_array[img_array.shape[0]-3, 2:2+img_np.shape[1]+2] = [0,0,0,255]
             # insert linegraph
             img_array[img_array.shape[0]-13:img_array.shape[0]-3, 3:2+img_np.shape[1]+1] = img_np
+
+        if comparison_mode == "side-by-side":
+            self._overlay_side_by_side_view_labels(img_array, view_legend, view_cut)
+
+        show_view_info_box = bool(params.get("show_view_info_box", False))
+        if show_view_info_box and comparison_mode in ["single", "slice-graph"]:
+            axis_text = params.get("view", "top").lower()
+            self._overlay_view_info_box(img_array, axis_text)
 
             
 

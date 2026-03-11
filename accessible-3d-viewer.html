@@ -292,6 +292,21 @@
             margin-top: 10px;
         }
 
+        .side-by-side-axis-labels {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 8px;
+            margin-top: 8px;
+            margin-bottom: 4px;
+            font-size: 0.9em;
+            color: #2c3e50;
+        }
+
+        .side-by-side-axis-label {
+            text-align: left;
+            font-weight: 600;
+        }
+
         /* Two-column layout */
         .layout {
             display: flex;
@@ -490,6 +505,16 @@
                     </fieldset>
                 </div>
 
+                <div style="margin-top: 12px;" aria-describedby="view-info-box-help">
+                    <label class="checkbox-label" for="show-view-info-box">
+                        <input type="checkbox" id="show-view-info-box">
+                        Show view info box on tactile display (single/slice-graph)
+                    </label>
+                    <div id="view-info-box-help" class="help-text">
+                        Adds a small box in the top-left corner showing the current view axis.
+                    </div>
+                </div>
+
                 <div style="margin-top: 14px;" aria-describedby="slice-graph-lock-help">
                     <div id="slice-graph-lock-help" class="help-text">
                         Slice graph lock freezes the graph while you explore. Use refresh to recompute from your current location.
@@ -538,7 +563,7 @@
                     <fieldset role="radiogroup" aria-labelledby="view-select-heading">
                         <legend class="sr-only">Model Views</legend>
                         <label>
-                            <input type="radio" name="view-select" id="view-front" value="y-" checked>
+                            <input type="radio" name="view-select" id="view-front" value="y-">
                             y-
                         </label>
                         <label>
@@ -554,7 +579,7 @@
                             y+
                         </label>
                         <label>
-                            <input type="radio" name="view-select" id="view-left" value="x+">
+                            <input type="radio" name="view-select" id="view-left" value="x+" checked>
                             x+
                         </label>
                         <label>
@@ -603,8 +628,12 @@
                 <div class="right-col" id="right-col">
 
                     <!-- Tactile Display Preview Section -->
-                    <section class="section" aria-labelledby="tactile-preview-heading" aria-live="polite">
+                    <section class="section" aria-hidden="true">
                         <h2 id="tactile-preview-heading">Tactile Display Preview</h2>
+                        <div id="side-by-side-axis-labels" class="side-by-side-axis-labels" hidden>
+                            <div id="left-view-axis-label" class="side-by-side-axis-label">Left view: --</div>
+                            <div id="right-view-axis-label" class="side-by-side-axis-label">Right view: --</div>
+                        </div>
                         <img id="tactile-display-img" src="" alt="Current tactile display content">
                         <div id="tactile-preview-meta" class="help-text">Waiting for render&hellip;</div>
                     </section>
@@ -738,6 +767,7 @@
                     current_model: currentModel,
                     compose_scrollbar: composeScrollbar,
                     compose_slicegraph: composeSliceGraph,
+                    show_view_info_box: showViewInfoBox,
                     slicegraph_locked: sliceGraphLocked,
                     slicegraph_view: requestedGraphView,
                     slicegraph_depth: requestedGraphDepth,
@@ -778,7 +808,7 @@
         
         // State management
         let currentSliceDepth = 50;
-        let currentView = 'Front';
+        let currentView = 'x+';
         let currentZoom = '0';
         let currentRenderMode = 'Shaded';
         let currentRepresentationMode = 'single';
@@ -789,6 +819,7 @@
         let currentModel = "none";
        let composeScrollbar = true;
         let composeSliceGraph = false;
+        let showViewInfoBox = false;
         let sliceGraphLocked = true;
         let sliceGraphAnchorView = 'y-';
         let sliceGraphAnchorDepth = 50;
@@ -818,6 +849,7 @@
         const sliceGraphLockBtn = document.getElementById('slice-graph-lock-btn');
         const sliceGraphRefreshBtn = document.getElementById('slice-graph-refresh-btn');
         const sliceGraphLockStatus = document.getElementById('slice-graph-lock-status');
+        const showViewInfoBoxCheckbox = document.getElementById('show-view-info-box');
 
         // New radio group references
         const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
@@ -940,6 +972,38 @@
                     composeSliceGraph = true;
                     break;
             }
+            updateSideBySideAxisLabels();
+        }
+
+        function getLegendAxisForCutAxis(cutAxis) {
+            const legendFromCut = {
+                'x+': 'z+',
+                'y+': 'x+',
+                'z+': 'y+',
+                'x-': 'z-',
+                'y-': 'x-',
+                'z-': 'y-',
+            };
+            return legendFromCut[cutAxis] || 'x+';
+        }
+
+        function updateSideBySideAxisLabels() {
+            const labelsContainer = document.getElementById('side-by-side-axis-labels');
+            const leftLabel = document.getElementById('left-view-axis-label');
+            const rightLabel = document.getElementById('right-view-axis-label');
+            if (!labelsContainer || !leftLabel || !rightLabel) {
+                return;
+            }
+
+            if (currentRepresentationMode === 'side-by-side') {
+                const rightAxis = currentView;
+                const leftAxis = getLegendAxisForCutAxis(rightAxis);
+                leftLabel.textContent = `Left view: ${leftAxis}`;
+                rightLabel.textContent = `Right view: ${rightAxis}`;
+                labelsContainer.hidden = false;
+            } else {
+                labelsContainer.hidden = true;
+            }
         }
 
         // Update view information
@@ -948,6 +1012,7 @@
             currentView = newView;
             currentViewSpan.textContent = currentView;
             updateButtonLabels();
+            updateSideBySideAxisLabels();
             syncRadios();
             announce(`${currentView.toLowerCase()} view`);
             
@@ -1092,6 +1157,7 @@
             }
             updateButtonLabels();
             updateSliceGraphLockUI();
+            updateSideBySideAxisLabels();
             syncRadios();
             announce(`${previousMode.toLowerCase()} to ${currentRepresentationMode.toLowerCase()}`);
             
@@ -1228,6 +1294,12 @@
                     updateZoom(e.target.value);
                 }
             }
+        });
+
+        showViewInfoBoxCheckbox.addEventListener('change', function() {
+            showViewInfoBox = this.checked;
+            announceStatus(`view info box ${showViewInfoBox ? 'on' : 'off'}`);
+            sendStateToServer();
         });
         
         // Deeper depth button
@@ -1466,11 +1538,12 @@
             
             // Set initial values
             updateSliceDepth(50, false);
-            updateView('front');
+            updateView('x+');
             updateDisplayOptions();
             syncRadios();
             updateButtonLabels();
             updateSliceGraphLockUI();
+            showViewInfoBoxCheckbox.checked = showViewInfoBox;
             
             // Send initial state to server
             sendStateToServer();

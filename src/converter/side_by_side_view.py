@@ -146,14 +146,11 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     if plt.fignum_exists(fig.number):
         plt.close(fig.number)
 
-    cut_img = np.zeros_like(img_np)
-    # extract outline
-    #print(img_np)
-    cut_img = img_np
-    #if rendering_mode in ["filled", "slice"]:
-    #    cut_img = img_np
-    #if rendering_mode == "outline":
-    #    cut_img = get_outlines(img_np)
+    # Right panel (cut view) follows the selected render mode.
+    if rendering_mode == "outline":
+        cut_img = get_outlines(img_np)
+    else:
+        cut_img = img_np
 
     # Legend - view
     #shape_brep = shape_brep_copy
@@ -226,12 +223,8 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     #plt.show()
     if plt.fignum_exists(fig.number):
         plt.close(fig.number)
-    #legend_img = img_np
+    # Left panel (legend view) stays visually stable across render mode changes.
     legend_img = get_outlines(img_np)
-    if rendering_mode in ["filled", "slice"]:
-        legend_img = img_np
-    if rendering_mode == "outline":
-        legend_img = get_outlines(img_np)
 
     # Line img (must match legend width)
     width_px, height_px = legend_width, total_height
