@@ -219,13 +219,23 @@ def render_view():
 
         buffer.seek(0)
         img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-        
+
+        # Also encode the binary tactile image (what was actually sent to the display)
+        try:
+            tactile_img = Image.fromarray(img_data.astype('uint8'), 'L')
+            tactile_buffer = io.BytesIO()
+            tactile_img.save(tactile_buffer, format='PNG')
+            tactile_buffer.seek(0)
+            tactile_base64 = base64.b64encode(tactile_buffer.getvalue()).decode('utf-8')
+        except Exception:
+            tactile_base64 = img_base64
+
         return jsonify({
             'status': 'success',
             'message': 'Render complete',
             'image_shape': img_array.shape,
             'bbox': r.bbox,
-            'image_base64': img_base64,
+            'image_base64': tactile_base64,
             'model_list': model_name_list
         }), 200
         

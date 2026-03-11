@@ -285,6 +285,17 @@ class CADComparisonRenderer:
         comparison_mode = params.get("mode", "single").lower()
         superposition_mode = params.get("superpositionMode", "outline").lower()
 
+        if "compose_scrollbar" in params.keys():
+            compose_scrollbar = params["compose_scrollbar"]
+        else:
+            compose_scrollbar = False
+
+        # Define a per-view viewing window. When scrollbars are enabled we reserve
+        # the last row/column for bars and the second-to-last row/column as spacer.
+        render_screen_size = [self.screen_size[0], self.screen_size[1]]
+        if compose_scrollbar:
+            render_screen_size = [max(1, self.screen_size[0] - 2), max(1, self.screen_size[1] - 2)]
+
         view_legend = params.get("view", "top")
         view_cut = "x+"
         if view_legend == "x+":
@@ -360,9 +371,9 @@ class CADComparisonRenderer:
         y_scroll_max = (y_zoom_max-y_min)/(y_max-y_min)
 
         # This needs to account for the aspect ratio of the monarch
-        current_aspect_ratio = self.screen_size[0]/self.screen_size[1]
+        current_aspect_ratio = render_screen_size[0]/render_screen_size[1]
         if comparison_mode == "side-by-side":
-            current_aspect_ratio = 0.5*self.screen_size[0]/self.screen_size[1]
+            current_aspect_ratio = 0.5*render_screen_size[0]/render_screen_size[1]
         if horizontal_dist/vertical_dist < current_aspect_ratio:
             horizontal_scale_factor = current_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
             #imposed_zoom_ax_limits[0][0] = max(self.view_limits[view_index][0][0], self.view_current_camera_center[view_index][0] - horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist)
@@ -394,7 +405,8 @@ class CADComparisonRenderer:
                 view_name,
                 render_mode,
                 imposed_ax_limits=self.view_limits[view_index],
-                superposition_key=superposition_key
+                superposition_key=superposition_key,
+                screen_size=render_screen_size
             )
         elif comparison_mode == "juxtaposition":
             img_array, _ = get_juxtaposition_view(
@@ -404,7 +416,8 @@ class CADComparisonRenderer:
                 view_name,
                 render_mode,
                 imposed_ax_limits=[],
-                superposition_key=superposition_mode
+                superposition_key=superposition_mode,
+                screen_size=render_screen_size
             )
         if comparison_mode == "side-by-side":
             # Calculate aspect-ratio-adjusted limits for the legend view
@@ -419,7 +432,7 @@ class CADComparisonRenderer:
             legend_center_y = (legend_limits[1][0] + legend_limits[1][1]) / 2.0
             
             # Apply same aspect ratio correction as used for cut view (0.5 aspect ratio for side-by-side)
-            side_by_side_aspect_ratio = 0.5 * self.screen_size[0] / self.screen_size[1]
+            side_by_side_aspect_ratio = 0.5 * render_screen_size[0] / render_screen_size[1]
             
             # Adjust legend limits to match the aspect ratio of half-screen
             if legend_horizontal_dist / legend_vertical_dist < side_by_side_aspect_ratio:
@@ -451,7 +464,7 @@ class CADComparisonRenderer:
                 imposed_ax_limits_legend=imposed_legend_ax_limits,
                 #imposed_ax_limits_cut=self.view_limits[self._get_view_index(view_name_cut)]
                 imposed_ax_limits_cut=imposed_zoom_ax_limits,
-                screen_size=self.screen_size
+                screen_size=render_screen_size
             )
         else:  # single mode
             #print(self.view_limits[view_index])
@@ -467,7 +480,7 @@ class CADComparisonRenderer:
                 view_name,
                 render_mode,
                 imposed_ax_limits=imposed_zoom_ax_limits,
-                screen_size=self.screen_size
+                screen_size=render_screen_size
             )
             self.current_cut_depth = 1.0-cut_depth
             self.view_current_axis = view_name
@@ -477,17 +490,27 @@ class CADComparisonRenderer:
         self.current_zoom_level = zoom_level
         
         # COMPOSITION STAGE
-        if "compose_scrollbar" in params.keys():
-            compose_scrollbar = params["compose_scrollbar"]
-        else:
-            compose_scrollbar = False
         if compose_scrollbar:
+            draw_w, draw_h = render_screen_size[0], render_screen_size[1]
+            full_img = np.full((self.screen_size[1], self.screen_size[0], img_array.shape[2]), 255, dtype=np.uint8)
+            if full_img.shape[2] > 3:
+                full_img[:, :, 3] = 255
+            copy_h = min(draw_h, img_array.shape[0], full_img.shape[0])
+            copy_w = min(draw_w, img_array.shape[1], full_img.shape[1])
+            full_img[:copy_h, :copy_w, :] = img_array[:copy_h, :copy_w, :]
+            img_array = full_img
+
+            # Keep a 1px spacer before the scrollbars for tactile/readability separation.
             img_array[:-1,-2,:] = [255,255,255,0]
             img_array[-2,:-1,:] = [255,255,255,0]
             img_array[:,-1,:] = [255,255,255,0]
             img_array[-1,:,:] = [255,255,255,0]
-            img_array[max(0,int(img_array.shape[0]*x_scroll_min)):min(int(img_array.shape[0]*x_scroll_max)+1, img_array.shape[0]),-1,:] = [0,0,0,255]
-            img_array[-1, max(0, int(img_array.shape[1]*y_scroll_min)):min(int(img_array.shape[1]*y_scroll_max)+1, img_array.shape[1]),:] = [0,0,0,255]
+            y0 = max(0, int(draw_h * x_scroll_min))
+            y1 = min(int(draw_h * x_scroll_max) + 1, draw_h)
+            x0 = max(0, int(draw_w * y_scroll_min))
+            x1 = min(int(draw_w * y_scroll_max) + 1, draw_w)
+            img_array[y0:y1, -1, :] = [0,0,0,255]
+            img_array[-1, x0:x1, :] = [0,0,0,255]
 
         if "compose_scrollbar" in params.keys():
             compose_slice_graph = params["compose_slicegraph"]
