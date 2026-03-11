@@ -83,7 +83,8 @@
         }
         
         /* Slider styling */
-        #slice-depth-slider {
+        #slice-depth-slider,
+        #zoom-slider {
             width: 100%;
             height: 8px;
             border-radius: 4px;
@@ -93,7 +94,8 @@
             cursor: pointer;
         }
         
-        #slice-depth-slider::-webkit-slider-thumb {
+        #slice-depth-slider::-webkit-slider-thumb,
+        #zoom-slider::-webkit-slider-thumb {
             appearance: none;
             width: 24px;
             height: 24px;
@@ -104,7 +106,8 @@
             box-shadow: 0 2px 6px rgba(0,0,0,0.2);
         }
         
-        #slice-depth-slider::-moz-range-thumb {
+        #slice-depth-slider::-moz-range-thumb,
+        #zoom-slider::-moz-range-thumb {
             width: 24px;
             height: 24px;
             border-radius: 50%;
@@ -594,27 +597,24 @@
 
                 <div aria-labelledby="zoom-select-heading" style="margin-top: 16px;">
                     <h3 id="zoom-select-heading" style="margin: 0 0 8px; font-size: 1.1em; color: #34495e;">Zoom level selection</h3>
-                    <fieldset role="radiogroup" aria-labelledby="zoom-select-heading">
-                        <legend class="sr-only">Zoom levels</legend>
-                        <label>
-                            <input type="radio" name="zoom-select" id="zoom_0" value="0" checked>
-                            No zoom
-                        </label>
-                        <label>
-                            <input type="radio" name="zoom-select" id="zoom_1" value="1">
-                            Coarse
-                        </label>
-                        <label>
-                            <input type="radio" name="zoom-select" id="zoom_2" value="2">
-                            Medium
-                        </label>
-                        <label>
-                            <input type="radio" name="zoom-select" id="zoom_3" value="3">
-                            High
-                        </label>
-                    </fieldset>
-                    <div class="help-text sr-only" id="switch-help">
-                        Select No zoom, coarse, medium or high
+                    <label for="zoom-slider">
+                        Zoom Level: <span id="zoom-level-value">0.0</span>
+                    </label>
+                    <input
+                        type="range"
+                        id="zoom-slider"
+                        min="0"
+                        max="3"
+                        value="0"
+                        step="0.1"
+                        aria-valuemin="0"
+                        aria-valuemax="3"
+                        aria-valuenow="0"
+                        aria-valuetext="zoom level 0.0"
+                        aria-describedby="zoom-help"
+                    >
+                    <div class="help-text" id="zoom-help">
+                        Use arrow keys or drag to adjust zoom continuously from 0.0 (no zoom) to 3.0.
                     </div>
                 </div>
             </section>
@@ -648,7 +648,6 @@
                         <li><strong>2</strong> - Go deeper (increase depth by 10%)</li>
                         <li><strong>Q</strong> - Go shallower (decrease depth by 1%)</li>
                         <li><strong>E</strong> - Go deeper (increase depth by 1%)</li>
-                        <li><strong>V</strong> - Switch view (cycle through Front/Left/Right/Top/Bottom views)</li>
 
                         <li><strong>4</strong> - Zoom out</li>
                         <li><strong>5</strong> - Zoom in</li>
@@ -809,7 +808,7 @@
         // State management
         let currentSliceDepth = 50;
         let currentView = 'x+';
-        let currentZoom = '0';
+        let currentZoom = 0.0;
         let currentRenderMode = 'Shaded';
         let currentRepresentationMode = 'single';
         let currentMoveCamera = "none";
@@ -827,7 +826,9 @@
         // Remove "Back" from available views
         //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
         const views = ['y-', 'x-', 'z+', 'z-', 'x+', 'y+'];
-        const zooms = ["0", "1", "2", "3"];
+        const MIN_ZOOM = 0.0;
+        const MAX_ZOOM = 3.0;
+        const ZOOM_STEP = 0.1;
         //const views = ['front', 'side', 'top'];
 
         const axisInfo = {
@@ -846,6 +847,8 @@
         const statusAnnouncements = document.getElementById('status-announcements');
         const deeperBtn = document.getElementById('deeper-btn');
         const shallowerBtn = document.getElementById('shallower-btn');
+        const zoomSlider = document.getElementById('zoom-slider');
+        const zoomLevelValue = document.getElementById('zoom-level-value');
         const sliceGraphLockBtn = document.getElementById('slice-graph-lock-btn');
         const sliceGraphRefreshBtn = document.getElementById('slice-graph-refresh-btn');
         const sliceGraphLockStatus = document.getElementById('slice-graph-lock-status');
@@ -855,7 +858,6 @@
         const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
         const viewModeRadios = () => document.querySelectorAll('input[name="view-mode"]');
         const viewRadios = () => document.querySelectorAll('input[name="view-select"]');
-        const zoomRadios = () => document.querySelectorAll('input[name="zoom-select"]');
         // ...existing code...
 
         // Consistent depth announcement formatter
@@ -953,7 +955,6 @@
             renderModeRadios().forEach(r => { r.checked = (r.value === currentRenderMode); });
             viewModeRadios().forEach(r => { r.checked = (r.value === currentRepresentationMode); });
             viewRadios().forEach(r => { r.checked = (r.value === currentView); });
-            zoomRadios().forEach(r => { r.checked = (r.value === currentZoom); });
         }
         
         // Helper to update composeScrollbar and composeSliceGraph based on view mode
@@ -1105,15 +1106,21 @@
         }, 500);
 
         // Update zoom information
-        function updateZoom(newZoom) {
+        function updateZoom(newZoom, shouldAnnounce = true) {
             const oldZoom = currentZoom;
-            currentZoom = newZoom;
-            //currentViewSpan.textContent = currentView;
+            currentZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Number(newZoom)));
+            const zoomText = currentZoom.toFixed(1);
+            zoomSlider.value = zoomText;
+            zoomLevelValue.textContent = zoomText;
+            zoomSlider.setAttribute('aria-valuenow', zoomText);
+            zoomSlider.setAttribute('aria-valuetext', `zoom level ${zoomText}`);
+
             updateButtonLabels();
-            syncRadios();
-            announce(`${currentZoom.toLowerCase()} view`);
-            
-            // Send state to server if changed
+
+            if (shouldAnnounce) {
+                announceStatus(`zoom ${zoomText}`);
+            }
+
             if (oldZoom !== currentZoom) {
                 sendStateToServer();
             }
@@ -1287,13 +1294,13 @@
             }
         });
 
-        // Zoom selection radios
-        document.addEventListener('change', function(e) {
-            if (e.target && e.target.matches('input[name="zoom-select"]')) {
-                if (e.target.checked) {
-                    updateZoom(e.target.value);
-                }
-            }
+        // Zoom slider
+        zoomSlider.addEventListener('input', function() {
+            updateZoom(this.value, false);
+        });
+
+        zoomSlider.addEventListener('change', function() {
+            updateZoom(this.value, true);
         });
 
         showViewInfoBoxCheckbox.addEventListener('change', function() {
@@ -1359,16 +1366,6 @@
                     e.preventDefault();
                     const newShallowerDepth = Math.max(0, currentSliceDepth - 10);
                     updateSliceDepth(newShallowerDepth, true);
-                    break;
-                    
-                case 'v':
-                    // Switch view (cycle through views)
-                    e.preventDefault();
-                    {
-                        const currentIndex = views.indexOf(currentView);
-                        const nextIndex = (currentIndex + 1) % views.length;
-                        updateView(views[nextIndex]);
-                    }
                     break;
                     
                 // View shortcuts (first letter where available)
@@ -1479,19 +1476,11 @@
 
                 case '4':
                     e.preventDefault();
-                    {
-                        const currentIndex = zooms.indexOf(currentZoom);
-                        const nextIndex = Math.max((currentIndex - 1), 0);
-                        updateZoom(zooms[nextIndex]);
-                    }
+                    updateZoom(currentZoom - ZOOM_STEP, true);
                     break;
                 case '5':
                     e.preventDefault();
-                    {
-                        const currentIndex = zooms.indexOf(currentZoom);
-                        const nextIndex = Math.min((currentIndex + 1), zooms.length-1);
-                        updateZoom(zooms[nextIndex]);
-                    }
+                    updateZoom(currentZoom + ZOOM_STEP, true);
                     break;
                 case '6':
                 case '7':
@@ -1540,6 +1529,7 @@
             updateSliceDepth(50, false);
             updateView('x+');
             updateDisplayOptions();
+            updateZoom(0, false);
             syncRadios();
             updateButtonLabels();
             updateSliceGraphLockUI();
