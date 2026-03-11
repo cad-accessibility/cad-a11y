@@ -640,6 +640,11 @@ class CADComparisonRenderer:
             cut_position_int = int(100.0 * (1.0 - graph_cut_depth))
             view_diff_mat = self.view_diff_mats[graph_view_name][cut_position_int]
 
+            # The marker always reflects the current (live) slice position,
+            # even when the graph data is locked to an anchor depth.
+            current_depth_percent = max(0, min(100, depth_percent))
+            marker_position_int = int(100.0 * (1.0 - current_depth_percent / 100.0))
+
             # Render line-graph edge-to-edge in the graph band width.
             width_px, height_px = self.screen_size[0], self.screen_size[1]
             graph_height_px = 10
@@ -673,7 +678,7 @@ class CADComparisonRenderer:
             # Enforce a 1px slice marker column in the graph bitmap.
             # This avoids anti-aliased or multi-pixel marker thickness from plotting.
             if img_np.shape[1] > 0 and len(view_diff_mat) > 1:
-                marker_col = int(round(cut_position_int * (img_np.shape[1] - 1) / (len(view_diff_mat) - 1)))
+                marker_col = int(round(marker_position_int * (img_np.shape[1] - 1) / (len(view_diff_mat) - 1)))
                 marker_col = max(0, min(img_np.shape[1] - 1, marker_col))
                 img_np[:, marker_col, :] = [0, 0, 0, 255]
             print("Slice graph")
