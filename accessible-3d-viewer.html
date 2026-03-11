@@ -83,7 +83,8 @@
         }
         
         /* Slider styling */
-        #slice-depth-slider {
+        #slice-depth-slider,
+        #zoom-slider {
             width: 100%;
             height: 8px;
             border-radius: 4px;
@@ -93,7 +94,8 @@
             cursor: pointer;
         }
         
-        #slice-depth-slider::-webkit-slider-thumb {
+        #slice-depth-slider::-webkit-slider-thumb,
+        #zoom-slider::-webkit-slider-thumb {
             appearance: none;
             width: 24px;
             height: 24px;
@@ -104,7 +106,8 @@
             box-shadow: 0 2px 6px rgba(0,0,0,0.2);
         }
         
-        #slice-depth-slider::-moz-range-thumb {
+        #slice-depth-slider::-moz-range-thumb,
+        #zoom-slider::-moz-range-thumb {
             width: 24px;
             height: 24px;
             border-radius: 50%;
@@ -288,6 +291,17 @@
             border-radius: 4px;
             image-rendering: pixelated;
             background: #f0f0f0;
+            display: block;
+            margin-top: 10px;
+        }
+
+        #high-fidelity-preview-img {
+            width: 100%;
+            height: auto;
+            border: 1px solid #e1e8ed;
+            border-radius: 4px;
+            image-rendering: auto;
+            background: #fff;
             display: block;
             margin-top: 10px;
         }
@@ -619,27 +633,24 @@
 
                 <div aria-labelledby="zoom-select-heading" style="margin-top: 16px;">
                     <h3 id="zoom-select-heading" style="margin: 0 0 8px; font-size: 1.1em; color: #34495e;">Zoom level selection</h3>
-                    <fieldset role="radiogroup" aria-labelledby="zoom-select-heading">
-                        <legend class="sr-only">Zoom levels</legend>
-                        <label>
-                            <input type="radio" name="zoom-select" id="zoom_0" value="0" checked>
-                            No zoom
-                        </label>
-                        <label>
-                            <input type="radio" name="zoom-select" id="zoom_1" value="1">
-                            Coarse
-                        </label>
-                        <label>
-                            <input type="radio" name="zoom-select" id="zoom_2" value="2">
-                            Medium
-                        </label>
-                        <label>
-                            <input type="radio" name="zoom-select" id="zoom_3" value="3">
-                            High
-                        </label>
-                    </fieldset>
-                    <div class="help-text sr-only" id="switch-help">
-                        Select No zoom, coarse, medium or high
+                    <label for="zoom-slider">
+                        Zoom Level: <span id="zoom-level-value">0.0</span>
+                    </label>
+                    <input
+                        type="range"
+                        id="zoom-slider"
+                        min="0"
+                        max="3"
+                        value="0"
+                        step="0.1"
+                        aria-valuemin="0"
+                        aria-valuemax="3"
+                        aria-valuenow="0"
+                        aria-valuetext="zoom level 0.0"
+                        aria-describedby="zoom-help"
+                    >
+                    <div class="help-text" id="zoom-help">
+                        Use arrow keys or drag to adjust zoom continuously from 0.0 (no zoom) to 3.0.
                     </div>
                 </div>
             </section>
@@ -652,6 +663,13 @@
                 <!-- RIGHT COLUMN: tactile preview + shortcuts -->
                 <div class="right-col" id="right-col">
 
+                    <section class="section" >
+                        <h2 id="tactile-preview-heading">Export</h2>
+                        <div class="button-group" style="margin-top: 0; margin-bottom: 8px;">
+                            <button type="button" id="export-slice-svg-btn">Export Current View as SVG</button>
+
+                        </div>
+			</section> 
                     <!-- Tactile Display Preview Section -->
                     <section class="section" aria-hidden="true">
                         <h2 id="tactile-preview-heading">Tactile Display Preview</h2>
@@ -661,6 +679,12 @@
                         </div>
                         <img id="tactile-display-img" src="" alt="Current tactile display content">
                         <div id="tactile-preview-meta" class="help-text">Waiting for render&hellip;</div>
+                    </section>
+
+                    <section class="section" aria-hidden="true">
+                        <h2 id="high-fidelity-preview-heading">High-Fidelity Preview</h2>
+                        <img id="high-fidelity-preview-img" src="" alt="High-fidelity tactile preview">
+                        <div id="high-fidelity-preview-meta" class="help-text">Waiting for high-fidelity render&hellip;</div>
                     </section>
 
             <!-- Keyboard Shortcuts Section -->
@@ -673,7 +697,6 @@
                         <li><strong>2</strong> - Go deeper (increase depth by 10%)</li>
                         <li><strong>Q</strong> - Go shallower (decrease depth by 1%)</li>
                         <li><strong>E</strong> - Go deeper (increase depth by 1%)</li>
-                        <li><strong>V</strong> - Switch view (cycle through Front/Left/Right/Top/Bottom views)</li>
 
                         <li><strong>4</strong> - Zoom out</li>
                         <li><strong>5</strong> - Zoom in</li>
@@ -821,6 +844,7 @@
                     if (data.image_base64) {
                         updateTactilePreview(data.image_base64, data.image_shape);
                     }
+                    scheduleHighFidelityPreviewRefresh(false);
                 })
                 .catch(error => {
                     // Silently fail - don't interrupt user experience
@@ -835,7 +859,7 @@
         // State management
         let currentSliceDepth = 50;
         let currentView = 'x+';
-        let currentZoom = '0';
+        let currentZoom = 0.0;
         let currentRenderMode = 'Shaded';
         let currentProjectionMode = 'orthographic';
         let currentRepresentationMode = 'single';
@@ -850,11 +874,16 @@
         let sliceGraphLocked = true;
         let sliceGraphAnchorView = 'y-';
         let sliceGraphAnchorDepth = 50;
+        let highFidelityPreviewTimer = null;
+        let highFidelityPreviewInFlight = false;
+        let lastHighFidelityKey = '';
         
         // Remove "Back" from available views
         //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
         const views = ['y-', 'x-', 'z+', 'z-', 'x+', 'y+'];
-        const zooms = ["0", "1", "2", "3"];
+        const MIN_ZOOM = 0.0;
+        const MAX_ZOOM = 3.0;
+        const ZOOM_STEP = 0.1;
         //const views = ['front', 'side', 'top'];
 
         const axisInfo = {
@@ -873,17 +902,21 @@
         const statusAnnouncements = document.getElementById('status-announcements');
         const deeperBtn = document.getElementById('deeper-btn');
         const shallowerBtn = document.getElementById('shallower-btn');
+        const zoomSlider = document.getElementById('zoom-slider');
+        const zoomLevelValue = document.getElementById('zoom-level-value');
         const sliceGraphLockBtn = document.getElementById('slice-graph-lock-btn');
         const sliceGraphRefreshBtn = document.getElementById('slice-graph-refresh-btn');
         const sliceGraphLockStatus = document.getElementById('slice-graph-lock-status');
         const showViewInfoBoxCheckbox = document.getElementById('show-view-info-box');
+        const exportSliceSvgBtn = document.getElementById('export-slice-svg-btn');
+        const highFidelityPreviewImg = document.getElementById('high-fidelity-preview-img');
+        const highFidelityPreviewMeta = document.getElementById('high-fidelity-preview-meta');
 
         // New radio group references
         const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
         const viewModeRadios = () => document.querySelectorAll('input[name="view-mode"]');
         const projectionModeRadios = () => document.querySelectorAll('input[name="projection-mode"]');
         const viewRadios = () => document.querySelectorAll('input[name="view-select"]');
-        const zoomRadios = () => document.querySelectorAll('input[name="zoom-select"]');
         // ...existing code...
 
         // Consistent depth announcement formatter
@@ -952,6 +985,345 @@
             currentPrintView = !currentPrintView;
         }
 
+        function escapeXml(value) {
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&apos;');
+        }
+
+        function textToBrailleCells(text) {
+            const letters = {
+                a: [1], b: [1, 2], c: [1, 4], d: [1, 4, 5], e: [1, 5],
+                f: [1, 2, 4], g: [1, 2, 4, 5], h: [1, 2, 5], i: [2, 4], j: [2, 4, 5],
+                k: [1, 3], l: [1, 2, 3], m: [1, 3, 4], n: [1, 3, 4, 5], o: [1, 3, 5],
+                p: [1, 2, 3, 4], q: [1, 2, 3, 4, 5], r: [1, 2, 3, 5], s: [2, 3, 4], t: [2, 3, 4, 5],
+                u: [1, 3, 6], v: [1, 2, 3, 6], w: [2, 4, 5, 6], x: [1, 3, 4, 6], y: [1, 3, 4, 5, 6], z: [1, 3, 5, 6],
+            };
+            const digits = {
+                '1': [1], '2': [1, 2], '3': [1, 4], '4': [1, 4, 5], '5': [1, 5],
+                '6': [1, 2, 4], '7': [1, 2, 4, 5], '8': [1, 2, 5], '9': [2, 4], '0': [2, 4, 5],
+            };
+            const punctuation = {
+                ' ': [],
+                ':': [2, 5],
+                '-': [3, 6],
+                '+': [3, 4, 6],
+                '.': [2, 5, 6],
+                ',': [2],
+                '%': [4, 6, 3, 5],
+            };
+            const numberSign = [3, 4, 5, 6];
+
+            const cells = [];
+            let inNumber = false;
+            for (const ch of String(text)) {
+                if (Object.prototype.hasOwnProperty.call(digits, ch)) {
+                    if (!inNumber) {
+                        cells.push(numberSign);
+                        inNumber = true;
+                    }
+                    cells.push(digits[ch]);
+                    continue;
+                }
+                inNumber = false;
+                const lower = ch.toLowerCase();
+                if (Object.prototype.hasOwnProperty.call(letters, lower)) {
+                    cells.push(letters[lower]);
+                } else if (Object.prototype.hasOwnProperty.call(punctuation, ch)) {
+                    cells.push(punctuation[ch]);
+                } else {
+                    cells.push([]);
+                }
+            }
+            return cells;
+        }
+
+        function buildBrailleDotsSvg(labels, width, yOffset = 0) {
+            const dotOffsets = {
+                1: [0, 0], 2: [0, 1], 3: [0, 2], 7: [0, 3],
+                4: [1, 0], 5: [1, 1], 6: [1, 2], 8: [1, 3],
+            };
+
+            const dotRadius = 1.25;
+            const colSpacing = 5.2;
+            const rowSpacing = 5.2;
+            const cellAdvance = 12.5;
+            const lineHeight = 26;
+            const startX = 12;
+            const topPadding = 14;
+
+            const circles = [];
+            labels.forEach((label, lineIndex) => {
+                const cells = textToBrailleCells(label);
+                const baseY = yOffset + topPadding + lineIndex * lineHeight;
+                let cursorX = startX;
+                cells.forEach((dots) => {
+                    dots.forEach((dot) => {
+                        const offset = dotOffsets[dot];
+                        if (!offset) {
+                            return;
+                        }
+                        const cx = cursorX + dotRadius + offset[0] * colSpacing;
+                        const cy = baseY + dotRadius + offset[1] * rowSpacing;
+                        if (cx >= 0 && cx <= width) {
+                            circles.push(`<circle cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" r="${dotRadius}" fill="black"/>`);
+                        }
+                    });
+                    cursorX += cellAdvance;
+                });
+            });
+            return circles.join('\n');
+        }
+
+        function getExportSvgLabels() {
+            const labels = [];
+            if (currentRepresentationMode === 'side-by-side') {
+                const rightAxis = currentView;
+                const leftAxis = getLegendAxisForCutAxis(rightAxis);
+                labels.push(`Left view: ${leftAxis}`);
+                labels.push(`Right view: ${rightAxis}`);
+            }
+
+            if (showViewInfoBox) {
+                labels.push(`Axis: ${currentView}`);
+                labels.push(`Zoom: ${Number(currentZoom).toFixed(1)}`);
+                labels.push(`Type: ${currentRepresentationMode}`);
+                labels.push(`Cut: ${currentSliceDepth}%`);
+            }
+
+            return labels;
+        }
+
+        function buildInvertedSliceSvgFromImage(imgElement, options = {}) {
+            const width = imgElement.naturalWidth || imgElement.width;
+            const height = imgElement.naturalHeight || imgElement.height;
+            if (!width || !height) {
+                throw new Error('No tactile preview image available yet.');
+            }
+
+            const labels = Array.isArray(options.labels) ? options.labels : [];
+            const labelLineHeight = 26;
+            const labelTopPadding = 14;
+            const labelBandHeight = labels.length > 0 ? (labelTopPadding + labels.length * labelLineHeight) : 0;
+            const totalHeight = height + labelBandHeight;
+
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+                throw new Error('Could not create drawing context.');
+            }
+
+            ctx.drawImage(imgElement, 0, 0, width, height);
+            const imageData = ctx.getImageData(0, 0, width, height).data;
+
+            const pathParts = [];
+            for (let y = 0; y < height; y += 1) {
+                let x = 0;
+                while (x < width) {
+                    const idx = (y * width + x) * 4;
+                    const r = imageData[idx];
+                    const g = imageData[idx + 1];
+                    const b = imageData[idx + 2];
+                    const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                    const inverted = 255 - luminance;
+                    const isBlackPixel = inverted < 128;
+
+                    if (!isBlackPixel) {
+                        x += 1;
+                        continue;
+                    }
+
+                    const runStart = x;
+                    x += 1;
+                    while (x < width) {
+                        const runIdx = (y * width + x) * 4;
+                        const rr = imageData[runIdx];
+                        const gg = imageData[runIdx + 1];
+                        const bb = imageData[runIdx + 2];
+                        const runLuminance = 0.2126 * rr + 0.7152 * gg + 0.0722 * bb;
+                        const runInverted = 255 - runLuminance;
+                        const runIsBlack = runInverted < 128;
+                        if (!runIsBlack) {
+                            break;
+                        }
+                        x += 1;
+                    }
+
+                    const runWidth = x - runStart;
+                    pathParts.push(`M${runStart} ${y}h${runWidth}v1h-${runWidth}z`);
+                }
+            }
+
+            const labelSvg = buildBrailleDotsSvg(labels, width, 0);
+
+            return [
+                `<?xml version="1.0" encoding="UTF-8"?>`,
+                `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${totalHeight}" viewBox="0 0 ${width} ${totalHeight}" shape-rendering="crispEdges">`,
+                `<rect width="100%" height="100%" fill="white"/>`,
+                labelSvg,
+                `<g transform="translate(0 ${labelBandHeight})">`,
+                `<path fill="black" d="${pathParts.join('')}"/>`,
+                `</g>`,
+                `</svg>`
+            ].join('\n');
+        }
+
+        function fetchExportSourceState() {
+            const requestedGraphView = sliceGraphLocked ? sliceGraphAnchorView : currentView;
+            const requestedGraphDepth = sliceGraphLocked ? sliceGraphAnchorDepth : currentSliceDepth;
+            return {
+                view: currentView,
+                zoom: currentZoom,
+                depth: currentSliceDepth,
+                renderMode: currentRenderMode,
+                mode: currentRepresentationMode,
+                move_camera_center: 'none',
+                print_view: false,
+                current_model: currentModel,
+                compose_scrollbar: composeScrollbar,
+                compose_slicegraph: composeSliceGraph,
+                show_view_info_box: showViewInfoBox,
+                slicegraph_locked: sliceGraphLocked,
+                slicegraph_view: requestedGraphView,
+                slicegraph_depth: requestedGraphDepth,
+                export_width: 1000,
+            };
+        }
+
+        function loadImageElementFromBase64(base64Data) {
+            return new Promise((resolve, reject) => {
+                const tempImage = new Image();
+                tempImage.onload = () => resolve(tempImage);
+                tempImage.onerror = () => reject(new Error('Failed to load export source image'));
+                tempImage.src = 'data:image/png;base64,' + base64Data;
+            });
+        }
+
+        async function fetchHighFidelityExportImage() {
+            const response = await fetch(`${SERVER_URL}/render/export-source`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(fetchExportSourceState()),
+                mode: 'cors'
+            });
+
+            if (!response.ok) {
+                throw new Error(`Export render request failed (${response.status})`);
+            }
+
+            const data = await response.json();
+            if (!data.image_base64) {
+                throw new Error('Export render response missing image data');
+            }
+
+            return loadImageElementFromBase64(data.image_base64);
+        }
+
+        function computeHighFidelityStateKey() {
+            return JSON.stringify(fetchExportSourceState());
+        }
+
+        async function refreshHighFidelityPreview(force = false) {
+            if (!highFidelityPreviewImg || !highFidelityPreviewMeta) {
+                return;
+            }
+
+            const stateKey = computeHighFidelityStateKey();
+            if (!force && stateKey === lastHighFidelityKey) {
+                return;
+            }
+            if (highFidelityPreviewInFlight) {
+                return;
+            }
+
+            highFidelityPreviewInFlight = true;
+            highFidelityPreviewMeta.textContent = 'Rendering high-fidelity preview...';
+
+            try {
+                const response = await fetch(`${SERVER_URL}/render/export-source`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(fetchExportSourceState()),
+                    mode: 'cors'
+                });
+
+                if (!response.ok) {
+                    throw new Error(`High-fidelity preview request failed (${response.status})`);
+                }
+
+                const data = await response.json();
+                if (!data.image_base64) {
+                    throw new Error('High-fidelity preview response missing image data');
+                }
+
+                highFidelityPreviewImg.src = 'data:image/png;base64,' + data.image_base64;
+                highFidelityPreviewImg.alt = `High-fidelity tactile display: ${currentView} view, ${currentSliceDepth}% depth, ${currentRenderMode}`;
+
+                const width = data.image_shape && data.image_shape.length > 1 ? data.image_shape[1] : '--';
+                const height = data.image_shape && data.image_shape.length > 0 ? data.image_shape[0] : '--';
+                highFidelityPreviewMeta.textContent = `${currentView} · ${currentSliceDepth}% · ${currentRenderMode} · ${width}×${height}px`;
+                lastHighFidelityKey = stateKey;
+            } catch (error) {
+                console.warn('Failed to update high-fidelity preview:', error);
+                highFidelityPreviewMeta.textContent = 'High-fidelity preview unavailable';
+            } finally {
+                highFidelityPreviewInFlight = false;
+            }
+        }
+
+        function scheduleHighFidelityPreviewRefresh(force = false) {
+            if (highFidelityPreviewTimer) {
+                clearTimeout(highFidelityPreviewTimer);
+            }
+            highFidelityPreviewTimer = setTimeout(() => {
+                refreshHighFidelityPreview(force);
+            }, 350);
+        }
+
+        async function exportCurrentSliceAsSvg() {
+            try {
+                exportSliceSvgBtn.disabled = true;
+                announceStatus('rendering high-fidelity export');
+
+                const exportImage = await fetchHighFidelityExportImage();
+                const exportWidth = exportImage.naturalWidth || exportImage.width;
+                if (exportWidth < 900) {
+                    throw new Error(`High-fidelity export width too small: ${exportWidth}px`);
+                }
+
+                const svgLabels = getExportSvgLabels();
+                const svgContent = buildInvertedSliceSvgFromImage(exportImage, { labels: svgLabels });
+                const blob = new Blob([svgContent], { type: 'image/svg+xml;charset=utf-8' });
+                const downloadUrl = URL.createObjectURL(blob);
+                const sanitizedView = String(currentView).replace(/[^a-zA-Z0-9+-]/g, '_');
+                const filename = `slice_${sanitizedView}_${currentSliceDepth}_${currentRenderMode.toLowerCase()}.svg`;
+
+                const link = document.createElement('a');
+                link.href = downloadUrl;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(downloadUrl);
+
+                announceStatus('slice exported as svg');
+            } catch (error) {
+                console.warn('Failed to export slice as SVG:', error);
+                announceStatus('High-fidelity export failed');
+            } finally {
+                exportSliceSvgBtn.disabled = false;
+            }
+        }
+
         // Update slice depth display and announce changes
         function updateSliceDepth(newDepth, shouldAnnounce = true) {
             const oldDepth = currentSliceDepth;
@@ -982,7 +1354,6 @@
             viewModeRadios().forEach(r => { r.checked = (r.value === currentRepresentationMode); });
             projectionModeRadios().forEach(r => { r.checked = (r.value === currentProjectionMode); });
             viewRadios().forEach(r => { r.checked = (r.value === currentView); });
-            zoomRadios().forEach(r => { r.checked = (r.value === currentZoom); });
         }
         
         // Helper to update composeScrollbar and composeSliceGraph based on view mode
@@ -1134,15 +1505,21 @@
         }, 500);
 
         // Update zoom information
-        function updateZoom(newZoom) {
+        function updateZoom(newZoom, shouldAnnounce = true) {
             const oldZoom = currentZoom;
-            currentZoom = newZoom;
-            //currentViewSpan.textContent = currentView;
+            currentZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Number(newZoom)));
+            const zoomText = currentZoom.toFixed(1);
+            zoomSlider.value = zoomText;
+            zoomLevelValue.textContent = zoomText;
+            zoomSlider.setAttribute('aria-valuenow', zoomText);
+            zoomSlider.setAttribute('aria-valuetext', `zoom level ${zoomText}`);
+
             updateButtonLabels();
-            syncRadios();
-            announce(`${currentZoom.toLowerCase()} view`);
-            
-            // Send state to server if changed
+
+            if (shouldAnnounce) {
+                announceStatus(`zoom ${zoomText}`);
+            }
+
             if (oldZoom !== currentZoom) {
                 sendStateToServer();
             }
@@ -1337,13 +1714,13 @@
             }
         });
 
-        // Zoom selection radios
-        document.addEventListener('change', function(e) {
-            if (e.target && e.target.matches('input[name="zoom-select"]')) {
-                if (e.target.checked) {
-                    updateZoom(e.target.value);
-                }
-            }
+        // Zoom slider
+        zoomSlider.addEventListener('input', function() {
+            updateZoom(this.value, false);
+        });
+
+        zoomSlider.addEventListener('change', function() {
+            updateZoom(this.value, true);
         });
 
         showViewInfoBoxCheckbox.addEventListener('change', function() {
@@ -1373,6 +1750,10 @@
             }
             captureSliceGraphAnchor(true);
             sendStateToServer();
+        });
+
+        exportSliceSvgBtn.addEventListener('click', function() {
+            exportCurrentSliceAsSvg();
         });
         
         // Global keyboard navigation support for accessibility
@@ -1409,16 +1790,6 @@
                     e.preventDefault();
                     const newShallowerDepth = Math.max(0, currentSliceDepth - 10);
                     updateSliceDepth(newShallowerDepth, true);
-                    break;
-                    
-                case 'v':
-                    // Switch view (cycle through views)
-                    e.preventDefault();
-                    {
-                        const currentIndex = views.indexOf(currentView);
-                        const nextIndex = (currentIndex + 1) % views.length;
-                        updateView(views[nextIndex]);
-                    }
                     break;
                     
                 // View shortcuts (first letter where available)
@@ -1529,19 +1900,11 @@
 
                 case '4':
                     e.preventDefault();
-                    {
-                        const currentIndex = zooms.indexOf(currentZoom);
-                        const nextIndex = Math.max((currentIndex - 1), 0);
-                        updateZoom(zooms[nextIndex]);
-                    }
+                    updateZoom(currentZoom - ZOOM_STEP, true);
                     break;
                 case '5':
                     e.preventDefault();
-                    {
-                        const currentIndex = zooms.indexOf(currentZoom);
-                        const nextIndex = Math.min((currentIndex + 1), zooms.length-1);
-                        updateZoom(zooms[nextIndex]);
-                    }
+                    updateZoom(currentZoom + ZOOM_STEP, true);
                     break;
                 case '6':
                 case '7':
@@ -1590,6 +1953,7 @@
             updateSliceDepth(50, false);
             updateView('x+');
             updateDisplayOptions();
+            updateZoom(0, false);
             syncRadios();
             updateButtonLabels();
             updateSliceGraphLockUI();
@@ -1597,6 +1961,7 @@
             
             // Send initial state to server
             sendStateToServer();
+            scheduleHighFidelityPreviewRefresh(true);
             
             // Add initial announcement
             setTimeout(() => {

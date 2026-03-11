@@ -293,6 +293,16 @@ def _img_to_base64_png(img_array: np.ndarray) -> str:
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed <= 0:
+        return default
+    return parsed
+
+
 def initialize_default_braille_render() -> None:
     _log("Preparing initial render...", force=True)
 
@@ -483,6 +493,52 @@ def get_data():
             "slider_value": state.slider_value,
         }
     return jsonify(payload), 200
+
+
+@app.route("/render/export-source", methods=["POST"])
+def render_export_source():
+    """Render a high-fidelity tactile source image for export workflows.
+
+    This endpoint intentionally avoids sending anything to braille hardware.
+    """
+    try:
+        params = request.get_json(silent=True) or {}
+        merged_params = dict(DEFAULT_RENDER_PARAMS)
+        merged_params.update(params)
+        merged_params["view"] = str(merged_params.get("view", "")).lower()
+        merged_params["print_view"] = False
+
+        export_width = _coerce_positive_int(params.get("export_width", 1000), 1000)
+
+        engine = get_or_create_renderer()
+        original_screen_size = list(engine.screen_size)
+        if not original_screen_size or original_screen_size[0] <= 0:
+            original_screen_size = [96, 40]
+
+        aspect_ratio = float(original_screen_size[1]) / float(original_screen_size[0])
+        export_height = max(1, int(round(export_width * aspect_ratio)))
+
+        engine.screen_size = [export_width, export_height]
+        try:
+            out_guard, err_guard = _renderer_stdio_guard()
+            with out_guard, err_guard:
+                rendered = engine.render(merged_params)
+        finally:
+            engine.screen_size = original_screen_size
+
+        tactile_payload = _to_braille_payload(rendered)
+        response = {
+            "status": "success",
+            "message": "Export source render complete",
+            "image_shape": list(tactile_payload.shape),
+            "image_base64": _img_to_base64_png(tactile_payload),
+            "export_width": export_width,
+            "export_height": export_height,
+        }
+        return jsonify(response), 200
+    except Exception as error:
+        _log(f"Error rendering export source: {error}", force=True)
+        return jsonify({"status": "error", "message": str(error)}), 400
 
 
 def main() -> int:
