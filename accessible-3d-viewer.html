@@ -464,7 +464,7 @@
             <section class="section" aria-labelledby="render-heading">
                 <h2 id="render-heading">Rendering Mode</h2>
                 <div id="render-help" class="help-text">
-                    Choose between Shaded (filled surfaces), Outline (wireframe edges), and Cut (cross-section)
+                    Choose between Shaded (filled surfaces), Outline (silhouette), and Line (all projected edges)
                 </div>
                 <div aria-describedby="render-help">
                     <fieldset role="radiogroup" aria-labelledby="render-heading">
@@ -478,8 +478,33 @@
                             Outline
                         </label>
                         <label>
-                            <input type="radio" name="render-mode" id="render-mode-cut" value="Cut">
-                            Cut
+                            <input type="radio" name="render-mode" id="render-mode-line" value="Line">
+                            Line
+                        </label>
+                    </fieldset>
+                </div>
+
+                <div id="projection-mode-help" class="help-text" style="margin-top: 10px;">
+                    Choose projection: Orthographic, Oblique, Isometric, or Slice
+                </div>
+                <div aria-describedby="projection-mode-help">
+                    <fieldset role="radiogroup" aria-labelledby="render-heading">
+                        <legend class="sr-only">Projection Mode Options</legend>
+                        <label>
+                            <input type="radio" name="projection-mode" id="projection-mode-orthographic" value="orthographic" checked>
+                            Orthographic
+                        </label>
+                        <label>
+                            <input type="radio" name="projection-mode" id="projection-mode-oblique" value="oblique">
+                            Oblique
+                        </label>
+                        <label>
+                            <input type="radio" name="projection-mode" id="projection-mode-isometric" value="isometric">
+                            Isometric
+                        </label>
+                        <label>
+                            <input type="radio" name="projection-mode" id="projection-mode-slice" value="slice">
+                            Slice
                         </label>
                     </fieldset>
                 </div>
@@ -662,9 +687,9 @@
 
                         <li><strong>F</strong> - Switch to filled/shaded view</li>
                         <li><strong>O</strong> - Switch to outline view</li>
-                        <li><strong>C</strong> - Switch to cut view</li>
+                        <li><strong>N</strong> - Switch to line view (all edges)</li>
 
-                        <li><strong>R</strong> - Switch render mode (cycle through filled, outline, cut)</li>
+                        <li><strong>R</strong> - Switch render mode (cycle through filled, outline)</li>
                         <li><strong>T</strong> - Switch view mode (cycle through single, side-by-side, and slice-graph)</li>
                         <li><strong>L</strong> - Toggle slice graph lock</li>
                         <li><strong>G</strong> - Refresh slice graph from current location</li>
@@ -761,6 +786,7 @@
                     zoom: currentZoom,
                     depth: currentSliceDepth,
                     renderMode: currentRenderMode,
+                    projectionMode: currentProjectionMode,
                     mode: currentRepresentationMode,
                     move_camera_center: currentMoveCamera,
                     print_view: currentPrintView,
@@ -811,10 +837,11 @@
         let currentView = 'x+';
         let currentZoom = '0';
         let currentRenderMode = 'Shaded';
+        let currentProjectionMode = 'orthographic';
         let currentRepresentationMode = 'single';
         let currentMoveCamera = "none";
         let currentPrintView = false;
-        const renderModes = ['Shaded', 'Outline', 'Cut'];
+        const renderModes = ['Shaded', 'Outline', 'Line'];
         const representationModes = ['single', 'side-by-side', 'slice-graph'];
         let currentModel = "none";
        let composeScrollbar = true;
@@ -854,6 +881,7 @@
         // New radio group references
         const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
         const viewModeRadios = () => document.querySelectorAll('input[name="view-mode"]');
+        const projectionModeRadios = () => document.querySelectorAll('input[name="projection-mode"]');
         const viewRadios = () => document.querySelectorAll('input[name="view-select"]');
         const zoomRadios = () => document.querySelectorAll('input[name="zoom-select"]');
         // ...existing code...
@@ -952,6 +980,7 @@
         function syncRadios() {
             renderModeRadios().forEach(r => { r.checked = (r.value === currentRenderMode); });
             viewModeRadios().forEach(r => { r.checked = (r.value === currentRepresentationMode); });
+            projectionModeRadios().forEach(r => { r.checked = (r.value === currentProjectionMode); });
             viewRadios().forEach(r => { r.checked = (r.value === currentView); });
             zoomRadios().forEach(r => { r.checked = (r.value === currentZoom); });
         }
@@ -975,8 +1004,8 @@
             updateSideBySideAxisLabels();
         }
 
-        function getLegendAxisForCutAxis(cutAxis) {
-            const legendFromCut = {
+        function getLegendAxisForSliceAxis(cutAxis) {
+            const legendFromSlice = {
                 'x+': 'z+',
                 'y+': 'x+',
                 'z+': 'y+',
@@ -984,7 +1013,7 @@
                 'y-': 'x-',
                 'z-': 'y-',
             };
-            return legendFromCut[cutAxis] || 'x+';
+            return legendFromSlice [cutAxis] || 'x+';
         }
 
         function updateSideBySideAxisLabels() {
@@ -997,7 +1026,7 @@
 
             if (currentRepresentationMode === 'side-by-side') {
                 const rightAxis = currentView;
-                const leftAxis = getLegendAxisForCutAxis(rightAxis);
+                const leftAxis = getLegendAxisForSliceAxis(rightAxis);
                 leftLabel.textContent = `Left view: ${leftAxis}`;
                 rightLabel.textContent = `Right view: ${rightAxis}`;
                 labelsContainer.hidden = false;
@@ -1142,6 +1171,18 @@
             switchToRenderMode(renderModes[nextIndex]);
         }
 
+        function switchToProjectionMode(targetMode) {
+            if (currentProjectionMode === targetMode) {
+                announceStatus(`already ${targetMode}`);
+                return;
+            }
+            const previousMode = currentProjectionMode;
+            currentProjectionMode = targetMode;
+            syncRadios();
+            announce(`${previousMode} to ${currentProjectionMode} projection`);
+            sendStateToServer();
+        }
+
         function switchToRepresentationMode(targetMode) {
             if (currentRepresentationMode === targetMode) {
                 announceStatus(`already ${targetMode.toLowerCase()}`);
@@ -1263,6 +1304,15 @@
             if (e.target && e.target.matches('input[name="render-mode"]')) {
                 if (e.target.checked) {
                     switchToRenderMode(e.target.value);
+                }
+            }
+        });
+
+        // Projection mode radios
+        document.addEventListener('change', function(e) {
+            if (e.target && e.target.matches('input[name="projection-mode"]')) {
+                if (e.target.checked) {
+                    switchToProjectionMode(e.target.value);
                 }
             }
         });
@@ -1435,11 +1485,11 @@
                     e.preventDefault();
                     switchToRenderMode('Outline');
                     break;
-                    
-                case 'c':
-                    // Switch to cut view
+
+                case 'n':
+                    // Switch to line view
                     e.preventDefault();
-                    switchToRenderMode('Cut');
+                    switchToRenderMode('Line');
                     break;
                     
                 //case '0':
@@ -1599,3 +1649,4 @@
     </script>
 </body>
 </html>
+ 

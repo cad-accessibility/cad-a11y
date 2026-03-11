@@ -13,7 +13,7 @@ from trimesh import Trimesh
 from trimesh.repair import stitch, fill_holes, fix_inversion, fix_winding
 from copy import copy, deepcopy
 import src.converter.plane_intersection_utils as plane_inter_utils
-from src.converter.single_view_stl import get_single_view, get_cut_faces
+from src.converter.single_view_stl import get_single_view, get_cut_faces, project_vertices
 from src.converter.juxtaposition_view_stl import get_juxtaposition_view
 from src.converter.superposition_view_stl import get_superposition_view
 from src.converter.side_by_side_view import get_side_view
@@ -134,6 +134,34 @@ class CADComparisonRenderer:
         print(np.array(view_limits))
         #exit()
 
+    def _calculate_projected_view_limits(self, projection_mode):
+        """Calculate per-view axis limits for a given projection mode."""
+        view_keys = ["top", "front", "left", "bottom", "back", "right"]
+        projected_limits = []
+
+        for view_key in view_keys:
+            all_x = []
+            all_y = []
+            for shape in self.shapes:
+                coords = project_vertices(shape.vertices, view_key, projection_mode=projection_mode)
+                if coords.shape[0] == 0:
+                    continue
+                all_x.append(coords[:, 0])
+                all_y.append(coords[:, 1])
+
+            if len(all_x) == 0:
+                projected_limits.append([[0.0, 1.0], [0.0, 1.0]])
+                continue
+
+            xs = np.concatenate(all_x)
+            ys = np.concatenate(all_y)
+            projected_limits.append([
+                [float(np.min(xs)), float(np.max(xs))],
+                [float(np.min(ys)), float(np.max(ys))],
+            ])
+
+        return np.array(projected_limits)
+
     def _compute_slice_graphs(self):
 
         shape = copy(self.shapes[0])
@@ -234,12 +262,24 @@ class CADComparisonRenderer:
         """Map render mode from JSON format to internal format."""
         mode_mapping = {
             "outline": "outline",
+            "line": "line",
             "filled": "filled",
             "shaded": "filled",
             "slice": "slice",
             "cut": "slice",
         }
         return mode_mapping.get(render_mode.lower(), "outline")
+
+    def _map_projection_mode(self, projection_mode):
+        """Map projection mode from JSON format to internal format."""
+        mode = (projection_mode or "orthographic").lower()
+        mapping = {
+            "orthographic": "orthographic",
+            "oblique": "oblique",
+            "isometric": "isometric",
+            "cut": "cut",
+        }
+        return mapping.get(mode, "orthographic")
     
     def _get_view_index(self, view_key):
         """Get the index for view limits array."""
@@ -370,6 +410,10 @@ class CADComparisonRenderer:
         view_name = self._map_view_name(params.get("view", "Top"))
         depth_percent = params.get("depth", 0)
         render_mode = self._map_render_mode(params.get("renderMode", "Outline"))
+        projection_mode = self._map_projection_mode(params.get("projectionMode", "orthographic"))
+        effective_projection_mode = "orthographic" if projection_mode == "cut" else projection_mode
+        if projection_mode == "cut":
+            render_mode = "slice"
         print(params)
         print(params.get("renderMode", "Outline"))
         shape_choice = params.get("shape", "after").lower()
@@ -384,6 +428,10 @@ class CADComparisonRenderer:
         # Slice-graph mode should never show scrollbars.
         if comparison_mode == "slice-graph":
             compose_scrollbar = False
+
+        active_view_limits = self.view_limits
+        if effective_projection_mode in ["oblique", "isometric"]:
+            active_view_limits = self._calculate_projected_view_limits(effective_projection_mode)
 
         # Define a per-view viewing window. When scrollbars are enabled we reserve
         # the last row/column for bars and the second-to-last row/column as spacer.
@@ -435,36 +483,51 @@ class CADComparisonRenderer:
         camera_move = params.get("move_camera_center", "none")
         print(camera_move)
 
-        horizontal_dist = np.abs((self.view_limits[view_index][0][1] - self.view_limits[view_index][0][0]))
-        vertical_dist = np.abs((self.view_limits[view_index][1][1] - self.view_limits[view_index][1][0]))
+        horizontal_dist = np.abs((active_view_limits[view_index][0][1] - active_view_limits[view_index][0][0]))
+        vertical_dist = np.abs((active_view_limits[view_index][1][1] - active_view_limits[view_index][1][0]))
+
+        # For non-orthographic projections at zoom 0, add a small margin so the
+        # projected model fits comfortably within the tactile frame.
+        if effective_projection_mode in ["oblique", "isometric"] and zoom_level == 0:
+            horizontal_dist *= 1.05
+            vertical_dist *= 1.05
+        current_center = np.array(self.view_current_camera_center[view_index], dtype=float)
+        if effective_projection_mode in ["oblique", "isometric"] and zoom_level == 0:
+            current_center = np.array([
+                (active_view_limits[view_index][0][0] + active_view_limits[view_index][0][1]) / 2.0,
+                (active_view_limits[view_index][1][0] + active_view_limits[view_index][1][1]) / 2.0,
+            ])
         # arrow-key stepping
         #self.view_current_camera_center[view_index][1] -= (0.5**(zoom_level+2))*vertical_dist
         if camera_move == "left":
-            self.view_current_camera_center[view_index][0] -= (0.5**(zoom_level+2))*horizontal_dist
+            current_center[0] -= (0.5**(zoom_level+2))*horizontal_dist
         if camera_move == "right":
-            self.view_current_camera_center[view_index][0] += (0.5**(zoom_level+2))*horizontal_dist
+            current_center[0] += (0.5**(zoom_level+2))*horizontal_dist
         if camera_move == "up":
-            self.view_current_camera_center[view_index][1] += (0.5**(zoom_level+2))*vertical_dist
+            current_center[1] += (0.5**(zoom_level+2))*vertical_dist
         if camera_move == "down":
-            self.view_current_camera_center[view_index][1] -= (0.5**(zoom_level+2))*vertical_dist
+            current_center[1] -= (0.5**(zoom_level+2))*vertical_dist
+
+        if effective_projection_mode == "orthographic":
+            self.view_current_camera_center[view_index] = current_center
 
         translational_ax_limits = [
-            [self.view_current_camera_center[view_index][0] - 0.5*horizontal_dist,
-            self.view_current_camera_center[view_index][0] + 0.5*horizontal_dist],
-            [self.view_current_camera_center[view_index][1] - 0.5*vertical_dist,
-            self.view_current_camera_center[view_index][1] + 0.5*vertical_dist],
+            [current_center[0] - 0.5*horizontal_dist,
+            current_center[0] + 0.5*horizontal_dist],
+            [current_center[1] - 0.5*vertical_dist,
+            current_center[1] + 0.5*vertical_dist],
             ]
 
         imposed_zoom_ax_limits = [
-            [self.view_current_camera_center[view_index][0] - 0.5**(zoom_level+1)*horizontal_dist,
-            self.view_current_camera_center[view_index][0] + 0.5**(zoom_level+1)*horizontal_dist],
-            [self.view_current_camera_center[view_index][1] - 0.5**(zoom_level+1)*vertical_dist,
-            self.view_current_camera_center[view_index][1] + 0.5**(zoom_level+1)*vertical_dist],
+            [current_center[0] - 0.5**(zoom_level+1)*horizontal_dist,
+            current_center[0] + 0.5**(zoom_level+1)*horizontal_dist],
+            [current_center[1] - 0.5**(zoom_level+1)*vertical_dist,
+            current_center[1] + 0.5**(zoom_level+1)*vertical_dist],
             ]
 
         # compute scrollbar dimensions
-        x_min = self.view_limits[view_index][1][0]
-        x_max = self.view_limits[view_index][1][1]
+        x_min = active_view_limits[view_index][1][0]
+        x_max = active_view_limits[view_index][1][1]
         x_zoom_min = imposed_zoom_ax_limits[1][0]
         x_zoom_max = imposed_zoom_ax_limits[1][1]
         x_scroll_max = 1.0-(x_zoom_min-x_min)/(x_max-x_min)
@@ -472,8 +535,8 @@ class CADComparisonRenderer:
 
         #y_min = translational_ax_limits[1][0]
         #y_max = translational_ax_limits[1][1]
-        y_min = self.view_limits[view_index][0][0]
-        y_max = self.view_limits[view_index][0][1]
+        y_min = active_view_limits[view_index][0][0]
+        y_max = active_view_limits[view_index][0][1]
         y_zoom_min = imposed_zoom_ax_limits[0][0]
         y_zoom_max = imposed_zoom_ax_limits[0][1]
         y_scroll_min = (y_zoom_min-y_min)/(y_max-y_min)
@@ -486,21 +549,21 @@ class CADComparisonRenderer:
         if horizontal_dist/vertical_dist < current_aspect_ratio:
             horizontal_scale_factor = current_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
             #imposed_zoom_ax_limits[0][0] = max(self.view_limits[view_index][0][0], self.view_current_camera_center[view_index][0] - horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist)
-            imposed_zoom_ax_limits[0][0] = self.view_current_camera_center[view_index][0] - horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist
+            imposed_zoom_ax_limits[0][0] = current_center[0] - horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist
             #imposed_zoom_ax_limits[0][1] = min(self.view_limits[view_index][0][1], self.view_current_camera_center[view_index][0] + horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist)
-            imposed_zoom_ax_limits[0][1] = self.view_current_camera_center[view_index][0] + horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist
+            imposed_zoom_ax_limits[0][1] = current_center[0] + horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist
         if horizontal_dist/vertical_dist > current_aspect_ratio:
             vertical_scale_factor = current_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
             vertical_scale_factor = 1.0/vertical_scale_factor
             #imposed_zoom_ax_limits[1][0] = max(self.view_limits[view_index][1][0], self.view_current_camera_center[view_index][1] - vertical_scale_factor*0.5**(zoom_level+1)*vertical_dist)
             #imposed_zoom_ax_limits[1][1] = min(self.view_limits[view_index][1][1], self.view_current_camera_center[view_index][1] + vertical_scale_factor*0.5**(zoom_level+1)*vertical_dist)
-            imposed_zoom_ax_limits[1][0] = self.view_current_camera_center[view_index][1] - vertical_scale_factor*0.5**(zoom_level+1)*vertical_dist
-            imposed_zoom_ax_limits[1][1] = self.view_current_camera_center[view_index][1] + vertical_scale_factor*0.5**(zoom_level+1)*vertical_dist
+            imposed_zoom_ax_limits[1][0] = current_center[1] - vertical_scale_factor*0.5**(zoom_level+1)*vertical_dist
+            imposed_zoom_ax_limits[1][1] = current_center[1] + vertical_scale_factor*0.5**(zoom_level+1)*vertical_dist
         print("zoom_level", zoom_level, + 0.5**(zoom_level+1))
         print("imposed_zoom_ax_limits")
         print(imposed_zoom_ax_limits)
         print("self.view_limits[view_index]")
-        print(self.view_limits[view_index])
+        print(active_view_limits[view_index])
         
         # Render based on comparison mode
         if comparison_mode == "superposition":
@@ -513,9 +576,10 @@ class CADComparisonRenderer:
                 1.0 - cut_depth,
                 view_name,
                 render_mode,
-                imposed_ax_limits=self.view_limits[view_index],
+                imposed_ax_limits=active_view_limits[view_index],
                 superposition_key=superposition_key,
-                screen_size=render_screen_size
+                screen_size=render_screen_size,
+                projection_mode=effective_projection_mode,
             )
         elif comparison_mode == "juxtaposition":
             img_array, _ = get_juxtaposition_view(
@@ -532,7 +596,7 @@ class CADComparisonRenderer:
             # Calculate aspect-ratio-adjusted limits for the legend view
             # Get the legend view index and base limits
             legend_view_index = self._get_view_index(view_name_legend)
-            legend_limits = self.view_limits[legend_view_index].copy()
+            legend_limits = active_view_limits[legend_view_index].copy()
             
             # Calculate dimensions for legend view
             legend_horizontal_dist = np.abs(legend_limits[0][1] - legend_limits[0][0])
@@ -573,7 +637,8 @@ class CADComparisonRenderer:
                 imposed_ax_limits_legend=imposed_legend_ax_limits,
                 #imposed_ax_limits_cut=self.view_limits[self._get_view_index(view_name_cut)]
                 imposed_ax_limits_cut=imposed_zoom_ax_limits,
-                screen_size=render_screen_size
+                screen_size=render_screen_size,
+                projection_mode=effective_projection_mode,
             )
         else:  # single mode
             #print(self.view_limits[view_index])
@@ -589,7 +654,8 @@ class CADComparisonRenderer:
                 view_name,
                 render_mode,
                 imposed_ax_limits=imposed_zoom_ax_limits,
-                screen_size=render_screen_size
+                screen_size=render_screen_size,
+                projection_mode=effective_projection_mode,
             )
             self.current_cut_depth = 1.0-cut_depth
             self.view_current_axis = view_name
