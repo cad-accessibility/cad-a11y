@@ -381,6 +381,10 @@ class CADComparisonRenderer:
         else:
             compose_scrollbar = False
 
+        # Slice-graph mode should never show scrollbars.
+        if comparison_mode == "slice-graph":
+            compose_scrollbar = False
+
         # Define a per-view viewing window. When scrollbars are enabled we reserve
         # the last row/column for bars and the second-to-last row/column as spacer.
         render_screen_size = [self.screen_size[0], self.screen_size[1]]
@@ -636,17 +640,17 @@ class CADComparisonRenderer:
             cut_position_int = int(100.0 * (1.0 - graph_cut_depth))
             view_diff_mat = self.view_diff_mats[graph_view_name][cut_position_int]
 
-            # render line-graph in appropriate dimensions
+            # Render line-graph edge-to-edge in the graph band width.
             width_px, height_px = self.screen_size[0], self.screen_size[1]
+            graph_height_px = 10
             dpi = 100 
 
-            fig = plt.figure(figsize=((width_px-6) / dpi, 10 / dpi), dpi=dpi)
+            fig = plt.figure(figsize=(width_px / dpi, graph_height_px / dpi), dpi=dpi)
             #fig = plt.figure(figsize=(1080 / dpi, 920 / dpi), dpi=dpi)
             ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
             ax.axis('off')
             # Render graph strokes as a single pixel (no anti-aliasing expansion).
             ax.plot(range(len(view_diff_mat)), view_diff_mat, aa=False, c="black", lw=.15)
-            ax.plot([cut_position_int, cut_position_int], [0, 1], aa=False, c="black", lw=.15)
             ax = plt.gca()
             #if len(imposed_ax_limits) > 0:
 
@@ -665,6 +669,13 @@ class CADComparisonRenderer:
             img = Image.open(buf)
             img_np = np.array(img)
             img_np = np.flip(img_np, axis=1)
+
+            # Enforce a 1px slice marker column in the graph bitmap.
+            # This avoids anti-aliased or multi-pixel marker thickness from plotting.
+            if img_np.shape[1] > 0 and len(view_diff_mat) > 1:
+                marker_col = int(round(cut_position_int * (img_np.shape[1] - 1) / (len(view_diff_mat) - 1)))
+                marker_col = max(0, min(img_np.shape[1] - 1, marker_col))
+                img_np[:, marker_col, :] = [0, 0, 0, 255]
             print("Slice graph")
             print(view_diff_mat)
             print(img_np.shape)
@@ -677,21 +688,21 @@ class CADComparisonRenderer:
                 print()
             print()
 
-            # compose onto img_array
-            # left border
-            img_array[img_array.shape[0]-14:img_array.shape[0]-2, 1] = [255,255,255,255]
-            img_array[img_array.shape[0]-14:img_array.shape[0]-2, 2] = [0,0,0,255]
-            # right border
-            img_array[img_array.shape[0]-14:img_array.shape[0]-2, 2+img_np.shape[1]+2] = [255,255,255,255]
-            img_array[img_array.shape[0]-14:img_array.shape[0]-2, 2+img_np.shape[1]+1] = [0,0,0,255]
-            # upper border
-            img_array[img_array.shape[0]-15, 2:2+img_np.shape[1]+2] = [255,255,255,255]
-            img_array[img_array.shape[0]-14, 2:2+img_np.shape[1]+2] = [0,0,0,255]
-            # lower border
-            img_array[img_array.shape[0]-2, 2:2+img_np.shape[1]+2] = [255,255,255,255]
-            img_array[img_array.shape[0]-3, 2:2+img_np.shape[1]+2] = [0,0,0,255]
-            # insert linegraph
-            img_array[img_array.shape[0]-13:img_array.shape[0]-3, 3:2+img_np.shape[1]+1] = img_np
+            # Compose graph without an outline box. Keep only a horizontal divider
+            # above the graph so the model and graph are clearly separated.
+            graph_top = max(0, img_array.shape[0] - graph_height_px)
+            graph_left = 0
+            graph_h, graph_w = img_np.shape[0], img_np.shape[1]
+            graph_bottom = min(img_array.shape[0], graph_top + graph_h)
+            graph_right = min(img_array.shape[1], graph_left + graph_w)
+
+            divider_row = max(0, graph_top - 1)
+            img_array[divider_row, :, :] = [0, 0, 0, 255]
+
+            copy_h = graph_bottom - graph_top
+            copy_w = graph_right - graph_left
+            if copy_h > 0 and copy_w > 0:
+                img_array[graph_top:graph_bottom, graph_left:graph_right, :] = img_np[:copy_h, :copy_w, :]
 
         if comparison_mode == "side-by-side":
             self._overlay_side_by_side_view_labels(img_array, view_legend, view_cut)

@@ -500,7 +500,7 @@
                         </label>
                         <label>
                             <input type="radio" name="view-mode" id="view-mode-slice-graph" value="slice-graph">
-                            Slice Graph (with scrollbar)
+                            Slice Graph
                         </label>
                     </fieldset>
                 </div>
@@ -968,7 +968,7 @@
                     composeSliceGraph = false;
                     break;
                 case 'slice-graph':
-                    composeScrollbar = true;
+                    composeScrollbar = false;
                     composeSliceGraph = true;
                     break;
             }
