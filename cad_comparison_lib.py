@@ -348,7 +348,7 @@ class CADComparisonRenderer:
         Args:
             params: Dictionary containing:
                 - view: "Top", "Front", or "Side" (case-insensitive)
-                - zoom: "0", "1", "2", "3"
+                - zoom: Float in [0, 3], where 0 is no zoom and larger values zoom in
                 - depth: Integer 0-100 representing depth percentage
                 - renderMode: "Outline", "Filled"/"Shaded", or "Slice" (case-insensitive)
                 - shape: (optional) "before" or "after", defaults to "after"
@@ -431,22 +431,26 @@ class CADComparisonRenderer:
         if comparison_mode == "side-by-side":
             view_index = self._get_view_index(view_name_cut)
 
-        zoom_level = int(params.get("zoom", "0"))
+        zoom_level = float(params.get("zoom", 0.0))
+        zoom_level = max(0.0, min(10.0, zoom_level))
+        # Linear zoom mapping: 0 -> full window, 1 -> half, 2 -> one-third, etc.
+        zoom_scale = 1.0 / (zoom_level + 1.0)
         camera_move = params.get("move_camera_center", "none")
         print(camera_move)
 
         horizontal_dist = np.abs((self.view_limits[view_index][0][1] - self.view_limits[view_index][0][0]))
         vertical_dist = np.abs((self.view_limits[view_index][1][1] - self.view_limits[view_index][1][0]))
         # arrow-key stepping
-        #self.view_current_camera_center[view_index][1] -= (0.5**(zoom_level+2))*vertical_dist
+        pan_step_scale = 0.5 * zoom_scale
+        #self.view_current_camera_center[view_index][1] -= pan_step_scale*vertical_dist
         if camera_move == "left":
-            self.view_current_camera_center[view_index][0] -= (0.5**(zoom_level+2))*horizontal_dist
+            self.view_current_camera_center[view_index][0] -= pan_step_scale*horizontal_dist
         if camera_move == "right":
-            self.view_current_camera_center[view_index][0] += (0.5**(zoom_level+2))*horizontal_dist
+            self.view_current_camera_center[view_index][0] += pan_step_scale*horizontal_dist
         if camera_move == "up":
-            self.view_current_camera_center[view_index][1] += (0.5**(zoom_level+2))*vertical_dist
+            self.view_current_camera_center[view_index][1] += pan_step_scale*vertical_dist
         if camera_move == "down":
-            self.view_current_camera_center[view_index][1] -= (0.5**(zoom_level+2))*vertical_dist
+            self.view_current_camera_center[view_index][1] -= pan_step_scale*vertical_dist
 
         translational_ax_limits = [
             [self.view_current_camera_center[view_index][0] - 0.5*horizontal_dist,
@@ -456,28 +460,18 @@ class CADComparisonRenderer:
             ]
 
         imposed_zoom_ax_limits = [
-            [self.view_current_camera_center[view_index][0] - 0.5**(zoom_level+1)*horizontal_dist,
-            self.view_current_camera_center[view_index][0] + 0.5**(zoom_level+1)*horizontal_dist],
-            [self.view_current_camera_center[view_index][1] - 0.5**(zoom_level+1)*vertical_dist,
-            self.view_current_camera_center[view_index][1] + 0.5**(zoom_level+1)*vertical_dist],
+            [self.view_current_camera_center[view_index][0] - zoom_scale*horizontal_dist,
+            self.view_current_camera_center[view_index][0] + zoom_scale*horizontal_dist],
+            [self.view_current_camera_center[view_index][1] - zoom_scale*vertical_dist,
+            self.view_current_camera_center[view_index][1] + zoom_scale*vertical_dist],
             ]
 
-        # compute scrollbar dimensions
-        x_min = self.view_limits[view_index][1][0]
-        x_max = self.view_limits[view_index][1][1]
-        x_zoom_min = imposed_zoom_ax_limits[1][0]
-        x_zoom_max = imposed_zoom_ax_limits[1][1]
-        x_scroll_max = 1.0-(x_zoom_min-x_min)/(x_max-x_min)
-        x_scroll_min = 1.0-(x_zoom_max-x_min)/(x_max-x_min)
-
-        #y_min = translational_ax_limits[1][0]
-        #y_max = translational_ax_limits[1][1]
-        y_min = self.view_limits[view_index][0][0]
-        y_max = self.view_limits[view_index][0][1]
-        y_zoom_min = imposed_zoom_ax_limits[0][0]
-        y_zoom_max = imposed_zoom_ax_limits[0][1]
-        y_scroll_min = (y_zoom_min-y_min)/(y_max-y_min)
-        y_scroll_max = (y_zoom_max-y_min)/(y_max-y_min)
+        # Compute scrollbar dimensions after final zoom/aspect correction so
+        # scrollbar thumb size/position track zoom changes continuously.
+        x_scroll_min = 0.0
+        x_scroll_max = 1.0
+        y_scroll_min = 0.0
+        y_scroll_max = 1.0
 
         # This needs to account for the aspect ratio of the monarch
         current_aspect_ratio = render_screen_size[0]/render_screen_size[1]
@@ -485,18 +479,41 @@ class CADComparisonRenderer:
             current_aspect_ratio = 0.5*render_screen_size[0]/render_screen_size[1]
         if horizontal_dist/vertical_dist < current_aspect_ratio:
             horizontal_scale_factor = current_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
-            #imposed_zoom_ax_limits[0][0] = max(self.view_limits[view_index][0][0], self.view_current_camera_center[view_index][0] - horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist)
-            imposed_zoom_ax_limits[0][0] = self.view_current_camera_center[view_index][0] - horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist
-            #imposed_zoom_ax_limits[0][1] = min(self.view_limits[view_index][0][1], self.view_current_camera_center[view_index][0] + horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist)
-            imposed_zoom_ax_limits[0][1] = self.view_current_camera_center[view_index][0] + horizontal_scale_factor*0.5**(zoom_level+1)*horizontal_dist
+            #imposed_zoom_ax_limits[0][0] = max(self.view_limits[view_index][0][0], self.view_current_camera_center[view_index][0] - horizontal_scale_factor*zoom_scale*horizontal_dist)
+            imposed_zoom_ax_limits[0][0] = self.view_current_camera_center[view_index][0] - horizontal_scale_factor*zoom_scale*horizontal_dist
+            #imposed_zoom_ax_limits[0][1] = min(self.view_limits[view_index][0][1], self.view_current_camera_center[view_index][0] + horizontal_scale_factor*zoom_scale*horizontal_dist)
+            imposed_zoom_ax_limits[0][1] = self.view_current_camera_center[view_index][0] + horizontal_scale_factor*zoom_scale*horizontal_dist
         if horizontal_dist/vertical_dist > current_aspect_ratio:
             vertical_scale_factor = current_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
             vertical_scale_factor = 1.0/vertical_scale_factor
-            #imposed_zoom_ax_limits[1][0] = max(self.view_limits[view_index][1][0], self.view_current_camera_center[view_index][1] - vertical_scale_factor*0.5**(zoom_level+1)*vertical_dist)
-            #imposed_zoom_ax_limits[1][1] = min(self.view_limits[view_index][1][1], self.view_current_camera_center[view_index][1] + vertical_scale_factor*0.5**(zoom_level+1)*vertical_dist)
-            imposed_zoom_ax_limits[1][0] = self.view_current_camera_center[view_index][1] - vertical_scale_factor*0.5**(zoom_level+1)*vertical_dist
-            imposed_zoom_ax_limits[1][1] = self.view_current_camera_center[view_index][1] + vertical_scale_factor*0.5**(zoom_level+1)*vertical_dist
-        print("zoom_level", zoom_level, + 0.5**(zoom_level+1))
+            #imposed_zoom_ax_limits[1][0] = max(self.view_limits[view_index][1][0], self.view_current_camera_center[view_index][1] - vertical_scale_factor*zoom_scale*vertical_dist)
+            #imposed_zoom_ax_limits[1][1] = min(self.view_limits[view_index][1][1], self.view_current_camera_center[view_index][1] + vertical_scale_factor*zoom_scale*vertical_dist)
+            imposed_zoom_ax_limits[1][0] = self.view_current_camera_center[view_index][1] - vertical_scale_factor*zoom_scale*vertical_dist
+            imposed_zoom_ax_limits[1][1] = self.view_current_camera_center[view_index][1] + vertical_scale_factor*zoom_scale*vertical_dist
+
+        x_min = self.view_limits[view_index][1][0]
+        x_max = self.view_limits[view_index][1][1]
+        x_range = x_max - x_min
+        if x_range != 0:
+            x_zoom_min = imposed_zoom_ax_limits[1][0]
+            x_zoom_max = imposed_zoom_ax_limits[1][1]
+            x_scroll_max = 1.0 - (x_zoom_min - x_min) / x_range
+            x_scroll_min = 1.0 - (x_zoom_max - x_min) / x_range
+
+        y_min = self.view_limits[view_index][0][0]
+        y_max = self.view_limits[view_index][0][1]
+        y_range = y_max - y_min
+        if y_range != 0:
+            y_zoom_min = imposed_zoom_ax_limits[0][0]
+            y_zoom_max = imposed_zoom_ax_limits[0][1]
+            y_scroll_min = (y_zoom_min - y_min) / y_range
+            y_scroll_max = (y_zoom_max - y_min) / y_range
+
+        x_scroll_min = max(0.0, min(1.0, x_scroll_min))
+        x_scroll_max = max(0.0, min(1.0, x_scroll_max))
+        y_scroll_min = max(0.0, min(1.0, y_scroll_min))
+        y_scroll_max = max(0.0, min(1.0, y_scroll_max))
+        print("zoom_level", zoom_level, zoom_scale)
         print("imposed_zoom_ax_limits")
         print(imposed_zoom_ax_limits)
         print("self.view_limits[view_index]")

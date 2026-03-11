@@ -44,6 +44,7 @@ for f in os.listdir(os.path.join(REPO_ROOT, "model")):
 
 #model_list = ["coffee", "second cup", "teaparty"]
 renderer_dict = {}
+export_renderer_dict = {}
 
 #_coffee_candidates = [
 #    os.path.join(REPO_ROOT, "model", first_stl_file)
@@ -61,6 +62,7 @@ print(f"Model list: {model_list}")
 renderer = None
 current_render = None  # Store the last rendered image
 device = None
+renderer_lock = threading.Lock()
 
 # Default render parameters for startup
 DEFAULT_RENDER_PARAMS = {
@@ -69,24 +71,39 @@ DEFAULT_RENDER_PARAMS = {
     'renderMode': 'Outline'
 }
 
-def get_or_create_renderer():
-    """Lazy initialization of renderer to avoid startup delay."""
-    global renderer_dict
-    if len(list(renderer_dict.keys())) == 0:
-        for i, f in enumerate(model_list):
-            print("Initializing CAD renderer...")
-            renderer = CADComparisonRenderer(f, f)
-            renderer.init_device(device)
-            renderer_dict[i] = renderer
-            print("Renderer initialized successfully!")
-    #global renderer
-    #if renderer is None:
-    #    print("Initializing CAD renderer...")
-    #    renderer = CADComparisonRenderer(before_model, after_model)
-    #    renderer.init_device(device)
-    #    print("Renderer initialized successfully!")
-    print(current_model_name)
-    return renderer_dict[current_model_name]
+
+def _coerce_positive_int(value, default):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed <= 0:
+        return default
+    return parsed
+
+def _resolve_model_index(model_value):
+    """Map UI model selection to a safe model index."""
+    if model_value == "none" or model_value is None:
+        return 0
+    try:
+        idx = int(model_value)
+    except (TypeError, ValueError):
+        return 0
+    if idx < 0 or idx >= len(model_list):
+        return 0
+    return idx
+
+
+def get_or_create_renderer(model_index, pool):
+    """Get a renderer for a model index from the given pool, creating it if needed."""
+    if model_index not in pool:
+        model_path = model_list[model_index]
+        print(f"Initializing CAD renderer for model index {model_index}: {model_path}")
+        renderer = CADComparisonRenderer(model_path, model_path)
+        renderer.init_device(device)
+        pool[model_index] = renderer
+        print("Renderer initialized successfully!")
+    return pool[model_index]
 
 def _format_img_data_repr(arr2d: np.ndarray) -> str:
     # Ensure 2D
@@ -110,7 +127,7 @@ def initialize_default_braille_render():
         print("INITIAL DEFAULT RENDER TO BRAILLE DISPLAY")
         print("=" * 60)
         print(f"Default params: {json.dumps(DEFAULT_RENDER_PARAMS)}")
-        r = get_or_create_renderer()
+        r = get_or_create_renderer(0, renderer_dict)
         img_array = r.render(DEFAULT_RENDER_PARAMS)
         current_render = img_array
         print(f"Rendered image shape: {img_array.shape}")
@@ -135,6 +152,7 @@ def home():
         'endpoints': {
             '/command': 'POST - Send commands from the viewer (triggers render)',
             '/render': 'POST - Render CAD view with parameters',
+            '/render/export-source': 'POST - Render high-fidelity tactile source for export',
             '/render/image': 'GET - Get last rendered image as PNG',
             '/render/base64': 'GET - Get last rendered image as base64',
             '/commands': 'GET - Retrieve all logged commands',
@@ -160,18 +178,19 @@ def render_view():
         #params["mode"] = "side_by_side"
         print(params["current_model"])
         # Handle case where current_model is 'none' or invalid
-        if params["current_model"] == "none" or params["current_model"] is None:
-            current_model_name = 0  # Default to first model
-        else:
-            current_model_name = int(params["current_model"])
+        current_model_name = _resolve_model_index(params.get("current_model"))
         print(current_model_name)
         
-        # Get or create renderer
-        r = get_or_create_renderer()
-        
-        # Render the view
-        img_array = r.render(params)
-        current_render = img_array
+        # Serialize access to shared renderer state.
+        # /render/export-source temporarily overrides screen_size, so overlapping
+        # requests can otherwise produce a tiny image in the top-left corner.
+        with renderer_lock:
+            # Get or create low-fidelity renderer from its dedicated pool
+            r = get_or_create_renderer(current_model_name, renderer_dict)
+
+            # Render the view
+            img_array = r.render(params)
+            current_render = img_array
         #print(cube_value)
         
         print(f"Rendered image shape: {img_array.shape}")
@@ -241,6 +260,69 @@ def render_view():
         
     except Exception as e:
         print(f"Error rendering: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 400
+
+
+@app.route('/render/export-source', methods=['POST', 'OPTIONS'])
+def render_export_source():
+    """Render a high-fidelity tactile source image for export without braille I/O."""
+    global current_model_name
+
+    if request.method == 'OPTIONS':
+        return ('', 200)
+
+    try:
+        params = request.get_json(silent=True) or {}
+        merged_params = dict(DEFAULT_RENDER_PARAMS)
+        merged_params.update(params)
+
+        model_value = merged_params.get('current_model', 'none')
+        current_model_name = _resolve_model_index(model_value)
+
+        export_width = _coerce_positive_int(merged_params.get('export_width', 1000), 1000)
+
+        with renderer_lock:
+            # Use an export-dedicated renderer pool so high-fidelity renders do not
+            # mutate low-fidelity renderer state.
+            renderer = get_or_create_renderer(current_model_name, export_renderer_dict)
+            original_screen_size = list(renderer.screen_size)
+            if not original_screen_size or original_screen_size[0] <= 0:
+                original_screen_size = [96, 40]
+
+            aspect_ratio = float(original_screen_size[1]) / float(original_screen_size[0])
+            export_height = max(1, int(round(export_width * aspect_ratio)))
+
+            renderer.screen_size = [export_width, export_height]
+            try:
+                img_array = renderer.render(merged_params)
+            finally:
+                renderer.screen_size = original_screen_size
+
+        img_data = ~img_array[:, :, 0]
+        img_data[img_data > 0] = 255
+        img_data = img_data.astype(np.uint8, copy=False)
+
+        tactile_img = Image.fromarray(img_data, 'L')
+        tactile_buffer = io.BytesIO()
+        tactile_img.save(tactile_buffer, format='PNG')
+        tactile_buffer.seek(0)
+        tactile_base64 = base64.b64encode(tactile_buffer.getvalue()).decode('utf-8')
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Export source render complete',
+            'image_shape': list(img_data.shape),
+            'image_base64': tactile_base64,
+            'export_width': export_width,
+            'export_height': export_height,
+        }), 200
+    except Exception as e:
+        print(f"Error rendering export source: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({

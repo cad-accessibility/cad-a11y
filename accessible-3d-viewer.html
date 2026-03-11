@@ -295,6 +295,17 @@
             margin-top: 10px;
         }
 
+        #high-fidelity-preview-img {
+            width: 100%;
+            height: auto;
+            border: 1px solid #e1e8ed;
+            border-radius: 4px;
+            image-rendering: auto;
+            background: #fff;
+            display: block;
+            margin-top: 10px;
+        }
+
         .side-by-side-axis-labels {
             display: grid;
             grid-template-columns: 1fr 2fr;
@@ -627,6 +638,13 @@
                 <!-- RIGHT COLUMN: tactile preview + shortcuts -->
                 <div class="right-col" id="right-col">
 
+                    <section class="section" aria-hidden="true">
+                        <h2 id="tactile-preview-heading">Export</h2>
+                        <div class="button-group" style="margin-top: 0; margin-bottom: 8px;">
+                            <button type="button" id="export-slice-svg-btn">Export Current View as SVG</button>
+
+                        </div>
+			</section> 
                     <!-- Tactile Display Preview Section -->
                     <section class="section" aria-hidden="true">
                         <h2 id="tactile-preview-heading">Tactile Display Preview</h2>
@@ -636,6 +654,12 @@
                         </div>
                         <img id="tactile-display-img" src="" alt="Current tactile display content">
                         <div id="tactile-preview-meta" class="help-text">Waiting for render&hellip;</div>
+                    </section>
+
+                    <section class="section" aria-hidden="true">
+                        <h2 id="high-fidelity-preview-heading">High-Fidelity Preview</h2>
+                        <img id="high-fidelity-preview-img" src="" alt="High-fidelity tactile preview">
+                        <div id="high-fidelity-preview-meta" class="help-text">Waiting for high-fidelity render&hellip;</div>
                     </section>
 
             <!-- Keyboard Shortcuts Section -->
@@ -794,6 +818,7 @@
                     if (data.image_base64) {
                         updateTactilePreview(data.image_base64, data.image_shape);
                     }
+                    scheduleHighFidelityPreviewRefresh(false);
                 })
                 .catch(error => {
                     // Silently fail - don't interrupt user experience
@@ -822,6 +847,9 @@
         let sliceGraphLocked = true;
         let sliceGraphAnchorView = 'y-';
         let sliceGraphAnchorDepth = 50;
+        let highFidelityPreviewTimer = null;
+        let highFidelityPreviewInFlight = false;
+        let lastHighFidelityKey = '';
         
         // Remove "Back" from available views
         //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
@@ -853,6 +881,9 @@
         const sliceGraphRefreshBtn = document.getElementById('slice-graph-refresh-btn');
         const sliceGraphLockStatus = document.getElementById('slice-graph-lock-status');
         const showViewInfoBoxCheckbox = document.getElementById('show-view-info-box');
+        const exportSliceSvgBtn = document.getElementById('export-slice-svg-btn');
+        const highFidelityPreviewImg = document.getElementById('high-fidelity-preview-img');
+        const highFidelityPreviewMeta = document.getElementById('high-fidelity-preview-meta');
 
         // New radio group references
         const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
@@ -924,6 +955,221 @@
             currentPrintView = true;
             sendStateToServer();
             currentPrintView = !currentPrintView;
+        }
+
+        function buildInvertedSliceSvgFromImage(imgElement) {
+            const width = imgElement.naturalWidth || imgElement.width;
+            const height = imgElement.naturalHeight || imgElement.height;
+            if (!width || !height) {
+                throw new Error('No tactile preview image available yet.');
+            }
+
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+                throw new Error('Could not create drawing context.');
+            }
+
+            ctx.drawImage(imgElement, 0, 0, width, height);
+            const imageData = ctx.getImageData(0, 0, width, height).data;
+
+            const pathParts = [];
+            for (let y = 0; y < height; y += 1) {
+                let x = 0;
+                while (x < width) {
+                    const idx = (y * width + x) * 4;
+                    const r = imageData[idx];
+                    const g = imageData[idx + 1];
+                    const b = imageData[idx + 2];
+                    const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                    const inverted = 255 - luminance;
+                    const isBlackPixel = inverted < 128;
+
+                    if (!isBlackPixel) {
+                        x += 1;
+                        continue;
+                    }
+
+                    const runStart = x;
+                    x += 1;
+                    while (x < width) {
+                        const runIdx = (y * width + x) * 4;
+                        const rr = imageData[runIdx];
+                        const gg = imageData[runIdx + 1];
+                        const bb = imageData[runIdx + 2];
+                        const runLuminance = 0.2126 * rr + 0.7152 * gg + 0.0722 * bb;
+                        const runInverted = 255 - runLuminance;
+                        const runIsBlack = runInverted < 128;
+                        if (!runIsBlack) {
+                            break;
+                        }
+                        x += 1;
+                    }
+
+                    const runWidth = x - runStart;
+                    pathParts.push(`M${runStart} ${y}h${runWidth}v1h-${runWidth}z`);
+                }
+            }
+
+            return [
+                `<?xml version="1.0" encoding="UTF-8"?>`,
+                `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" shape-rendering="crispEdges">`,
+                `<rect width="100%" height="100%" fill="white"/>`,
+                `<path fill="black" d="${pathParts.join('')}"/>`,
+                `</svg>`
+            ].join('\n');
+        }
+
+        function fetchExportSourceState() {
+            const requestedGraphView = sliceGraphLocked ? sliceGraphAnchorView : currentView;
+            const requestedGraphDepth = sliceGraphLocked ? sliceGraphAnchorDepth : currentSliceDepth;
+            return {
+                view: currentView,
+                zoom: currentZoom,
+                depth: currentSliceDepth,
+                renderMode: currentRenderMode,
+                mode: currentRepresentationMode,
+                move_camera_center: 'none',
+                print_view: false,
+                current_model: currentModel,
+                compose_scrollbar: composeScrollbar,
+                compose_slicegraph: composeSliceGraph,
+                show_view_info_box: showViewInfoBox,
+                slicegraph_locked: sliceGraphLocked,
+                slicegraph_view: requestedGraphView,
+                slicegraph_depth: requestedGraphDepth,
+                export_width: 1000,
+            };
+        }
+
+        function loadImageElementFromBase64(base64Data) {
+            return new Promise((resolve, reject) => {
+                const tempImage = new Image();
+                tempImage.onload = () => resolve(tempImage);
+                tempImage.onerror = () => reject(new Error('Failed to load export source image'));
+                tempImage.src = 'data:image/png;base64,' + base64Data;
+            });
+        }
+
+        async function fetchHighFidelityExportImage() {
+            const response = await fetch(`${SERVER_URL}/render/export-source`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(fetchExportSourceState()),
+                mode: 'cors'
+            });
+
+            if (!response.ok) {
+                throw new Error(`Export render request failed (${response.status})`);
+            }
+
+            const data = await response.json();
+            if (!data.image_base64) {
+                throw new Error('Export render response missing image data');
+            }
+
+            return loadImageElementFromBase64(data.image_base64);
+        }
+
+        function computeHighFidelityStateKey() {
+            return JSON.stringify(fetchExportSourceState());
+        }
+
+        async function refreshHighFidelityPreview(force = false) {
+            if (!highFidelityPreviewImg || !highFidelityPreviewMeta) {
+                return;
+            }
+
+            const stateKey = computeHighFidelityStateKey();
+            if (!force && stateKey === lastHighFidelityKey) {
+                return;
+            }
+            if (highFidelityPreviewInFlight) {
+                return;
+            }
+
+            highFidelityPreviewInFlight = true;
+            highFidelityPreviewMeta.textContent = 'Rendering high-fidelity preview...';
+
+            try {
+                const response = await fetch(`${SERVER_URL}/render/export-source`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(fetchExportSourceState()),
+                    mode: 'cors'
+                });
+
+                if (!response.ok) {
+                    throw new Error(`High-fidelity preview request failed (${response.status})`);
+                }
+
+                const data = await response.json();
+                if (!data.image_base64) {
+                    throw new Error('High-fidelity preview response missing image data');
+                }
+
+                highFidelityPreviewImg.src = 'data:image/png;base64,' + data.image_base64;
+                highFidelityPreviewImg.alt = `High-fidelity tactile display: ${currentView} view, ${currentSliceDepth}% depth, ${currentRenderMode}`;
+
+                const width = data.image_shape && data.image_shape.length > 1 ? data.image_shape[1] : '--';
+                const height = data.image_shape && data.image_shape.length > 0 ? data.image_shape[0] : '--';
+                highFidelityPreviewMeta.textContent = `${currentView} · ${currentSliceDepth}% · ${currentRenderMode} · ${width}×${height}px`;
+                lastHighFidelityKey = stateKey;
+            } catch (error) {
+                console.warn('Failed to update high-fidelity preview:', error);
+                highFidelityPreviewMeta.textContent = 'High-fidelity preview unavailable';
+            } finally {
+                highFidelityPreviewInFlight = false;
+            }
+        }
+
+        function scheduleHighFidelityPreviewRefresh(force = false) {
+            if (highFidelityPreviewTimer) {
+                clearTimeout(highFidelityPreviewTimer);
+            }
+            highFidelityPreviewTimer = setTimeout(() => {
+                refreshHighFidelityPreview(force);
+            }, 350);
+        }
+
+        async function exportCurrentSliceAsSvg() {
+            try {
+                exportSliceSvgBtn.disabled = true;
+                announceStatus('rendering high-fidelity export');
+
+                const exportImage = await fetchHighFidelityExportImage();
+                const exportWidth = exportImage.naturalWidth || exportImage.width;
+                if (exportWidth < 900) {
+                    throw new Error(`High-fidelity export width too small: ${exportWidth}px`);
+                }
+
+                const svgContent = buildInvertedSliceSvgFromImage(exportImage);
+                const blob = new Blob([svgContent], { type: 'image/svg+xml;charset=utf-8' });
+                const downloadUrl = URL.createObjectURL(blob);
+                const sanitizedView = String(currentView).replace(/[^a-zA-Z0-9+-]/g, '_');
+                const filename = `slice_${sanitizedView}_${currentSliceDepth}_${currentRenderMode.toLowerCase()}.svg`;
+
+                const link = document.createElement('a');
+                link.href = downloadUrl;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(downloadUrl);
+
+                announceStatus('slice exported as svg');
+            } catch (error) {
+                console.warn('Failed to export slice as SVG:', error);
+                announceStatus('High-fidelity export failed');
+            } finally {
+                exportSliceSvgBtn.disabled = false;
+            }
         }
 
         // Update slice depth display and announce changes
@@ -1331,6 +1577,10 @@
             captureSliceGraphAnchor(true);
             sendStateToServer();
         });
+
+        exportSliceSvgBtn.addEventListener('click', function() {
+            exportCurrentSliceAsSvg();
+        });
         
         // Global keyboard navigation support for accessibility
         document.addEventListener('keydown', function(e) {
@@ -1537,6 +1787,7 @@
             
             // Send initial state to server
             sendStateToServer();
+            scheduleHighFidelityPreviewRefresh(true);
             
             // Add initial announcement
             setTimeout(() => {
