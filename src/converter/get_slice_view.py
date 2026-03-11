@@ -1,3 +1,5 @@
+import matplotlib
+matplotlib.use('Agg')  # Use non-GUI backend for thread safety
 import numpy as np
 import polyscope as ps
 from .plane_intersection_utils import depth_peeling_single_depth_with_bbox

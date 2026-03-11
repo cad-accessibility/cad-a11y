@@ -126,15 +126,8 @@ def draw_custom_hatching(ax, clip_path, spacing=0.1, angle=45, linewidth=0.1, co
 
 
 def save_binary_array_as_vector_pdf(array, filename="low_res.pdf"):
-    height, width, _ = array.shape
+    height, width = array.shape
     fig = plt.figure(figsize=(width / 100, height / 100), dpi=100)
-    #print(fig.get_figwidth())
-    #print(fig.get_figheight())
-    # scale to 10 x 4 inches
-    #scale_factor = 10.0/fig.get_figwidth()
-    scale_factor = 4.00/fig.get_figheight()
-    fig.set_size_inches(w=fig.get_figwidth()*scale_factor, h=4.00)
-    #exit()
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, width)
     ax.set_ylim(0, height)
@@ -146,11 +139,15 @@ def save_binary_array_as_vector_pdf(array, filename="low_res.pdf"):
     # Draw black pixels only
     for y in range(height):
         for x in range(width):
-            if np.all(array[y, x] == [0,0,0,255]):
+            if array[y, x] == 255:
                 #ax.add_patch(Rectangle((x, height - y - 1), 1, 1, facecolor='black'))
+                #if y == height-1:
+                #    ax.add_patch(Circle((x, height - y), 0.3, facecolor='black'))
+                #else:
                 ax.add_patch(Circle((x, height - y - 1), 0.3, facecolor='black'))
 
     fig.savefig(filename, format='pdf', bbox_inches='tight', pad_inches=0)
+    #fig.savefig(filename, format='pdf')
     plt.close(fig)
 
 def save_array_as_pdf(array, filename="low_res.pdf", dpi=100):
@@ -186,7 +183,7 @@ def low_res_render(lines_0, lines_1, shape_regions_0, bounds=[0,0,1,1], filename
     }):
 
         # Target pixel resolution
-        width_px, height_px = 96, 40 
+        width_px, height_px = 96, 40
         dpi = 100  # Dots per inch
 
         # Create figure with correct size in inches
@@ -268,7 +265,8 @@ def get_outlines(img_np):
     outline_pixels = np.zeros(img_np.shape[:2], dtype=int)
     for i in range(img_np.shape[0]):
         for j in range(img_np.shape[1]):
-            if np.all(img_np[i][j] == [0,0,0,255]):
+            #if np.all(img_np[i][j] == [0,0,0,255]):
+            if img_np[i][j][0] < 255:
                 # check if there's a white_pixel neighbor
                 neighbors = [[i-1, j-1],
                              [i-1, j],
@@ -297,6 +295,7 @@ def get_outlines(img_np):
     outline_pixels_rgba = np.zeros((img_np.shape[0], img_np.shape[1], 4), dtype=np.uint8)
     mask = outline_pixels == 1
     outline_pixels_rgba[mask] = [0, 0, 0, 255]
+    outline_pixels_rgba[~mask] = [255, 255, 255, 255]
     return outline_pixels_rgba
 
 def get_outlines_and_filled(img_np):
