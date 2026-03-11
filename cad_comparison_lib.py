@@ -494,9 +494,19 @@ class CADComparisonRenderer:
         else:
             compose_slice_graph = False
         if compose_slice_graph:
+            # Optionally use an anchored slice graph location while the user explores.
+            slice_graph_locked = bool(params.get("slicegraph_locked", False))
+            graph_view_name = view_name
+            graph_depth_percent = depth_percent
+            if slice_graph_locked:
+                graph_view_name = self._map_view_name(params.get("slicegraph_view", params.get("view", "Top")))
+                graph_depth_percent = int(params.get("slicegraph_depth", depth_percent))
+
             # take correct view_diff_mat
-            cut_position_int = int(100.0*(1.0-cut_depth))
-            view_diff_mat = self.view_diff_mats[view_name][cut_position_int]
+            graph_depth_percent = max(0, min(100, graph_depth_percent))
+            graph_cut_depth = graph_depth_percent / 100.0
+            cut_position_int = int(100.0 * (1.0 - graph_cut_depth))
+            view_diff_mat = self.view_diff_mats[graph_view_name][cut_position_int]
 
             # render line-graph in appropriate dimensions
             width_px, height_px = self.screen_size[0], self.screen_size[1]

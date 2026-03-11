@@ -198,7 +198,14 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
         ax.set_xlim(imposed_ax_limits_legend[0])
         ax.set_ylim(imposed_ax_limits_legend[1])
     ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
-    print(ax_limits)
+    # Expand by 1 pixel on each side so the model never fills the full width,
+    # ensuring the slice line is always visible at the edge.
+    x_margin = (ax_limits[0][1] - ax_limits[0][0]) / legend_width
+    y_margin = (ax_limits[1][1] - ax_limits[1][0]) / total_height
+    ax.set_xlim(ax_limits[0][0] - x_margin, ax_limits[0][1] + x_margin)
+    ax.set_ylim(ax_limits[1][0] - y_margin, ax_limits[1][1] + y_margin)
+    legend_ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
+    print(legend_ax_limits)
 
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=dpi, pad_inches=0)
@@ -261,9 +268,8 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     #print("line coords", coords)
     ax.set_aspect('equal')
     ax = plt.gca()
-    if len(imposed_ax_limits_legend) > 0:
-        ax.set_xlim(imposed_ax_limits_legend[0])
-        ax.set_ylim(imposed_ax_limits_legend[1])
+    ax.set_xlim(legend_ax_limits[0])
+    ax.set_ylim(legend_ax_limits[1])
     ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
     print(ax_limits)
 

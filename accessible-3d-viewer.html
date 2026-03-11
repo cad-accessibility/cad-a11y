@@ -445,6 +445,21 @@
                         </label>
                     </fieldset>
                 </div>
+
+                <div style="margin-top: 14px;" aria-describedby="slice-graph-lock-help">
+                    <div id="slice-graph-lock-help" class="help-text">
+                        Slice graph lock freezes the graph while you explore. Use refresh to recompute from your current location.
+                    </div>
+                    <div class="button-group" style="margin-top: 8px;">
+                        <button type="button" id="slice-graph-lock-btn" aria-pressed="true">
+                            Slice Graph Lock: On
+                        </button>
+                        <button type="button" id="slice-graph-refresh-btn">
+                            Refresh Slice Graph
+                        </button>
+                    </div>
+                    <div class="help-text" id="slice-graph-lock-status">Graph lock is ON (default).</div>
+                </div>
             </section>
 
             <!-- Control Buttons Section -->
@@ -563,6 +578,8 @@
 
                         <li><strong>R</strong> - Switch render mode (cycle through filled, outline, cut)</li>
                         <li><strong>T</strong> - Switch view mode (cycle through single, side-by-side, and slice-graph)</li>
+                        <li><strong>L</strong> - Toggle slice graph lock</li>
+                        <li><strong>G</strong> - Refresh slice graph from current location</li>
 
                         <li><strong>W</strong> - Move scene up</li>
                         <li><strong>A</strong> - Move scene left</li>
@@ -592,6 +609,8 @@
         // Function to send current state to the server
         async function sendStateToServer() {
             try {
+                const requestedGraphView = sliceGraphLocked ? sliceGraphAnchorView : currentView;
+                const requestedGraphDepth = sliceGraphLocked ? sliceGraphAnchorDepth : currentSliceDepth;
                 const state = {
                     view: currentView,
                     zoom: currentZoom,
@@ -603,6 +622,9 @@
                     current_model: currentModel,
                     compose_scrollbar: composeScrollbar,
                     compose_slicegraph: composeSliceGraph,
+                    slicegraph_locked: sliceGraphLocked,
+                    slicegraph_view: requestedGraphView,
+                    slicegraph_depth: requestedGraphDepth,
                 };
                 
                 // Send to server and process response
@@ -647,6 +669,9 @@
         let currentModel = "none";
        let composeScrollbar = true;
         let composeSliceGraph = false;
+        let sliceGraphLocked = true;
+        let sliceGraphAnchorView = 'y-';
+        let sliceGraphAnchorDepth = 50;
         
         // Remove "Back" from available views
         //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
@@ -670,6 +695,9 @@
         const statusAnnouncements = document.getElementById('status-announcements');
         const deeperBtn = document.getElementById('deeper-btn');
         const shallowerBtn = document.getElementById('shallower-btn');
+        const sliceGraphLockBtn = document.getElementById('slice-graph-lock-btn');
+        const sliceGraphRefreshBtn = document.getElementById('slice-graph-refresh-btn');
+        const sliceGraphLockStatus = document.getElementById('slice-graph-lock-status');
 
         // New radio group references
         const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
@@ -692,6 +720,50 @@
             deeperBtn.setAttribute('aria-label', `Go deeper. Current depth: ${depthText}. Will increase to ${Math.min(100, currentSliceDepth + 10)}%`);
             shallowerBtn.textContent = `Shallower: Currently ${depthText}`;
             shallowerBtn.setAttribute('aria-label', `Go shallower. Current depth: ${depthText}. Will decrease to ${Math.max(0, currentSliceDepth - 10)}%`);
+        }
+
+        function updateSliceGraphLockUI() {
+            const isSliceGraphMode = currentRepresentationMode === 'slice-graph';
+            sliceGraphRefreshBtn.disabled = !isSliceGraphMode;
+            if (sliceGraphLocked) {
+                sliceGraphLockBtn.textContent = 'Slice Graph Lock: On';
+                sliceGraphLockBtn.setAttribute('aria-pressed', 'true');
+                if (isSliceGraphMode) {
+                    sliceGraphLockStatus.textContent = `Graph lock is ON. Frozen at view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%.`;
+                } else {
+                    sliceGraphLockStatus.textContent = 'Graph lock is ON (default). Switch to Slice Graph mode to refresh.';
+                }
+            } else {
+                sliceGraphLockBtn.textContent = 'Slice Graph Lock: Off';
+                sliceGraphLockBtn.setAttribute('aria-pressed', 'false');
+                if (isSliceGraphMode) {
+                    sliceGraphLockStatus.textContent = 'Graph lock is OFF. Graph follows your current location.';
+                } else {
+                    sliceGraphLockStatus.textContent = 'Graph lock is OFF. Switch to Slice Graph mode to use refresh.';
+                }
+            }
+        }
+
+        function captureSliceGraphAnchor(shouldAnnounce = true) {
+            sliceGraphAnchorView = currentView;
+            sliceGraphAnchorDepth = currentSliceDepth;
+            updateSliceGraphLockUI();
+            if (shouldAnnounce) {
+                announceStatus(`slice graph refreshed at ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
+            }
+        }
+
+        function toggleSliceGraphLock() {
+            sliceGraphLocked = !sliceGraphLocked;
+            if (sliceGraphLocked) {
+                // When turning lock back on, freeze at the current exploration point.
+                captureSliceGraphAnchor(false);
+                announce('slice graph lock on');
+            } else {
+                announce('slice graph lock off');
+            }
+            updateSliceGraphLockUI();
+            sendStateToServer();
         }
         
         function print_view(){
@@ -880,7 +952,13 @@
             const previousMode = currentRepresentationMode;
             currentRepresentationMode = targetMode;
             updateDisplayOptions();
+            if (targetMode === 'slice-graph') {
+                // Entering slice-graph mode captures an initial locked snapshot.
+                sliceGraphLocked = true;
+                captureSliceGraphAnchor(false);
+            }
             updateButtonLabels();
+            updateSliceGraphLockUI();
             syncRadios();
             announce(`${previousMode.toLowerCase()} to ${currentRepresentationMode.toLowerCase()}`);
             
@@ -1028,6 +1106,19 @@
         shallowerBtn.addEventListener('click', function() {
             updateSliceDepth(currentSliceDepth - 10, true);
         });
+
+        sliceGraphLockBtn.addEventListener('click', function() {
+            toggleSliceGraphLock();
+        });
+
+        sliceGraphRefreshBtn.addEventListener('click', function() {
+            if (currentRepresentationMode !== 'slice-graph') {
+                announceStatus('refresh only available in slice-graph mode');
+                return;
+            }
+            captureSliceGraphAnchor(true);
+            sendStateToServer();
+        });
         
         // Global keyboard navigation support for accessibility
         document.addEventListener('keydown', function(e) {
@@ -1117,6 +1208,21 @@
                     // Switch to filled/shaded view
                     e.preventDefault();
                     cycleRepresentationMode();
+                    break;
+
+                case 'l':
+                    e.preventDefault();
+                    toggleSliceGraphLock();
+                    break;
+
+                case 'g':
+                    e.preventDefault();
+                    if (currentRepresentationMode !== 'slice-graph') {
+                        announceStatus('refresh only available in slice-graph mode');
+                        break;
+                    }
+                    captureSliceGraphAnchor(true);
+                    sendStateToServer();
                     break;
                     
                 case 'o':
@@ -1231,6 +1337,7 @@
             updateDisplayOptions();
             syncRadios();
             updateButtonLabels();
+            updateSliceGraphLockUI();
             
             // Send initial state to server
             sendStateToServer();
