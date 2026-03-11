@@ -642,8 +642,11 @@ class CADComparisonRenderer:
 
             # The marker always reflects the current (live) slice position,
             # even when the graph data is locked to an anchor depth.
+            # NOTE: marker_position_int is NOT inverted like cut_position_int because
+            # the image has already been flipped; in the flipped image, left=0% and
+            # right=100%, so the marker index should increase with depth.
             current_depth_percent = max(0, min(100, depth_percent))
-            marker_position_int = int(100.0 * (1.0 - current_depth_percent / 100.0))
+            marker_position_int = int(current_depth_percent)
 
             # Render line-graph edge-to-edge in the graph band width.
             width_px, height_px = self.screen_size[0], self.screen_size[1]
