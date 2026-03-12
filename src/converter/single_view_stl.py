@@ -208,12 +208,48 @@ def get_projected_feature_segments(
     projection_mode="orthographic",
     feature_angle_deg=1.0,
     cull_hidden=False,
+    silhouette_only=False,
 ):
     """Return 2D line segments for boundary/sharp edges, removing coplanar triangulation edges."""
     if shape is None or len(shape.faces) == 0:
         return np.zeros((0, 2, 2), dtype=float)
 
     feature_edges = set()
+
+    # Orthographic tactile line mode: keep only true silhouettes and open boundaries.
+    # This avoids many extra lines from curved-surface triangulation.
+    if silhouette_only:
+        visible_faces = get_visible_face_mask(shape, view_key, projection_mode=projection_mode)
+
+        try:
+            for pair, edge in zip(shape.face_adjacency, shape.face_adjacency_edges):
+                f0 = int(pair[0])
+                f1 = int(pair[1])
+                if visible_faces[f0] != visible_faces[f1]:
+                    feature_edges.add(tuple(sorted((int(edge[0]), int(edge[1])))))
+        except Exception:
+            pass
+
+        # Keep mesh boundaries if present.
+        try:
+            boundary_edges = shape.edges_boundary
+            for edge in boundary_edges:
+                feature_edges.add(tuple(sorted((int(edge[0]), int(edge[1])))))
+        except Exception:
+            pass
+
+        if len(feature_edges) == 0:
+            # Fallback to open-boundary-only approximation if adjacency data is unavailable.
+            try:
+                boundary_edges = shape.edges_boundary
+                for edge in boundary_edges:
+                    feature_edges.add(tuple(sorted((int(edge[0]), int(edge[1])))))
+            except Exception:
+                pass
+
+        edge_idx = np.array(list(feature_edges), dtype=int) if len(feature_edges) > 0 else np.zeros((0, 2), dtype=int)
+        coords_2d = project_vertices(shape.vertices, view_key, projection_mode=projection_mode)
+        return coords_2d[edge_idx] if edge_idx.shape[0] > 0 else np.zeros((0, 2, 2), dtype=float)
 
     # Keep sharp adjacency edges only (face normal change above threshold).
     try:
@@ -313,22 +349,29 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
         #shape = trimesh.load_mesh("model.stl")
 
         coords = project_vertices(shape.vertices, view_key, projection_mode=projection_mode)
-        if rendering_mode == "line":
+
+        # Compute feature/silhouette segments once for modes that need linework.
+        segments_2d = []
+        if rendering_mode in ["line", "outline", "filled"]:
             segments_2d = get_projected_feature_segments(
                 shape,
                 view_key,
                 projection_mode=projection_mode,
                 cull_hidden=(projection_mode in ["isometric", "oblique"]),
+                silhouette_only=(projection_mode in ["orthographic", "oblique", "isometric"]),
             )
+
+        if rendering_mode in ["line", "outline"]:
             if len(segments_2d) > 0:
-                ax.add_collection(LineCollection(segments_2d, colors="black", linewidths=0.1))
+                ax.add_collection(LineCollection(segments_2d, colors="black", linewidths=1.0, antialiaseds=False))
                 ax.autoscale_view()
         else:
             triangles = shape.faces
-            if projection_mode in ["isometric", "oblique"]:
-                face_mask = get_visible_face_mask(shape, view_key, projection_mode=projection_mode)
-                if np.any(face_mask):
-                    triangles = shape.faces[face_mask]
+            # Always cull hidden faces for raster fills to avoid back-face overlap
+            # artifacts (especially in orthographic outline extraction).
+            face_mask = get_visible_face_mask(shape, view_key, projection_mode=projection_mode)
+            if np.any(face_mask):
+                triangles = shape.faces[face_mask]
             colors = [0.0 for i in range(len(triangles))]
             ax.tripcolor(
                 coords[:,0],
@@ -340,6 +383,11 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
                 edgecolor="none",
                 shading="flat",
             )
+            # Draw silhouette/feature edges on top of the filled shape so the
+            # outline is explicitly rasterized — otherwise it depends on which
+            # triangles happen to cover pixel centres, giving a ragged boundary.
+            if rendering_mode == "filled" and len(segments_2d) > 0:
+                ax.add_collection(LineCollection(segments_2d, colors="black", linewidths=1.0, antialiaseds=False))
 
         # for each pixel, get triangle ID and barycentric coordinates
 
@@ -373,14 +421,8 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
         plt.close(fig.number)
 
     #print(img_np)
-    outlines_np = get_outlines(img_np)
-    if rendering_mode in ["filled", "slice", "line"]:
+    if rendering_mode in ["filled", "slice", "line", "outline"]:
         return img_np, ax_limits
-    if rendering_mode == "outline":
-        outlines_np = get_outlines(img_np)
-        #im = Image.fromarray(barycentric_coords)
-        #im.save("barycentric_coords.png")
-        return outlines_np, ax_limits
 
 if __name__ == '__main__':
     #model_file = os.path.join("src", "models", "brep", "cup_higher.step")

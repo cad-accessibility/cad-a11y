@@ -117,15 +117,17 @@ def get_side_view(
         #shape = trimesh.load_mesh("model.stl")
 
         coords = project_vertices(shape_cut.vertices, view_key_cut, projection_mode=projection_mode)
-        if rendering_mode == "line":
-            segments_2d = get_projected_feature_segments(
-                shape_cut,
-                view_key_cut,
-                projection_mode=projection_mode,
-                cull_hidden=(projection_mode in ["isometric", "oblique"]),
-            )
+        segments_2d = get_projected_feature_segments(
+            shape_cut,
+            view_key_cut,
+            projection_mode=projection_mode,
+            cull_hidden=(projection_mode in ["isometric", "oblique"]),
+            silhouette_only=(projection_mode in ["orthographic", "oblique", "isometric"]),
+        )
+
+        if rendering_mode in ["line", "outline"]:
             if len(segments_2d) > 0:
-                ax.add_collection(LineCollection(segments_2d, colors="black", linewidths=0.1))
+                ax.add_collection(LineCollection(segments_2d, colors="black", linewidths=1.0, antialiaseds=False))
                 ax.autoscale_view()
         else:
             cut_triangles = shape_cut.faces
@@ -143,6 +145,8 @@ def get_side_view(
                 aa=False,
                 edgecolor="none",
             )
+            if len(segments_2d) > 0:
+                ax.add_collection(LineCollection(segments_2d, colors="black", linewidths=1.0, antialiaseds=False))
 
     ax.set_aspect('equal')
     ax = plt.gca()
@@ -172,11 +176,8 @@ def get_side_view(
     if plt.fignum_exists(fig.number):
         plt.close(fig.number)
 
-    # Right panel (cut view) follows the selected render mode.
-    if rendering_mode == "outline":
-        cut_img = get_outlines(img_np)
-    else:
-        cut_img = img_np
+    # Right panel uses direct, explicit linework/fill rendering from this pass.
+    cut_img = img_np
 
     # Legend - view
     #shape_brep = shape_brep_copy
@@ -192,25 +193,35 @@ def get_side_view(
 
     #area = compute_area(shape_brep)
     if not np.isclose(shape.area, 0.0):
-        #write_stl_file(shape_brep, "model.stl", linear_deflection=0.1)
-        #shape = trimesh.load_mesh("model.stl")
-
-        legend_triangles = shape.faces
-        if projection_mode in ["isometric", "oblique"]:
-            legend_face_mask = get_visible_face_mask(shape, view_key_legend, projection_mode=projection_mode)
-            if np.any(legend_face_mask):
-                legend_triangles = shape.faces[legend_face_mask]
-        colors = [0.0 for i in range(len(legend_triangles))]
-        coords = project_vertices(shape.vertices, view_key_legend, projection_mode=projection_mode)
-        ax.tripcolor(
-            coords[:,0],
-            coords[:, 1],
-            facecolors=colors,
-            cmap="gray",
-            triangles=legend_triangles,
-            aa=False,
-            edgecolor="none",
+        # Draw legend as explicit silhouette/feature lines for stable braille output.
+        legend_segments_2d = get_projected_feature_segments(
+            shape,
+            view_key_legend,
+            projection_mode=projection_mode,
+            cull_hidden=(projection_mode in ["isometric", "oblique"]),
+            silhouette_only=(projection_mode in ["orthographic", "oblique", "isometric"]),
         )
+        if len(legend_segments_2d) > 0:
+            ax.add_collection(LineCollection(legend_segments_2d, colors="black", linewidths=1.0, antialiaseds=False))
+            ax.autoscale_view()
+        else:
+            # Fallback for degenerate meshes where edge extraction yields no segments.
+            legend_triangles = shape.faces
+            if projection_mode in ["isometric", "oblique"]:
+                legend_face_mask = get_visible_face_mask(shape, view_key_legend, projection_mode=projection_mode)
+                if np.any(legend_face_mask):
+                    legend_triangles = shape.faces[legend_face_mask]
+            colors = [0.0 for i in range(len(legend_triangles))]
+            coords = project_vertices(shape.vertices, view_key_legend, projection_mode=projection_mode)
+            ax.tripcolor(
+                coords[:,0],
+                coords[:, 1],
+                facecolors=colors,
+                cmap="gray",
+                triangles=legend_triangles,
+                aa=False,
+                edgecolor="none",
+            )
 
 
     ax.set_aspect('equal')
@@ -247,8 +258,8 @@ def get_side_view(
     #plt.show()
     if plt.fignum_exists(fig.number):
         plt.close(fig.number)
-    # Left panel (legend view) stays visually stable across render mode changes.
-    legend_img = get_outlines(img_np)
+    # Left panel (legend view) is already rendered as stable explicit linework.
+    legend_img = img_np
 
     # Line img (must match legend width)
     width_px, height_px = legend_width, total_height
@@ -262,7 +273,7 @@ def get_side_view(
     plane_origin_np = np.array(plane_origin)
     line_pts = np.array([plane_origin_np - 1000.0*line_vec, plane_origin_np + 1000.0*line_vec])
     coords = project_vertices(line_pts, view_key_legend, projection_mode=projection_mode)
-    ax.plot(coords[:, 0], coords[:, 1], linewidth=0.3, color=(0.0,0.0,0.0,1.0), aa=False)
+    ax.plot(coords[:, 0], coords[:, 1], linewidth=1.0, color=(0.0,0.0,0.0,1.0), aa=False)
     #print("line coords", coords)
     ax.set_aspect('equal')
     ax = plt.gca()

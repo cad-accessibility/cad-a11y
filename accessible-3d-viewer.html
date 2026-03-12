@@ -356,6 +356,129 @@
             overflow-y: auto;
         }
 
+        .debug-panel {
+            margin-top: 24px;
+            border: 1px solid #d7e2ea;
+            border-radius: 8px;
+            background: #f3f7fb;
+            padding: 14px;
+        }
+
+        .debug-panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .debug-panel-header h2 {
+            margin: 0;
+        }
+
+        .debug-panel-toggle {
+            background: #ffffff;
+            border: 1px solid #b6c8d6;
+            border-radius: 6px;
+            padding: 6px 10px;
+            color: #1f3343;
+            cursor: pointer;
+            font-size: 0.9em;
+        }
+
+        .debug-panel-toggle:hover,
+        .debug-panel-toggle:focus {
+            border-color: #2f6f97;
+            outline: none;
+        }
+
+        .debug-panel-content[hidden] {
+            display: none !important;
+        }
+
+        .debug-stage-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .debug-stage {
+            border: 1px solid #c8d5df;
+            border-left-width: 6px;
+            border-radius: 6px;
+            padding: 8px;
+            background: #fff;
+        }
+
+        .debug-stage.ok {
+            border-left-color: #2e7d32;
+        }
+
+        .debug-stage.skipped {
+            border-left-color: #6c757d;
+        }
+
+        .debug-stage.error {
+            border-left-color: #b3261e;
+        }
+
+        .debug-stage-title {
+            font-weight: 700;
+            margin-bottom: 4px;
+            color: #243746;
+        }
+
+        .debug-stage-status {
+            font-size: 0.85em;
+            color: #4f6473;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+        }
+
+        .debug-stage-explanation {
+            font-size: 0.82em;
+            line-height: 1.35;
+            color: #2f4453;
+            background: #eef4f8;
+            border: 1px solid #d7e2ea;
+            border-radius: 4px;
+            padding: 6px;
+            margin-bottom: 6px;
+        }
+
+        .debug-stage-explanation strong {
+            color: #1e3444;
+        }
+
+        .debug-stage pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-size: 0.8em;
+            line-height: 1.35;
+            background: #f6fafc;
+            border: 1px solid #e1e8ed;
+            border-radius: 4px;
+            padding: 6px;
+        }
+
+        .debug-stage-image {
+            width: 100%;
+            height: auto;
+            margin-bottom: 6px;
+            border: 1px solid #d8e2e9;
+            border-radius: 4px;
+            background: #fff;
+            image-rendering: pixelated;
+        }
+
+        .debug-stage-image-label {
+            font-size: 0.78em;
+            color: #4a6070;
+            margin-bottom: 4px;
+        }
+
         /* Mobile responsive design */
         @media (max-width: 768px) {
             .layout {
@@ -448,6 +571,26 @@
                 </div>
             </section>
 
+            <!-- Device Selector Section -->
+            <section class="section" aria-labelledby="device-heading">
+                <h2 id="device-heading">Braille Display Device</h2>
+                <div id="device-info" aria-describedby="device-heading">
+                    <div class="help-text" style="margin-bottom: 10px;">
+                        Select which braille display is connected.
+                    </div>
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <label for="device-select">Device:</label>
+                        <select id="device-select" aria-label="Select braille display device">
+                            <option value="none">None (no device)</option>
+                            <option value="dotpad">DotPad (BLE)</option>
+                            <option value="monarch">Monarch (HID)</option>
+                        </select>
+                        <button id="device-connect-btn" onclick="connectDevice()">Connect</button>
+                    </div>
+                    <div id="device-status" aria-live="polite" style="margin-top:8px; font-size:0.9em; color:#555;">Status: unknown</div>
+                </div>
+            </section>
+
             <!-- Slice Depth Section -->
             <section class="section" aria-labelledby="slice-heading">
                 <h2 id="slice-heading">Slice Depth Control</h2>
@@ -499,7 +642,7 @@
                 </div>
 
                 <div id="projection-mode-help" class="help-text" style="margin-top: 10px;">
-                    Choose projection: Orthographic, Oblique, Isometric, or Slice
+                    Choose projection: Orthographic or Slice
                 </div>
                 <div aria-describedby="projection-mode-help">
                     <fieldset role="radiogroup" aria-labelledby="render-heading">
@@ -507,14 +650,6 @@
                         <label>
                             <input type="radio" name="projection-mode" id="projection-mode-orthographic" value="orthographic" checked>
                             Orthographic
-                        </label>
-                        <label>
-                            <input type="radio" name="projection-mode" id="projection-mode-oblique" value="oblique">
-                            Oblique
-                        </label>
-                        <label>
-                            <input type="radio" name="projection-mode" id="projection-mode-isometric" value="isometric">
-                            Isometric
                         </label>
                         <label>
                             <input type="radio" name="projection-mode" id="projection-mode-slice" value="slice">
@@ -666,7 +801,7 @@
                     <section class="section" >
                         <h2 id="tactile-preview-heading">Export</h2>
                         <div class="button-group" style="margin-top: 0; margin-bottom: 8px;">
-                            <button type="button" id="export-slice-svg-btn">Export Current View as SVG</button>
+                            <button type="button" id="export-slice-svg-btn">Export Current View as Image</button>
 
                         </div>
 			</section> 
@@ -737,6 +872,27 @@
 
                 </div><!-- end right-col -->
             </div><!-- end layout -->
+
+            <section class="section debug-panel" aria-labelledby="debug-pipeline-heading">
+                <div class="debug-panel-header">
+                    <h2 id="debug-pipeline-heading">Pipeline Debug Visualization</h2>
+                    <button
+                        id="debug-pipeline-toggle-btn"
+                        class="debug-panel-toggle"
+                        type="button"
+                        aria-expanded="true"
+                        aria-controls="debug-pipeline-content"
+                    >
+                        Hide Debug Pipeline
+                    </button>
+                </div>
+                <div id="debug-pipeline-content" class="debug-panel-content">
+                    <div class="help-text" id="debug-pipeline-summary">
+                        Waiting for render debug data...
+                    </div>
+                    <div id="debug-stage-list" class="debug-stage-list" aria-live="polite"></div>
+                </div>
+            </section>
         </main>
     </div>
 
@@ -744,6 +900,51 @@
         // Configuration
         const SERVER_URL = 'http://localhost:6969';
         //const SERVER_URL = 'http://10.18.193.149:6969';
+
+        // Fetch current device status on page load and update selector
+        async function refreshDeviceStatus() {
+            try {
+                const resp = await fetch(`${SERVER_URL}/device`);
+                const data = await resp.json();
+                const sel = document.getElementById('device-select');
+                const statusEl = document.getElementById('device-status');
+                if (sel) sel.value = data.device || 'none';
+                if (statusEl) {
+                    statusEl.textContent = data.connected
+                        ? `Status: connected (${data.device})`
+                        : 'Status: not connected';
+                }
+            } catch (e) {
+                const statusEl = document.getElementById('device-status');
+                if (statusEl) statusEl.textContent = 'Status: server unreachable';
+            }
+        }
+
+        async function connectDevice() {
+            const sel = document.getElementById('device-select');
+            const statusEl = document.getElementById('device-status');
+            const deviceType = sel ? sel.value : 'none';
+            if (statusEl) statusEl.textContent = 'Status: connecting…';
+            try {
+                const resp = await fetch(`${SERVER_URL}/device`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({device: deviceType})
+                });
+                const data = await resp.json();
+                if (data.status === 'ok') {
+                    statusEl.textContent = data.connected
+                        ? `Status: connected (${data.device})`
+                        : 'Status: not connected';
+                } else {
+                    statusEl.textContent = `Status: error – ${data.message}`;
+                }
+            } catch (e) {
+                if (statusEl) statusEl.textContent = `Status: error – ${e.message}`;
+            }
+        }
+
+        window.addEventListener('load', refreshDeviceStatus);
 
         // Drag-to-resize columns
         (function() {
@@ -844,7 +1045,8 @@
                     if (data.image_base64) {
                         updateTactilePreview(data.image_base64, data.image_shape);
                     }
-                    scheduleHighFidelityPreviewRefresh(false);
+                    renderPipelineDebug(data.debug_pipeline);
+                    updateHighFidelityPreviewFromDebugPipeline(data.debug_pipeline);
                 })
                 .catch(error => {
                     // Silently fail - don't interrupt user experience
@@ -874,9 +1076,6 @@
         let sliceGraphLocked = true;
         let sliceGraphAnchorView = 'y-';
         let sliceGraphAnchorDepth = 50;
-        let highFidelityPreviewTimer = null;
-        let highFidelityPreviewInFlight = false;
-        let lastHighFidelityKey = '';
         
         // Remove "Back" from available views
         //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
@@ -911,6 +1110,11 @@
         const exportSliceSvgBtn = document.getElementById('export-slice-svg-btn');
         const highFidelityPreviewImg = document.getElementById('high-fidelity-preview-img');
         const highFidelityPreviewMeta = document.getElementById('high-fidelity-preview-meta');
+        const debugPipelineToggleBtn = document.getElementById('debug-pipeline-toggle-btn');
+        const debugPipelineContent = document.getElementById('debug-pipeline-content');
+        const debugPipelineSummary = document.getElementById('debug-pipeline-summary');
+        const debugStageList = document.getElementById('debug-stage-list');
+        const DEBUG_PIPELINE_VISIBILITY_KEY = 'debugPipelineVisible';
 
         // New radio group references
         const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
@@ -985,192 +1189,206 @@
             currentPrintView = !currentPrintView;
         }
 
-        function escapeXml(value) {
-            return String(value)
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&apos;');
-        }
-
-        function textToBrailleCells(text) {
-            const letters = {
-                a: [1], b: [1, 2], c: [1, 4], d: [1, 4, 5], e: [1, 5],
-                f: [1, 2, 4], g: [1, 2, 4, 5], h: [1, 2, 5], i: [2, 4], j: [2, 4, 5],
-                k: [1, 3], l: [1, 2, 3], m: [1, 3, 4], n: [1, 3, 4, 5], o: [1, 3, 5],
-                p: [1, 2, 3, 4], q: [1, 2, 3, 4, 5], r: [1, 2, 3, 5], s: [2, 3, 4], t: [2, 3, 4, 5],
-                u: [1, 3, 6], v: [1, 2, 3, 6], w: [2, 4, 5, 6], x: [1, 3, 4, 6], y: [1, 3, 4, 5, 6], z: [1, 3, 5, 6],
-            };
-            const digits = {
-                '1': [1], '2': [1, 2], '3': [1, 4], '4': [1, 4, 5], '5': [1, 5],
-                '6': [1, 2, 4], '7': [1, 2, 4, 5], '8': [1, 2, 5], '9': [2, 4], '0': [2, 4, 5],
-            };
-            const punctuation = {
-                ' ': [],
-                ':': [2, 5],
-                '-': [3, 6],
-                '+': [3, 4, 6],
-                '.': [2, 5, 6],
-                ',': [2],
-                '%': [4, 6, 3, 5],
-            };
-            const numberSign = [3, 4, 5, 6];
-
-            const cells = [];
-            let inNumber = false;
-            for (const ch of String(text)) {
-                if (Object.prototype.hasOwnProperty.call(digits, ch)) {
-                    if (!inNumber) {
-                        cells.push(numberSign);
-                        inNumber = true;
-                    }
-                    cells.push(digits[ch]);
-                    continue;
-                }
-                inNumber = false;
-                const lower = ch.toLowerCase();
-                if (Object.prototype.hasOwnProperty.call(letters, lower)) {
-                    cells.push(letters[lower]);
-                } else if (Object.prototype.hasOwnProperty.call(punctuation, ch)) {
-                    cells.push(punctuation[ch]);
-                } else {
-                    cells.push([]);
-                }
+        function formatDebugValue(value) {
+            if (value === undefined || value === null) {
+                return 'null';
             }
-            return cells;
+            if (typeof value === 'number') {
+                if (Number.isInteger(value)) {
+                    return String(value);
+                }
+                return value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+            }
+            if (typeof value === 'string' || typeof value === 'boolean') {
+                return String(value);
+            }
+            try {
+                return JSON.stringify(value, null, 2);
+            } catch (_) {
+                return String(value);
+            }
         }
 
-        function buildBrailleDotsSvg(labels, width, yOffset = 0) {
-            const dotOffsets = {
-                1: [0, 0], 2: [0, 1], 3: [0, 2], 7: [0, 3],
-                4: [1, 0], 5: [1, 1], 6: [1, 2], 8: [1, 3],
+        function setDebugPipelineVisible(isVisible) {
+            if (!debugPipelineContent || !debugPipelineToggleBtn) {
+                return;
+            }
+            debugPipelineContent.hidden = !isVisible;
+            debugPipelineToggleBtn.setAttribute('aria-expanded', String(isVisible));
+            debugPipelineToggleBtn.textContent = isVisible ? 'Hide Debug Pipeline' : 'Show Debug Pipeline';
+            try {
+                window.localStorage.setItem(DEBUG_PIPELINE_VISIBILITY_KEY, isVisible ? '1' : '0');
+            } catch (_) {
+                // Ignore localStorage failures (e.g., privacy mode).
+            }
+        }
+
+        function toggleDebugPipelineVisibility() {
+            if (!debugPipelineContent) {
+                return;
+            }
+            setDebugPipelineVisible(debugPipelineContent.hidden);
+        }
+
+        function initializeDebugPipelineVisibility() {
+            let isVisible = true;
+            try {
+                const saved = window.localStorage.getItem(DEBUG_PIPELINE_VISIBILITY_KEY);
+                if (saved === '0') {
+                    isVisible = false;
+                }
+            } catch (_) {
+                // Keep default visible if persistence is unavailable.
+            }
+            setDebugPipelineVisible(isVisible);
+        }
+
+        function renderPipelineDebug(debugPipeline) {
+            if (!debugPipelineSummary || !debugStageList) {
+                return;
+            }
+
+            const stages = Array.isArray(debugPipeline && debugPipeline.stages) ? debugPipeline.stages : [];
+            if (stages.length === 0) {
+                debugPipelineSummary.textContent = 'No stage data returned by server.';
+                debugStageList.innerHTML = '';
+                return;
+            }
+
+            const statusCounts = stages.reduce((acc, stage) => {
+                const status = String(stage && stage.status ? stage.status : 'unknown');
+                acc[status] = (acc[status] || 0) + 1;
+                return acc;
+            }, {});
+            debugPipelineSummary.textContent = `Stages: ${stages.length} | ok: ${statusCounts.ok || 0} | skipped: ${statusCounts.skipped || 0} | error: ${statusCounts.error || 0}`;
+
+            debugStageList.innerHTML = '';
+
+            const stageDocs = {
+                request: {
+                    summary: 'Captures the render request exactly as sent from the UI.',
+                    inputs: 'Current UI state: view, depth, render mode, projection mode, selected model.',
+                    outputs: 'Normalized parameters that downstream stages use.',
+                },
+                mesh_input: {
+                    summary: 'Loads/selects the source STL mesh before any clipping or slicing.',
+                    inputs: 'Selected model mesh and requested view.',
+                    outputs: 'Mesh statistics and a baseline render of the full geometry.',
+                },
+                full_stl_color: {
+                    summary: 'Renders the complete STL with depth-based colors for visual debugging.',
+                    inputs: 'Full input mesh and view projection.',
+                    outputs: 'Color image showing depth variation across faces.',
+                },
+                slice_plane: {
+                    summary: 'Computes where the slicing plane sits in 3D for the current depth.',
+                    inputs: 'Bounding box, view normal, and requested depth.',
+                    outputs: 'Plane origin/normal and projection-distance values.',
+                },
+                depth_peel_progression: {
+                    summary: 'Shows multiple peel depths to visualize how geometry is removed over depth.',
+                    inputs: 'Input mesh, slice normal, and sampled depth values.',
+                    outputs: 'A sequence of color renders at increasing peel depth.',
+                },
+                depth_peel: {
+                    summary: 'Applies boolean clipping to keep the mesh on one side of the slice plane.',
+                    inputs: 'Input mesh and computed slice plane.',
+                    outputs: 'Clipped mesh plus its updated geometry statistics.',
+                },
+                slice_faces: {
+                    summary: 'Extracts triangles that lie on the slice plane after clipping.',
+                    inputs: 'Clipped mesh and slice plane definition.',
+                    outputs: 'On-plane face mesh used for slice-style views.',
+                },
+                interpolation_diagnostic: {
+                    summary: 'Compares anti-aliasing and thresholding choices that can thicken lines.',
+                    inputs: 'Rendered grayscale channel before braille binarization.',
+                    outputs: 'AA/threshold comparison panel and raised-pixel counts.',
+                },
+                renderer_output_raw: {
+                    summary: 'Shows the direct renderer output before any additional conversion/debug handling.',
+                    inputs: 'Final raster image returned by CADComparisonRenderer.render(...).',
+                    outputs: 'Raw RGBA image preview and basic image metadata.',
+                },
+                render_image: {
+                    summary: 'Final low-fidelity rendered image before braille conversion.',
+                    inputs: 'Active render mode output from the renderer pipeline.',
+                    outputs: 'RGBA bitmap plus channel statistics.',
+                },
+                hf_binary_raw: {
+                    summary: 'Shows the raw high-fidelity binary before optimization.',
+                    inputs: 'Inverted renderer channel thresholded with any nonzero treated as raised.',
+                    outputs: 'Unoptimized binary mask used as payload source for braille downsampling.',
+                },
+                slice_pipeline: {
+                    summary: 'Reports when slice-specific processing is skipped or fails.',
+                    inputs: 'Slice prerequisites (bbox, view mapping, mesh).',
+                    outputs: 'Skip/error reason so pipeline gaps are visible.',
+                },
+                slice_graph_data: {
+                    summary: 'Load-time precomputed pairwise slice-area difference matrix used to draw the line graph overlay.',
+                    inputs: 'CADComparisonRenderer.__init__() -> _load_models() -> _compute_slice_graphs() result (view_diff_mats); current view and depth.',
+                    outputs: 'Row vector at current depth sent to compose_slicegraph branch of CADComparisonRenderer.render().',
+                },
             };
 
-            const dotRadius = 1.25;
-            const colSpacing = 5.2;
-            const rowSpacing = 5.2;
-            const cellAdvance = 12.5;
-            const lineHeight = 26;
-            const startX = 12;
-            const topPadding = 14;
+            stages.forEach((stage, index) => {
+                const status = String(stage && stage.status ? stage.status : 'unknown');
+                const title = stage && stage.title ? stage.title : `Stage ${index + 1}`;
+                const dataText = formatDebugValue(stage ? stage.data : null);
+                const stageId = stage && stage.id ? String(stage.id) : '';
+                const doc = stageDocs[stageId] || {
+                    summary: 'Pipeline stage diagnostic information.',
+                    inputs: 'Previous stage outputs and current render context.',
+                    outputs: 'Stage-specific data and optional preview image.',
+                };
 
-            const circles = [];
-            labels.forEach((label, lineIndex) => {
-                const cells = textToBrailleCells(label);
-                const baseY = yOffset + topPadding + lineIndex * lineHeight;
-                let cursorX = startX;
-                cells.forEach((dots) => {
-                    dots.forEach((dot) => {
-                        const offset = dotOffsets[dot];
-                        if (!offset) {
-                            return;
-                        }
-                        const cx = cursorX + dotRadius + offset[0] * colSpacing;
-                        const cy = baseY + dotRadius + offset[1] * rowSpacing;
-                        if (cx >= 0 && cx <= width) {
-                            circles.push(`<circle cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" r="${dotRadius}" fill="black"/>`);
-                        }
-                    });
-                    cursorX += cellAdvance;
-                });
+                const card = document.createElement('article');
+                card.className = `debug-stage ${status}`;
+
+                const titleEl = document.createElement('div');
+                titleEl.className = 'debug-stage-title';
+                titleEl.textContent = `${index + 1}. ${title}`;
+
+                const statusEl = document.createElement('div');
+                statusEl.className = 'debug-stage-status';
+                statusEl.textContent = status;
+
+                const pre = document.createElement('pre');
+                pre.textContent = dataText;
+
+                card.appendChild(titleEl);
+                card.appendChild(statusEl);
+
+                const expl = document.createElement('div');
+                expl.className = 'debug-stage-explanation';
+                const pipelineFunc = stage && stage.data && stage.data.pipeline_function
+                    ? `<div><strong>Function:</strong> <code>${stage.data.pipeline_function}</code></div>` : '';
+                expl.innerHTML =
+                    pipelineFunc +
+                    `<div><strong>What:</strong> ${doc.summary}</div>` +
+                    `<div><strong>Inputs:</strong> ${doc.inputs}</div>` +
+                    `<div><strong>Outputs:</strong> ${doc.outputs}</div>`;
+                card.appendChild(expl);
+
+                const previewImageBase64 = stage && stage.preview_image_base64 ? String(stage.preview_image_base64) : '';
+                if (previewImageBase64.length > 0) {
+                    const imageLabel = document.createElement('div');
+                    imageLabel.className = 'debug-stage-image-label';
+                    imageLabel.textContent = 'Stage preview';
+
+                    const image = document.createElement('img');
+                    image.className = 'debug-stage-image';
+                    image.src = 'data:image/png;base64,' + previewImageBase64;
+                    image.alt = `${title} preview image`;
+
+                    card.appendChild(imageLabel);
+                    card.appendChild(image);
+                }
+
+                card.appendChild(pre);
+                debugStageList.appendChild(card);
             });
-            return circles.join('\n');
-        }
-
-        function getExportSvgLabels() {
-            const labels = [];
-            if (currentRepresentationMode === 'side-by-side') {
-                const rightAxis = currentView;
-                const leftAxis = getLegendAxisForCutAxis(rightAxis);
-                labels.push(`Left view: ${leftAxis}`);
-                labels.push(`Right view: ${rightAxis}`);
-            }
-
-            if (showViewInfoBox) {
-                labels.push(`Axis: ${currentView}`);
-                labels.push(`Zoom: ${Number(currentZoom).toFixed(1)}`);
-                labels.push(`Type: ${currentRepresentationMode}`);
-                labels.push(`Cut: ${currentSliceDepth}%`);
-            }
-
-            return labels;
-        }
-
-        function buildInvertedSliceSvgFromImage(imgElement, options = {}) {
-            const width = imgElement.naturalWidth || imgElement.width;
-            const height = imgElement.naturalHeight || imgElement.height;
-            if (!width || !height) {
-                throw new Error('No tactile preview image available yet.');
-            }
-
-            const labels = Array.isArray(options.labels) ? options.labels : [];
-            const labelLineHeight = 26;
-            const labelTopPadding = 14;
-            const labelBandHeight = labels.length > 0 ? (labelTopPadding + labels.length * labelLineHeight) : 0;
-            const totalHeight = height + labelBandHeight;
-
-            const canvas = document.createElement('canvas');
-            canvas.width = width;
-            canvas.height = height;
-            const ctx = canvas.getContext('2d');
-            if (!ctx) {
-                throw new Error('Could not create drawing context.');
-            }
-
-            ctx.drawImage(imgElement, 0, 0, width, height);
-            const imageData = ctx.getImageData(0, 0, width, height).data;
-
-            const pathParts = [];
-            for (let y = 0; y < height; y += 1) {
-                let x = 0;
-                while (x < width) {
-                    const idx = (y * width + x) * 4;
-                    const r = imageData[idx];
-                    const g = imageData[idx + 1];
-                    const b = imageData[idx + 2];
-                    const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-                    const inverted = 255 - luminance;
-                    const isBlackPixel = inverted < 128;
-
-                    if (!isBlackPixel) {
-                        x += 1;
-                        continue;
-                    }
-
-                    const runStart = x;
-                    x += 1;
-                    while (x < width) {
-                        const runIdx = (y * width + x) * 4;
-                        const rr = imageData[runIdx];
-                        const gg = imageData[runIdx + 1];
-                        const bb = imageData[runIdx + 2];
-                        const runLuminance = 0.2126 * rr + 0.7152 * gg + 0.0722 * bb;
-                        const runInverted = 255 - runLuminance;
-                        const runIsBlack = runInverted < 128;
-                        if (!runIsBlack) {
-                            break;
-                        }
-                        x += 1;
-                    }
-
-                    const runWidth = x - runStart;
-                    pathParts.push(`M${runStart} ${y}h${runWidth}v1h-${runWidth}z`);
-                }
-            }
-
-            const labelSvg = buildBrailleDotsSvg(labels, width, 0);
-
-            return [
-                `<?xml version="1.0" encoding="UTF-8"?>`,
-                `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${totalHeight}" viewBox="0 0 ${width} ${totalHeight}" shape-rendering="crispEdges">`,
-                `<rect width="100%" height="100%" fill="white"/>`,
-                labelSvg,
-                `<g transform="translate(0 ${labelBandHeight})">`,
-                `<path fill="black" d="${pathParts.join('')}"/>`,
-                `</g>`,
-                `</svg>`
-            ].join('\n');
         }
 
         function fetchExportSourceState() {
@@ -1195,58 +1413,33 @@
             };
         }
 
-        function loadImageElementFromBase64(base64Data) {
-            return new Promise((resolve, reject) => {
-                const tempImage = new Image();
-                tempImage.onload = () => resolve(tempImage);
-                tempImage.onerror = () => reject(new Error('Failed to load export source image'));
-                tempImage.src = 'data:image/png;base64,' + base64Data;
-            });
-        }
-
-        async function fetchHighFidelityExportImage() {
-            const response = await fetch(`${SERVER_URL}/render/export-source`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(fetchExportSourceState()),
-                mode: 'cors'
-            });
-
-            if (!response.ok) {
-                throw new Error(`Export render request failed (${response.status})`);
-            }
-
-            const data = await response.json();
-            if (!data.image_base64) {
-                throw new Error('Export render response missing image data');
-            }
-
-            return loadImageElementFromBase64(data.image_base64);
-        }
-
-        function computeHighFidelityStateKey() {
-            return JSON.stringify(fetchExportSourceState());
-        }
-
-        async function refreshHighFidelityPreview(force = false) {
+        function updateHighFidelityPreviewFromDebugPipeline(debugPipeline) {
             if (!highFidelityPreviewImg || !highFidelityPreviewMeta) {
                 return;
             }
 
-            const stateKey = computeHighFidelityStateKey();
-            if (!force && stateKey === lastHighFidelityKey) {
-                return;
-            }
-            if (highFidelityPreviewInFlight) {
+            const stages = Array.isArray(debugPipeline && debugPipeline.stages) ? debugPipeline.stages : [];
+            const hfStage = stages.find(stage => stage && stage.id === 'hf_binary_raw');
+
+            if (!hfStage || !hfStage.preview_image_base64) {
+                highFidelityPreviewMeta.textContent = 'High-fidelity preview unavailable (hf_binary_raw missing)';
                 return;
             }
 
-            highFidelityPreviewInFlight = true;
-            highFidelityPreviewMeta.textContent = 'Rendering high-fidelity preview...';
+            highFidelityPreviewImg.src = 'data:image/png;base64,' + hfStage.preview_image_base64;
+            highFidelityPreviewImg.alt = `HF binary raw: ${currentView} view, ${currentSliceDepth}% depth, ${currentRenderMode}`;
 
+            const shape = hfStage.data && Array.isArray(hfStage.data.shape) ? hfStage.data.shape : null;
+            const width = shape && shape.length > 1 ? shape[1] : '--';
+            const height = shape && shape.length > 0 ? shape[0] : '--';
+            highFidelityPreviewMeta.textContent = `${currentView} · ${currentSliceDepth}% · ${currentRenderMode} · hf_binary_raw ${width}×${height}px`;
+        }
+
+        async function exportCurrentSliceAsPng() {
             try {
+                exportSliceSvgBtn.disabled = true;
+                announceStatus('rendering high-fidelity export');
+
                 const response = await fetch(`${SERVER_URL}/render/export-source`, {
                     method: 'POST',
                     headers: {
@@ -1257,55 +1450,17 @@
                 });
 
                 if (!response.ok) {
-                    throw new Error(`High-fidelity preview request failed (${response.status})`);
+                    throw new Error(`Export render request failed (${response.status})`);
                 }
 
                 const data = await response.json();
                 if (!data.image_base64) {
-                    throw new Error('High-fidelity preview response missing image data');
+                    throw new Error('Export render response missing image data');
                 }
 
-                highFidelityPreviewImg.src = 'data:image/png;base64,' + data.image_base64;
-                highFidelityPreviewImg.alt = `High-fidelity tactile display: ${currentView} view, ${currentSliceDepth}% depth, ${currentRenderMode}`;
-
-                const width = data.image_shape && data.image_shape.length > 1 ? data.image_shape[1] : '--';
-                const height = data.image_shape && data.image_shape.length > 0 ? data.image_shape[0] : '--';
-                highFidelityPreviewMeta.textContent = `${currentView} · ${currentSliceDepth}% · ${currentRenderMode} · ${width}×${height}px`;
-                lastHighFidelityKey = stateKey;
-            } catch (error) {
-                console.warn('Failed to update high-fidelity preview:', error);
-                highFidelityPreviewMeta.textContent = 'High-fidelity preview unavailable';
-            } finally {
-                highFidelityPreviewInFlight = false;
-            }
-        }
-
-        function scheduleHighFidelityPreviewRefresh(force = false) {
-            if (highFidelityPreviewTimer) {
-                clearTimeout(highFidelityPreviewTimer);
-            }
-            highFidelityPreviewTimer = setTimeout(() => {
-                refreshHighFidelityPreview(force);
-            }, 350);
-        }
-
-        async function exportCurrentSliceAsSvg() {
-            try {
-                exportSliceSvgBtn.disabled = true;
-                announceStatus('rendering high-fidelity export');
-
-                const exportImage = await fetchHighFidelityExportImage();
-                const exportWidth = exportImage.naturalWidth || exportImage.width;
-                if (exportWidth < 900) {
-                    throw new Error(`High-fidelity export width too small: ${exportWidth}px`);
-                }
-
-                const svgLabels = getExportSvgLabels();
-                const svgContent = buildInvertedSliceSvgFromImage(exportImage, { labels: svgLabels });
-                const blob = new Blob([svgContent], { type: 'image/svg+xml;charset=utf-8' });
-                const downloadUrl = URL.createObjectURL(blob);
+                const downloadUrl = 'data:image/png;base64,' + data.image_base64;
                 const sanitizedView = String(currentView).replace(/[^a-zA-Z0-9+-]/g, '_');
-                const filename = `slice_${sanitizedView}_${currentSliceDepth}_${currentRenderMode.toLowerCase()}.svg`;
+                const filename = `slice_${sanitizedView}_${currentSliceDepth}_${currentRenderMode.toLowerCase()}.png`;
 
                 const link = document.createElement('a');
                 link.href = downloadUrl;
@@ -1313,11 +1468,10 @@
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
-                URL.revokeObjectURL(downloadUrl);
 
-                announceStatus('slice exported as svg');
+                announceStatus('slice exported as png');
             } catch (error) {
-                console.warn('Failed to export slice as SVG:', error);
+                console.warn('Failed to export slice as PNG:', error);
                 announceStatus('High-fidelity export failed');
             } finally {
                 exportSliceSvgBtn.disabled = false;
@@ -1753,8 +1907,14 @@
         });
 
         exportSliceSvgBtn.addEventListener('click', function() {
-            exportCurrentSliceAsSvg();
+            exportCurrentSliceAsPng();
         });
+
+        if (debugPipelineToggleBtn) {
+            debugPipelineToggleBtn.addEventListener('click', function() {
+                toggleDebugPipelineVisibility();
+            });
+        }
         
         // Global keyboard navigation support for accessibility
         document.addEventListener('keydown', function(e) {
@@ -1958,10 +2118,10 @@
             updateButtonLabels();
             updateSliceGraphLockUI();
             showViewInfoBoxCheckbox.checked = showViewInfoBox;
+            initializeDebugPipelineVisibility();
             
             // Send initial state to server
             sendStateToServer();
-            scheduleHighFidelityPreviewRefresh(true);
             
             // Add initial announcement
             setTimeout(() => {

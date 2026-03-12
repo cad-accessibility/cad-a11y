@@ -7,6 +7,7 @@ It processes STEP files and returns rendered image arrays based on specified par
 
 import numpy as np
 import os
+import json
 from OCC.Core.STEPControl import STEPControl_Reader
 from trimesh.exchange.stl import load_stl
 from trimesh import Trimesh
@@ -53,6 +54,12 @@ class CADComparisonRenderer:
         self.current_render = None
         self.current_ax_limits = []
         self.current_zoom_level = None
+        self.cache_version = 2
+        self.cache_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "renders",
+            "cad_precompute_cache.json",
+        )
         
         # Load and normalize shapes
         self._load_models()
@@ -81,57 +88,152 @@ class CADComparisonRenderer:
             [shape_before, shape_after]
         )
         self.bbox = [xmin, ymin, zmin, xmax, ymax, zmax]
-        
-        # Calculate view limits for all views
+
+        # Precompute or load from cache for startup performance.
+        self._precompute_with_cache()
+
+    def _model_signature(self):
+        """Build a lightweight signature that changes when source STL files change."""
+        signature = {
+            "before": self._file_signature(self.before_model_path),
+            "after": self._file_signature(self.after_model_path),
+        }
+        return signature
+
+    def _file_signature(self, file_path):
+        try:
+            stat_info = os.stat(file_path)
+            return {
+                "path": os.path.abspath(file_path),
+                "size": int(stat_info.st_size),
+                "mtime_ns": int(stat_info.st_mtime_ns),
+            }
+        except OSError:
+            return {
+                "path": os.path.abspath(file_path),
+                "size": -1,
+                "mtime_ns": -1,
+            }
+
+    def _precompute_with_cache(self):
+        """Load precomputed slice/orthographic data, or recompute if stale/missing."""
+        cache = self._load_precompute_cache()
+        signature = self._model_signature()
+
+        if cache and cache.get("model_signature") == signature:
+            try:
+                self._hydrate_precomputed_from_cache(cache)
+                print("Loaded precomputed slices/view limits from cache")
+                return
+            except Exception as error:
+                print("Ignoring invalid precompute cache:", error)
+
+        print("Precomputing slices and orthographic view limits...")
         self._calculate_view_limits()
         self._compute_slice_graphs()
+        self._save_precompute_cache(signature)
+
+    def _load_precompute_cache(self):
+        if not os.path.exists(self.cache_path):
+            return None
+        try:
+            with open(self.cache_path, "r", encoding="utf-8") as fp:
+                cache = json.load(fp)
+            if cache.get("cache_version") != self.cache_version:
+                return None
+            return cache
+        except Exception:
+            return None
+
+    def _save_precompute_cache(self, signature):
+        os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
+
+        orthographic_view_limits = np.asarray(self.view_limits, dtype=float)
+        orthographic_centers = np.asarray(self.view_current_camera_center, dtype=float)
+        slice_diff_mats = {
+            key: np.asarray(value, dtype=float).tolist()
+            for key, value in self.view_diff_mats.items()
+        }
+
+        cache_payload = {
+            "cache_version": self.cache_version,
+            "model_signature": signature,
+            "orthographic_view_limits": orthographic_view_limits.tolist(),
+            "orthographic_view_centers": orthographic_centers.tolist(),
+            "slice_diff_mats": slice_diff_mats,
+        }
+
+        with open(self.cache_path, "w", encoding="utf-8") as fp:
+            json.dump(cache_payload, fp)
+
+    def _hydrate_precomputed_from_cache(self, cache):
+        orthographic_view_limits = np.asarray(cache["orthographic_view_limits"], dtype=float)
+        orthographic_centers = np.asarray(cache["orthographic_view_centers"], dtype=float)
+        slice_diff_mats_raw = cache["slice_diff_mats"]
+
+        if orthographic_view_limits.shape != (6, 2, 2):
+            raise ValueError("Invalid cached orthographic view limits shape")
+        if orthographic_centers.shape != (6, 2):
+            raise ValueError("Invalid cached orthographic centers shape")
+
+        required_slice_views = ["top", "front", "left", "bottom", "back", "right"]
+        for view_name in required_slice_views:
+            if view_name not in slice_diff_mats_raw:
+                raise ValueError("Missing cached slice view: " + view_name)
+
+        self.view_limits = orthographic_view_limits
+        self.view_current_camera_center = orthographic_centers
+        self.view_diff_mats = {
+            key: np.asarray(value, dtype=float)
+            for key, value in slice_diff_mats_raw.items()
+        }
+
+    def _ensure_slice_graphs(self):
+        """Compute slice graph matrices only when a render path needs them."""
+        if len(self.view_diff_mats) == 0:
+            self._compute_slice_graphs()
+            self._save_precompute_cache(self._model_signature())
     
     def _calculate_view_limits(self):
-        """Calculate axis limits for all views for both shapes."""
-        #view_keys = ["top", "front", "side"]
+        """Calculate tight orthographic limits for each axis view across both shapes."""
         view_keys = ["top", "front", "left", "bottom", "back", "right"]
-        rendering_modes = ["outline", "filled", "slice"]
-        
-        xmin, ymin, zmin, xmax, ymax, zmax = self.bbox
-        
-        view_limits = [
-            [[xmin, xmax], [ymin, ymax]],  # top
-            [[xmin, xmax], [ymin, ymax]],  # front
-            [[xmin, xmax], [ymin, ymax]],  # side
-            [[xmin, xmax], [ymin, ymax]],  # top
-            [[xmin, xmax], [ymin, ymax]],  # front
-            [[xmin, xmax], [ymin, ymax]],  # side
-        ]
-        self.view_current_camera_center = [
-            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
-            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
-            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
-            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
-            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
-            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
-        ]
-        
-        shape_before, shape_after = self.shapes
-        
-        for i, view_key in enumerate(view_keys):
-            print("view_key", view_key)
-            _, ax_limits_before = get_single_view(
-                shape_before, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
-            )
-            _, ax_limits_after = get_single_view(
-                shape_after, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
-            )
-            view_limits[i][0][0] = min(ax_limits_before[0][0], ax_limits_after[0][0])
-            view_limits[i][0][1] = max(ax_limits_before[0][1], ax_limits_after[0][1])
-            view_limits[i][1][0] = min(ax_limits_before[1][0], ax_limits_after[1][0])
-            view_limits[i][1][1] = max(ax_limits_before[1][1], ax_limits_after[1][1])
-            self.view_current_camera_center[i][0] = (view_limits[i][0][0] + view_limits[i][0][1])/2.0
-            self.view_current_camera_center[i][1] = (view_limits[i][1][0] + view_limits[i][1][1])/2.0
-        
-        self.view_limits = np.array(view_limits)
-        self.view_current_camera_center = np.array(self.view_current_camera_center)
+        view_limits = []
+        view_centers = []
+
+        for view_key in view_keys:
+            all_x = []
+            all_y = []
+            for shape in self.shapes:
+                coords = project_vertices(shape.vertices, view_key, projection_mode="orthographic")
+                if coords.shape[0] == 0:
+                    continue
+                all_x.append(coords[:, 0])
+                all_y.append(coords[:, 1])
+
+            if len(all_x) == 0:
+                x_min, x_max = 0.0, 1.0
+                y_min, y_max = 0.0, 1.0
+            else:
+                xs = np.concatenate(all_x)
+                ys = np.concatenate(all_y)
+                x_min, x_max = float(np.min(xs)), float(np.max(xs))
+                y_min, y_max = float(np.min(ys)), float(np.max(ys))
+
+                # Guard against degenerate zero-span limits.
+                if np.isclose(x_min, x_max):
+                    x_min -= 0.5
+                    x_max += 0.5
+                if np.isclose(y_min, y_max):
+                    y_min -= 0.5
+                    y_max += 0.5
+
+            view_limits.append([[x_min, x_max], [y_min, y_max]])
+            view_centers.append([(x_min + x_max) / 2.0, (y_min + y_max) / 2.0])
+
+        self.view_limits = np.array(view_limits, dtype=float)
+        self.view_current_camera_center = np.array(view_centers, dtype=float)
         print("view_limits")
-        print(np.array(view_limits))
+        print(self.view_limits)
         #exit()
 
     def _calculate_projected_view_limits(self, projection_mode):
@@ -277,7 +379,7 @@ class CADComparisonRenderer:
             "orthographic": "orthographic",
             "oblique": "oblique",
             "isometric": "isometric",
-            "cut": "cut",
+            "slice": "cut",
         }
         return mapping.get(mode, "orthographic")
     
@@ -486,14 +588,16 @@ class CADComparisonRenderer:
         camera_move = params.get("move_camera_center", "none")
         print(camera_move)
 
-        horizontal_dist = np.abs((active_view_limits[view_index][0][1] - active_view_limits[view_index][0][0]))
-        vertical_dist = np.abs((active_view_limits[view_index][1][1] - active_view_limits[view_index][1][0]))
+        horizontal_range = np.abs((active_view_limits[view_index][0][1] - active_view_limits[view_index][0][0]))
+        vertical_range = np.abs((active_view_limits[view_index][1][1] - active_view_limits[view_index][1][0]))
+        horizontal_half_span = 0.5 * horizontal_range
+        vertical_half_span = 0.5 * vertical_range
 
         # For non-orthographic projections at zoom 0, add a small margin so the
         # projected model fits comfortably within the tactile frame.
         if effective_projection_mode in ["oblique", "isometric"] and zoom_level == 0:
-            horizontal_dist *= 1.05
-            vertical_dist *= 1.05
+            horizontal_half_span *= 1.05
+            vertical_half_span *= 1.05
         current_center = np.array(self.view_current_camera_center[view_index], dtype=float)
         if effective_projection_mode in ["oblique", "isometric"] and zoom_level == 0:
             current_center = np.array([
@@ -502,31 +606,31 @@ class CADComparisonRenderer:
             ])
         # arrow-key stepping
         pan_step_scale = 0.5 * zoom_scale
-        #self.view_current_camera_center[view_index][1] -= pan_step_scale*vertical_dist
+        #self.view_current_camera_center[view_index][1] -= pan_step_scale*vertical_half_span
         if camera_move == "left":
-            current_center[0] -= pan_step_scale*horizontal_dist
+            current_center[0] -= pan_step_scale*horizontal_half_span
         if camera_move == "right":
-            current_center[0] += pan_step_scale*horizontal_dist
+            current_center[0] += pan_step_scale*horizontal_half_span
         if camera_move == "up":
-            current_center[1] += pan_step_scale*vertical_dist
+            current_center[1] += pan_step_scale*vertical_half_span
         if camera_move == "down":
-            current_center[1] -= pan_step_scale*vertical_dist
+            current_center[1] -= pan_step_scale*vertical_half_span
 
         if effective_projection_mode == "orthographic":
             self.view_current_camera_center[view_index] = current_center
 
         translational_ax_limits = [
-            [current_center[0] - 0.5*horizontal_dist,
-            current_center[0] + 0.5*horizontal_dist],
-            [current_center[1] - 0.5*vertical_dist,
-            current_center[1] + 0.5*vertical_dist],
+            [current_center[0] - horizontal_half_span,
+            current_center[0] + horizontal_half_span],
+            [current_center[1] - vertical_half_span,
+            current_center[1] + vertical_half_span],
             ]
 
         imposed_zoom_ax_limits = [
-            [current_center[0] - zoom_scale*horizontal_dist,
-            current_center[0] + zoom_scale*horizontal_dist],
-            [current_center[1] - zoom_scale*vertical_dist,
-            current_center[1] + zoom_scale*vertical_dist],
+            [current_center[0] - zoom_scale*horizontal_half_span,
+            current_center[0] + zoom_scale*horizontal_half_span],
+            [current_center[1] - zoom_scale*vertical_half_span,
+            current_center[1] + zoom_scale*vertical_half_span],
             ]
 
         # Compute scrollbar dimensions after final zoom/aspect correction so
@@ -540,19 +644,21 @@ class CADComparisonRenderer:
         current_aspect_ratio = render_screen_size[0]/render_screen_size[1]
         if comparison_mode == "side-by-side":
             current_aspect_ratio = 0.5*render_screen_size[0]/render_screen_size[1]
-        if horizontal_dist/vertical_dist < current_aspect_ratio:
+        safe_horizontal_range = max(horizontal_range, 1e-12)
+        safe_vertical_range = max(vertical_range, 1e-12)
+        if safe_horizontal_range/safe_vertical_range < current_aspect_ratio:
             horizontal_scale_factor = current_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
             #imposed_zoom_ax_limits[0][0] = max(self.view_limits[view_index][0][0], self.view_current_camera_center[view_index][0] - horizontal_scale_factor*zoom_scale*horizontal_dist)
-            imposed_zoom_ax_limits[0][0] = current_center[0] - horizontal_scale_factor*zoom_scale*horizontal_dist
+            imposed_zoom_ax_limits[0][0] = current_center[0] - horizontal_scale_factor*zoom_scale*horizontal_half_span
             #imposed_zoom_ax_limits[0][1] = min(self.view_limits[view_index][0][1], self.view_current_camera_center[view_index][0] + horizontal_scale_factor*zoom_scale*horizontal_dist)
-            imposed_zoom_ax_limits[0][1] = current_center[0] + horizontal_scale_factor*zoom_scale*horizontal_dist
-        if horizontal_dist/vertical_dist > current_aspect_ratio:
+            imposed_zoom_ax_limits[0][1] = current_center[0] + horizontal_scale_factor*zoom_scale*horizontal_half_span
+        if safe_horizontal_range/safe_vertical_range > current_aspect_ratio:
             vertical_scale_factor = current_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
             vertical_scale_factor = 1.0/vertical_scale_factor
             #imposed_zoom_ax_limits[1][0] = max(self.view_limits[view_index][1][0], self.view_current_camera_center[view_index][1] - vertical_scale_factor*zoom_scale*vertical_dist)
             #imposed_zoom_ax_limits[1][1] = min(self.view_limits[view_index][1][1], self.view_current_camera_center[view_index][1] + vertical_scale_factor*zoom_scale*vertical_dist)
-            imposed_zoom_ax_limits[1][0] = current_center[1] - vertical_scale_factor*zoom_scale*vertical_dist
-            imposed_zoom_ax_limits[1][1] = current_center[1] + vertical_scale_factor*zoom_scale*vertical_dist
+            imposed_zoom_ax_limits[1][0] = current_center[1] - vertical_scale_factor*zoom_scale*vertical_half_span
+            imposed_zoom_ax_limits[1][1] = current_center[1] + vertical_scale_factor*zoom_scale*vertical_half_span
 
         x_min = active_view_limits[view_index][1][0]
         x_max = active_view_limits[view_index][1][1]
@@ -709,6 +815,7 @@ class CADComparisonRenderer:
         else:
             compose_slice_graph = False
         if compose_slice_graph:
+            self._ensure_slice_graphs()
             # Optionally use an anchored slice graph location while the user explores.
             slice_graph_locked = bool(params.get("slicegraph_locked", False))
             graph_view_name = view_name
@@ -731,9 +838,10 @@ class CADComparisonRenderer:
             current_depth_percent = max(0, min(100, depth_percent))
             marker_position_int = int(current_depth_percent)
 
-            # Render line-graph edge-to-edge in the graph band width.
-            width_px, height_px = self.screen_size[0], self.screen_size[1]
-            graph_height_px = 10
+            # Render line-graph edge-to-edge and reserve the bottom quarter of the
+            # current render for it, regardless of device resolution.
+            width_px = int(img_array.shape[1])
+            graph_height_px = max(1, int(round(img_array.shape[0] * 0.25)))
             dpi = 100 
 
             fig = plt.figure(figsize=(width_px / dpi, graph_height_px / dpi), dpi=dpi)
@@ -795,7 +903,8 @@ class CADComparisonRenderer:
             if copy_h > 0 and copy_w > 0:
                 img_array[graph_top:graph_bottom, graph_left:graph_right, :] = img_np[:copy_h, :copy_w, :]
 
-        if comparison_mode == "side-by-side":
+        show_side_by_side_labels = bool(params.get("show_side_by_side_labels", True))
+        if comparison_mode == "side-by-side" and show_side_by_side_labels:
             self._overlay_side_by_side_view_labels(img_array, view_legend, view_cut)
 
         show_view_info_box = bool(params.get("show_view_info_box", False))
@@ -808,6 +917,8 @@ class CADComparisonRenderer:
         return img_array
 
     def init_device(self, device):
+        if device is None:
+            return
         if device.kind == "monarch":
             self.screen_size = [96, 40]
         if device.kind == "dotpad":
