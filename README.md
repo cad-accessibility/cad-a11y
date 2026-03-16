@@ -96,6 +96,42 @@ Then, open accessible-3d-viewer.html in a browser.
 
 You should now be able to interact with the website and your terminal and your monarch should serve as displays.
 
+## Windows One-Click Installer (EXE)
+
+This repository includes a Constructor-based Windows installer configuration that builds a downloadable EXE.
+
+### Build the EXE in GitHub Actions (recommended)
+
+1. Push your branch to GitHub.
+2. Run the workflow in `.github/workflows/build-windows-installer.yml`:
+    - Actions -> Build Windows Installer -> Run workflow
+3. Download the EXE from the workflow artifact named `cad-a11y-windows-installer`.
+
+When you publish a GitHub Release, the same workflow also uploads the EXE as a release asset.
+
+### Build the EXE locally on Windows
+
+1. Install Miniforge or Miniconda.
+2. Install Constructor in base:
+    ```
+    conda install -n base -c conda-forge constructor
+    ```
+3. From repo root, run:
+    ```
+    constructor installer --output-dir dist installer
+    ```
+4. Your installer EXE will be written to `dist/`.
+
+### Installer behavior
+
+- Uses `installer/construct.yaml` to define packaged runtime and files.
+- Installs launcher script `installer/launch_cad_a11y.bat`.
+- Runs `installer/post_install.bat` to:
+    - create Desktop and Start Menu shortcuts,
+    - install pip-only dependency `godice`,
+    - attempt user-scope `winget` installs of OpenSCAD and FreeCAD (if `winget` is available).
+- Writes a post-install log at `%PREFIX%\\cad_a11y_post_install.log` with step-by-step status for dependency and shortcut setup.
+
 ## Future Development
 
 - Expanding to support additional CAD file formats

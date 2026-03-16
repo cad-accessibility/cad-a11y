@@ -1,0 +1,47 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  build-installer:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Miniconda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-variant: Miniforge3
+          use-mamba: true
+          channels: conda-forge
+          channel-priority: strict
+          auto-update-conda: true
+          activate-environment: base
+
+      - name: Install constructor
+        shell: bash -l {0}
+        run: |
+          mamba install -n base -y constructor
+
+      - name: Build Windows EXE installer
+        shell: bash -l {0}
+        run: |
+          constructor installer --output-dir dist installer
+          ls -la dist
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cad-a11y-windows-installer
+          path: dist/*.exe
+
+      - name: Upload installer to release assets
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.exe
