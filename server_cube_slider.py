@@ -71,6 +71,8 @@ DEFAULT_RENDER_PARAMS = {
     'renderMode': 'Outline'
 }
 
+DEFAULT_OUTPUT_DEVICE = "monarch"
+
 
 def _coerce_positive_int(value, default):
     try:
@@ -92,6 +94,18 @@ def _resolve_model_index(model_value):
     if idx < 0 or idx >= len(model_list):
         return 0
     return idx
+
+
+def _resolve_output_device(device_value):
+    """Map UI output device selection to supported transport values."""
+    if device_value is None:
+        return DEFAULT_OUTPUT_DEVICE
+    text = str(device_value).strip().lower()
+    if text == "dot":
+        return "dotpad"
+    if text in {"monarch", "dotpad", "auto"}:
+        return text
+    return DEFAULT_OUTPUT_DEVICE
 
 
 def get_or_create_renderer(model_index, pool):
@@ -179,7 +193,9 @@ def render_view():
         print(params["current_model"])
         # Handle case where current_model is 'none' or invalid
         current_model_name = _resolve_model_index(params.get("current_model"))
+        selected_output_device = _resolve_output_device(params.get("output_device"))
         print(current_model_name)
+        print(f"Output device: {selected_output_device}")
         
         # Serialize access to shared renderer state.
         # /render/export-source temporarily overrides screen_size, so overlapping
@@ -205,7 +221,7 @@ def render_view():
                         print(0, end='')
                 print()
             img_data[img_data > 0] = 255
-            bytes_written = send_to_braille_display(img_data)
+            bytes_written = send_to_braille_display(img_data, preferred_device=selected_output_device)
             print(f"Braille write: {bytes_written} bytes")
             print("img_data summary:\n" + _format_img_data_repr(img_data))
         except BrailleDisplayError as e:
@@ -255,7 +271,8 @@ def render_view():
             'image_shape': img_array.shape,
             'bbox': r.bbox,
             'image_base64': tactile_base64,
-            'model_list': model_name_list
+            'model_list': model_name_list,
+            'output_device': selected_output_device,
         }), 200
         
     except Exception as e:
@@ -458,7 +475,8 @@ def receive_command():
                             else:
                                 print(0, end='')
                         print()
-                    bytes_written = send_to_braille_display(img_data)
+                    output_device = _resolve_output_device(data.get("output_device"))
+                    bytes_written = send_to_braille_display(img_data, preferred_device=output_device)
                     print(f"Braille write: {bytes_written} bytes")
                     print("img_data summary:\n" + _format_img_data_repr(img_data))
                 except BrailleDisplayError as e:
@@ -744,7 +762,11 @@ if __name__ == '__main__':
     print("  - POST /models            - Change before/after model files")
     print("=" * 70)
 
-    device = _connect(scan_timeout=6.0, prefer_dotpad=True)
+    try:
+        device = _connect(scan_timeout=6.0, prefer_dotpad=False, preferred_device="auto")
+    except BrailleDisplayError as e:
+        device = None
+        print(f"Braille display auto-connect skipped: {e}")
     # Render once on startup and send to braille display
     initialize_default_braille_render()
     import logging

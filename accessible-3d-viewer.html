@@ -543,6 +543,7 @@
                     </div>
                     <div class="help-text" id="slice-graph-lock-status">Graph lock is ON (default).</div>
                 </div>
+
             </section>
 
             <!-- Control Buttons Section -->
@@ -660,6 +661,30 @@
                         <h2 id="high-fidelity-preview-heading">High-Fidelity Preview</h2>
                         <img id="high-fidelity-preview-img" src="" alt="High-fidelity tactile preview">
                         <div id="high-fidelity-preview-meta" class="help-text">Waiting for high-fidelity render&hellip;</div>
+                    </section>
+
+                    <section class="section" aria-labelledby="output-device-heading">
+                        <h2 id="output-device-heading">Display Selection</h2>
+                        <div id="output-device-help" class="help-text">
+                            Select your tactile hardware output target.
+                        </div>
+                        <div aria-describedby="output-device-help">
+                            <fieldset role="radiogroup" aria-labelledby="output-device-heading">
+                                <legend class="sr-only">Output Device</legend>
+                                <label>
+                                    <input type="radio" name="output-device" id="output-device-monarch" value="monarch" checked>
+                                    Monarch
+                                </label>
+                                <label>
+                                    <input type="radio" name="output-device" id="output-device-dotpad" value="dotpad">
+                                    Dot
+                                </label>
+                                <label>
+                                    <input type="radio" name="output-device" id="output-device-auto" value="auto">
+                                    Auto
+                                </label>
+                            </fieldset>
+                        </div>
                     </section>
 
             <!-- Keyboard Shortcuts Section -->
@@ -791,6 +816,7 @@
                     compose_scrollbar: composeScrollbar,
                     compose_slicegraph: composeSliceGraph,
                     show_view_info_box: showViewInfoBox,
+                    output_device: currentOutputDevice,
                     slicegraph_locked: sliceGraphLocked,
                     slicegraph_view: requestedGraphView,
                     slicegraph_depth: requestedGraphDepth,
@@ -838,6 +864,7 @@
         let currentRepresentationMode = 'single';
         let currentMoveCamera = "none";
         let currentPrintView = false;
+        let currentOutputDevice = 'monarch';
         const renderModes = ['Shaded', 'Outline', 'Cut'];
         const representationModes = ['single', 'side-by-side', 'slice-graph'];
         let currentModel = "none";
@@ -889,6 +916,7 @@
         const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
         const viewModeRadios = () => document.querySelectorAll('input[name="view-mode"]');
         const viewRadios = () => document.querySelectorAll('input[name="view-select"]');
+        const outputDeviceRadios = () => document.querySelectorAll('input[name="output-device"]');
         // ...existing code...
 
         // Consistent depth announcement formatter
@@ -1160,6 +1188,7 @@
                 compose_scrollbar: composeScrollbar,
                 compose_slicegraph: composeSliceGraph,
                 show_view_info_box: showViewInfoBox,
+                output_device: currentOutputDevice,
                 slicegraph_locked: sliceGraphLocked,
                 slicegraph_view: requestedGraphView,
                 slicegraph_depth: requestedGraphDepth,
@@ -1325,6 +1354,19 @@
             renderModeRadios().forEach(r => { r.checked = (r.value === currentRenderMode); });
             viewModeRadios().forEach(r => { r.checked = (r.value === currentRepresentationMode); });
             viewRadios().forEach(r => { r.checked = (r.value === currentView); });
+            outputDeviceRadios().forEach(r => { r.checked = (r.value === currentOutputDevice); });
+        }
+
+        function switchOutputDevice(targetDevice) {
+            if (currentOutputDevice === targetDevice) {
+                announceStatus(`already using ${targetDevice}`);
+                return;
+            }
+
+            currentOutputDevice = targetDevice;
+            syncRadios();
+            announceStatus(`output device ${targetDevice}`);
+            sendStateToServer();
         }
         
         // Helper to update composeScrollbar and composeSliceGraph based on view mode
@@ -1660,6 +1702,15 @@
             if (e.target && e.target.matches('input[name="view-select"]')) {
                 if (e.target.checked) {
                     updateView(e.target.value);
+                }
+            }
+        });
+
+        // Output device radios (Monarch, DotPad, Auto)
+        document.addEventListener('change', function(e) {
+            if (e.target && e.target.matches('input[name="output-device"]')) {
+                if (e.target.checked) {
+                    switchOutputDevice(e.target.value);
                 }
             }
         });
