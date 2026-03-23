@@ -244,6 +244,51 @@
             color: #2c3e50;
             margin-right: 8px;
         }
+
+        .announcements-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .announcements-header h2 {
+            margin-bottom: 0;
+        }
+
+        #clear-announcements-btn {
+            min-width: auto;
+            padding: 8px 12px;
+            margin: 0;
+            font-size: 0.9em;
+        }
+
+        #announcement-history {
+            list-style: none;
+            margin: 12px 0 0;
+            padding: 0;
+            max-height: 260px;
+            overflow-y: auto;
+            border: 1px solid #d9e2ec;
+            border-radius: 6px;
+            background: #fff;
+        }
+
+        #announcement-history li {
+            padding: 8px 12px;
+            border-bottom: 1px solid #eef2f7;
+            font-size: 0.95em;
+        }
+
+        #announcement-history li:last-child {
+            border-bottom: none;
+        }
+
+        #announcement-history .announcement-time {
+            color: #6c757d;
+            margin-right: 8px;
+            font-variant-numeric: tabular-nums;
+        }
         
         #current-view, #current-axis {
             color: #2980b9;
@@ -382,11 +427,6 @@
         </header>
 
         <main>
-            <!-- Live region for announcements -->
-            <div id="announcements" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
-            <!-- Secondary live region for status information -->
-            <div id="status-announcements" aria-live="polite" aria-atomic="false" class="sr-only"></div>
-
             <div class="layout">
                 <!-- LEFT COLUMN: controls -->
                 <div class="left-col" id="left-col">
@@ -712,6 +752,15 @@
                 </div>
             </section>
 
+            <section class="section" aria-labelledby="announcements-heading">
+                <div class="announcements-header">
+                    <h2 id="announcements-heading">Announcements</h2>
+                    <button type="button" id="clear-announcements-btn">Clear history</button>
+                </div>
+                <div class="help-text">All announcements are shown here only and are not sent to live screen reader regions.</div>
+                <ul id="announcement-history" aria-label="Announcement history"></ul>
+            </section>
+
                 </div><!-- end right-col -->
             </div><!-- end layout -->
         </main>
@@ -875,8 +924,8 @@
         const sliceSlider = document.getElementById('slice-depth-slider');
         const slicePercentage = document.getElementById('slice-percentage');
         const currentViewSpan = document.getElementById('current-view');
-        const announcements = document.getElementById('announcements');
-        const statusAnnouncements = document.getElementById('status-announcements');
+        const announcementHistory = document.getElementById('announcement-history');
+        const clearAnnouncementsBtn = document.getElementById('clear-announcements-btn');
         const deeperBtn = document.getElementById('deeper-btn');
         const shallowerBtn = document.getElementById('shallower-btn');
         const zoomSlider = document.getElementById('zoom-slider');
@@ -1404,7 +1453,9 @@
             updateButtonLabels();
             updateSideBySideAxisLabels();
             syncRadios();
-            announce(`${currentView.toLowerCase()} view`);
+            if (oldView !== currentView) {
+                announce(`${currentView.toLowerCase()} view`);
+            }
             
             // Send state to server if changed
             if (oldView !== currentView) {
@@ -1567,27 +1618,40 @@
             switchToRepresentationMode(representationModes[nextIndex]);
         }
 
-        // Enhanced announcement system
+        // Visible-only announcement history (no live region output).
         function announce(message, isUrgent = true) {
-            const targetElement = isUrgent ? announcements : statusAnnouncements;
-            
-            // Clear previous announcement first
-            targetElement.textContent = '';
-            
-            // Add the new announcement after a brief delay to ensure screen readers notice the change
-            setTimeout(() => {
-                targetElement.textContent = message;
-            }, 10);
-            
-            // Clear after appropriate delay based on urgency
-            setTimeout(() => {
-                targetElement.textContent = '';
-            }, isUrgent ? 3000 : 1500);
+            if (!announcementHistory) {
+                return;
+            }
+
+            const item = document.createElement('li');
+            if (isUrgent) {
+                item.style.fontWeight = '600';
+            }
+
+            const time = new Date();
+            const timestamp = document.createElement('span');
+            timestamp.className = 'announcement-time';
+            timestamp.textContent = `[${time.toLocaleTimeString()}]`;
+
+            const text = document.createElement('span');
+            text.textContent = message;
+
+            item.appendChild(timestamp);
+            item.appendChild(text);
+            announcementHistory.appendChild(item);
+            announcementHistory.scrollTop = announcementHistory.scrollHeight;
         }
         
         // Announce status information that should be less intrusive
         function announceStatus(message) {
             announce(message, false);
+        }
+
+        if (clearAnnouncementsBtn && announcementHistory) {
+            clearAnnouncementsBtn.addEventListener('click', function() {
+                announcementHistory.innerHTML = '';
+            });
         }
         
         // Event listeners
