@@ -1,6 +1,5 @@
 import os
 from time import time
-import polyscope as ps
 from copy import copy
 from trimesh import Trimesh
 from trimesh.intersections import slice_mesh_plane
@@ -163,10 +162,6 @@ def cut_shape_with_plane(shape, plane_origin, plane_normal):
         lower_left = bbox[0]
         lower_left[2] = plane_origin[2]
         cut_box = Box(bounds=[lower_left, bbox[1]])
-    #ps.init()
-    ##ps.register_surface_mesh("box", cut_box.vertices, cut_box.faces)
-    #ps.register_surface_mesh("shape", shape.vertices, shape.faces)
-    #ps.show()
     start_time = time()
     # TRIMESH version
     #diff = difference([shape, cut_box], use_exact=True)
@@ -178,7 +173,6 @@ def cut_shape_with_plane(shape, plane_origin, plane_normal):
                           
                          mrmeshpy.BooleanOperation.DifferenceAB).mesh)
     #print("diff_time", time()-start_time)
-    #ps.register_surface_mesh("diff", diff.vertices, diff.faces)
     return diff, True
     return slice_mesh_plane(shape, plane_normal, plane_origin), True
     # Create the cutting plane face
@@ -353,12 +347,7 @@ def faces_on_plane(shape, plane_origin, plane_normal, tol=1e-3):
             if np.isclose(np.abs(n[2]), 1.0) and np.abs(origin[2] - plane_origin[2]) < tol:
                 plane_face_ids.append(tri)
                 selected_points.append(shape.vertices[tri])
-    #ps.init()
-    #ps.register_point_cloud("points", np.array(selected_points).reshape(-1, 3))
     submesh = Trimesh(vertices=shape.vertices, faces=plane_face_ids)
-    
-    #ps.register_surface_mesh("submesh", submesh.vertices, submesh.faces)
-    #ps.show()
     print("faces_on_plane time", time()-start_time)
     return submesh
 
@@ -444,10 +433,6 @@ def depth_peeling_single_depth_with_bbox(shape, normal_dir, depth: float, bbox):
     #print(origin)
     cut_shape, success = cut_shape_with_plane(shape, origin, normal_dir)
     #print(cut_shape)
-    #ps.init()
-    #ps.register_surface_mesh("shape", shape.vertices, shape.faces)
-    #ps.register_surface_mesh("cut_shape", cut_shape.vertices, cut_shape.faces)
-    #ps.show()
     #trimesh.intersections.slice_faces_plane
 
     #plane = gp_Pln(origin, normal_dir)
