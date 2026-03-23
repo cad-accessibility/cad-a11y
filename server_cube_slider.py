@@ -71,7 +71,7 @@ DEFAULT_RENDER_PARAMS = {
     'renderMode': 'Outline'
 }
 
-DEFAULT_OUTPUT_DEVICE = "monarch"
+DEFAULT_OUTPUT_DEVICE = "dot"
 
 
 def _coerce_positive_int(value, default):
