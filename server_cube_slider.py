@@ -763,7 +763,7 @@ if __name__ == '__main__':
     print("=" * 70)
 
     try:
-        device = _connect(scan_timeout=6.0, prefer_dotpad=False, preferred_device="auto")
+        device = _connect(scan_timeout=6.0, prefer_dotpad=True, preferred_device="auto")
     except BrailleDisplayError as e:
         device = None
         print(f"Braille display auto-connect skipped: {e}")
