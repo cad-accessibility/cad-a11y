@@ -442,8 +442,8 @@
                 <h2 id="view-info-heading">View and Axis Information</h2>
                 <div id="view-info" aria-describedby="view-info-heading">
                     <div>
-                        <strong>Current View:</strong> <span id="current-view">Front</span>
-                    </div>
+                        <strong>Current View:</strong> <span id="current-view">Front</span>   <strong>Slice Depth:</strong> <span id="current-slice-depth-info">50%</span>                 <strong>Rendering Mode:</strong> <span id="current-render-mode-info">Shaded</span>                        <strong>Zoom Level:</strong> <span id="current-zoom-info">0.0</span>
+                        <strong>Bounding Box Dimensions:</strong> <span id="current-bbox-dimensions-info">--</span>
                 </div>
             </section>
 
@@ -904,6 +904,7 @@
         let highFidelityPreviewInFlight = false;
         let lastHighFidelityKey = '';
         let lastAnnouncementMessage = '';
+        let currentBBoxDimensionsText = '--';
         
         // Remove "Back" from available views
         //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
@@ -925,6 +926,10 @@
         const sliceSlider = document.getElementById('slice-depth-slider');
         const slicePercentage = document.getElementById('slice-percentage');
         const currentViewSpan = document.getElementById('current-view');
+        const currentSliceDepthInfo = document.getElementById('current-slice-depth-info');
+        const currentRenderModeInfo = document.getElementById('current-render-mode-info');
+        const currentZoomInfo = document.getElementById('current-zoom-info');
+        const currentBBoxDimensionsInfo = document.getElementById('current-bbox-dimensions-info');
         const announcementHistory = document.getElementById('announcement-history');
         const clearAnnouncementsBtn = document.getElementById('clear-announcements-btn');
         const deeperBtn = document.getElementById('deeper-btn');
@@ -951,6 +956,21 @@
             if (pct === 0) return 'surface';
             if (pct === 100) return 'full depth';
             return `depth ${pct}%`;
+        }
+
+        function refreshViewInfoSummary() {
+            if (currentSliceDepthInfo) {
+                currentSliceDepthInfo.textContent = `${currentSliceDepth}%`;
+            }
+            if (currentRenderModeInfo) {
+                currentRenderModeInfo.textContent = currentRenderMode;
+            }
+            if (currentZoomInfo) {
+                currentZoomInfo.textContent = Number(currentZoom).toFixed(1);
+            }
+            if (currentBBoxDimensionsInfo) {
+                currentBBoxDimensionsInfo.textContent = currentBBoxDimensionsText;
+            }
         }
 
         // Update button labels with current state information
@@ -1348,6 +1368,7 @@
             currentSliceDepth = Math.max(0, Math.min(100, newDepth));
             sliceSlider.value = currentSliceDepth;
             slicePercentage.textContent = currentSliceDepth;
+            refreshViewInfoSummary();
             
             // Update ARIA attributes
             sliceSlider.setAttribute('aria-valuenow', currentSliceDepth);
@@ -1440,6 +1461,7 @@
             const oldView = currentView;
             currentView = newView;
             currentViewSpan.textContent = currentView;
+            refreshViewInfoSummary();
             updateButtonLabels();
             updateSideBySideAxisLabels();
             syncRadios();
@@ -1493,6 +1515,9 @@
             document.getElementById('bbox-z-min').textContent = format(zmin);
             document.getElementById('bbox-z-max').textContent = format(zmax);
             document.getElementById('bbox-z-depth').textContent = format(zmax - zmin);
+
+            currentBBoxDimensionsText = `${format(xmax - xmin)} × ${format(ymax - ymin)} × ${format(zmax - zmin)}`;
+            refreshViewInfoSummary();
         }
 
         function updateModelList(model_list) {
@@ -1544,6 +1569,7 @@
             const zoomText = currentZoom.toFixed(1);
             zoomSlider.value = zoomText;
             zoomLevelValue.textContent = zoomText;
+            refreshViewInfoSummary();
             zoomSlider.setAttribute('aria-valuenow', zoomText);
             zoomSlider.setAttribute('aria-valuetext', `zoom level ${zoomText}`);
 
@@ -1568,6 +1594,7 @@
             }
             const previousMode = currentRenderMode;
             currentRenderMode = targetMode;
+            refreshViewInfoSummary();
             updateButtonLabels();
             syncRadios();
             announce(`${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
@@ -2082,6 +2109,7 @@
             syncRadios();
             updateButtonLabels();
             updateSliceGraphLockUI();
+            refreshViewInfoSummary();
             showViewInfoBoxCheckbox.checked = showViewInfoBox;
             
             // Send initial state to server
