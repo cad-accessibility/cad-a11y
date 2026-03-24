@@ -1830,18 +1830,42 @@
         
         // Global keyboard navigation support for accessibility
         document.addEventListener('keydown', function(e) {
-            // Skip if user is typing in an input field or textarea
-            //if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
-            //    return;
-            //}
-            //console.log(e.target.tagName);
-            //if (e.target.tagName === 'INPUT') {
-            //    return;
-            //}
+            const target = e.target;
+            const tagName = target && target.tagName ? target.tagName.toLowerCase() : '';
+            const isEditableTarget = Boolean(
+                target && (
+                    target.isContentEditable ||
+                    tagName === 'input' ||
+                    tagName === 'textarea' ||
+                    tagName === 'select' ||
+                    tagName === 'button'
+                )
+            );
+
+            // Do not override native keyboard behavior for form controls.
+            if (isEditableTarget) {
+                return;
+            }
+
+            // Leave browser/app shortcuts untouched (Cmd/Ctrl/Alt combos).
+            if (e.metaKey || e.ctrlKey || e.altKey) {
+                return;
+            }
+
             if (e.repeat) {
                 return;
             }
             const key = e.key.toLowerCase();
+            const supportedShortcuts = new Set([
+                '1', '2', '4', '5', '7', '8', '9', '0', '-', '=',
+                'q', 'e', 'f', 'r', 't', 'l', 'g', 'o', 'c',
+                'w', 'a', 's', 'd', '[', ']', 'i', 'h', 'p', 'escape'
+            ]);
+
+            if (!supportedShortcuts.has(key)) {
+                return;
+            }
+
             switch(key) {
                 case 'e':
                     // Go deeper (increase depth by 1%)
