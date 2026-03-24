@@ -61,7 +61,8 @@ class CADComparisonRenderer:
         """Load STL files and prepare shapes."""
         shapes = []
         for stl_file in [self.before_model_path, self.after_model_path]:
-            with open(stl_file, "r") as fp:
+            print(stl_file)
+            with open(stl_file, "rb") as fp:
                 mesh_dict = load_stl(fp)
                 mesh = Trimesh(mesh_dict["vertices"], mesh_dict["faces"], mesh_dict["face_normals"])
                 print(mesh.is_watertight)
