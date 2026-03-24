@@ -741,7 +741,7 @@
 
 
                         <li><strong>P</strong> - Print current render to renders/print_0.pdf</li>
-                        <li><strong>A</strong> - Get current status (view, depth, mode)</li>
+                        <li><strong>I</strong> - Get current status (view, depth, mode)</li>
                         <li><strong>H</strong> - Shortcut reminder</li>
                         <li><strong>Escape</strong> - Clear focus from current element</li>
                     </ul>
@@ -903,6 +903,7 @@
         let highFidelityPreviewTimer = null;
         let highFidelityPreviewInFlight = false;
         let lastHighFidelityKey = '';
+        let lastAnnouncementMessage = '';
         
         // Remove "Back" from available views
         //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
@@ -987,9 +988,6 @@
             sliceGraphAnchorView = currentView;
             sliceGraphAnchorDepth = currentSliceDepth;
             updateSliceGraphLockUI();
-            if (shouldAnnounce) {
-                announceStatus(`slice graph refreshed at ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
-            }
         }
 
         function toggleSliceGraphLock() {
@@ -997,9 +995,6 @@
             if (sliceGraphLocked) {
                 // When turning lock back on, freeze at the current exploration point.
                 captureSliceGraphAnchor(false);
-                announce('slice graph lock on');
-            } else {
-                announce('slice graph lock off');
             }
             updateSliceGraphLockUI();
             sendStateToServer();
@@ -1319,7 +1314,6 @@
         async function exportCurrentSliceAsSvg() {
             try {
                 exportSliceSvgBtn.disabled = true;
-                announceStatus('rendering high-fidelity export');
 
                 const exportImage = await fetchHighFidelityExportImage();
                 const exportWidth = exportImage.naturalWidth || exportImage.width;
@@ -1341,11 +1335,8 @@
                 link.click();
                 document.body.removeChild(link);
                 URL.revokeObjectURL(downloadUrl);
-
-                announceStatus('slice exported as svg');
             } catch (error) {
                 console.warn('Failed to export slice as SVG:', error);
-                announceStatus('High-fidelity export failed');
             } finally {
                 exportSliceSvgBtn.disabled = false;
             }
@@ -1364,15 +1355,13 @@
             
             // Update button labels with new state
             updateButtonLabels();
-            
-            if (shouldAnnounce) {
-                announce(depthAnnouncement(currentSliceDepth));
-            }
-            
+
             // Send state to server if changed
             if (oldDepth !== currentSliceDepth) {
                 sendStateToServer();
             }
+
+            return oldDepth !== currentSliceDepth;
         }
         
         // Helper to sync radios with current state
@@ -1393,6 +1382,7 @@
             syncRadios();
             announceStatus(`output device ${targetDevice}`);
             sendStateToServer();
+            return true;
         }
         
         // Helper to update composeScrollbar and composeSliceGraph based on view mode
@@ -1461,6 +1451,8 @@
             if (oldView !== currentView) {
                 sendStateToServer();
             }
+
+            return oldView !== currentView;
         }
 
         // Update the tactile display preview image
@@ -1564,6 +1556,8 @@
             if (oldZoom !== currentZoom) {
                 sendStateToServer();
             }
+
+            return oldZoom !== currentZoom;
         }
         
         // Switch to a specific render mode
@@ -1580,6 +1574,7 @@
             
             // Send state to server
             sendStateToServer();
+            return true;
         }
         
         // Cycle to next render mode (used if needed)
@@ -1610,6 +1605,7 @@
             
             // Send state to server
             sendStateToServer();
+            return true;
         }
 
         function cycleRepresentationMode() {
@@ -1621,6 +1617,11 @@
         // Visible-only announcement history (no live region output).
         function announce(message, isUrgent = true) {
             if (!announcementHistory) {
+                return;
+            }
+
+            const normalizedMessage = String(message);
+            if (normalizedMessage === lastAnnouncementMessage) {
                 return;
             }
 
@@ -1641,11 +1642,21 @@
             item.appendChild(text);
             announcementHistory.appendChild(item);
             announcementHistory.scrollTop = announcementHistory.scrollHeight;
+
+            lastAnnouncementMessage = normalizedMessage;
         }
         
         // Announce status information that should be less intrusive
         function announceStatus(message) {
             announce(message, false);
+        }
+
+        function announceDepthShortcut(shortcutLabel, previousDepth, depthValue) {
+            if (previousDepth === depthValue) {
+                announceStatus(`shortcut ${shortcutLabel}: depth unchanged at ${depthValue}%`);
+                return;
+            }
+            announceStatus(`shortcut ${shortcutLabel}: ${depthAnnouncement(depthValue)}`);
         }
 
         if (clearAnnouncementsBtn && announcementHistory) {
@@ -1670,17 +1681,10 @@
             
             // Update button labels immediately
             updateButtonLabels();
-            
-            // Debounce the announcement during dragging
-            clearTimeout(sliderUpdateTimeout);
-            sliderUpdateTimeout = setTimeout(() => {
-                announceStatus(depthAnnouncement(currentSliceDepth));
-            }, 150);
         });
         
         sliceSlider.addEventListener('change', function() {
             clearTimeout(sliderUpdateTimeout);
-            announce(depthAnnouncement(currentSliceDepth));
             // Send state to server
             sendStateToServer();
         });
@@ -1767,7 +1771,6 @@
 
         showViewInfoBoxCheckbox.addEventListener('change', function() {
             showViewInfoBox = this.checked;
-            announceStatus(`view info box ${showViewInfoBox ? 'on' : 'off'}`);
             sendStateToServer();
         });
         
@@ -1808,101 +1811,152 @@
             //if (e.target.tagName === 'INPUT') {
             //    return;
             //}
+            if (e.repeat) {
+                return;
+            }
             const key = e.key.toLowerCase();
             switch(key) {
                 case 'e':
                     // Go deeper (increase depth by 1%)
                     e.preventDefault();
-                    updateSliceDepth(Math.min(100, currentSliceDepth + 1), true);
+                    {
+                        const previousDepth = currentSliceDepth;
+                        const nextDepth = Math.min(100, currentSliceDepth + 1);
+                        updateSliceDepth(nextDepth, false);
+                        announceDepthShortcut('E', previousDepth, nextDepth);
+                    }
                     break;
                 case 'q':
                     // Go shallower (decrease depth by 1%)
                     e.preventDefault();
-                    updateSliceDepth(Math.max(0, currentSliceDepth - 1), true);
+                    {
+                        const previousDepth = currentSliceDepth;
+                        const nextDepth = Math.max(0, currentSliceDepth - 1);
+                        updateSliceDepth(nextDepth, false);
+                        announceDepthShortcut('Q', previousDepth, nextDepth);
+                    }
                     break;
                 case '2':
                     // Go deeper (increase depth by 10%)
                     e.preventDefault();
+                    const previousDeeperDepth = currentSliceDepth;
                     const newDeeperDepth = Math.min(100, currentSliceDepth + 10);
-                    updateSliceDepth(newDeeperDepth, true);
+                    updateSliceDepth(newDeeperDepth, false);
+                    announceDepthShortcut('2', previousDeeperDepth, newDeeperDepth);
                     break;
                     
                 case '1':
                     // Go shallower (decrease depth by 10%)
                     e.preventDefault();
+                    const previousShallowerDepth = currentSliceDepth;
                     const newShallowerDepth = Math.max(0, currentSliceDepth - 10);
-                    updateSliceDepth(newShallowerDepth, true);
+                    updateSliceDepth(newShallowerDepth, false);
+                    announceDepthShortcut('1', previousShallowerDepth, newShallowerDepth);
                     break;
                     
                 // View shortcuts (first letter where available)
                 case '7':
                     e.preventDefault();
-                    updateView('x-');
+                    if (updateView('x-')) {
+                        announceStatus('shortcut 7: view x-');
+                    }
                     break;
                 case '8':
                     e.preventDefault();
-                    updateView('x+');
+                    if (updateView('x+')) {
+                        announceStatus('shortcut 8: view x+');
+                    }
                     break;
                 case '9':
                     e.preventDefault();
-                    updateView('z+');
+                    if (updateView('z+')) {
+                        announceStatus('shortcut 9: view z+');
+                    }
                     break;
                 case '0':
                     e.preventDefault();
-                    updateView('z-');
+                    if (updateView('z-')) {
+                        announceStatus('shortcut 0: view z-');
+                    }
                     break;
                 case '-':
                     e.preventDefault();
-                    updateView('y-');
+                    if (updateView('y-')) {
+                        announceStatus('shortcut -: view y-');
+                    }
                     break;
                 case '=':
                     e.preventDefault();
-                    updateView('y+');
+                    if (updateView('y+')) {
+                        announceStatus('shortcut =: view y+');
+                    }
                     break;
                     
                 case 'f':
                     // Switch to filled/shaded view
                     e.preventDefault();
-                    switchToRenderMode('Shaded');
+                    if (switchToRenderMode('Shaded')) {
+                        announceStatus('shortcut F: mode shaded');
+                    } else {
+                        announceStatus('shortcut F: mode unchanged (shaded)');
+                    }
                     break;
 
                 case 'r':
                     // Switch to filled/shaded view
                     e.preventDefault();
+                    {
+                        const previousMode = currentRenderMode;
                     cycleRenderMode();
+                        announceStatus(`shortcut R: mode ${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
+                    }
                     break;
 
                 case 't':
                     // Switch to filled/shaded view
                     e.preventDefault();
+                    {
+                        const previousViewMode = currentRepresentationMode;
                     cycleRepresentationMode();
+                        announceStatus(`shortcut T: view mode ${previousViewMode} to ${currentRepresentationMode}`);
+                    }
                     break;
 
                 case 'l':
                     e.preventDefault();
                     toggleSliceGraphLock();
+                    announceStatus(`shortcut L: slice graph lock ${sliceGraphLocked ? 'on' : 'off'}`);
                     break;
 
                 case 'g':
                     e.preventDefault();
                     if (currentRepresentationMode !== 'slice-graph') {
-                        announceStatus('refresh only available in slice-graph mode');
+                        announceStatus('shortcut G: no change, not in slice-graph mode');
                         break;
                     }
                     captureSliceGraphAnchor(true);
                     sendStateToServer();
+                    announceStatus(`shortcut G: slice graph refreshed at ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
                     break;
                     
                 case 'o':
                     // Switch to outline view
                     e.preventDefault();
-                    switchToRenderMode('Outline');
+                    if (switchToRenderMode('Outline')) {
+                        announceStatus('shortcut O: mode outline');
+                    } else {
+                        announceStatus('shortcut O: mode unchanged (outline)');
+                    }
                     break;
                     
                 case 'c':
                     // Switch to cut view
                     e.preventDefault();
-                    switchToRenderMode('Cut');
+                    if (switchToRenderMode('Cut')) {
+                        announceStatus('shortcut C: mode cut');
+                    } else {
+                        announceStatus('shortcut C: mode unchanged (cut)');
+                    }
                     break;
                     
                 //case '0':
@@ -1915,47 +1969,60 @@
                     currentMoveCamera = "up";
                     sendStateToServer();
                     currentMoveCamera = "none";
-                    break
+                    announceStatus('shortcut W: moved scene up');
+                    break;
                 case 'd':
                     currentMoveCamera = "right";
                     sendStateToServer();
                     currentMoveCamera = "none";
-                    break
+                    announceStatus('shortcut D   moved scene right');
+                    break;
                 case 's':
                     currentMoveCamera = "down";
                     sendStateToServer();
                     currentMoveCamera = "none";
-                    break
+                    announceStatus('shortcut S: moved scene down');
+                    break;
                 case '[':
                     composeScrollbar = !composeScrollbar;
                     sendStateToServer();
-                    break
+                    announceStatus(`shortcut [: compose scrollbar ${composeScrollbar ? 'on' : 'off'}`);
+                    break;
                 case ']':
                     composeSliceGraph = !composeSliceGraph;
                     sendStateToServer();
-                    break
+                    announceStatus(`shortcut ]: compose slice graph ${composeSliceGraph ? 'on' : 'off'}`);
+                    break;
                 case 'a':
                     currentMoveCamera = "left";
                     sendStateToServer();
                     currentMoveCamera = "none";
-                    break
+                    announceStatus('shortcut A: moved scene left');
+                    break;
 
                 case '4':
                     e.preventDefault();
-                    updateZoom(currentZoom - ZOOM_STEP, true);
+                    {
+                        const previousZoom = currentZoom;
+                        const zoomChanged = updateZoom(currentZoom - ZOOM_STEP, false);
+                        if (zoomChanged) {
+                            announceStatus(`shortcut 4: zoom ${currentZoom.toFixed(1)}`);
+                        } else {
+                            announceStatus(`shortcut 4: zoom unchanged at ${previousZoom.toFixed(1)}`);
+                        }
+                    }
                     break;
                 case '5':
                     e.preventDefault();
-                    updateZoom(currentZoom + ZOOM_STEP, true);
-                    break;
-                case '6':
-                case '7':
-                case '8':
-                case '9':
-                    // Jump to percentage depth (1=10%, 2=20%, etc.)
-                    e.preventDefault();
-                    const percentage = parseInt(key) * 10;
-                    updateSliceDepth(percentage, true);
+                    {
+                        const previousZoom = currentZoom;
+                        const zoomChanged = updateZoom(currentZoom + ZOOM_STEP, false);
+                        if (zoomChanged) {
+                            announceStatus(`shortcut 5: zoom ${currentZoom.toFixed(1)}`);
+                        } else {
+                            announceStatus(`shortcut 5: zoom unchanged at ${previousZoom.toFixed(1)}`);
+                        }
+                    }
                     break;
                     
                 case 'escape':
@@ -1963,33 +2030,49 @@
                     document.activeElement.blur();
                     announceStatus('Focus cleared');
                     break;
-                    
-                case 'a':
+
+                case 'i':
                     // Concise current status
                     e.preventDefault();
                     {
                         const depthState = depthAnnouncement(currentSliceDepth).replace('depth ', '');
                         const statusMsg = `state: ${currentView}, ${depthState}, ${currentRenderMode.toLowerCase()}`;
-                        announce(statusMsg);
+                        announceStatus(`shortcut I: ${statusMsg}`);
                     }
                     break;
+
                 case 'h':
                     // Shortcut reminder
                     e.preventDefault();
-                    announce('shortcuts: D deeper, S shallower, V view cycle, L left, R right, T top, B bottom, F shaded, O outline, C cut, 0 surface, 1-9 set depth, Esc clear focus, A status');
+                    announceStatus('shortcut H: 1 shallower 10%, 2 deeper 10%, Q shallower 1%, E deeper 1%, 4 zoom out, 5 zoom in, 7 x-, 8 x+, 9 z+, 0 z-, - y-, = y+, F shaded, O outline, C cut, R cycle render, T cycle view mode, L lock graph, G refresh graph, W/A/S/D move, [ scrollbar toggle, ] slice-graph toggle, I status, P print, Esc clear focus');
                     break;
+
                 case 'p':
+                    announceStatus('shortcut P: printing current render');
                     print_view();
+                    break;
+
                 default:
                     return;
             }
         });
+
+        function focusTopOfPage() {
+            const pageTitle = document.getElementById('page-title');
+            if (!pageTitle) {
+                return;
+            }
+            // Delay one frame so layout is ready before moving focus.
+            requestAnimationFrame(() => {
+                pageTitle.focus({ preventScroll: true });
+                pageTitle.scrollIntoView({ block: 'start' });
+            });
+        }
         
         // Initialize the interface
         document.addEventListener('DOMContentLoaded', function() {
-            // Move focus to the top element (page title) on load
-            const pageTitle = document.getElementById('page-title');
-            if (pageTitle) pageTitle.focus();
+            // Move focus to the top element (page title) on load.
+            focusTopOfPage();
             
             // Set initial values
             updateSliceDepth(50, false);
@@ -2005,10 +2088,11 @@
             sendStateToServer();
             scheduleHighFidelityPreviewRefresh(true);
             
-            // Add initial announcement
-            setTimeout(() => {
-                announce('viewer loaded — Front, 50%, shaded');
-            }, 500);
+        });
+
+        // Ensure top focus is restored when returning via browser history cache.
+        window.addEventListener('pageshow', function() {
+            focusTopOfPage();
         });
         
         // Additional accessibility features
