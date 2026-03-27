@@ -68,13 +68,13 @@ _DOTPAD_TEXT_CELLS = 20
 
 @dataclass(frozen=True)
 class _ConnectedDevice:
-    kind: str  # "monarch" | "dotpad"
+    kind: str  # "monarch" | "dotpad" | "terminal"
     handle: object
 
 
 def send_to_braille_display(
     array: np.ndarray,
-    *,
+    device: _ConnectedDevice,
     dot_text_hex_data: str | None = None,
     scan_timeout: float = 6.0,
     preferred_device: str = "auto",
@@ -106,11 +106,11 @@ def send_to_braille_display(
             f"preferred_device must be one of 'auto', 'monarch', or 'dotpad'; got {preferred_device!r}"
         )
 
-    device = _connect(
-        scan_timeout=scan_timeout,
-        prefer_dotpad=dot_text_hex_data is not None,
-        preferred_device=requested_device,
-    )
+    #device = _connect(
+    #    scan_timeout=scan_timeout,
+    #    prefer_dotpad=dot_text_hex_data is not None,
+    #    preferred_device=requested_device,
+    #)
 
     if device.kind == "monarch":
         if dot_text_hex_data is not None:
@@ -127,7 +127,7 @@ def send_to_braille_display(
             dot_text_hex_data=dot_text_hex_data,
         )
 
-    raise BrailleDisplayError(f"Unsupported device kind: {device.kind}")
+    #raise BrailleDisplayError(f"Unsupported device kind: {device.kind}")
 
 
 def _normalize_array(array: np.ndarray) -> np.ndarray:
@@ -196,16 +196,18 @@ def _connect(*, scan_timeout: float, prefer_dotpad: bool, preferred_device: str 
         return dot
 
     # If DotPad-only features were requested and no DotPad was found, fail early.
-    if prefer_dotpad:
-        raise BrailleDisplayError("dot_text_hex_data requested but no DotPad was found.")
+    #if prefer_dotpad:
+    #    raise BrailleDisplayError("dot_text_hex_data requested but no DotPad was found.")
 
     monarch = _try_monarch()
     if monarch is not None:
         return monarch
 
-    raise BrailleDisplayError(
-        "No supported braille display detected. Expected DotPad (BLE) or Humanware HID device."
-    )
+    print("No supported braille display detected. Expected DotPad (BLE) or Humanware HID device. Using the terminal instead.")
+    return _ConnectedDevice(kind="terminal", handle=None)
+    #raise BrailleDisplayError(
+    #    "No supported braille display detected. Expected DotPad (BLE) or Humanware HID device."
+    #)
 
 
 def _find_humanware_hid_device() -> dict | None:
