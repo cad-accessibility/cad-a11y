@@ -8,6 +8,7 @@ It processes STEP files and returns rendered image arrays based on specified par
 import numpy as np
 import os
 from OCC.Core.STEPControl import STEPControl_Reader
+import trimesh as tm
 from trimesh.exchange.stl import load_stl
 from trimesh import Trimesh
 from trimesh.repair import stitch, fill_holes, fix_inversion, fix_winding
@@ -17,7 +18,7 @@ from src.converter.single_view_stl import get_single_view, get_cut_faces
 from src.converter.juxtaposition_view_stl import get_juxtaposition_view
 from src.converter.superposition_view_stl import get_superposition_view
 from src.converter.side_by_side_view import get_side_view
-from shapely.geometry import Polygon, MultiPolygon
+from shapely.geometry import Polygon, MultiPolygon, box
 from shapely.ops import unary_union
 from shapely import union_all
 from shapely.plotting import plot_polygon
@@ -50,6 +51,7 @@ class CADComparisonRenderer:
         self.current_render_mode = None
         self.screen_size = [96,40]
         self.view_diff_mats = {}
+        self.view_cut_polygons = {}
         self.current_render = None
         self.current_ax_limits = []
         self.current_zoom_level = None
@@ -58,19 +60,40 @@ class CADComparisonRenderer:
         self._load_models()
         
     def _load_models(self):
-        """Load STL files and prepare shapes."""
+        """Load mesh files and prepare shapes."""
         shapes = []
-        for stl_file in [self.before_model_path, self.after_model_path]:
-            with open(stl_file, "r") as fp:
-                mesh_dict = load_stl(fp)
-                mesh = Trimesh(mesh_dict["vertices"], mesh_dict["faces"], mesh_dict["face_normals"])
-                print(mesh.is_watertight)
-                print(mesh.is_volume)
-                fill_holes(mesh)
-                fix_inversion(mesh)
-                fix_winding(mesh)
-                #stitch(mesh)
-                shapes.append(mesh)
+        for model_file in [self.before_model_path, self.after_model_path]:
+            ext = os.path.splitext(model_file)[1].lower()
+
+            if ext == ".stl":
+                # STL parsing expects binary bytes for binary STL files.
+                with open(model_file, "rb") as fp:
+                    mesh_dict = load_stl(fp)
+                    mesh = Trimesh(mesh_dict["vertices"], mesh_dict["faces"], mesh_dict["face_normals"])
+            else:
+                # STEP/BREP and other mesh-like formats should go through trimesh's generic loader.
+                try:
+                    loaded = tm.load(model_file, force='mesh')
+                except Exception as exc:
+                    raise ValueError(f"Failed to load model file '{model_file}': {exc}") from exc
+
+                if isinstance(loaded, tm.Scene):
+                    geometries = [geom for geom in loaded.geometry.values() if isinstance(geom, tm.Trimesh)]
+                    if not geometries:
+                        raise ValueError(f"Model file '{model_file}' produced an empty scene")
+                    mesh = tm.util.concatenate(geometries)
+                elif isinstance(loaded, tm.Trimesh):
+                    mesh = loaded
+                else:
+                    raise ValueError(f"Unsupported mesh object type for '{model_file}': {type(loaded)}")
+
+            print(mesh.is_watertight)
+            print(mesh.is_volume)
+            fill_holes(mesh)
+            fix_inversion(mesh)
+            fix_winding(mesh)
+            #stitch(mesh)
+            shapes.append(mesh)
         
         # Normalize both shapes
         shape_before, shape_after = plane_inter_utils.normalize_shapes_diagonal(shapes)
@@ -139,7 +162,7 @@ class CADComparisonRenderer:
         shape = copy(self.shapes[0])
         cut_depth = 0.0
         view_keys = ["top", "front", "left", "bottom", "back", "right"]
-        for view_key in ["front", "top", "left"]:
+        for view_key in view_keys:
             cut_percent = 0
             cut_faces_list = []
             diff_mat = np.zeros([101, 101])
@@ -192,15 +215,37 @@ class CADComparisonRenderer:
             #plt.savefig("diff_mat_cut_"+view_key+".png")
             #plt.close()
 
-            diff_mat /= np.max(diff_mat)
+            max_diff = np.max(diff_mat)
+            if max_diff > 0:
+                diff_mat /= max_diff
             self.view_diff_mats[view_key] = diff_mat
-            if view_key == "top":
-                self.view_diff_mats["bottom"] = np.flip(diff_mat)
-            if view_key == "front":
-                self.view_diff_mats["back"] = np.flip(diff_mat)
-            if view_key == "left":
-                self.view_diff_mats["right"] = np.flip(diff_mat)
+            self.view_cut_polygons[view_key] = cut_faces_list
         #exit()
+
+    def _get_zoom_filtered_slice_profile(self, view_key, anchor_depth_percent, zoom_ax_limits):
+        """Compute a slice-graph profile using only geometry inside current zoom limits."""
+        cut_polygons = self.view_cut_polygons.get(view_key)
+        if cut_polygons is None or len(cut_polygons) == 0:
+            return self.view_diff_mats[view_key][anchor_depth_percent]
+
+        x0 = min(float(zoom_ax_limits[0][0]), float(zoom_ax_limits[0][1]))
+        x1 = max(float(zoom_ax_limits[0][0]), float(zoom_ax_limits[0][1]))
+        y0 = min(float(zoom_ax_limits[1][0]), float(zoom_ax_limits[1][1]))
+        y1 = max(float(zoom_ax_limits[1][0]), float(zoom_ax_limits[1][1]))
+        zoom_window = box(x0, y0, x1, y1)
+
+        anchor_index = max(0, min(100, int(anchor_depth_percent)))
+        anchor_poly = cut_polygons[anchor_index].intersection(zoom_window)
+
+        profile = np.zeros(101, dtype=float)
+        for depth_index, depth_poly in enumerate(cut_polygons):
+            clipped_poly = depth_poly.intersection(zoom_window)
+            profile[depth_index] = symmetric_difference(anchor_poly, clipped_poly).area
+
+        max_profile = np.max(profile)
+        if max_profile > 0:
+            profile /= max_profile
+        return profile
     
     def _map_view_name(self, view_name):
         """Map view name from JSON format to internal format."""
@@ -655,7 +700,15 @@ class CADComparisonRenderer:
             graph_depth_percent = max(0, min(100, graph_depth_percent))
             graph_cut_depth = graph_depth_percent / 100.0
             cut_position_int = int(100.0 * (1.0 - graph_cut_depth))
-            view_diff_mat = self.view_diff_mats[graph_view_name][cut_position_int]
+            graph_zoom_ax_limits = imposed_zoom_ax_limits
+            if graph_view_name != view_name:
+                graph_view_index = self._get_view_index(graph_view_name)
+                graph_zoom_ax_limits = self.view_limits[graph_view_index]
+            view_diff_mat = self._get_zoom_filtered_slice_profile(
+                graph_view_name,
+                cut_position_int,
+                graph_zoom_ax_limits,
+            )
 
             # The marker always reflects the current (live) slice position,
             # even when the graph data is locked to an anchor depth.
@@ -742,6 +795,8 @@ class CADComparisonRenderer:
         return img_array
 
     def init_device(self, device):
+        if device is None:
+            return
         if device.kind == "monarch":
             self.screen_size = [96, 40]
         if device.kind == "dotpad":

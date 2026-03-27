@@ -11,6 +11,7 @@ import json
 import os
 import io
 import base64
+import traceback
 from PIL import Image
 import numpy as np
 from cad_comparison_lib import CADComparisonRenderer
@@ -35,12 +36,27 @@ current_model_name = 0
 
 # Determine repo root and resolve default coffee mug model path
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
-first_stl_file = ""
-for f in os.listdir(os.path.join(REPO_ROOT, "model")):
-    if ".stl" in f:
-        #first_stl_file = f
-        model_list.append(os.path.join(REPO_ROOT, "model", f))
-        model_name_list.append(f.split(".stl")[0])
+
+SUPPORTED_MODEL_EXTENSIONS = (".stl", ".step", ".stp", ".brep")
+
+def _discover_models(root_dir):
+    discovered = []
+    for dirpath, _dirnames, filenames in os.walk(root_dir):
+        for filename in filenames:
+            lower_name = filename.lower()
+            if lower_name.endswith(SUPPORTED_MODEL_EXTENSIONS):
+                full_path = os.path.join(dirpath, filename)
+                discovered.append(full_path)
+    discovered.sort()
+    return discovered
+
+def _build_model_display_name(path):
+    rel_path = os.path.relpath(path, os.path.join(REPO_ROOT, "model"))
+    stem, _ext = os.path.splitext(rel_path)
+    return stem.replace("\\", "/")
+
+model_list = _discover_models(os.path.join(REPO_ROOT, "model"))
+model_name_list = [_build_model_display_name(path) for path in model_list]
 
 #model_list = ["coffee", "second cup", "teaparty"]
 renderer_dict = {}
@@ -85,6 +101,8 @@ def _coerce_positive_int(value, default):
 
 def _resolve_model_index(model_value):
     """Map UI model selection to a safe model index."""
+    if not model_list:
+        return -1
     if model_value == "none" or model_value is None:
         return 0
     try:
@@ -110,6 +128,8 @@ def _resolve_output_device(device_value):
 
 def get_or_create_renderer(model_index, pool):
     """Get a renderer for a model index from the given pool, creating it if needed."""
+    if model_index < 0 or model_index >= len(model_list):
+        raise ValueError("No models are available to render")
     if model_index not in pool:
         model_path = model_list[model_index]
         print(f"Initializing CAD renderer for model index {model_index}: {model_path}")
@@ -156,6 +176,7 @@ def initialize_default_braille_render():
         print("=" * 60 + "\n")
     except Exception as e:
         print(f"Default render failed: {e}")
+        print(traceback.format_exc())
 
 @app.route('/')
 def home():
@@ -740,7 +761,8 @@ def get_data():
     return jsonify({
         'status': 'success',
         'cube_value': cube_value,
-        'slider_value': slider_value
+        'slider_value': slider_value,
+        'model_list': model_name_list,
     })
 
 if __name__ == '__main__':
@@ -767,8 +789,8 @@ if __name__ == '__main__':
     except BrailleDisplayError as e:
         device = None
         print(f"Braille display auto-connect skipped: {e}")
-    # Render once on startup and send to braille display
-    initialize_default_braille_render()
+    # Render once on startup and send to braille display (background so Flask starts immediately)
+    threading.Thread(target=initialize_default_braille_render, daemon=True).start()
     import logging
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
 

@@ -482,8 +482,7 @@
                         The 3D models to choose from.
                     </div>
                     <select id="model-list-dropdown" method="GET" action="/">
-                        <option value="0" selected>"mug"</option>
-                        <option value="1">"gamepad"</option>
+                        <option value="" selected>Loading models...</option>
                     </select>
                 </div>
             </section>
@@ -828,6 +827,12 @@
         // Function to send current state to the server
         async function sendStateToServer() {
             try {
+                // When the polling loop has already confirmed the server is down,
+                // skip active render requests until we detect a reconnection.
+                if (serverConnected === false) {
+                    return;
+                }
+
                 const requestedGraphView = sliceGraphLocked ? sliceGraphAnchorView : currentView;
                 const requestedGraphDepth = sliceGraphLocked ? sliceGraphAnchorDepth : currentSliceDepth;
                 const state = {
@@ -859,6 +864,11 @@
                 })
                 .then(res => res.json())
                 .then(data => {
+                    if (serverConnected === false) {
+                        announce('Server reconnected.');
+                    }
+                    serverConnected = true;
+
                     // Update bounding box if available in response
                     if (data.bbox) {
                         updateBoundingBox(data.bbox);
@@ -873,8 +883,11 @@
                     scheduleHighFidelityPreviewRefresh(false);
                 })
                 .catch(error => {
-                    // Silently fail - don't interrupt user experience
                     console.warn('Failed to send state to server:', error);
+                    if (serverConnected !== false) {
+                        serverConnected = false;
+                        announce('Server unavailable — rendering paused.');
+                    }
                 });
                 
             } catch (error) {
@@ -904,7 +917,11 @@
         let highFidelityPreviewInFlight = false;
         let lastHighFidelityKey = '';
         let lastAnnouncementMessage = '';
+        let lastModelListSignature = '';
+        let lastPolledView = null;
+        let serverConnected = null; // null = unknown, true = up, false = down
         let currentBBoxDimensionsText = '--';
+        const SERVER_POLL_INTERVAL_MS = 1000;
         
         // Remove "Back" from available views
         //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
@@ -1008,6 +1025,20 @@
             sliceGraphAnchorView = currentView;
             sliceGraphAnchorDepth = currentSliceDepth;
             updateSliceGraphLockUI();
+        }
+
+        function autoRefreshSliceGraph(options = {}) {
+            const { updateAnchor = false } = options;
+            if (currentRepresentationMode !== 'slice-graph') {
+                return;
+            }
+
+            // In locked mode, keep the graph centered on the current exploration point.
+            if (updateAnchor && sliceGraphLocked) {
+                captureSliceGraphAnchor(false);
+            }
+
+            sendStateToServer();
         }
 
         function toggleSliceGraphLock() {
@@ -1277,6 +1308,11 @@
                 return;
             }
 
+            if (serverConnected === false) {
+                highFidelityPreviewMeta.textContent = 'High-fidelity preview unavailable';
+                return;
+            }
+
             const stateKey = computeHighFidelityStateKey();
             if (!force && stateKey === lastHighFidelityKey) {
                 return;
@@ -1317,6 +1353,10 @@
             } catch (error) {
                 console.warn('Failed to update high-fidelity preview:', error);
                 highFidelityPreviewMeta.textContent = 'High-fidelity preview unavailable';
+                if (serverConnected !== false) {
+                    serverConnected = false;
+                    announce('Server unavailable — rendering paused.');
+                }
             } finally {
                 highFidelityPreviewInFlight = false;
             }
@@ -1471,7 +1511,11 @@
             
             // Send state to server if changed
             if (oldView !== currentView) {
-                sendStateToServer();
+                if (currentRepresentationMode === 'slice-graph') {
+                    autoRefreshSliceGraph({ updateAnchor: true });
+                } else {
+                    sendStateToServer();
+                }
             }
 
             return oldView !== currentView;
@@ -1522,45 +1566,101 @@
 
         function updateModelList(model_list) {
             const dropdown = document.getElementById("model-list-dropdown");
-            dropdown.innerHTML = '<option value="">--Select--</option>';
 
-            var i=0;
-            model_list.forEach(item => {
+            if (!Array.isArray(model_list)) {
+                return;
+            }
+
+            const signature = model_list.join('||');
+            if (signature === lastModelListSignature && dropdown.options.length > 0) {
+                return;
+            }
+
+            lastModelListSignature = signature;
+            dropdown.innerHTML = '';
+
+            if (model_list.length === 0) {
+                dropdown.innerHTML = '<option value="" selected>No models found</option>';
+                dropdown.disabled = true;
+                return;
+            }
+
+            dropdown.disabled = false;
+
+            model_list.forEach((item, i) => {
                 let option = document.createElement("option");
                 option.value = i;
-                if(i == currentModel){
-                    option.selected = true;
-                }
                 option.text = item;
                 dropdown.appendChild(option);
-                i = i+1;
-                }
-            );
+            });
+
+            const currentModelIndex = Number(currentModel);
+            if (Number.isInteger(currentModelIndex) && currentModelIndex >= 0 && currentModelIndex < model_list.length) {
+                dropdown.value = String(currentModelIndex);
+            } else {
+                dropdown.selectedIndex = 0;
+                currentModel = dropdown.value;
+            }
         }
+
+        document.getElementById("model-list-dropdown").addEventListener("input", function() {
+            // Keep local state in sync while keyboard arrows navigate options.
+            currentModel = this.value;
+        });
 
         document.getElementById("model-list-dropdown").addEventListener("change", function() {
             const selectedItem = this.value;
             currentModel = selectedItem;
-            sendStateToServer();
+            if (currentRepresentationMode === 'slice-graph') {
+                autoRefreshSliceGraph({ updateAnchor: false });
+            } else {
+                sendStateToServer();
+            }
             }
         );
 
-        // Just commented for debugging
+                // Poll server state and only apply UI changes when values changed.
         setInterval(() => {
           fetch(`${SERVER_URL}/get_data`)
-            .then(res => res.json())
+            .then(res => {
+                if (!res.ok) {
+                    throw new Error(`Polling request failed (${res.status})`);
+                }
+                return res.json();
+            })
             .then(data => {
-                console.log(data.cube_value);
-                updateView(data.cube_value);
+                if (serverConnected === false) {
+                    serverConnected = true;
+                    announce('Server reconnected.');
+                } else {
+                    serverConnected = true;
+                }
+
+                if (data.cube_value !== undefined && data.cube_value !== lastPolledView) {
+                    lastPolledView = data.cube_value;
+                    updateView(data.cube_value);
+                }
                 
+                // Keep the list synced, but do not rewrite options while user is interacting.
+                const modelDropdown = document.getElementById("model-list-dropdown");
+                const dropdownFocused = document.activeElement === modelDropdown;
+                if (data.model_list && !dropdownFocused) {
+                    updateModelList(data.model_list);
+                }
+
                 // Update bounding box if available
                 if (data.bbox) {
                     updateBoundingBox(data.bbox);
                 }
-                //updateSliceDepth(data.slider_value);
-              //document.getElementById("msg").innerText = data.value;
+            })
+            .catch(error => {
+                console.warn('Failed to poll server state:', error);
+                if (serverConnected !== false) {
+                    serverConnected = false;
+                    announce('Server unavailable — rendering paused.');
+                }
             });
-        }, 500);
+        }, SERVER_POLL_INTERVAL_MS);
 
         // Update zoom information
         function updateZoom(newZoom, shouldAnnounce = true) {
@@ -1580,7 +1680,11 @@
             }
 
             if (oldZoom !== currentZoom) {
-                sendStateToServer();
+                if (currentRepresentationMode === 'slice-graph') {
+                    autoRefreshSliceGraph({ updateAnchor: false });
+                } else {
+                    sendStateToServer();
+                }
             }
 
             return oldZoom !== currentZoom;
@@ -1832,18 +1936,25 @@
         document.addEventListener('keydown', function(e) {
             const target = e.target;
             const tagName = target && target.tagName ? target.tagName.toLowerCase() : '';
-            const isEditableTarget = Boolean(
+            const inputType = target && tagName === 'input' ? String(target.type || '').toLowerCase() : '';
+            const isTextEntryTarget = Boolean(
                 target && (
                     target.isContentEditable ||
-                    tagName === 'input' ||
                     tagName === 'textarea' ||
-                    tagName === 'select' ||
-                    tagName === 'button'
+                    (tagName === 'input' && (
+                        inputType === 'text' ||
+                        inputType === 'search' ||
+                        inputType === 'email' ||
+                        inputType === 'url' ||
+                        inputType === 'password' ||
+                        inputType === 'number' ||
+                        inputType === 'tel'
+                    ))
                 )
             );
 
-            // Do not override native keyboard behavior for form controls.
-            if (isEditableTarget) {
+            // Do not override native keyboard behavior for text entry fields.
+            if (isTextEntryTarget) {
                 return;
             }
 
@@ -1855,18 +1966,25 @@
             if (e.repeat) {
                 return;
             }
-            const key = e.key.toLowerCase();
+            const rawKey = String(e.key || '');
+            const key = rawKey.toLowerCase();
+            const code = String(e.code || '');
+            const normalizedKey = (
+                code === 'Digit1' || code === 'Numpad1' ? '1' :
+                code === 'Digit2' || code === 'Numpad2' ? '2' :
+                key
+            );
             const supportedShortcuts = new Set([
                 '1', '2', '4', '5', '7', '8', '9', '0', '-', '=',
                 'q', 'e', 'f', 'r', 't', 'l', 'g', 'o', 'c',
                 'w', 'a', 's', 'd', '[', ']', 'i', 'h', 'p', 'escape'
             ]);
 
-            if (!supportedShortcuts.has(key)) {
+            if (!supportedShortcuts.has(normalizedKey)) {
                 return;
             }
 
-            switch(key) {
+            switch(normalizedKey) {
                 case 'e':
                     // Go deeper (increase depth by 1%)
                     e.preventDefault();

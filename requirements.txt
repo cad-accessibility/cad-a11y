@@ -10,6 +10,8 @@ matplotlib>=3.5.0
 # CAD / geometry stack
 trimesh>=3.20.0
 shapely>=2.0.0
+cascadio
+networkx
 meshlib
 polyscope
 svgwrite
