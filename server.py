@@ -5,6 +5,7 @@ Features:
 - Receives render state from the viewer and renders with CADComparisonRenderer.
 - Sends rendered output to a connected braille display using braille_display.py.
 - Optionally reads GoDice orientation and Slider Trinkey position if hardware is present.
+- Supports command logging endpoints used by the legacy cube/slider server.
 - Opens accessible-3d-viewer.html in the default browser at startup.
 """
 
@@ -18,6 +19,7 @@ import io
 import json
 import logging
 import os
+import sys
 import threading
 import time
 import webbrowser
@@ -26,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from flask import Flask, has_request_context, jsonify, request
+from flask import Flask, has_request_context, jsonify, request, send_file
 from flask_cors import CORS
 from PIL import Image
 
@@ -62,9 +64,14 @@ CORS(app)
 class RuntimeState:
     cube_value: str = "z+"
     slider_value: int = 0
+    current_model_index: int = 0
 
 
-REPO_ROOT = Path(__file__).resolve().parent
+if getattr(sys, "frozen", False):
+    # In bundled mode, runtime assets are expected next to the executable.
+    REPO_ROOT = Path(sys.executable).resolve().parent
+else:
+    REPO_ROOT = Path(__file__).resolve().parent
 MODEL_DIR = REPO_ROOT / "model"
 RENDERS_DIR = REPO_ROOT / "renders"
 STUDY_LOG_DIR = REPO_ROOT / "study_logs"
@@ -90,10 +97,12 @@ VIEW_CUBE_MAPPING = {
 }
 
 state = RuntimeState()
-renderer: CADComparisonRenderer | None = None
+renderers_by_model: dict[int, CADComparisonRenderer] = {}
 current_render: np.ndarray | None = None
+commands_log: list[dict[str, Any]] = []
 state_lock = threading.Lock()
 braille_log_lock = threading.Lock()
+commands_log_lock = threading.Lock()
 braille_send_sequence = 0
 last_render_fingerprint: str | None = None
 last_render_response: dict[str, Any] | None = None
@@ -114,29 +123,49 @@ def _renderer_stdio_guard():
     return contextlib.nullcontext(), contextlib.nullcontext()
 
 
+def _discover_models() -> list[Path]:
+    patterns = ("*.stl", "*.step", "*.STEP")
+    models: list[Path] = []
+    for pattern in patterns:
+        models.extend(sorted(MODEL_DIR.glob(pattern)))
+    # Deduplicate while preserving order.
+    return list(dict.fromkeys(models))
+
+
 def _find_default_model() -> Path:
-    stl_files = sorted(MODEL_DIR.glob("*.stl"))
-    if stl_files:
-        return stl_files[0]
-
-    step_files = sorted(MODEL_DIR.glob("*.step")) + sorted(MODEL_DIR.glob("*.STEP"))
-    if step_files:
-        return step_files[0]
-
+    models = _discover_models()
+    if models:
+        return models[0]
     raise FileNotFoundError(f"No .stl/.step model found in {MODEL_DIR}")
 
 
 DEFAULT_MODEL = _find_default_model()
+AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
+MODEL_NAME_LIST = [model_path.stem for model_path in AVAILABLE_MODELS]
 
 
-def get_or_create_renderer() -> CADComparisonRenderer:
-    global renderer
-    if renderer is None:
-        _log(f"Initializing CAD renderer with: {DEFAULT_MODEL}")
+def _normalize_model_index(raw_index: Any) -> int:
+    if raw_index is None:
+        with state_lock:
+            return state.current_model_index
+    try:
+        index = int(raw_index)
+    except (TypeError, ValueError):
+        return 0
+    if index < 0 or index >= len(AVAILABLE_MODELS):
+        return 0
+    return index
+
+
+def get_or_create_renderer(model_index: int | None = None) -> CADComparisonRenderer:
+    index = _normalize_model_index(model_index)
+    if index not in renderers_by_model:
+        model_path = AVAILABLE_MODELS[index]
+        _log(f"Initializing CAD renderer with: {model_path}")
         out_guard, err_guard = _renderer_stdio_guard()
         with out_guard, err_guard:
-            renderer = CADComparisonRenderer(str(DEFAULT_MODEL), str(DEFAULT_MODEL))
-    return renderer
+            renderers_by_model[index] = CADComparisonRenderer(str(model_path), str(model_path))
+    return renderers_by_model[index]
 
 
 def _to_braille_payload(rendered_rgba: np.ndarray) -> np.ndarray:
@@ -188,11 +217,12 @@ def _next_braille_send_sequence() -> int:
         return braille_send_sequence
 
 
-def _render_and_send(params: dict[str, Any], *, source: str) -> tuple[np.ndarray, list[float] | None, np.ndarray]:
+def _render_and_send(
+    params: dict[str, Any], *, source: str, model_index: int
+) -> tuple[np.ndarray, list[float] | None, np.ndarray]:
     global current_render
 
-    engine = get_or_create_renderer()
-    print(params)
+    engine = get_or_create_renderer(model_index)
     out_guard, err_guard = _renderer_stdio_guard()
     with out_guard, err_guard:
         rendered = engine.render(params)
@@ -205,13 +235,15 @@ def _render_and_send(params: dict[str, Any], *, source: str) -> tuple[np.ndarray
         state_snapshot = {
             "cube_value": state.cube_value,
             "slider_value": state.slider_value,
+            "current_model_index": state.current_model_index,
         }
     event: dict[str, Any] = {
         "event": "braille_send",
         "sequence": sequence,
         "source": source,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "model": str(DEFAULT_MODEL),
+        "model": str(AVAILABLE_MODELS[model_index]),
+        "model_index": model_index,
         "params": {
             "view": params.get("view"),
             "zoom": params.get("zoom"),
@@ -293,11 +325,61 @@ def _img_to_base64_png(img_array: np.ndarray) -> str:
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
+def _img_to_png_bytes(img_array: np.ndarray) -> io.BytesIO:
+    image = Image.fromarray(img_array.astype("uint8"))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
+
+
+def _prepare_render_params(raw_params: dict[str, Any] | None) -> tuple[dict[str, Any], int, bool, str]:
+    params = raw_params or {}
+    merged_params = dict(DEFAULT_RENDER_PARAMS)
+    merged_params.update(params)
+    merged_params["view"] = str(merged_params.get("view", "")).lower()
+
+    model_index = _normalize_model_index(merged_params.get("current_model"))
+    merged_params["current_model"] = model_index
+
+    move_camera_center = str(merged_params.get("move_camera_center", "none")).lower()
+    is_pan_request = move_camera_center != "none"
+    fingerprint = json.dumps(merged_params, sort_keys=True, default=str)
+    return merged_params, model_index, is_pan_request, fingerprint
+
+
+def _render_response(merged_params: dict[str, Any], *, source: str) -> dict[str, Any]:
+    model_index = int(merged_params.get("current_model", 0))
+    rendered, bbox, braille_payload = _render_and_send(merged_params, source=source, model_index=model_index)
+    engine = get_or_create_renderer(model_index)
+    _save_print_if_requested(merged_params, engine, braille_payload)
+    return {
+        "status": "success",
+        "message": "Render complete",
+        "image_shape": list(rendered.shape),
+        "bbox": bbox,
+        "image_base64": _img_to_base64_png(rendered),
+        "model_list": MODEL_NAME_LIST,
+        "current_model": model_index,
+    }
+
+
+def _record_command(data: dict[str, Any]) -> int:
+    entry = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "data": data,
+    }
+    with commands_log_lock:
+        commands_log.append(entry)
+        return len(commands_log)
+
+
 def initialize_default_braille_render() -> None:
     _log("Preparing initial render...", force=True)
 
     try:
-        rendered, _, _ = _render_and_send(dict(DEFAULT_RENDER_PARAMS), source="startup")
+        merged_params, model_index, _is_pan_request, _fingerprint = _prepare_render_params(dict(DEFAULT_RENDER_PARAMS))
+        rendered, _, _ = _render_and_send(merged_params, source="startup", model_index=model_index)
         _log(f"Initial render ready: shape={tuple(rendered.shape)}", force=True)
     except Exception as error:
         _log(f"Initial render failed: {error}", force=True)
@@ -416,6 +498,13 @@ def home():
             "message": "Accessible 3D Viewer server",
             "endpoints": {
                 "/render": "POST - Render CAD view with parameters",
+                "/render/image": "GET - Get last rendered image as PNG",
+                "/render/base64": "GET - Get last rendered image as base64",
+                "/command": "POST - Receive and log command; auto-render if render params exist",
+                "/commands": "GET - Retrieve logged commands",
+                "/commands/clear": "POST - Clear command log",
+                "/commands/stats": "GET - Command statistics",
+                "/models": "GET/POST - List or update active model index",
                 "/get_data": "GET - Optional cube/slider state",
             },
         }
@@ -427,21 +516,12 @@ def render_view():
     global last_render_fingerprint, last_render_response
 
     try:
-        params = request.get_json(silent=True) or {}
-        merged_params = dict(DEFAULT_RENDER_PARAMS)
-        merged_params.update(params)
-        merged_params["view"] = str(merged_params.get("view", "")).lower()
-
-        move_camera_center = str(merged_params.get("move_camera_center", "none")).lower()
-        is_pan_request = move_camera_center != "none"
-
-        fingerprint = json.dumps(merged_params, sort_keys=True, default=str)
+        merged_params, model_index, is_pan_request, fingerprint = _prepare_render_params(request.get_json(silent=True))
 
         with state_lock:
             if (
                 not is_pan_request
-                and
-                merged_params.get("print_view") is not True
+                and merged_params.get("print_view") is not True
                 and last_render_fingerprint == fingerprint
                 and last_render_response is not None
             ):
@@ -451,19 +531,11 @@ def render_view():
             view = merged_params.get("view")
             if isinstance(view, str) and view:
                 state.cube_value = view
+            state.current_model_index = model_index
+
         _log(f"Render request: {merged_params}")
+        response = _render_response(merged_params, source="http_render")
 
-        rendered, bbox, braille_payload = _render_and_send(merged_params, source="http_render")
-        engine = get_or_create_renderer()
-        _save_print_if_requested(merged_params, engine, braille_payload)
-
-        response = {
-            "status": "success",
-            "message": "Render complete",
-            "image_shape": list(rendered.shape),
-            "bbox": bbox,
-            "image_base64": _img_to_base64_png(rendered),
-        }
         with state_lock:
             if merged_params.get("print_view") is not True:
                 last_render_fingerprint = fingerprint
@@ -474,6 +546,149 @@ def render_view():
         return jsonify({"status": "error", "message": str(error)}), 400
 
 
+@app.route("/render/image", methods=["GET"])
+def get_render_image():
+    if current_render is None:
+        return jsonify({"status": "error", "message": "No image has been rendered yet"}), 404
+    try:
+        return send_file(_img_to_png_bytes(current_render), mimetype="image/png")
+    except Exception as error:
+        return jsonify({"status": "error", "message": str(error)}), 400
+
+
+@app.route("/render/base64", methods=["GET"])
+def get_render_base64():
+    if current_render is None:
+        return jsonify({"status": "error", "message": "No image has been rendered yet"}), 404
+    try:
+        return jsonify(
+            {
+                "status": "success",
+                "image_base64": _img_to_base64_png(current_render),
+                "image_shape": list(current_render.shape),
+            }
+        ), 200
+    except Exception as error:
+        return jsonify({"status": "error", "message": str(error)}), 400
+
+
+@app.route("/command", methods=["POST"])
+def receive_command():
+    try:
+        data = request.get_json(silent=True) or {}
+        command_id = _record_command(data)
+
+        response_data: dict[str, Any] = {
+            "status": "success",
+            "message": "Command received",
+            "command_id": command_id,
+        }
+
+        render_keys = {"view", "renderMode", "depth", "zoom", "mode", "move_camera_center", "print_view", "current_model"}
+        if any(key in data for key in render_keys):
+            merged_params, model_index, _is_pan_request, _fingerprint = _prepare_render_params(data)
+            with state_lock:
+                view = merged_params.get("view")
+                if isinstance(view, str) and view:
+                    state.cube_value = view
+                state.current_model_index = model_index
+            response_data["render"] = _render_response(merged_params, source="command_auto_render")
+
+        return jsonify(response_data), 200
+    except Exception as error:
+        _log(f"Error processing command: {error}", force=True)
+        return jsonify({"status": "error", "message": str(error)}), 400
+
+
+@app.route("/commands", methods=["GET"])
+def get_commands():
+    with commands_log_lock:
+        payload = {
+            "status": "success",
+            "total_commands": len(commands_log),
+            "commands": list(commands_log),
+        }
+    return jsonify(payload), 200
+
+
+@app.route("/commands/clear", methods=["POST"])
+def clear_commands():
+    with commands_log_lock:
+        count = len(commands_log)
+        commands_log.clear()
+    return jsonify({"status": "success", "message": f"Cleared {count} commands"}), 200
+
+
+@app.route("/commands/stats", methods=["GET"])
+def get_stats():
+    with commands_log_lock:
+        snapshot = list(commands_log)
+
+    if not snapshot:
+        return jsonify({"status": "success", "total_commands": 0, "stats": {}}), 200
+
+    type_counts: dict[str, int] = {}
+    action_counts: dict[str, int] = {}
+    for entry in snapshot:
+        data = entry.get("data", {})
+        if not isinstance(data, dict):
+            continue
+        cmd_type = str(data.get("type", "unknown"))
+        action = str(data.get("action", "unknown"))
+        type_counts[cmd_type] = type_counts.get(cmd_type, 0) + 1
+        action_counts[action] = action_counts.get(action, 0) + 1
+
+    return jsonify(
+        {
+            "status": "success",
+            "total_commands": len(snapshot),
+            "stats": {
+                "by_type": type_counts,
+                "by_action": action_counts,
+                "first_command": snapshot[0].get("timestamp"),
+                "last_command": snapshot[-1].get("timestamp"),
+            },
+        }
+    ), 200
+
+
+@app.route("/models", methods=["GET", "POST"])
+def models_endpoint():
+    global last_render_fingerprint, last_render_response
+
+    if request.method == "GET":
+        with state_lock:
+            current_index = state.current_model_index
+        return jsonify(
+            {
+                "status": "success",
+                "model_list": MODEL_NAME_LIST,
+                "model_paths": [str(model) for model in AVAILABLE_MODELS],
+                "current_model": current_index,
+            }
+        ), 200
+
+    try:
+        data = request.get_json(silent=True) or {}
+        model_index = _normalize_model_index(data.get("current_model", data.get("model_index")))
+        with state_lock:
+            state.current_model_index = model_index
+            # Changing model invalidates response cache.
+            last_render_fingerprint = None
+            last_render_response = None
+        return jsonify(
+            {
+                "status": "success",
+                "message": "Current model updated",
+                "current_model": model_index,
+                "model_name": MODEL_NAME_LIST[model_index],
+                "model_path": str(AVAILABLE_MODELS[model_index]),
+            }
+        ), 200
+    except Exception as error:
+        return jsonify({"status": "error", "message": str(error)}), 400
+
+
 @app.route("/get_data", methods=["GET"])
 def get_data():
     with state_lock:
@@ -481,14 +696,16 @@ def get_data():
             "status": "success",
             "cube_value": state.cube_value,
             "slider_value": state.slider_value,
+            "current_model": state.current_model_index,
         }
     return jsonify(payload), 200
 
 
 def main() -> int:
     _log("Server starting on http://localhost:6969", force=True)
-    _log(f"Model: {DEFAULT_MODEL}", force=True)
-    _log("Endpoints: POST /render, GET /get_data", force=True)
+    _log(f"Model directory: {MODEL_DIR}", force=True)
+    _log(f"Models found: {len(AVAILABLE_MODELS)}", force=True)
+    _log("Endpoints: POST /render, POST /command, GET /get_data", force=True)
     _log(f"Braille send logs: {BRAILLE_LOG_PATH}", force=True)
     if QUIET_MODE:
         _log("Output mode: quiet (set SERVER_VERBOSE=1 for debug logs)", force=True)

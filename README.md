@@ -96,6 +96,43 @@ Then, open accessible-3d-viewer.html in a browser.
 
 You should now be able to interact with the website and your terminal and your monarch should serve as displays.
 
+### Building a Windows .exe
+
+This repository includes a PyInstaller setup for `server.py`:
+
+- Spec file: `server_pyinstaller.spec`
+- Build script: `build_windows_exe.ps1`
+
+On Windows PowerShell:
+
+```powershell
+# Optional: set up dependencies first
+.\setup_windows.ps1
+
+# Build using conda env (default: cad-a11y)
+.\build_windows_exe.ps1
+
+# Or build with current Python instead of conda
+.\build_windows_exe.ps1 -UseCurrentPython
+```
+
+The executable is created at:
+
+```text
+dist\cad-a11y-server\cad-a11y-server.exe
+```
+
+Run it from PowerShell:
+
+```powershell
+& '.\dist\cad-a11y-server\cad-a11y-server.exe'
+```
+
+Notes:
+
+- This is an onedir build (folder with exe + bundled dependencies), which is more reliable for the CAD stack.
+- The build includes `model/` and `accessible-3d-viewer.html` so runtime paths work in the packaged app.
+
 ## Future Development
 
 - Expanding to support additional CAD file formats
