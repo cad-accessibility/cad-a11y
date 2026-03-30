@@ -2,15 +2,15 @@ from .single_view_stl import get_single_view
 import numpy as np
 
 def get_superposition_view(shapes, bbox, cut_depth=0.9, view_key="top", rendering_mode="brep", imposed_ax_limits=[],
-                           superposition_key="intersection"):
+                           superposition_key="intersection", screen_size=[96,40]):
     filled_before, ax_limits = get_single_view(shapes[0], bbox, cut_depth, view_key, "filled", 
-                          imposed_ax_limits=imposed_ax_limits)
+                          imposed_ax_limits=imposed_ax_limits, screen_size=screen_size)
     outlines_before, ax_limits = get_single_view(shapes[0], bbox, cut_depth, view_key, "outline", 
-                          imposed_ax_limits=imposed_ax_limits)
+                          imposed_ax_limits=imposed_ax_limits, screen_size=screen_size)
     filled_after, ax_limits = get_single_view(shapes[1], bbox, cut_depth, view_key, "filled",  
-                          imposed_ax_limits=imposed_ax_limits)
+                          imposed_ax_limits=imposed_ax_limits, screen_size=screen_size)
     outlines_after, ax_limits = get_single_view(shapes[1], bbox, cut_depth, view_key, "outline", 
-                          imposed_ax_limits=imposed_ax_limits)
+                          imposed_ax_limits=imposed_ax_limits, screen_size=screen_size)
 
     filled_before_int = np.zeros(filled_before.shape[:2], dtype=int)
     mask = (np.all(filled_before[:,:,:] == [0,0,0,255], axis=2))#[:,:,3]

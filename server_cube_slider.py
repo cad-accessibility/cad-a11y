@@ -11,6 +11,7 @@ import json
 import os
 import io
 import base64
+import traceback
 from PIL import Image
 import numpy as np
 from cad_comparison_lib import CADComparisonRenderer
@@ -35,12 +36,27 @@ current_model_name = 0
 
 # Determine repo root and resolve default coffee mug model path
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
-first_stl_file = ""
-for f in os.listdir(os.path.join(REPO_ROOT, "model")):
-    if ".stl" in f:
-        #first_stl_file = f
-        model_list.append(os.path.join(REPO_ROOT, "model", f))
-        model_name_list.append(f.split(".stl")[0])
+
+SUPPORTED_MODEL_EXTENSIONS = (".stl", ".step", ".stp", ".brep")
+
+def _discover_models(root_dir):
+    discovered = []
+    for dirpath, _dirnames, filenames in os.walk(root_dir):
+        for filename in filenames:
+            lower_name = filename.lower()
+            if lower_name.endswith(SUPPORTED_MODEL_EXTENSIONS):
+                full_path = os.path.join(dirpath, filename)
+                discovered.append(full_path)
+    discovered.sort()
+    return discovered
+
+def _build_model_display_name(path):
+    rel_path = os.path.relpath(path, os.path.join(REPO_ROOT, "model"))
+    stem, _ext = os.path.splitext(rel_path)
+    return stem.replace("\\", "/")
+
+model_list = _discover_models(os.path.join(REPO_ROOT, "model"))
+model_name_list = [_build_model_display_name(path) for path in model_list]
 
 #model_list = ["coffee", "second cup", "teaparty"]
 renderer_dict = {}
@@ -69,24 +85,57 @@ DEFAULT_RENDER_PARAMS = {
     'renderMode': 'Outline'
 }
 
-def get_or_create_renderer():
-    """Lazy initialization of renderer to avoid startup delay."""
-    global renderer_dict
-    if len(list(renderer_dict.keys())) == 0:
-        for i, f in enumerate(model_list):
-            print("Initializing CAD renderer...")
-            renderer = CADComparisonRenderer(f, f)
-            renderer.init_device(device)
-            renderer_dict[i] = renderer
-            print("Renderer initialized successfully!")
-    #global renderer
-    #if renderer is None:
-    #    print("Initializing CAD renderer...")
-    #    renderer = CADComparisonRenderer(before_model, after_model)
-    #    renderer.init_device(device)
-    #    print("Renderer initialized successfully!")
-    print(current_model_name)
-    return renderer_dict[current_model_name]
+DEFAULT_OUTPUT_DEVICE = "dot"
+
+
+def _coerce_positive_int(value, default):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed <= 0:
+        return default
+    return parsed
+
+def _resolve_model_index(model_value):
+    """Map UI model selection to a safe model index."""
+    if not model_list:
+        return -1
+    if model_value == "none" or model_value is None:
+        return 0
+    try:
+        idx = int(model_value)
+    except (TypeError, ValueError):
+        return 0
+    if idx < 0 or idx >= len(model_list):
+        return 0
+    return idx
+
+
+def _resolve_output_device(device_value):
+    """Map UI output device selection to supported transport values."""
+    if device_value is None:
+        return DEFAULT_OUTPUT_DEVICE
+    text = str(device_value).strip().lower()
+    if text == "dot":
+        return "dotpad"
+    if text in {"monarch", "dotpad", "auto"}:
+        return text
+    return DEFAULT_OUTPUT_DEVICE
+
+
+def get_or_create_renderer(model_index, pool):
+    """Get a renderer for a model index from the given pool, creating it if needed."""
+    if model_index < 0 or model_index >= len(model_list):
+        raise ValueError("No models are available to render")
+    if model_index not in pool:
+        model_path = model_list[model_index]
+        print(f"Initializing CAD renderer for model index {model_index}: {model_path}")
+        renderer = CADComparisonRenderer(model_path, model_path)
+        renderer.init_device(device)
+        pool[model_index] = renderer
+        print("Renderer initialized successfully!")
+    return pool[model_index]
 
 def _format_img_data_repr(arr2d: np.ndarray) -> str:
     # Ensure 2D
@@ -116,15 +165,16 @@ def initialize_default_braille_render():
         print(f"Rendered image shape: {img_array.shape}")
         try:
             img_data = img_array[:, :, 3]
-            bytes_written = send_to_braille_display(img_data)
-            print(f"Braille write: {bytes_written} bytes")
-            print("img_data summary:\n" + _format_img_data_repr(img_data))
+            bytes_written = send_to_braille_display(img_data, device)
+            #print(f"Braille write: {bytes_written} bytes")
+            #print("img_data summary:\n" + _format_img_data_repr(img_data))
         except BrailleDisplayError as e:
             print(f"Braille send failed: {e}")
         print("Default render complete.")
         print("=" * 60 + "\n")
     except Exception as e:
         print(f"Default render failed: {e}")
+        print(traceback.format_exc())
 
 @app.route('/')
 def home():
@@ -182,9 +232,9 @@ def render_view():
                         print(0, end='')
                 print()
             img_data[img_data > 0] = 255
-            bytes_written = send_to_braille_display(img_data)
-            print(f"Braille write: {bytes_written} bytes")
-            print("img_data summary:\n" + _format_img_data_repr(img_data))
+            bytes_written = send_to_braille_display(img_data, device)
+            #print(f"Braille write: {bytes_written} bytes")
+            #print("img_data summary:\n" + _format_img_data_repr(img_data))
         except BrailleDisplayError as e:
             print(f"Braille send failed: {e}")
         print("=" * 60 + "\n")
@@ -362,9 +412,9 @@ def receive_command():
                             else:
                                 print(0, end='')
                         print()
-                    bytes_written = send_to_braille_display(img_data)
-                    print(f"Braille write: {bytes_written} bytes")
-                    print("img_data summary:\n" + _format_img_data_repr(img_data))
+                    bytes_written = send_to_braille_display(img_data, device)
+                    #print(f"Braille write: {bytes_written} bytes")
+                    #print("img_data summary:\n" + _format_img_data_repr(img_data))
                 except BrailleDisplayError as e:
                     print(f"Braille send failed: {e}")
                 
@@ -626,7 +676,8 @@ def get_data():
     return jsonify({
         'status': 'success',
         'cube_value': cube_value,
-        'slider_value': slider_value
+        'slider_value': slider_value,
+        'model_list': model_name_list,
     })
 
 if __name__ == '__main__':
@@ -648,9 +699,13 @@ if __name__ == '__main__':
     print("  - POST /models            - Change before/after model files")
     print("=" * 70)
 
-    device = _connect(scan_timeout=6.0, prefer_dotpad=True)
-    # Render once on startup and send to braille display
-    initialize_default_braille_render()
+    try:
+        device = _connect(scan_timeout=6.0, prefer_dotpad=True, preferred_device="auto")
+    except BrailleDisplayError as e:
+        device = None
+        print(f"Braille display auto-connect skipped: {e}")
+    # Render once on startup and send to braille display (background so Flask starts immediately)
+    threading.Thread(target=initialize_default_braille_render, daemon=True).start()
     import logging
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
 

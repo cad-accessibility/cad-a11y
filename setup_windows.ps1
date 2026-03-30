@@ -1,7 +1,8 @@
 param(
     [switch]$SkipCadTools,
     [switch]$SkipExtras,
-    [string]$EnvName = "cad-a11y"
+    [string]$EnvName = "cad-a11y",
+    [string]$ServerScript = "server_cube_slider.py"
 )
 
 $ErrorActionPreference = "Stop"
@@ -164,8 +165,15 @@ else {
 Write-Host ""
 Write-Ok "Setup complete."
 Write-Host ""
+
+$serverPath = Join-Path $repoRoot $ServerScript
+if (-not (Test-Path $serverPath)) {
+    Write-WarnMsg "Server script '$ServerScript' was not found at repo root. Falling back to 'server.py'."
+    $ServerScript = "server.py"
+}
+
 Write-Host "Run the server with:" -ForegroundColor White
-Write-Host "  conda run -n $EnvName python server.py" -ForegroundColor Green
+Write-Host "  conda run -n $EnvName python $ServerScript" -ForegroundColor Green
 Write-Host ""
 Write-Host "Then open:" -ForegroundColor White
 Write-Host "  accessible-3d-viewer.html" -ForegroundColor Green
@@ -173,3 +181,4 @@ Write-Host ""
 Write-Host "Optional flags:" -ForegroundColor White
 Write-Host "  .\setup_windows.ps1 -SkipCadTools" -ForegroundColor Gray
 Write-Host "  .\setup_windows.ps1 -SkipExtras" -ForegroundColor Gray
+Write-Host "  .\setup_windows.ps1 -ServerScript server.py" -ForegroundColor Gray

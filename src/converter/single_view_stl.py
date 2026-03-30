@@ -79,8 +79,8 @@ def get_cut_faces(shape, view_key, cut_depth, bbox):
 def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="filled", imposed_ax_limits=[], screen_size=[96,40]):
 
     shape = copy(shape)
-    print("rendering mode", rendering_mode, "view key", view_key)
-    print("cut depth", cut_depth)
+    #print("rendering mode", rendering_mode, "view key", view_key)
+    #print("cut depth", cut_depth)
     #cut_depth = 0.5
     normal_dir = views[view_key]["dir"]
     if rendering_mode == "slice":
@@ -142,13 +142,13 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
 
     img = Image.open(buf)
     img_np = np.array(img)
-    for i in range(img_np.shape[0]):
-        for j in range(img_np.shape[1]):
-            if ~img_np[i,j,0] > 0:
-                print(1, end='')
-            else:
-                print(0, end='')
-        print()
+    #for i in range(img_np.shape[0]):
+    #    for j in range(img_np.shape[1]):
+    #        if ~img_np[i,j,0] > 0:
+    #            print(1, end='')
+    #        else:
+    #            print(0, end='')
+    #    print()
 
     if plt.fignum_exists(fig.number):
         plt.close(fig.number)

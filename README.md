@@ -96,42 +96,41 @@ Then, open accessible-3d-viewer.html in a browser.
 
 You should now be able to interact with the website and your terminal and your monarch should serve as displays.
 
-### Building a Windows .exe
+## Windows One-Click Installer (EXE)
 
-This repository includes a PyInstaller setup for `server.py`:
+This repository includes a Constructor-based Windows installer configuration that builds a downloadable EXE.
 
-- Spec file: `server_pyinstaller.spec`
-- Build script: `build_windows_exe.ps1`
+### Build the EXE in GitHub Actions (recommended)
 
-On Windows PowerShell:
+1. Push your branch to GitHub.
+2. Run the workflow in `.github/workflows/build-windows-installer.yml`:
+    - Actions -> Build Windows Installer -> Run workflow
+3. Download the EXE from the workflow artifact named `cad-a11y-windows-installer`.
 
-```powershell
-# Optional: set up dependencies first
-.\setup_windows.ps1
+When you publish a GitHub Release, the same workflow also uploads the EXE as a release asset.
 
-# Build using conda env (default: cad-a11y)
-.\build_windows_exe.ps1
+### Build the EXE locally on Windows
 
-# Or build with current Python instead of conda
-.\build_windows_exe.ps1 -UseCurrentPython
-```
+1. Install Miniforge or Miniconda.
+2. Install Constructor in base:
+    ```
+    conda install -n base -c conda-forge constructor
+    ```
+3. From repo root, run:
+    ```
+    constructor installer --output-dir dist installer
+    ```
+4. Your installer EXE will be written to `dist/`.
 
-The executable is created at:
+### Installer behavior
 
-```text
-dist\cad-a11y-server\cad-a11y-server.exe
-```
-
-Run it from PowerShell:
-
-```powershell
-& '.\dist\cad-a11y-server\cad-a11y-server.exe'
-```
-
-Notes:
-
-- This is an onedir build (folder with exe + bundled dependencies), which is more reliable for the CAD stack.
-- The build includes `model/` and `accessible-3d-viewer.html` so runtime paths work in the packaged app.
+- Uses `installer/construct.yaml` to define packaged runtime and files.
+- Installs launcher script `installer/launch_cad_a11y.bat`.
+- Runs `installer/post_install.bat` to:
+    - create Desktop and Start Menu shortcuts,
+    - install pip-only dependency `godice`,
+    - attempt user-scope `winget` installs of OpenSCAD and FreeCAD (if `winget` is available).
+- Writes a post-install log at `%PREFIX%\\cad_a11y_post_install.log` with step-by-step status for dependency and shortcut setup.
 
 ## Future Development
 

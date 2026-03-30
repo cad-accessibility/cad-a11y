@@ -30,7 +30,8 @@ views = {
 
 def get_juxtaposition_view(shapes, bbox, cut_depth=0.9, view_key="top", rendering_mode="outline", 
                            imposed_ax_limits=[],
-                           superposition_key="intersection"):
+                           superposition_key="intersection",
+                           screen_size=[96,40]):
 
     normal_dir = views[view_key]["dir"]
     shape_brep_0, plane_origin_0 = depth_peeling_single_depth_with_bbox(shapes[0], gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
@@ -43,7 +44,7 @@ def get_juxtaposition_view(shapes, bbox, cut_depth=0.9, view_key="top", renderin
     #    shape_brep_1 = faces_on_plane(shape_brep_1, plane_origin_1, normal_dir)
 
     # Target pixel resolution
-    width_px, height_px = 96, 40
+    width_px, height_px = screen_size[0], screen_size[1]
     dpi = 100 
     fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
     ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure

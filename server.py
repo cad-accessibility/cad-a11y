@@ -325,53 +325,14 @@ def _img_to_base64_png(img_array: np.ndarray) -> str:
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-def _img_to_png_bytes(img_array: np.ndarray) -> io.BytesIO:
-    image = Image.fromarray(img_array.astype("uint8"))
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    buffer.seek(0)
-    return buffer
-
-
-def _prepare_render_params(raw_params: dict[str, Any] | None) -> tuple[dict[str, Any], int, bool, str]:
-    params = raw_params or {}
-    merged_params = dict(DEFAULT_RENDER_PARAMS)
-    merged_params.update(params)
-    merged_params["view"] = str(merged_params.get("view", "")).lower()
-
-    model_index = _normalize_model_index(merged_params.get("current_model"))
-    merged_params["current_model"] = model_index
-
-    move_camera_center = str(merged_params.get("move_camera_center", "none")).lower()
-    is_pan_request = move_camera_center != "none"
-    fingerprint = json.dumps(merged_params, sort_keys=True, default=str)
-    return merged_params, model_index, is_pan_request, fingerprint
-
-
-def _render_response(merged_params: dict[str, Any], *, source: str) -> dict[str, Any]:
-    model_index = int(merged_params.get("current_model", 0))
-    rendered, bbox, braille_payload = _render_and_send(merged_params, source=source, model_index=model_index)
-    engine = get_or_create_renderer(model_index)
-    _save_print_if_requested(merged_params, engine, braille_payload)
-    return {
-        "status": "success",
-        "message": "Render complete",
-        "image_shape": list(rendered.shape),
-        "bbox": bbox,
-        "image_base64": _img_to_base64_png(rendered),
-        "model_list": MODEL_NAME_LIST,
-        "current_model": model_index,
-    }
-
-
-def _record_command(data: dict[str, Any]) -> int:
-    entry = {
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "data": data,
-    }
-    with commands_log_lock:
-        commands_log.append(entry)
-        return len(commands_log)
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed <= 0:
+        return default
+    return parsed
 
 
 def initialize_default_braille_render() -> None:
@@ -699,6 +660,52 @@ def get_data():
             "current_model": state.current_model_index,
         }
     return jsonify(payload), 200
+
+
+@app.route("/render/export-source", methods=["POST"])
+def render_export_source():
+    """Render a high-fidelity tactile source image for export workflows.
+
+    This endpoint intentionally avoids sending anything to braille hardware.
+    """
+    try:
+        params = request.get_json(silent=True) or {}
+        merged_params = dict(DEFAULT_RENDER_PARAMS)
+        merged_params.update(params)
+        merged_params["view"] = str(merged_params.get("view", "")).lower()
+        merged_params["print_view"] = False
+
+        export_width = _coerce_positive_int(params.get("export_width", 1000), 1000)
+
+        engine = get_or_create_renderer()
+        original_screen_size = list(engine.screen_size)
+        if not original_screen_size or original_screen_size[0] <= 0:
+            original_screen_size = [96, 40]
+
+        aspect_ratio = float(original_screen_size[1]) / float(original_screen_size[0])
+        export_height = max(1, int(round(export_width * aspect_ratio)))
+
+        engine.screen_size = [export_width, export_height]
+        try:
+            out_guard, err_guard = _renderer_stdio_guard()
+            with out_guard, err_guard:
+                rendered = engine.render(merged_params)
+        finally:
+            engine.screen_size = original_screen_size
+
+        tactile_payload = _to_braille_payload(rendered)
+        response = {
+            "status": "success",
+            "message": "Export source render complete",
+            "image_shape": list(tactile_payload.shape),
+            "image_base64": _img_to_base64_png(tactile_payload),
+            "export_width": export_width,
+            "export_height": export_height,
+        }
+        return jsonify(response), 200
+    except Exception as error:
+        _log(f"Error rendering export source: {error}", force=True)
+        return jsonify({"status": "error", "message": str(error)}), 400
 
 
 def main() -> int:

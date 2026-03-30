@@ -68,15 +68,16 @@ _DOTPAD_TEXT_CELLS = 20
 
 @dataclass(frozen=True)
 class _ConnectedDevice:
-    kind: str  # "monarch" | "dotpad"
+    kind: str  # "monarch" | "dotpad" | "terminal"
     handle: object
 
 
 def send_to_braille_display(
     array: np.ndarray,
-    *,
+    device: _ConnectedDevice,
     dot_text_hex_data: str | None = None,
     scan_timeout: float = 6.0,
+    preferred_device: str = "auto",
 ) -> int:
     """Send an array to whichever supported braille display is available.
 
@@ -86,6 +87,7 @@ def send_to_braille_display(
             text area (20 cells) using this hex-encoded braille data.
             If no DotPad is available, raises BrailleDisplayError.
         scan_timeout: BLE scan timeout (seconds) used when DotPad discovery is needed.
+        preferred_device: Which device to target: "auto", "monarch", or "dotpad".
 
     Returns:
         Number of bytes written to the underlying transport.
@@ -96,7 +98,19 @@ def send_to_braille_display(
     """
 
     array_2d = _normalize_array(array)
-    device = _connect(scan_timeout=scan_timeout, prefer_dotpad=dot_text_hex_data is not None)
+    requested_device = (preferred_device or "auto").strip().lower()
+    if requested_device == "dot":
+        requested_device = "dotpad"
+    if requested_device not in {"auto", "monarch", "dotpad"}:
+        raise ValueError(
+            f"preferred_device must be one of 'auto', 'monarch', or 'dotpad'; got {preferred_device!r}"
+        )
+
+    #device = _connect(
+    #    scan_timeout=scan_timeout,
+    #    prefer_dotpad=dot_text_hex_data is not None,
+    #    preferred_device=requested_device,
+    #)
 
     if device.kind == "monarch":
         if dot_text_hex_data is not None:
@@ -113,7 +127,7 @@ def send_to_braille_display(
             dot_text_hex_data=dot_text_hex_data,
         )
 
-    raise BrailleDisplayError(f"Unsupported device kind: {device.kind}")
+    #raise BrailleDisplayError(f"Unsupported device kind: {device.kind}")
 
 
 def _normalize_array(array: np.ndarray) -> np.ndarray:
@@ -126,33 +140,34 @@ def _normalize_array(array: np.ndarray) -> np.ndarray:
     raise ValueError(f"Array must be 2D or (H, W, 1); got shape {array.shape}")
 
 
-def _connect(*, scan_timeout: float, prefer_dotpad: bool) -> _ConnectedDevice:
+def _connect(*, scan_timeout: float, prefer_dotpad: bool, preferred_device: str = "auto") -> _ConnectedDevice:
     """Pick whichever supported device is available.
 
-    Connection order:
-    1) Try DotPad BLE (existing connection first, then scan)
-    2) If no DotPad is present, try Monarch via HID enumeration filtering
-       manufacturer == Humanware, then open using discovered VID/PID.
+    preferred_device:
+    - "auto": DotPad first, then Monarch fallback.
+    - "dotpad": DotPad only.
+    - "monarch": Monarch only.
     """
 
-    # 1) Try DotPad as usual.
-    existing = _dotpad_manager_if_connected()
-    if existing is not None:
-        return _ConnectedDevice(kind="dotpad", handle=existing.address)
+    desired = (preferred_device or "auto").strip().lower()
+    if desired == "dot":
+        desired = "dotpad"
 
-    address = _dotpad_best_address(scan_timeout=scan_timeout)
-    if address is not None:
-        return _ConnectedDevice(kind="dotpad", handle=address)
+    def _try_dotpad() -> _ConnectedDevice | None:
+        existing = _dotpad_manager_if_connected()
+        if existing is not None:
+            return _ConnectedDevice(kind="dotpad", handle=existing.address)
 
-    # If DotPad-only features were requested and no DotPad was found, fail early.
-    if prefer_dotpad:
-        raise BrailleDisplayError(
-            "dot_text_hex_data requested but no DotPad was found."
-        )
+        address = _dotpad_best_address(scan_timeout=scan_timeout)
+        if address is not None:
+            return _ConnectedDevice(kind="dotpad", handle=address)
+        return None
 
-    # 2) If no DotPad, find Monarch by HID manufacturer and connect with discovered IDs.
-    monarch = _find_humanware_hid_device()
-    if monarch is not None:
+    def _try_monarch() -> _ConnectedDevice | None:
+        monarch = _find_humanware_hid_device()
+        if monarch is None:
+            return None
+
         vendor_id = monarch.get("vendor_id")
         product_id = monarch.get("product_id")
         if vendor_id is None or product_id is None:
@@ -163,9 +178,36 @@ def _connect(*, scan_timeout: float, prefer_dotpad: bool) -> _ConnectedDevice:
         h.open(int(vendor_id), int(product_id))
         return _ConnectedDevice(kind="monarch", handle=h)
 
-    raise BrailleDisplayError(
-        "No supported braille display detected. Expected DotPad (BLE) or Humanware HID device."
-    )
+    if desired == "dotpad":
+        dot = _try_dotpad()
+        if dot is not None:
+            return dot
+        raise BrailleDisplayError("DotPad selected, but no DotPad was found.")
+
+    if desired == "monarch":
+        monarch = _try_monarch()
+        if monarch is not None:
+            return monarch
+        raise BrailleDisplayError("Monarch selected, but no Humanware HID device was found.")
+
+    # Auto mode (default): DotPad first, then Monarch.
+    dot = _try_dotpad()
+    if dot is not None:
+        return dot
+
+    # If DotPad-only features were requested and no DotPad was found, fail early.
+    #if prefer_dotpad:
+    #    raise BrailleDisplayError("dot_text_hex_data requested but no DotPad was found.")
+
+    monarch = _try_monarch()
+    if monarch is not None:
+        return monarch
+
+    print("No supported braille display detected. Expected DotPad (BLE) or Humanware HID device. Using the terminal instead.")
+    return _ConnectedDevice(kind="terminal", handle=None)
+    #raise BrailleDisplayError(
+    #    "No supported braille display detected. Expected DotPad (BLE) or Humanware HID device."
+    #)
 
 
 def _find_humanware_hid_device() -> dict | None:
@@ -727,7 +769,7 @@ def main() -> int:
     args = parser.parse_args()
 
     # Detect which device we will use, so we can size the image appropriately.
-    device = _connect(scan_timeout=args.scan_timeout, prefer_dotpad=False)
+    device = _connect(scan_timeout=args.scan_timeout, prefer_dotpad=False, preferred_device="auto")
     height, width = _device_pixel_dims(device.kind)
     print(f"Detected device: {device.kind} (image {height}x{width} pixels)")
 
@@ -742,7 +784,11 @@ def main() -> int:
 
     img = _make_happy_face_pixels(height=height, width=width)
 
-    bytes_written = send_to_braille_display(img, scan_timeout=args.scan_timeout)
+    bytes_written = send_to_braille_display(
+        img,
+        scan_timeout=args.scan_timeout,
+        preferred_device=device.kind,
+    )
     print(f"Sent happy face (bytes_written={bytes_written})")
 
     if device.kind == "dotpad":
