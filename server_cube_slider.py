@@ -7,7 +7,10 @@ This server logs all user interactions from the HTML interface.
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from datetime import datetime
+from copy import copy
 import json
+import time
+import struct
 import os
 import io
 import base64
@@ -19,7 +22,7 @@ from braille_display import send_to_braille_display, BrailleDisplayError, _conne
 from src.converter.render_low_res import save_binary_array_as_vector_pdf
 
 import asyncio
-import bleak
+from bleak import BleakClient, BleakScanner
 import threading
 import godice
 import serial
@@ -77,6 +80,8 @@ print(f"Model list: {model_list}")
 renderer = None
 current_render = None  # Store the last rendered image
 device = None
+cube_value = None
+slider_value = 10
 
 # Default render parameters for startup
 DEFAULT_RENDER_PARAMS = {
@@ -555,90 +560,152 @@ def change_models():
             'message': str(e)
         }), 400
 
-view_cube_mapping = {
-    3: "x-",
-    4: "x+",
-    2: "y-",
-    5: "y+",
-    1: "z-",
-    6: "z+"
-}
+world_up = np.array([0, 0, 1])
 
-cube_value = view_cube_mapping[6]
-slider_value = 0
+# ---- CONFIG ----
+DEVICE_NAME = "WT901BLE68"     # change if needed
+RUN_DURATION = 30              # seconds to run before disconnecting
 
-async def notification_callback(number, stability_descr):
+# UUID for notify characteristic (common for WT901BLECL)
+NOTIFY_UUID = "0000ffe4-0000-1000-8000-00805f9a34fb"
+
+
+def hex_to_short(raw_data):
+    return list(struct.unpack("hhh", bytearray(raw_data)))
+
+buffer = b""
+angle = [0,0,0]
+first_angle = []
+
+verts = np.array([
+    [-1, -1, -1],
+    [ 1, -1, -1],
+    [ 1,  1, -1],
+    [-1,  1, -1],
+    [-1, -1,  1],
+    [ 1, -1,  1],
+    [ 1,  1,  1],
+    [-1,  1,  1],
+])
+
+faces = np.array([
+    [0,1,2],[0,2,3],  # bottom
+    [4,5,6],[4,6,7],  # top
+    [0,1,5],[0,5,4],  # front
+    [2,3,7],[2,7,6],  # back
+    [1,2,6],[1,6,5],  # right
+    [3,0,4],[3,4,7],  # left
+])
+
+face_normals = np.array([
+    [ 0,  0,  1],  # top (+Z)
+    [ 0,  0, -1],  # bottom (-Z)
+    [ 0,  1,  0],  # front (-X)
+    [ 0, -1,  0],  # back (+X)
+    [ 1,  0,  0],  # right (+Y)
+    [-1,  0,  0],  # left (-Y)
+])
+face_names = ["z+", "z-", "x-", "x+", "y+", "y-"]
+
+# --- Rotation helper ---
+def euler_to_matrix(x_deg, y_deg, z_deg):
+    x = np.radians(x_deg)
+    y = np.radians(y_deg)
+    z = np.radians(z_deg)
+    # Rotation matrices around X, Y, Z
+    Rx = np.array([[1,0,0],[0,np.cos(x),-np.sin(x)],[0,np.sin(x),np.cos(x)]])
+    Ry = np.array([[np.cos(y),0,np.sin(y)],[0,1,0],[-np.sin(y),0,np.cos(y)]])
+    Rz = np.array([[np.cos(z),-np.sin(z),0],[np.sin(z),np.cos(z),0],[0,0,1]])
+    # Combine Z * Y * X (intrinsic rotation)
+    return Rz @ Ry @ Rx
+
+def parse_61_frame(msg):
+	if msg[1] != 0x61:  # check frame type
+		return None
+	angle = [hex_to_short(msg[14:20])[i] / 32768.0 * 180 for i in range(0, 3)]
+	#print("x", angle[0], "y", angle[1], "z", angle[2])
+	return angle
+
+def notification_handler(sender, data):
+	global buffer
+	global angle
+	global first_angle
+	buffer += data
+	parts = buffer.split(b"\x55")
+	buffer = parts[-1]
+
+	for chunk in parts[:-1]:  
+		# add header back for parsing
+		msg = b"\x55" + chunk
+		try:
+			res = parse_61_frame(msg)
+			if res is not None:
+				angle = res
+				if len(first_angle) > 0:
+					angle[0] -= first_angle[0]
+					angle[1] -= first_angle[1]
+					angle[2] -= first_angle[2]
+		except:
+			continue
+
+async def main():
+    global angle
+    global first_angle
     global cube_value
-    """
-    GoDice number notification callback.
-    Called each time GoDice is flipped, receiving flip event data:
-    :param number: a rolled number
-    :param stability_descr: an additional value clarifying device movement state, ie stable, rolling...
-    """
-    if stability_descr in [godice.StabilityDescriptor.MOVE_STABLE, godice.StabilityDescriptor.STABLE]:
-        print(f"Number: {number}, stability descriptor: {stability_descr}")
-        cube_value = view_cube_mapping[number]
-        #return {'cube_value': view_cube_mapping[number]}
+    print("Scanning for device...")
+    device = await BleakScanner.find_device_by_name(DEVICE_NAME)
 
-def filter_godice_devices(dev_advdata_tuples):
-    """
-    Receives all discovered devices and returns only GoDice devices
-    """
-    return [
-        (dev, adv_data)
-        for dev, adv_data in dev_advdata_tuples
-        if (dev.name and dev.name.startswith("GoDice"))
-    ]
+    if device is None:
+        print("Device not found.")
+        return
 
+    print(f"Connecting to {device.name}...")
+    previous_angle = []
 
-def select_closest_device(dev_advdata_tuples):
-    """
-    Finds the closest device based on RSSI are returns it
-    """
-    def _rssi_as_key(dev_advdata):
-        _, adv_data = dev_advdata
-        return adv_data.rssi
+    async with BleakClient(device) as client:
 
-    return max(dev_advdata_tuples, key=_rssi_as_key)
+        print("Connected!")
 
+        print("\n=== SERVICES ===")
+        for service in client.services:
+            print(f"[Service] {service.uuid}")
+            for char in service.characteristics:
+                props = ",".join(char.properties)
+                print(f"  └── {char.uuid} ({props})")
 
-def print_device_info(devices):
-    """
-    Prints short summary of discovered devices
-    """
-    for dev, adv_data in devices:
-        print(f"Name: {dev.name}, address: {dev.address}, rssi: {adv_data.rssi}")
+            if not client.is_connected:
+                print("Failed to connect.")
+                return
 
-async def godice_main():
-    global dice
-    #print("Discovering GoDice devices...")
-    print("Discovering  devices...")
-    discovery_res = await bleak.BleakScanner.discover(timeout=10, return_adv=True)
-    device_advdata_tuples = discovery_res.values()
-    device_advdata_tuples = filter_godice_devices(device_advdata_tuples)
+        print("Connected!")
 
-    print("Discovered devices...")
-    print_device_info(device_advdata_tuples)
+        await client.start_notify(NOTIFY_UUID, notification_handler)
 
-    print("Connecting to a closest device...")
-    device, _adv_data = select_closest_device(device_advdata_tuples)
+        print(f"Reading angles for {RUN_DURATION} seconds...\n")
+        start = time.time()
 
-    async with godice.create(device.address, godice.Shell.D6) as dice:
-        print(f"Connected to {device.name}")
-
-        color = await dice.get_color()
-        battery_lvl = await dice.get_battery_level()
-        print(f"Color: {color}")
-        print(f"Battery: {battery_lvl}")
-
-        print("Listening to position updates. Flip your dice")
-        await dice.subscribe_number_notification(notification_callback)
+        #while time.time() - start < RUN_DURATION:
         while True:
-            await asyncio.sleep(30)  # sleep to keep callbacks alive
-    print("end godice")
+            # we switch faces if a particular axis passes the 45 degree mark
+            await asyncio.sleep(0.1)
+            #print(angle)
+            if len(first_angle) == 0 and time.time() - start > 5.0 and angle is not None:
+                first_angle = copy(angle)
+                print("FIRST_ANGLE", first_angle)
+            R = euler_to_matrix(*angle)
+            rotated_normals = face_normals @ R.T  # rotate normals to world frame
+            dots = rotated_normals @ world_up  # dot product with up vector
+            up_face_index = np.argmax(dots)    # the face most aligned with up
+            up_face_name = face_names[up_face_index]
+            #print(up_face_name)
+            cube_value = up_face_name
 
-def dice_main_thread():
-    asyncio.run(godice_main())
+        await client.stop_notify(NOTIFY_UUID)
+
+print("Disconnected.")
+
+def run_wimotion_loop():
+    asyncio.run(main())
 
 
 def start_slider_trinkey():
@@ -710,6 +777,6 @@ if __name__ == '__main__':
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
     print("\nWaiting for commands...\n")
-    #threading.Thread(target=dice_main_thread, daemon=True).start()
+    threading.Thread(target=run_wimotion_loop, daemon=True).start()
     #threading.Thread(target=start_slider_trinkey, daemon=True).start()
     app.run(debug=False, host='0.0.0.0', port=6969)
