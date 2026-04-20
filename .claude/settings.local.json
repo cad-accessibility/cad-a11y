@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(gh api:*)",
+      "Bash(xargs curl:*)",
+      "Bash(curl -sL https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/README.md)",
+      "Bash(curl -sL https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/3.0.0/README.md)",
+      "Bash(curl -sL https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/1.0.0/DemoApp/src/DotPadSDK-1.0.0.js)",
+      "Bash(curl -sL https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/3.0.0/DemoApp/src/sdk/DotPadSDK-3.0.0.js)",
+      "Bash(curl -sL https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/3.0.0/DemoApp/src/sdk/DotPadSDK-3.0.0.d.ts)",
+      "Bash(curl -sL https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/1.0.0/DemoApp/src/App.tsx)",
+      "Bash(curl -sL https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/1.0.0/DemoApp/src/App.css)",
+      "Bash(curl -sL https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/1.0.0/DemoApp/src/index.tsx)",
+      "Bash(curl -sL https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/1.0.0/DemoApp/package.json)",
+      "Bash(curl -sL https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/3.0.0/DemoApp/src/App.tsx)",
+      "Bash(curl -sL https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/3.0.0/DemoApp/src/App.css)",
+      "Bash(curl -sL https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/3.0.0/DemoApp/src/index.tsx)",
+      "Bash(curl -sL https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/3.0.0/DemoApp/package.json)",
+      "Bash(curl -sL https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/1.0.0/DemoApp/public/index.html)",
+      "Bash(curl -sL https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/3.0.0/DemoApp/public/index.html)",
+      "Bash(curl -sL https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/1.0.0/DemoApp/src/index.css)",
+      "Bash(curl -sL https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/3.0.0/DemoApp/src/index.css)",
+      "Bash(grep -v \"^d.*\\\\.$\")",
+      "WebFetch(domain:api.github.com)",
+      "Bash(git show-branch:*)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/3.0.0/DemoApp/src/sdk/DotPadSDK-3.0.0.js\" -o \"/Users/ctejada/Library/CloudStorage/Dropbox/repositories/cad-a11y/static/js/DotPadSDK-3.0.0.js\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/dotincorp/dotpad-sample-code/main/Web/3.0.0/DemoApp/src/App.tsx\" -o \"/tmp/dotpad-app-tsx-reference.txt\")",
+      "Read(//tmp/**)",
+      "Bash(python3 -c \"import ast; tree = ast.parse\\(open\\('server.py'\\).read\\(\\)\\); [print\\(node.name, node.lineno\\) for node in ast.walk\\(tree\\) if isinstance\\(node, \\(ast.FunctionDef, ast.AsyncFunctionDef\\)\\)]\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('server.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import server; print\\('server imports OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('/Users/ctejada/Library/CloudStorage/Dropbox/repositories/cad-a11y/server.py'\\).read\\(\\)\\); print\\('server.py: syntax OK'\\)\")",
+      "Bash(python3 -c ':*)"
+    ]
+  }
+}

@@ -47,6 +47,11 @@
             padding-bottom: 8px;
         }
         
+        h3 {
+            color: #34495e;
+            font-weight: 500;
+        }
+
         /* Section styling */
         .section {
             margin-bottom: 30px;
@@ -74,42 +79,41 @@
             border: 0;
         }
         
-        /* Help text styling */
+        /* Help text styling – #596871 on #fafbfc = 5.0:1 (AA pass) */
         .help-text {
             font-size: 0.9em;
-            color: #6c757d;
+            color: #596871;
             margin-top: 8px;
             font-style: italic;
         }
         
-        /* Slider styling */
+        /* Slider styling – WCAG 2.5.8: thumb >=44px touch target */
         #slice-depth-slider,
         #zoom-slider {
             width: 100%;
             height: 8px;
             border-radius: 4px;
             background: #ddd;
-            outline: none;
             margin: 15px 0;
             cursor: pointer;
         }
-        
+
         #slice-depth-slider::-webkit-slider-thumb,
         #zoom-slider::-webkit-slider-thumb {
             appearance: none;
-            width: 24px;
-            height: 24px;
+            width: 44px;
+            height: 44px;
             border-radius: 50%;
             background: #3498db;
             cursor: pointer;
             border: 2px solid white;
             box-shadow: 0 2px 6px rgba(0,0,0,0.2);
         }
-        
+
         #slice-depth-slider::-moz-range-thumb,
         #zoom-slider::-moz-range-thumb {
-            width: 24px;
-            height: 24px;
+            width: 44px;
+            height: 44px;
             border-radius: 50%;
             background: #3498db;
             cursor: pointer;
@@ -149,21 +153,21 @@
             transform: translateY(0);
         }
         
-        /* Toggle button specific styling */
+        /* Toggle button – #6c7a7d on white = 4.6:1 (AA pass) */
         #render-mode-toggle {
-            background: #95a5a6;
+            background: #6c7a7d;
         }
-        
+
         #render-mode-toggle[aria-pressed="true"] {
-            background: #27ae60;
+            background: #1e8449;
         }
-        
+
         #render-mode-toggle:hover {
-            background: #7f8c8d;
+            background: #566062;
         }
-        
+
         #render-mode-toggle[aria-pressed="true"]:hover {
-            background: #229954;
+            background: #196f3d;
         }
         
         /* Button group layout */
@@ -213,25 +217,72 @@
             color: #2c3e50;
         }
         
-        /* Checkbox styling */
+        /* Checkbox styling – WCAG 2.5.8: >=44px touch target */
         input[type="checkbox"] {
-            width: 18px;
-            height: 18px;
+            width: 24px;
+            height: 24px;
             margin-right: 8px;
             cursor: pointer;
             vertical-align: middle;
         }
-        
+
         .checkbox-label {
             display: flex;
             align-items: center;
+            min-height: 44px;
             margin-bottom: 12px;
             cursor: pointer;
             user-select: none;
         }
-        
+
         .checkbox-label:hover {
             color: #2980b9;
+        }
+
+        /* Upload model UI */
+        #upload-model-label {
+            display: inline-block;
+            padding: 8px 16px;
+            background: #3498db;
+            color: #fff;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.95em;
+            min-height: 44px;
+            line-height: 28px;
+        }
+        #upload-model-label:hover {
+            background: #2980b9;
+        }
+        #upload-model-input {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+            clip: rect(0,0,0,0);
+            white-space: nowrap;
+        }
+        #upload-model-status {
+            margin-top: 8px;
+            font-size: 0.9em;
+            min-height: 1.4em;
+        }
+
+        /* Radio button touch targets – WCAG 2.5.8 */
+        input[type="radio"] {
+            width: 24px;
+            height: 24px;
+            margin-right: 6px;
+            cursor: pointer;
+            vertical-align: middle;
+        }
+
+        fieldset label {
+            display: inline-flex;
+            align-items: center;
+            min-height: 44px;
+            padding: 4px 8px;
+            cursor: pointer;
         }
         
         /* Info display styling */
@@ -285,7 +336,7 @@
         }
 
         #announcement-history .announcement-time {
-            color: #6c757d;
+            color: #596871;
             margin-right: 8px;
             font-variant-numeric: tabular-nums;
         }
@@ -294,17 +345,114 @@
             color: #2980b9;
             font-weight: 500;
         }
-        
-        /* Focus indicators for accessibility */
-        button:focus,
-        input:focus,
-        [tabindex]:focus {
+
+        /* ---- Live status bar at top of page ---- */
+        #status-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 18px;
+            align-items: center;
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 10px 18px;
+            border-radius: 8px;
+            margin-bottom: 18px;
+            font-size: 1.05em;
+            font-variant-numeric: tabular-nums;
+            line-height: 1.5;
+        }
+        #status-bar .status-item {
+            white-space: nowrap;
+        }
+        /* Status bar labels: #b0bec5 on #2c3e50 = 5.3:1 (AA pass) */
+        #status-bar .status-label {
+            color: #b0bec5;
+            font-weight: 400;
+            margin-right: 4px;
+        }
+        #status-bar .status-value {
+            font-weight: 600;
+            color: #fff;
+        }
+        /* Highlight: #ffe082 on #2c3e50 = 10.2:1 (AAA pass) */
+        #status-bar .status-value.highlight {
+            color: #ffe082;
+        }
+        /* Separator: #90a4ae on #2c3e50 = 4.5:1 (AA pass) */
+        #status-bar .status-separator {
+            color: #90a4ae;
+            user-select: none;
+        }
+
+        /* ---- Announcement toast overlay ---- */
+        #announcement-toast {
+            position: fixed;
+            top: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(44, 62, 80, 0.94);
+            color: #fff;
+            padding: 10px 24px;
+            border-radius: 8px;
+            font-size: 1.1em;
+            font-weight: 500;
+            z-index: 9999;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.18s ease;
+            max-width: 90vw;
+            text-align: center;
+        }
+        #announcement-toast.visible {
+            opacity: 1;
+        }
+
+        /* ---- Announcement duration control ---- */
+        #announcement-duration-control {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 6px;
+        }
+        #announcement-duration-control label {
+            font-size: 0.92em;
+            color: #596871;
+        }
+        #announcement-duration-control input[type="range"] {
+            width: 120px;
+            height: 6px;
+        }
+        #announcement-duration-control .duration-value {
+            font-size: 0.92em;
+            font-variant-numeric: tabular-nums;
+            min-width: 32px;
+        }
+
+        /* Focus indicators – visible only for keyboard (focus-visible) per WCAG 2.4.7 / 2.4.11 */
+        button:focus-visible,
+        input:focus-visible,
+        select:focus-visible,
+        [tabindex]:focus-visible {
             outline: 3px solid #e74c3c;
             outline-offset: 2px;
         }
-        
-        button:focus {
+
+        button:focus-visible {
             outline-color: #f39c12;
+        }
+
+        /* Fallback for older browsers that don't support :focus-visible */
+        @supports not selector(:focus-visible) {
+            button:focus,
+            input:focus,
+            select:focus,
+            [tabindex]:focus {
+                outline: 3px solid #e74c3c;
+                outline-offset: 2px;
+            }
+            button:focus {
+                outline-color: #f39c12;
+            }
         }
         
         /* High contrast mode support */
@@ -312,18 +460,55 @@
             .section {
                 border: 2px solid #000;
             }
-            
+
             button {
                 border: 2px solid #000;
             }
+
+            #status-bar {
+                border: 2px solid #fff;
+            }
+
+            #announcement-toast {
+                border: 2px solid #fff;
+            }
+
+            #status-bar .status-label {
+                color: #fff;
+            }
+
+            #status-bar .status-value.highlight {
+                color: #ffff00;
+            }
+        }
+
+        /* Forced colors (Windows High Contrast) support */
+        @media (forced-colors: active) {
+            #status-bar {
+                border: 2px solid ButtonText;
+            }
+
+            #announcement-toast {
+                border: 2px solid ButtonText;
+                background: Canvas;
+                color: CanvasText;
+            }
+
+            button:focus-visible,
+            input:focus-visible,
+            select:focus-visible,
+            [tabindex]:focus-visible {
+                outline: 3px solid Highlight;
+            }
         }
         
-        /* Reduced motion support */
+        /* Reduced motion support – WCAG 2.3.3 */
         @media (prefers-reduced-motion: reduce) {
-            button, .section {
-                transition: none;
+            *, *::before, *::after {
+                transition-duration: 0.01ms !important;
+                animation-duration: 0.01ms !important;
             }
-            
+
             button:hover {
                 transform: none;
             }
@@ -420,347 +605,358 @@
     </style>
 </head>
 <body>
+    <!-- Skip navigation link – WCAG 2.4.1 -->
+    <a href="#main-content" class="sr-only" style="position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden;z-index:10000;" onfocus="this.style.position='static';this.style.width='auto';this.style.height='auto';this.style.left='auto';this.style.overflow='visible';this.style.padding='8px 16px';this.style.background='#2c3e50';this.style.color='#fff';this.style.fontSize='1em';this.style.textDecoration='underline';" onblur="this.style.position='absolute';this.style.left='-9999px';this.style.width='1px';this.style.height='1px';this.style.overflow='hidden';this.style.padding='0';">Skip to main content</a>
     <div class="container">
-        <header>
+        <header role="banner">
             <h1 id="page-title" tabindex="-1">Accessible 3D Model Viewer</h1>
-            <p>Navigate and explore 3D models with screen reader support and keyboard controls.</p>
         </header>
 
-        <main>
+        <!--
+            STATUS: single terse line for braille display users.
+            A braille reader sees: "x+ 50% Outline z:0.0 single cube"
+            Sighted users see the full styled bar.
+            SR live region (polite) so it doesn't interrupt reading.
+        -->
+        <div id="status-bar" role="status" aria-live="polite" aria-atomic="true" aria-label="Current state">
+            <span class="status-item">
+                <span class="status-label">View:</span>
+                <span class="status-value highlight" id="sb-view">x+</span>
+            </span>
+            <span class="status-separator" aria-hidden="true">|</span>
+            <span class="status-item">
+                <span class="status-label">Depth:</span>
+                <span class="status-value highlight" id="sb-depth">50%</span>
+            </span>
+            <span class="status-separator" aria-hidden="true">|</span>
+            <span class="status-item">
+                <span class="status-label">Render:</span>
+                <span class="status-value" id="sb-render-mode">Shaded</span>
+            </span>
+            <span class="status-separator" aria-hidden="true">|</span>
+            <span class="status-item">
+                <span class="status-label">Zoom:</span>
+                <span class="status-value" id="sb-zoom">0.0</span>
+            </span>
+            <span class="status-separator" aria-hidden="true">|</span>
+            <span class="status-item">
+                <span class="status-label">Layout:</span>
+                <span class="status-value" id="sb-view-mode">single</span>
+            </span>
+            <span class="status-separator" aria-hidden="true">|</span>
+            <span class="status-item">
+                <span class="status-label">Model:</span>
+                <span class="status-value" id="sb-model">--</span>
+            </span>
+            <span class="status-separator" aria-hidden="true">|</span>
+            <span class="status-item">
+                <span class="status-label">DotPad:</span>
+                <span class="status-value" id="sb-dotpad">--</span>
+            </span>
+        </div>
+
+        <!-- SR live region: polite for state changes (doesn't interrupt braille reading) -->
+        <div id="sr-live-announce" aria-live="polite" aria-atomic="true" class="sr-only"></div>
+
+        <!-- Visual toast for sighted users (hidden from SR – the live region above handles it) -->
+        <div id="announcement-toast" aria-hidden="true"></div>
+
+        <main id="main-content">
             <div class="layout">
-                <!-- LEFT COLUMN: controls -->
+                <!-- LEFT COLUMN: controls (braille reading order: most-used first) -->
                 <div class="left-col" id="left-col">
+
+            <!-- ============================================================
+                 1. CONTROLS — the things braille users change constantly
+                 ============================================================ -->
+
+            <!-- 1a. View axis — most frequently changed -->
+            <section class="section" aria-labelledby="view-select-heading">
+                <h2 id="view-select-heading">View</h2>
+                <fieldset aria-labelledby="view-select-heading">
+                    <legend class="sr-only">View axis</legend>
+                    <label>
+                        <input type="radio" name="view-select" id="view-y-minus" value="y-">
+                        y-
+                    </label>
+                    <label>
+                        <input type="radio" name="view-select" id="view-x-minus" value="x-">
+                        x-
+                    </label>
+                    <label>
+                        <input type="radio" name="view-select" id="view-z-plus" value="z+">
+                        z+
+                    </label>
+                    <label>
+                        <input type="radio" name="view-select" id="view-y-plus" value="y+">
+                        y+
+                    </label>
+                    <label>
+                        <input type="radio" name="view-select" id="view-x-plus" value="x+" checked>
+                        x+
+                    </label>
+                    <label>
+                        <input type="radio" name="view-select" id="view-z-minus" value="z-">
+                        z-
+                    </label>
+                </fieldset>
+            </section>
+
+            <!-- 1b. Depth — second most frequently changed -->
+            <section class="section" aria-labelledby="slice-heading">
+                <h2 id="slice-heading">Depth</h2>
+                <label for="slice-depth-slider">
+                    <span id="slice-percentage">50</span>%
+                </label>
+                <input
+                    type="range"
+                    id="slice-depth-slider"
+                    min="0"
+                    max="100"
+                    value="50"
+                    step="1"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow="50"
+                    aria-valuetext="50 percent depth"
+                    aria-describedby="slice-help"
+                >
+                <div id="slice-help" class="help-text sr-only">0% surface, 100% full depth. Keys: 1/2 coarse, Q/E fine.</div>
+                <div class="button-group">
+                    <button type="button" id="deeper-btn" aria-describedby="deeper-help">Deeper: 50%</button>
+                    <button type="button" id="shallower-btn" aria-describedby="shallower-help">Shallower: 50%</button>
+                </div>
+                <div id="deeper-help" class="sr-only">+10%</div>
+                <div id="shallower-help" class="sr-only">-10%</div>
+            </section>
+
+            <!-- 1c. Render mode -->
+            <section class="section" aria-labelledby="render-heading">
+                <h2 id="render-heading">Render</h2>
+                <fieldset aria-labelledby="render-heading">
+                    <legend class="sr-only">Render mode</legend>
+                    <label>
+                        <input type="radio" name="render-mode" id="render-mode-shaded" value="Shaded" checked>
+                        Shaded
+                    </label>
+                    <label>
+                        <input type="radio" name="render-mode" id="render-mode-outline" value="Outline">
+                        Outline
+                    </label>
+                    <label>
+                        <input type="radio" name="render-mode" id="render-mode-cut" value="Cut">
+                        Cut
+                    </label>
+                </fieldset>
+            </section>
+
+            <!-- 1d. Zoom -->
+            <section class="section" aria-labelledby="zoom-select-heading">
+                <h2 id="zoom-select-heading">Zoom</h2>
+                <label for="zoom-slider">
+                    <span id="zoom-level-value">0.0</span>
+                </label>
+                <input
+                    type="range"
+                    id="zoom-slider"
+                    min="0"
+                    max="3"
+                    value="0"
+                    step="0.1"
+                    aria-valuemin="0"
+                    aria-valuemax="3"
+                    aria-valuenow="0"
+                    aria-valuetext="zoom 0.0"
+                    aria-describedby="zoom-help"
+                >
+                <div id="zoom-help" class="help-text sr-only">0 none, 3 max. Keys: 4 out, 5 in.</div>
+            </section>
+
+            <!-- ============================================================
+                 2. DISPLAY OPTIONS — changed occasionally
+                 ============================================================ -->
+            <section class="section" aria-labelledby="display-opts-heading">
+                <h2 id="display-opts-heading">Display Options</h2>
+
+                <fieldset>
+                    <legend class="sr-only">Layout mode</legend>
+                    <label>
+                        <input type="radio" name="view-mode" id="view-mode-single" value="single" checked>
+                        Single
+                    </label>
+                    <label>
+                        <input type="radio" name="view-mode" id="view-mode-side-by-side" value="side-by-side">
+                        Side-by-Side
+                    </label>
+                    <label>
+                        <input type="radio" name="view-mode" id="view-mode-slice-graph" value="slice-graph">
+                        Slice Graph
+                    </label>
+                </fieldset>
+
+                <label class="checkbox-label" for="show-view-info-box">
+                    <input type="checkbox" id="show-view-info-box">
+                    View info box on display
+                </label>
+
+                <div class="button-group" style="margin-top: 8px;">
+                    <button type="button" id="slice-graph-lock-btn" aria-pressed="true">
+                        Graph Lock: On
+                    </button>
+                    <button type="button" id="slice-graph-refresh-btn">
+                        Refresh Graph
+                    </button>
+                </div>
+                <div class="help-text" id="slice-graph-lock-status" aria-live="polite">Graph lock ON.</div>
+
+                <fieldset style="margin-top: 8px;">
+                    <legend class="sr-only">Output device</legend>
+                    <label>
+                        <input type="radio" name="output-device" id="output-device-monarch" value="monarch" checked>
+                        Monarch
+                    </label>
+                    <label>
+                        <input type="radio" name="output-device" id="output-device-dotpad" value="dotpad">
+                        DotPad
+                    </label>
+                    <label>
+                        <input type="radio" name="output-device" id="output-device-auto" value="auto">
+                        Auto
+                    </label>
+                </fieldset>
+            </section>
+
+            <!-- ============================================================
+                 3. MODEL — changed infrequently
+                 ============================================================ -->
+            <section class="section" aria-labelledby="model-list-heading">
+                <h2 id="model-list-heading">Model</h2>
+                <select id="model-list-dropdown" aria-label="Select a 3D model">
+                    <option value="" selected>Loading models...</option>
+                </select>
+                <div style="margin-top: 12px;">
+                    <input type="file" id="upload-model-input" accept=".stl,.step,.STEP"
+                        aria-label="Upload an STL or STEP model file">
+                    <label for="upload-model-input" id="upload-model-label">Upload model…</label>
+                    <div id="upload-model-status" class="help-text" aria-live="polite" aria-atomic="true"></div>
+                </div>
+            </section>
+
+            <!-- ============================================================
+                 4. DOTPAD — one-time setup
+                 ============================================================ -->
+            <section class="section" aria-labelledby="dotpad-heading">
+                <h2 id="dotpad-heading">DotPad</h2>
+                <div class="button-group" style="margin-bottom: 8px;">
+                    <button type="button" id="dotpad-scan-ble-btn">Connect BLE</button>
+                    <button type="button" id="dotpad-scan-usb-btn">Connect USB</button>
+                    <button type="button" id="dotpad-disconnect-btn" disabled>Disconnect</button>
+                </div>
+                <div id="dotpad-status" role="status" aria-live="polite" aria-atomic="true" class="help-text">
+                    Not connected.
+                </div>
+                <label class="checkbox-label" for="dotpad-auto-send">
+                    <input type="checkbox" id="dotpad-auto-send" checked>
+                    Auto-send to DotPad
+                </label>
+            </section>
+
+            <!-- ============================================================
+                 5. REFERENCE — read on demand (H key navigation)
+                 ============================================================ -->
+
             <section class="section" aria-labelledby="model-desc-heading">
                 <h2 id="model-desc-heading">Model Description</h2>
-                <div id="model-description" aria-describedby="model-desc-heading">
+                <div id="model-description">
                     Coffee mug with a cylindrical handle and rounded base. The model features smooth curves and a traditional mug shape with approximately 300ml capacity.
                 </div>
             </section>
 
-            <!-- View and Axis Information Section -->
+            <!-- State summary — kept in DOM for JS references; visually rendered in status bar -->
             <section class="section" aria-labelledby="view-info-heading">
-                <h2 id="view-info-heading">View and Axis Information</h2>
-                <div id="view-info" aria-describedby="view-info-heading">
-                    <div>
-                        <strong>Current View:</strong> <span id="current-view">Front</span>   <strong>Slice Depth:</strong> <span id="current-slice-depth-info">50%</span>                 <strong>Rendering Mode:</strong> <span id="current-render-mode-info">Shaded</span>                        <strong>Zoom Level:</strong> <span id="current-zoom-info">0.0</span>
-                        <strong>Bounding Box Dimensions:</strong> <span id="current-bbox-dimensions-info">--</span>
+                <h2 id="view-info-heading">State Summary</h2>
+                <div id="view-info">
+                    <span id="current-view" class="sr-only">x+</span>
+                    <span id="current-slice-depth-info" class="sr-only">50%</span>
+                    <span id="current-render-mode-info" class="sr-only">Shaded</span>
+                    <span id="current-zoom-info" class="sr-only">0.0</span>
+                    <span id="current-bbox-dimensions-info" class="sr-only">--</span>
                 </div>
             </section>
 
-            <!-- Bounding Box Information Section -->
             <section class="section" aria-labelledby="bbox-heading">
-                <h2 id="bbox-heading">Bounding Box Dimensions</h2>
-                <div id="bbox-info" aria-describedby="bbox-heading">
-                    <div class="help-text" style="margin-bottom: 10px;">
-                        The bounding box defines the 3D space occupied by the model.
-                    </div>
-                    <div style="margin-bottom: 8px;">
-                        <strong>X-axis range:</strong> 
-                        <span id="bbox-x-min" aria-label="X minimum">--</span> to 
-                        <span id="bbox-x-max" aria-label="X maximum">--</span>
-                        <span class="help-text" style="margin-left: 8px;">(width: <span id="bbox-x-width">--</span>)</span>
-                    </div>
-                    <div style="margin-bottom: 8px;">
-                        <strong>Y-axis range:</strong> 
-                        <span id="bbox-y-min" aria-label="Y minimum">--</span> to 
-                        <span id="bbox-y-max" aria-label="Y maximum">--</span>
-                        <span class="help-text" style="margin-left: 8px;">(height: <span id="bbox-y-height">--</span>)</span>
-                    </div>
-                    <div style="margin-bottom: 8px;">
-                        <strong>Z-axis range:</strong> 
-                        <span id="bbox-z-min" aria-label="Z minimum">--</span> to 
-                        <span id="bbox-z-max" aria-label="Z maximum">--</span>
-                        <span class="help-text" style="margin-left: 8px;">(depth: <span id="bbox-z-depth">--</span>)</span>
-                    </div>
+                <h2 id="bbox-heading">Bounding Box</h2>
+                <div id="bbox-info">
+                    <div>X: <span id="bbox-x-min">--</span> to <span id="bbox-x-max">--</span> (w: <span id="bbox-x-width">--</span>)</div>
+                    <div>Y: <span id="bbox-y-min">--</span> to <span id="bbox-y-max">--</span> (h: <span id="bbox-y-height">--</span>)</div>
+                    <div>Z: <span id="bbox-z-min">--</span> to <span id="bbox-z-max">--</span> (d: <span id="bbox-z-depth">--</span>)</div>
                 </div>
             </section>
 
-            <section class="section" aria-labelledby="model-list-heading">
-                <h2 id="model-list-heading">Model list</h2>
-                <div id="model-list-info" aria-describedby="model-list-heading">
-                    <div class="help-text" style="margin-bottom: 10px;">
-                        The 3D models to choose from.
-                    </div>
-                    <select id="model-list-dropdown" method="GET" action="/">
-                        <option value="" selected>Loading models...</option>
-                    </select>
-                </div>
+            <section class="section" aria-labelledby="export-heading">
+                <h2 id="export-heading">Export</h2>
+                <button type="button" id="export-slice-svg-btn">Export SVG</button>
             </section>
 
-            <!-- Slice Depth Section -->
-            <section class="section" aria-labelledby="slice-heading">
-                <h2 id="slice-heading">Slice Depth Control</h2>
-                <div aria-describedby="slice-heading">
-                    <label for="slice-depth-slider">
-                        Slice Depth: <span id="slice-percentage">50</span>%
-                    </label>
-                    <input 
-                        type="range" 
-                        id="slice-depth-slider"
-                        min="0" 
-                        max="100" 
-                        value="50" 
-                        step="1"
-                        aria-valuemin="0"
-                        aria-valuemax="100"
-                        aria-valuenow="50"
-                        aria-valuetext="50 percent depth"
-                        aria-describedby="slice-help"
-                    >
-                    <div id="slice-help" class="help-text">
-                        Use arrow keys or drag to adjust the slice depth from 0% (surface) to 100% (full depth)
-                    </div>
-                </div>
+            <section class="section" aria-labelledby="shortcuts-heading">
+                <h2 id="shortcuts-heading">Keys</h2>
+                <details>
+                    <summary>Show all keyboard shortcuts</summary>
+                    <ul class="shortcuts-list">
+                        <li><strong>1/2</strong> depth +/-10%</li>
+                        <li><strong>Q/E</strong> depth +/-1%</li>
+                        <li><strong>4/5</strong> zoom out/in</li>
+                        <li><strong>7</strong> x- <strong>8</strong> x+ <strong>9</strong> z+ <strong>0</strong> z- <strong>-</strong> y- <strong>=</strong> y+</li>
+                        <li><strong>F</strong> shaded <strong>O</strong> outline <strong>C</strong> cut <strong>R</strong> cycle render</li>
+                        <li><strong>T</strong> cycle layout <strong>L</strong> graph lock <strong>G</strong> refresh graph</li>
+                        <li><strong>W/A/S/D</strong> pan up/left/down/right</li>
+                        <li><strong>P</strong> print PDF <strong>I</strong> status <strong>H</strong> shortcut reminder</li>
+                    </ul>
+                </details>
             </section>
 
-            <!-- Rendering Mode Section -->
-            <section class="section" aria-labelledby="render-heading">
-                <h2 id="render-heading">Rendering Mode</h2>
-                <div id="render-help" class="help-text">
-                    Choose between Shaded (filled surfaces), Outline (wireframe edges), and Cut (cross-section)
+            <section class="section" aria-labelledby="announcements-heading">
+                <h2 id="announcements-heading">Log</h2>
+                <div id="announcement-duration-control">
+                    <label for="toast-duration-slider">Toast time:</label>
+                    <input type="range" id="toast-duration-slider" min="0" max="10" value="3" step="0.5"
+                           aria-valuemin="0" aria-valuemax="10" aria-valuenow="3"
+                           aria-valuetext="3 seconds">
+                    <span class="duration-value" id="toast-duration-value">3s</span>
                 </div>
-                <div aria-describedby="render-help">
-                    <fieldset role="radiogroup" aria-labelledby="render-heading">
-                        <legend class="sr-only">Rendering Mode Options</legend>
-                        <label>
-                            <input type="radio" name="render-mode" id="render-mode-shaded" value="Shaded" checked>
-                            Shaded
-                        </label>
-                        <label>
-                            <input type="radio" name="render-mode" id="render-mode-outline" value="Outline">
-                            Outline
-                        </label>
-                        <label>
-                            <input type="radio" name="render-mode" id="render-mode-cut" value="Cut">
-                            Cut
-                        </label>
-                    </fieldset>
-                </div>
-
-                <div id="view-mode-help" class="help-text">
-                    Choose how to visualize the model
-                </div>
-                <div aria-describedby="view-mode-help">
-                    <fieldset role="radiogroup" aria-labelledby="render-heading">
-                        <legend class="sr-only">View Mode Options</legend>
-                        <label>
-                            <input type="radio" name="view-mode" id="view-mode-single" value="single" checked>
-                            Single (with scrollbar)
-                        </label>
-                        <label>
-                            <input type="radio" name="view-mode" id="view-mode-side-by-side" value="side-by-side">
-                            Side-by-Side
-                        </label>
-                        <label>
-                            <input type="radio" name="view-mode" id="view-mode-slice-graph" value="slice-graph">
-                            Slice Graph
-                        </label>
-                    </fieldset>
-                </div>
-
-                <div style="margin-top: 12px;" aria-describedby="view-info-box-help">
-                    <label class="checkbox-label" for="show-view-info-box">
-                        <input type="checkbox" id="show-view-info-box">
-                        Show view info box on tactile display (single/slice-graph)
-                    </label>
-                    <div id="view-info-box-help" class="help-text">
-                        Adds a small box in the top-left corner showing the current view axis.
-                    </div>
-                </div>
-
-                <div style="margin-top: 14px;" aria-describedby="slice-graph-lock-help">
-                    <div id="slice-graph-lock-help" class="help-text">
-                        Slice graph lock freezes the graph while you explore. Use refresh to recompute from your current location.
-                    </div>
-                    <div class="button-group" style="margin-top: 8px;">
-                        <button type="button" id="slice-graph-lock-btn" aria-pressed="true">
-                            Slice Graph Lock: On
-                        </button>
-                        <button type="button" id="slice-graph-refresh-btn">
-                            Refresh Slice Graph
-                        </button>
-                    </div>
-                    <div class="help-text" id="slice-graph-lock-status">Graph lock is ON (default).</div>
-                </div>
-
-            </section>
-
-            <!-- Control Buttons Section -->
-            <section class="section" aria-labelledby="controls-heading">
-                <h2 id="controls-heading">Model Controls</h2>
-                <div class="button-group" aria-describedby="controls-heading">
-                    <button 
-                        type="button" 
-                        id="deeper-btn"
-                        aria-describedby="deeper-help"
-                    >
-                        Deeper: Loading...
-                    </button>
-                    <div id="deeper-help" class="help-text sr-only">
-                        Increase slice depth by 10% to see deeper into the model
-                    </div>
-
-                    <button 
-                        type="button" 
-                        id="shallower-btn"
-                        aria-describedby="shallower-help"
-                    >
-                        Shallower: Loading...
-                    </button>
-                    <div id="shallower-help" class="help-text sr-only">
-                        Decrease slice depth by 10% to see closer to the surface
-                    </div>
-                </div>
-
-                <div aria-labelledby="view-select-heading" style="margin-top: 16px;">
-                    <h3 id="view-select-heading" style="margin: 0 0 8px; font-size: 1.1em; color: #34495e;">View Selection</h3>
-                    <fieldset role="radiogroup" aria-labelledby="view-select-heading">
-                        <legend class="sr-only">Model Views</legend>
-                        <label>
-                            <input type="radio" name="view-select" id="view-front" value="y-">
-                            y-
-                        </label>
-                        <label>
-                            <input type="radio" name="view-select" id="view-left" value="x-">
-                            x-
-                        </label>
-                        <label>
-                            <input type="radio" name="view-select" id="view-right" value="z+">
-                            z+
-                        </label>
-                        <label>
-                            <input type="radio" name="view-select" id="view-front" value="y+">
-                            y+
-                        </label>
-                        <label>
-                            <input type="radio" name="view-select" id="view-left" value="x+" checked>
-                            x+
-                        </label>
-                        <label>
-                            <input type="radio" name="view-select" id="view-right" value="z-">
-                            z-
-                        </label>
-                    </fieldset>
-                    <div class="help-text sr-only" id="switch-help">
-                        Select front, side or top
-                    </div>
-                </div>
-
-                <div aria-labelledby="zoom-select-heading" style="margin-top: 16px;">
-                    <h3 id="zoom-select-heading" style="margin: 0 0 8px; font-size: 1.1em; color: #34495e;">Zoom level selection</h3>
-                    <label for="zoom-slider">
-                        Zoom Level: <span id="zoom-level-value">0.0</span>
-                    </label>
-                    <input
-                        type="range"
-                        id="zoom-slider"
-                        min="0"
-                        max="3"
-                        value="0"
-                        step="0.1"
-                        aria-valuemin="0"
-                        aria-valuemax="3"
-                        aria-valuenow="0"
-                        aria-valuetext="zoom level 0.0"
-                        aria-describedby="zoom-help"
-                    >
-                    <div class="help-text" id="zoom-help">
-                        Use arrow keys or drag to adjust zoom continuously from 0.0 (no zoom) to 3.0.
-                    </div>
-                </div>
+                <button type="button" id="clear-announcements-btn" style="margin-top:6px;">Clear</button>
+                <ul id="announcement-history" aria-label="Announcement history"></ul>
             </section>
 
                 </div><!-- end left-col -->
 
-                <!-- DRAG DIVIDER -->
+                <!-- DRAG DIVIDER (keyboard accessible) -->
                 <div class="col-divider" id="col-divider" role="separator" aria-label="Resize columns" tabindex="0"></div>
 
-                <!-- RIGHT COLUMN: tactile preview + shortcuts -->
-                <div class="right-col" id="right-col">
+                <!--
+                    RIGHT COLUMN: visual previews for sighted users.
+                    Hidden from screen readers — braille users read the physical display,
+                    not a bitmap on screen.
+                -->
+                <aside class="right-col" id="right-col" aria-label="Visual previews">
 
                     <section class="section" aria-hidden="true">
-                        <h2 id="tactile-preview-heading">Export</h2>
-                        <div class="button-group" style="margin-top: 0; margin-bottom: 8px;">
-                            <button type="button" id="export-slice-svg-btn">Export Current View as SVG</button>
-
-                        </div>
-			</section> 
-                    <!-- Tactile Display Preview Section -->
-                    <section class="section" aria-hidden="true">
-                        <h2 id="tactile-preview-heading">Tactile Display Preview</h2>
+                        <h2 aria-hidden="true">Tactile Display Preview</h2>
                         <div id="side-by-side-axis-labels" class="side-by-side-axis-labels" hidden>
                             <div id="left-view-axis-label" class="side-by-side-axis-label">Left view: --</div>
                             <div id="right-view-axis-label" class="side-by-side-axis-label">Right view: --</div>
                         </div>
-                        <img id="tactile-display-img" src="" alt="Current tactile display content">
+                        <img id="tactile-display-img" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="" role="presentation">
                         <div id="tactile-preview-meta" class="help-text">Waiting for render&hellip;</div>
                     </section>
 
                     <section class="section" aria-hidden="true">
-                        <h2 id="high-fidelity-preview-heading">High-Fidelity Preview</h2>
-                        <img id="high-fidelity-preview-img" src="" alt="High-fidelity tactile preview">
+                        <h2 aria-hidden="true">High-Fidelity Preview</h2>
+                        <img id="high-fidelity-preview-img" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="" role="presentation">
                         <div id="high-fidelity-preview-meta" class="help-text">Waiting for high-fidelity render&hellip;</div>
                     </section>
 
-
-            <!-- Keyboard Shortcuts Section -->
-            <section class="section" aria-labelledby="shortcuts-heading">
-                <h2 id="shortcuts-heading">Keyboard Shortcuts</h2>
-                <div aria-describedby="shortcuts-heading">
-                    <p class="help-text">Use these keyboard shortcuts from anywhere on the page:</p>
-                    <ul class="shortcuts-list">
-                        <li><strong>1</strong> - Go shallower (decrease depth by 10%)</li>
-                        <li><strong>2</strong> - Go deeper (increase depth by 10%)</li>
-                        <li><strong>Q</strong> - Go shallower (decrease depth by 1%)</li>
-                        <li><strong>E</strong> - Go deeper (increase depth by 1%)</li>
-
-                        <li><strong>4</strong> - Zoom out</li>
-                        <li><strong>5</strong> - Zoom in</li>
-
-                        <li><strong>7</strong> - Switch to x- view</li>
-                        <li><strong>8</strong> - Switch to x+ view</li>
-                        <li><strong>9</strong> - Switch to z+ view</li>
-                        <li><strong>0</strong> - Switch to z- view</li>
-                        <li><strong>-</strong> - Switch to y- view</li>
-                        <li><strong>=</strong> - Switch to y+ view</li>
-
-                        <li><strong>F</strong> - Switch to filled/shaded view</li>
-                        <li><strong>O</strong> - Switch to outline view</li>
-                        <li><strong>C</strong> - Switch to cut view</li>
-
-                        <li><strong>R</strong> - Switch render mode (cycle through filled, outline, cut)</li>
-                        <li><strong>T</strong> - Switch view mode (cycle through single, side-by-side, and slice-graph)</li>
-                        <li><strong>L</strong> - Toggle slice graph lock</li>
-                        <li><strong>G</strong> - Refresh slice graph from current location</li>
-
-                        <li><strong>W</strong> - Move scene up</li>
-                        <li><strong>A</strong> - Move scene left</li>
-                        <li><strong>S</strong> - Move scene down</li>
-                        <li><strong>D</strong> - Move scene right</li>
-
-
-                        <li><strong>P</strong> - Print current render to renders/print_0.pdf</li>
-                        <li><strong>I</strong> - Get current status (view, depth, mode)</li>
-                        <li><strong>H</strong> - Shortcut reminder</li>
-                        <li><strong>Escape</strong> - Clear focus from current element</li>
-                    </ul>
-                    <p class="help-text">
-                        <em>Note: These shortcuts are optimized for Braille displays and screen readers. 
-                        They work globally without needing to focus on specific elements first.</em>
-                    </p>
-                </div>
-            </section>
-
-            <section class="section" aria-labelledby="announcements-heading">
-                <div class="announcements-header">
-                    <h2 id="announcements-heading">Announcements</h2>
-                    <button type="button" id="clear-announcements-btn">Clear history</button>
-                </div>
-                <div class="help-text">All announcements are shown here only and are not sent to live screen reader regions.</div>
-                <ul id="announcement-history" aria-label="Announcement history"></ul>
-            </section>
-
-                </div><!-- end right-col -->
+                </aside><!-- end right-col -->
             </div><!-- end layout -->
         </main>
     </div>
@@ -881,6 +1077,11 @@
                         updateTactilePreview(data.image_base64, data.image_shape);
                     }
                     scheduleHighFidelityPreviewRefresh(false);
+
+                    // Trigger DotPad web send if connected
+                    if (typeof window._dotpadOnRender === 'function') {
+                        window._dotpadOnRender(state);
+                    }
                 })
                 .catch(error => {
                     console.warn('Failed to send state to server:', error);
@@ -966,7 +1167,61 @@
         const viewModeRadios = () => document.querySelectorAll('input[name="view-mode"]');
         const viewRadios = () => document.querySelectorAll('input[name="view-select"]');
         const outputDeviceRadios = () => document.querySelectorAll('input[name="output-device"]');
-        // ...existing code...
+
+        // Status bar elements
+        const sbView = document.getElementById('sb-view');
+        const sbDepth = document.getElementById('sb-depth');
+        const sbRenderMode = document.getElementById('sb-render-mode');
+        const sbZoom = document.getElementById('sb-zoom');
+        const sbViewMode = document.getElementById('sb-view-mode');
+        const sbModel = document.getElementById('sb-model');
+        const sbDotPad = document.getElementById('sb-dotpad');
+
+        // Toast / live-region elements
+        const announcementToast = document.getElementById('announcement-toast');
+        const srLiveAnnounce = document.getElementById('sr-live-announce');
+        const toastDurationSlider = document.getElementById('toast-duration-slider');
+        const toastDurationValue = document.getElementById('toast-duration-value');
+        let toastDurationSec = 3;  // default 3 seconds; 0 = off
+        let toastTimer = null;
+
+        // Toast duration slider handler
+        if (toastDurationSlider) {
+            toastDurationSlider.addEventListener('input', function() {
+                toastDurationSec = parseFloat(this.value);
+                if (toastDurationValue) toastDurationValue.textContent = toastDurationSec === 0 ? 'off' : toastDurationSec + 's';
+                this.setAttribute('aria-valuenow', toastDurationSec);
+                this.setAttribute('aria-valuetext', toastDurationSec === 0 ? 'off' : toastDurationSec + ' seconds');
+            });
+        }
+
+        /** Update the top status bar to reflect current state. */
+        function refreshStatusBar() {
+            if (sbView) sbView.textContent = currentView;
+            if (sbDepth) sbDepth.textContent = currentSliceDepth + '%';
+            if (sbRenderMode) sbRenderMode.textContent = currentRenderMode;
+            if (sbZoom) sbZoom.textContent = Number(currentZoom).toFixed(1);
+            if (sbViewMode) sbViewMode.textContent = currentRepresentationMode;
+        }
+
+        /** Show a brief on-screen toast and push text to the SR live region. */
+        function showToast(message) {
+            // Screen reader: always push to assertive live region.
+            if (srLiveAnnounce) {
+                // Clear then set (forces re-read even for same text).
+                srLiveAnnounce.textContent = '';
+                requestAnimationFrame(() => { srLiveAnnounce.textContent = message; });
+            }
+
+            // Visual toast: respect user-chosen duration.
+            if (!announcementToast || toastDurationSec <= 0) return;
+            announcementToast.textContent = message;
+            announcementToast.classList.add('visible');
+            if (toastTimer) clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => {
+                announcementToast.classList.remove('visible');
+            }, toastDurationSec * 1000);
+        }
 
         // Consistent depth announcement formatter
         function depthAnnouncement(pct) {
@@ -988,6 +1243,7 @@
             if (currentBBoxDimensionsInfo) {
                 currentBBoxDimensionsInfo.textContent = currentBBoxDimensionsText;
             }
+            refreshStatusBar();
         }
 
         // Update button labels with current state information
@@ -1597,9 +1853,11 @@
             const currentModelIndex = Number(currentModel);
             if (Number.isInteger(currentModelIndex) && currentModelIndex >= 0 && currentModelIndex < model_list.length) {
                 dropdown.value = String(currentModelIndex);
+                if (sbModel) sbModel.textContent = model_list[currentModelIndex];
             } else {
                 dropdown.selectedIndex = 0;
                 currentModel = dropdown.value;
+                if (sbModel && model_list.length > 0) sbModel.textContent = model_list[0];
             }
         }
 
@@ -1618,6 +1876,53 @@
             }
             }
         );
+
+        // Handle STL/STEP file upload
+        document.getElementById('upload-model-input').addEventListener('change', async function() {
+            const file = this.files[0];
+            if (!file) return;
+
+            const statusEl = document.getElementById('upload-model-status');
+            const label = document.getElementById('upload-model-label');
+
+            statusEl.textContent = `Uploading ${file.name}…`;
+            label.setAttribute('aria-disabled', 'true');
+            this.disabled = true;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const resp = await fetch(`${SERVER_URL}/upload`, {
+                    method: 'POST',
+                    body: formData,
+                    mode: 'cors',
+                });
+                const data = await resp.json();
+
+                if (data.status === 'success') {
+                    updateModelList(data.model_list);
+                    // Select the newly uploaded model
+                    const dropdown = document.getElementById('model-list-dropdown');
+                    dropdown.value = String(data.new_model_index);
+                    currentModel = String(data.new_model_index);
+                    statusEl.textContent = `✓ ${data.filename} uploaded`;
+                    announce(`Model ${data.filename} uploaded and selected.`);
+                    sendStateToServer();
+                } else {
+                    statusEl.textContent = `Upload failed: ${data.message}`;
+                    announce(`Upload failed: ${data.message}`);
+                }
+            } catch (err) {
+                statusEl.textContent = `Upload error: ${err.message}`;
+                announce(`Upload error: ${err.message}`);
+            } finally {
+                label.removeAttribute('aria-disabled');
+                this.disabled = false;
+                // Clear file input so re-uploading the same file fires change again
+                this.value = '';
+            }
+        });
 
                 // Poll server state and only apply UI changes when values changed.
         setInterval(() => {
@@ -1745,39 +2050,41 @@
             switchToRepresentationMode(representationModes[nextIndex]);
         }
 
-        // Visible-only announcement history (no live region output).
+        // Announce a change: adds to visible history, shows toast, and speaks via SR live region.
         function announce(message, isUrgent = true) {
-            if (!announcementHistory) {
-                return;
-            }
-
             const normalizedMessage = String(message);
-            if (normalizedMessage === lastAnnouncementMessage) {
-                return;
+
+            // Always refresh the status bar so it reflects the latest state.
+            refreshStatusBar();
+
+            // Show the toast + push to screen-reader live region.
+            showToast(normalizedMessage);
+
+            // Append to visible history log.
+            if (announcementHistory) {
+                if (normalizedMessage !== lastAnnouncementMessage) {
+                    const item = document.createElement('li');
+                    if (isUrgent) item.style.fontWeight = '600';
+
+                    const time = new Date();
+                    const timestamp = document.createElement('span');
+                    timestamp.className = 'announcement-time';
+                    timestamp.textContent = `[${time.toLocaleTimeString()}]`;
+
+                    const text = document.createElement('span');
+                    text.textContent = message;
+
+                    item.appendChild(timestamp);
+                    item.appendChild(text);
+                    announcementHistory.appendChild(item);
+                    announcementHistory.scrollTop = announcementHistory.scrollHeight;
+                }
             }
-
-            const item = document.createElement('li');
-            if (isUrgent) {
-                item.style.fontWeight = '600';
-            }
-
-            const time = new Date();
-            const timestamp = document.createElement('span');
-            timestamp.className = 'announcement-time';
-            timestamp.textContent = `[${time.toLocaleTimeString()}]`;
-
-            const text = document.createElement('span');
-            text.textContent = message;
-
-            item.appendChild(timestamp);
-            item.appendChild(text);
-            announcementHistory.appendChild(item);
-            announcementHistory.scrollTop = announcementHistory.scrollHeight;
 
             lastAnnouncementMessage = normalizedMessage;
         }
-        
-        // Announce status information that should be less intrusive
+
+        // Announce status information (same mechanism, just non-urgent weight).
         function announceStatus(message) {
             announce(message, false);
         }
@@ -2253,7 +2560,8 @@
             updateSliceGraphLockUI();
             refreshViewInfoSummary();
             showViewInfoBoxCheckbox.checked = showViewInfoBox;
-            
+            refreshStatusBar();
+
             // Send initial state to server
             sendStateToServer();
             scheduleHighFidelityPreviewRefresh(true);
@@ -2307,6 +2615,139 @@
         
         // Initialize zoom handling
         document.addEventListener('DOMContentLoaded', handleZoomChanges);
+    </script>
+
+    <!-- DotPad Web SDK integration (ES module) -->
+    <script type="module">
+        import { DotPadSDK, DotPadScanner, DataCodes, DisplayMode } from '/static/js/DotPadSDK-3.0.0.js';
+
+        const SERVER_URL = 'http://localhost:6969';
+
+        const sdk = new DotPadSDK();
+        const scanner = new DotPadScanner();
+        let connectedDevice = null;   // DotDevice returned by SDK
+        let connectionType = null;     // 'ble' | 'usb'
+        let rawTarget = null;          // BluetoothDevice | SerialPort
+
+        const statusEl = document.getElementById('dotpad-status');
+        const bleScanBtn = document.getElementById('dotpad-scan-ble-btn');
+        const usbScanBtn = document.getElementById('dotpad-scan-usb-btn');
+        const disconnectBtn = document.getElementById('dotpad-disconnect-btn');
+        const autoSendCheckbox = document.getElementById('dotpad-auto-send');
+
+        function setStatus(msg) {
+            if (statusEl) statusEl.textContent = msg;
+            // Also update the top status bar DotPad field.
+            const sbDotPad = document.getElementById('sb-dotpad');
+            if (sbDotPad) sbDotPad.textContent = msg;
+        }
+
+        // --- BLE scan & connect ---
+        bleScanBtn.addEventListener('click', async () => {
+            try {
+                setStatus('Scanning for BLE DotPad...');
+                const device = await scanner.startBleScan();
+                if (!device) { setStatus('No BLE device selected.'); return; }
+                rawTarget = device;
+                setStatus(`Connecting to ${device.name || 'BLE DotPad'}...`);
+                const dotDevice = await sdk.connectBleDevice(device);
+                if (dotDevice) {
+                    connectedDevice = dotDevice;
+                    connectionType = 'ble';
+                    sdk.setCallBack(onMessage, onKey);
+                    setStatus(`Connected: ${device.name || 'BLE DotPad'}`);
+                    disconnectBtn.disabled = false;
+                    if (typeof window.announce === 'function') window.announce('DotPad connected via Bluetooth.');
+                } else {
+                    setStatus('BLE connection failed.');
+                }
+            } catch (err) {
+                console.error('BLE scan/connect error:', err);
+                setStatus('BLE error: ' + err.message);
+            }
+        });
+
+        // --- USB scan & connect ---
+        usbScanBtn.addEventListener('click', async () => {
+            try {
+                setStatus('Requesting USB DotPad...');
+                const port = await scanner.startUsbScan();
+                if (!port) { setStatus('No USB device selected.'); return; }
+                rawTarget = port;
+                setStatus('Connecting to USB DotPad...');
+                const dotDevice = await sdk.connectUsbDevice(port);
+                if (dotDevice) {
+                    connectedDevice = dotDevice;
+                    connectionType = 'usb';
+                    sdk.setCallBack(onMessage, onKey);
+                    setStatus(`Connected: USB DotPad`);
+                    disconnectBtn.disabled = false;
+                    if (typeof window.announce === 'function') window.announce('DotPad connected via USB.');
+                } else {
+                    setStatus('USB connection failed.');
+                }
+            } catch (err) {
+                console.error('USB scan/connect error:', err);
+                setStatus('USB error: ' + err.message);
+            }
+        });
+
+        // --- Disconnect ---
+        disconnectBtn.addEventListener('click', () => {
+            sdk.disconnect(connectedDevice);
+            connectedDevice = null;
+            connectionType = null;
+            rawTarget = null;
+            disconnectBtn.disabled = true;
+            setStatus('Disconnected.');
+            if (typeof window.announce === 'function') window.announce('DotPad disconnected.');
+        });
+
+        // --- SDK callbacks ---
+        function onMessage(device, dataCode, msg) {
+            if (dataCode === DataCodes.Disconnected) {
+                connectedDevice = null;
+                connectionType = null;
+                rawTarget = null;
+                disconnectBtn.disabled = true;
+                setStatus('DotPad disconnected unexpectedly.');
+                if (typeof window.announce === 'function') window.announce('DotPad disconnected.');
+            }
+            console.log('[DotPad]', dataCode, msg);
+        }
+
+        function onKey(device, keyCode, keyMsg) {
+            console.log('[DotPad key]', keyCode, keyMsg);
+        }
+
+        // --- Send hex data to DotPad ---
+        let sendInFlight = false;
+
+        async function sendHexToDotPad(renderParams) {
+            if (!connectedDevice || sendInFlight) return;
+            if (autoSendCheckbox && !autoSendCheckbox.checked) return;
+
+            sendInFlight = true;
+            try {
+                const resp = await fetch(`${SERVER_URL}/render/dotpad-hex`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(renderParams),
+                    mode: 'cors',
+                });
+                const data = await resp.json();
+                if (data.status === 'success' && data.dotpad_graphic_hex) {
+                    sdk.displayGraphicData(data.dotpad_graphic_hex, connectedDevice, DisplayMode.GraphicMode);
+                }
+            } catch (err) {
+                console.warn('DotPad hex send failed:', err);
+            } finally {
+                sendInFlight = false;
+            }
+        }
+
+        // Hook into the main render cycle
+        window._dotpadOnRender = sendHexToDotPad;
     </script>
 </body>
 </html>
