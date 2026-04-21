@@ -261,7 +261,7 @@ def low_res_render(lines_0, lines_1, shape_regions_0, bounds=[0,0,1,1], filename
         #img_rgba[mask] = [0, 0, 0, 255]
         return img_np, outlines_np, filled_np, ax_limits
 
-def get_outlines(img_np):
+def get_outlines_loop(img_np):
     outline_pixels = np.zeros(img_np.shape[:2], dtype=int)
     for i in range(img_np.shape[0]):
         for j in range(img_np.shape[1]):
@@ -281,21 +281,40 @@ def get_outlines(img_np):
                         if np.all(img_np[n[0]][n[1]] == [255,255,255,255]): 
                             outline_pixels[i][j] = 1
 
-    #for i in range(img_np.shape[0]):
-    #    if img_np[i][0][0] == 0:
-    #        outline_pixels[i][0] = 1
-    #    if img_np[i][-1][0] == 0:
-    #        outline_pixels[i][-1] = 1
-    #for j in range(img_np.shape[1]):
-    #    if img_np[0][j][0] == 0:
-    #        outline_pixels[0][j] = 1
-    #    if img_np[-1][j][0] == 0:
-    #        outline_pixels[-1][j] = 1
-
     outline_pixels_rgba = np.zeros((img_np.shape[0], img_np.shape[1], 4), dtype=np.uint8)
     mask = outline_pixels == 1
     outline_pixels_rgba[mask] = [0, 0, 0, 255]
     outline_pixels_rgba[~mask] = [255, 255, 255, 255]
+    return outline_pixels_rgba
+
+
+
+# vectorized version
+def get_outlines(img_np):
+    h, w = img_np.shape[:2]
+
+    white = np.all(img_np == [255, 255, 255, 255], axis=-1)
+    non_white = img_np[..., 0] < 255
+    white_padded = np.pad(white, 1, mode='constant', constant_values=False)
+
+    # white mask neighbors
+    neighbor_white = (
+        white_padded[0:h,     0:w]   | 
+        white_padded[0:h,     1:w+1] | 
+        white_padded[0:h,     2:w+2] | 
+        white_padded[1:h+1,   0:w]   | 
+        white_padded[1:h+1,   2:w+2] | 
+        white_padded[2:h+2,   0:w]   | 
+        white_padded[2:h+2,   1:w+1] | 
+        white_padded[2:h+2,   2:w+2]    
+    )
+
+    outline_mask = non_white & neighbor_white
+
+    outline_pixels_rgba = np.empty((h, w, 4), dtype=np.uint8)
+    outline_pixels_rgba[outline_mask] = [0, 0, 0, 255]
+    outline_pixels_rgba[~outline_mask] = [255, 255, 255, 255]
+
     return outline_pixels_rgba
 
 def get_outlines_and_filled(img_np):
