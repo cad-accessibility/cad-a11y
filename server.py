@@ -29,10 +29,21 @@ from typing import Any
 
 import numpy as np
 from flask import Flask, has_request_context, jsonify, request, send_file
+from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
 
-from braille_display import BrailleDisplayError, send_to_braille_display
+from braille_display import (
+    BrailleDisplayError,
+    send_to_braille_display,
+    _pixels_to_braille_cells,
+    _pixels_to_braille_cells_dotpad,
+    _MONARCH_LINES,
+    _MONARCH_COLS,
+    _DOTPAD_LINES,
+    _DOTPAD_COLS,
+    _DOTPAD_GRAPHIC_CELLS,
+)
 from cad_comparison_lib import CADComparisonRenderer
 from src.converter.render_low_res import save_binary_array_as_vector_pdf
 
@@ -101,6 +112,7 @@ renderers_by_model: dict[int, CADComparisonRenderer] = {}
 current_render: np.ndarray | None = None
 commands_log: list[dict[str, Any]] = []
 state_lock = threading.Lock()
+models_lock = threading.Lock()
 braille_log_lock = threading.Lock()
 commands_log_lock = threading.Lock()
 braille_send_sequence = 0
@@ -260,8 +272,15 @@ def _render_and_send(
     }
 
     try:
-        bytes_written = send_to_braille_display(braille_payload)
-        elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+        output_device = str(params.get("output_device") or "monarch").strip().lower()
+        if output_device == "monarch_hid":
+            # Browser-side Web HID: server renders at Monarch resolution but defers
+            # hardware send to the browser (Web HID API).
+            elapsed_ms = 0.0
+            bytes_written = 0
+        else:
+            bytes_written = send_to_braille_display(braille_payload, preferred_device=output_device)
+            elapsed_ms = (time.perf_counter() - started_at) * 1000.0
         event.update(
             {
                 "status": "success",
@@ -325,6 +344,15 @@ def _img_to_base64_png(img_array: np.ndarray) -> str:
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
+def _img_to_png_bytes(img_array: np.ndarray) -> io.BytesIO:
+    """Return an in-memory PNG file (BytesIO) for send_file."""
+    image = Image.fromarray(img_array.astype("uint8"))
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
 def _coerce_positive_int(value: Any, default: int) -> int:
     try:
         parsed = int(value)
@@ -333,6 +361,53 @@ def _coerce_positive_int(value: Any, default: int) -> int:
     if parsed <= 0:
         return default
     return parsed
+
+
+def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any], int, bool, str]:
+    """Merge incoming request data with defaults and return (params, model_index, is_pan, fingerprint)."""
+    if data is None:
+        data = {}
+    merged = dict(DEFAULT_RENDER_PARAMS)
+    merged.update({k: v for k, v in data.items() if v is not None})
+
+    # Normalise view to lowercase string.
+    merged["view"] = str(merged.get("view", "")).lower()
+
+    model_index = _normalize_model_index(data.get("current_model"))
+
+    is_pan_request = str(merged.get("move_camera_center", "none")).lower() != "none"
+
+    # Fingerprint for caching (excludes transient fields).
+    fp_keys = ("view", "zoom", "depth", "renderMode", "mode", "current_model",
+               "compose_scrollbar", "compose_slicegraph", "show_view_info_box",
+               "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth")
+    fp_dict = {k: merged.get(k) for k in fp_keys}
+    fp_dict["model_index"] = model_index
+    fingerprint = hashlib.sha256(json.dumps(fp_dict, sort_keys=True).encode()).hexdigest()
+
+    return merged, model_index, is_pan_request, fingerprint
+
+
+def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
+    """Render, send to braille display, and build JSON response dict."""
+    model_index = _normalize_model_index(params.get("current_model"))
+    rendered, bbox, braille_payload = _render_and_send(params, source=source, model_index=model_index)
+
+    engine = get_or_create_renderer(model_index)
+    _save_print_if_requested(params, engine, rendered)
+
+    response: dict[str, Any] = {
+        "status": "success",
+        "image_base64": _img_to_base64_png(braille_payload),
+        "image_shape": list(braille_payload.shape),
+        "model_list": MODEL_NAME_LIST,
+    }
+    if bbox is not None:
+        response["bbox"] = bbox
+    if str(params.get("output_device", "")).strip().lower() == "monarch_hid":
+        cells = _pixels_to_braille_cells(braille_payload, lines=_MONARCH_LINES, cols=_MONARCH_COLS)
+        response["monarch_cells_hex"] = cells.hex()
+    return response
 
 
 def initialize_default_braille_render() -> None:
@@ -347,14 +422,9 @@ def initialize_default_braille_render() -> None:
 
 
 def open_viewer_in_browser() -> None:
-    html_path = REPO_ROOT / "accessible-3d-viewer.html"
-    if not html_path.exists():
-        _log(f"Viewer file not found: {html_path}", force=True)
-        return
-
     try:
-        webbrowser.open(html_path.as_uri(), new=1)
-        _log(f"Opened viewer: {html_path}", force=True)
+        webbrowser.open("http://localhost:6969/viewer", new=1)
+        _log("Opened viewer: http://localhost:6969/viewer", force=True)
     except Exception as error:
         _log(f"Could not open viewer in browser: {error}", force=True)
 
@@ -451,6 +521,12 @@ def start_optional_hardware_watchers() -> None:
     threading.Thread(target=_slider_worker, daemon=True).start()
 
 
+@app.route("/viewer", methods=["GET"])
+def serve_viewer():
+    """Serve the main HTML viewer (needed for ES module imports)."""
+    return send_file(REPO_ROOT / "accessible-3d-viewer.html")
+
+
 @app.route("/", methods=["GET"])
 def home():
     return jsonify(
@@ -466,7 +542,10 @@ def home():
                 "/commands/clear": "POST - Clear command log",
                 "/commands/stats": "GET - Command statistics",
                 "/models": "GET/POST - List or update active model index",
+                "/upload": "POST - Upload an STL or STEP model file",
                 "/get_data": "GET - Optional cube/slider state",
+                "/render/dotpad-hex": "POST - Get render as DotPad hex string for Web SDK",
+                "/viewer": "GET - Serve the HTML viewer (required for DotPad Web SDK)",
             },
         }
     )
@@ -650,6 +729,50 @@ def models_endpoint():
         return jsonify({"status": "error", "message": str(error)}), 400
 
 
+_ALLOWED_EXTENSIONS = {".stl", ".step"}
+
+
+@app.route("/upload", methods=["POST"])
+def upload_model():
+    """Accept an STL or STEP file upload and add it to the model list."""
+    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response
+
+    if "file" not in request.files:
+        return jsonify({"status": "error", "message": "No file field in request"}), 400
+
+    file = request.files["file"]
+    if not file.filename:
+        return jsonify({"status": "error", "message": "No file selected"}), 400
+
+    filename = secure_filename(file.filename)
+    suffix = Path(filename).suffix.lower()
+    if suffix not in _ALLOWED_EXTENSIONS:
+        return jsonify({"status": "error", "message": f"Unsupported file type '{suffix}'. Use .stl or .step"}), 400
+
+    dest = MODEL_DIR / filename
+    try:
+        file.save(dest)
+    except Exception as error:
+        return jsonify({"status": "error", "message": f"Could not save file: {error}"}), 500
+
+    with models_lock:
+        AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
+        MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
+        new_index = next((i for i, p in enumerate(AVAILABLE_MODELS) if p == dest), 0)
+
+    with state_lock:
+        last_render_fingerprint = None
+        last_render_response = None
+
+    _log(f"Model uploaded: {filename} → index {new_index}", force=True)
+    return jsonify({
+        "status": "success",
+        "filename": filename,
+        "model_list": MODEL_NAME_LIST,
+        "new_model_index": new_index,
+    }), 200
+
+
 @app.route("/get_data", methods=["GET"])
 def get_data():
     with state_lock:
@@ -706,6 +829,56 @@ def render_export_source():
     except Exception as error:
         _log(f"Error rendering export source: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
+
+
+@app.route("/render/dotpad-hex", methods=["POST"])
+def render_dotpad_hex():
+    """Return the current render as a DotPad-compatible hex string.
+
+    The hex string can be passed directly to the DotPad Web SDK's
+    ``displayGraphicData(hexString)`` method.
+    """
+    try:
+        params = request.get_json(silent=True) or {}
+        merged_params = dict(DEFAULT_RENDER_PARAMS)
+        merged_params.update({k: v for k, v in params.items() if v is not None})
+        merged_params["view"] = str(merged_params.get("view", "")).lower()
+
+        model_index = _normalize_model_index(params.get("current_model"))
+        engine = get_or_create_renderer(model_index)
+
+        # Force DotPad screen size (60x40 pixels = 10 lines x 30 cols of braille cells).
+        original_screen_size = list(engine.screen_size)
+        engine.screen_size = [60, 40]
+        try:
+            out_guard, err_guard = _renderer_stdio_guard()
+            with out_guard, err_guard:
+                rendered = engine.render(merged_params)
+        finally:
+            engine.screen_size = original_screen_size
+
+        braille_payload = _to_braille_payload(rendered)
+        cells = _pixels_to_braille_cells_dotpad(
+            braille_payload, lines=_DOTPAD_LINES, cols=_DOTPAD_COLS,
+        )
+        # Pad/truncate to exactly 300 cells.
+        cell_bytes = cells[:_DOTPAD_GRAPHIC_CELLS].ljust(_DOTPAD_GRAPHIC_CELLS, b"\x00")
+        hex_string = cell_bytes.hex().upper()
+
+        return jsonify({
+            "status": "success",
+            "dotpad_graphic_hex": hex_string,
+            "cell_count": _DOTPAD_GRAPHIC_CELLS,
+        }), 200
+    except Exception as error:
+        _log(f"Error rendering DotPad hex: {error}", force=True)
+        return jsonify({"status": "error", "message": str(error)}), 400
+
+
+@app.route("/static/js/<path:filename>", methods=["GET"])
+def serve_static_js(filename):
+    """Serve JavaScript files from the static/js directory."""
+    return send_file(REPO_ROOT / "static" / "js" / filename, mimetype="application/javascript")
 
 
 def main() -> int:

@@ -5,7 +5,7 @@ Public API (kept from the previous version):
 - send_to_braille_display(array, ...)
 
 This module auto-selects a supported device connected/available on the machine:
-- Monarch (USB HID): VID/PID 0x1C71/0xD110 (existing implementation)
+- Monarch (USB HID): VID/PID 0x1C71/0xD110
 - DotPad (BLE): device name prefix "DotPad" + known service/characteristic UUIDs
 
 DotPad supports two outputs:
@@ -74,7 +74,7 @@ class _ConnectedDevice:
 
 def send_to_braille_display(
     array: np.ndarray,
-    device: _ConnectedDevice,
+    device: _ConnectedDevice | None = None,
     dot_text_hex_data: str | None = None,
     scan_timeout: float = 6.0,
     preferred_device: str = "auto",
@@ -83,10 +83,11 @@ def send_to_braille_display(
 
     Args:
         array: 2D array (H, W) or 3D array (H, W, 1). Values > 0 are "raised".
+        device: Already-connected device. If None, auto-discovers based on preferred_device.
         dot_text_hex_data: If provided and a DotPad is used, also write the DotPad
             text area (20 cells) using this hex-encoded braille data.
             If no DotPad is available, raises BrailleDisplayError.
-        scan_timeout: BLE scan timeout (seconds) used when DotPad discovery is needed.
+        scan_timeout: BLE scan timeout (seconds) used when BLE discovery is needed.
         preferred_device: Which device to target: "auto", "monarch", or "dotpad".
 
     Returns:
@@ -106,11 +107,12 @@ def send_to_braille_display(
             f"preferred_device must be one of 'auto', 'monarch', or 'dotpad'; got {preferred_device!r}"
         )
 
-    #device = _connect(
-    #    scan_timeout=scan_timeout,
-    #    prefer_dotpad=dot_text_hex_data is not None,
-    #    preferred_device=requested_device,
-    #)
+    if device is None:
+        device = _connect(
+            scan_timeout=scan_timeout,
+            prefer_dotpad=dot_text_hex_data is not None,
+            preferred_device=requested_device,
+        )
 
     if device.kind == "monarch":
         if dot_text_hex_data is not None:
@@ -127,8 +129,6 @@ def send_to_braille_display(
             dot_text_hex_data=dot_text_hex_data,
         )
 
-    #raise BrailleDisplayError(f"Unsupported device kind: {device.kind}")
-
 
 def _normalize_array(array: np.ndarray) -> np.ndarray:
     if not isinstance(array, np.ndarray):
@@ -144,9 +144,9 @@ def _connect(*, scan_timeout: float, prefer_dotpad: bool, preferred_device: str 
     """Pick whichever supported device is available.
 
     preferred_device:
-    - "auto": DotPad first, then Monarch fallback.
+    - "auto": DotPad first, then Monarch USB fallback.
     - "dotpad": DotPad only.
-    - "monarch": Monarch only.
+    - "monarch": Monarch USB only.
     """
 
     desired = (preferred_device or "auto").strip().lower()
@@ -190,14 +190,10 @@ def _connect(*, scan_timeout: float, prefer_dotpad: bool, preferred_device: str 
             return monarch
         raise BrailleDisplayError("Monarch selected, but no Humanware HID device was found.")
 
-    # Auto mode (default): DotPad first, then Monarch.
+    # Auto mode (default): DotPad first, then Monarch USB.
     dot = _try_dotpad()
     if dot is not None:
         return dot
-
-    # If DotPad-only features were requested and no DotPad was found, fail early.
-    #if prefer_dotpad:
-    #    raise BrailleDisplayError("dot_text_hex_data requested but no DotPad was found.")
 
     monarch = _try_monarch()
     if monarch is not None:
@@ -205,9 +201,6 @@ def _connect(*, scan_timeout: float, prefer_dotpad: bool, preferred_device: str 
 
     print("No supported braille display detected. Expected DotPad (BLE) or Humanware HID device. Using the terminal instead.")
     return _ConnectedDevice(kind="terminal", handle=None)
-    #raise BrailleDisplayError(
-    #    "No supported braille display detected. Expected DotPad (BLE) or Humanware HID device."
-    #)
 
 
 def _find_humanware_hid_device() -> dict | None:
@@ -311,17 +304,14 @@ async def _dotpad_best_address_async(*, scan_timeout: float) -> str | None:
     return best_addr
 
 
-
-
 # --- Shared pixel->braille conversion ---
 
 def _pixels_to_braille_cells_dotpad(array_2d: np.ndarray, *, lines: int, cols: int) -> bytes:
-    """Convert a pixel array into packed braille-cell bytes.
+    """Convert a pixel array into packed braille-cell bytes (DotPad column-sequential layout).
 
-    Each cell is a 4x2 block mapped to 8-dot braille bits:
-      (0,0)->bit0, (1,0)->bit1, (2,0)->bit2,
-      (0,1)->bit3, (1,1)->bit4, (2,1)->bit5,
-      (3,0)->bit6, (3,1)->bit7
+    Each cell is a 4x2 block packed column-first:
+      col0: (0,0)->bit0, (1,0)->bit1, (2,0)->bit2, (3,0)->bit3
+      col1: (0,1)->bit4, (1,1)->bit5, (2,1)->bit6, (3,1)->bit7
     """
 
     out = bytearray(lines * cols)
