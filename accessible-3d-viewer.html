@@ -2040,10 +2040,12 @@
                 announceStatus(`zoom ${zoomText}`);
             }
 
+            console.log(oldZoom, currentZoom);
             if (sendToServer && oldZoom !== currentZoom) {
                 if (currentRepresentationMode === 'slice-graph') {
                     autoRefreshSliceGraph({ updateAnchor: false });
                 } else {
+                    console.log("sendStateToServer");
                     sendStateToServer();
                 }
             }
@@ -2258,7 +2260,7 @@
         let zoomDebounceTimer = null;
 
         zoomSlider.addEventListener('input', function() {
-            updateZoom(this.value, false, false); // Update UI immediately, skip server send
+            //updateZoom(this.value, false, false); // Update UI immediately, skip server send
             clearTimeout(zoomDebounceTimer);
             zoomDebounceTimer = setTimeout(() => {
                 updateZoom(zoomSlider.value, false, true); // Send to server after 150ms idle
