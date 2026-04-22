@@ -129,6 +129,9 @@ def send_to_braille_display(
             dot_text_hex_data=dot_text_hex_data,
         )
 
+    # Terminal fallback — no hardware to write to.
+    return 0
+
 
 def _normalize_array(array: np.ndarray) -> np.ndarray:
     if not isinstance(array, np.ndarray):

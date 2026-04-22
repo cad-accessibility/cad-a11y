@@ -83,12 +83,11 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
     #print("cut depth", cut_depth)
     #cut_depth = 0.5
     normal_dir = views[view_key]["dir"]
-    if rendering_mode == "slice":
-        #shape_brep, plane_origin = depth_peeling_single_depth_with_bbox(shape_brep, gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
-        #                                                              depth=cut_depth, bbox=bbox)
-        #shape_brep = faces_on_plane(shape_brep, plane_origin, normal_dir)
-        shape, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
-        shape = faces_on_plane_fast(shape, plane_origin, normal_dir)
+    # Always slice at the given depth so all render modes respond to the depth slider.
+    # The render mode controls how the cross-section looks (filled / outline / edge),
+    # not whether depth is applied.
+    shape, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
+    shape = faces_on_plane_fast(shape, plane_origin, normal_dir)
 
     # Target pixel resolution
     width_px, height_px = screen_size[0], screen_size[1]

@@ -87,8 +87,6 @@ class CADComparisonRenderer:
                 else:
                     raise ValueError(f"Unsupported mesh object type for '{model_file}': {type(loaded)}")
 
-            print(mesh.is_watertight)
-            print(mesh.is_volume)
             fill_holes(mesh)
             fix_inversion(mesh)
             fix_winding(mesh)
@@ -137,7 +135,6 @@ class CADComparisonRenderer:
         shape_before, shape_after = self.shapes
         
         for i, view_key in enumerate(view_keys):
-            print("view_key", view_key)
             _, ax_limits_before = get_single_view(
                 shape_before, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
             )
@@ -153,9 +150,6 @@ class CADComparisonRenderer:
         
         self.view_limits = np.array(view_limits)
         self.view_current_camera_center = np.array(self.view_current_camera_center)
-        print("view_limits")
-        print(np.array(view_limits))
-        #exit()
 
     def _compute_slice_graphs(self):
 
@@ -415,8 +409,6 @@ class CADComparisonRenderer:
         view_name = self._map_view_name(params.get("view", "Top"))
         depth_percent = params.get("depth", 0)
         render_mode = self._map_render_mode(params.get("renderMode", "Outline"))
-        print(params)
-        print(params.get("renderMode", "Outline"))
         shape_choice = params.get("shape", "after").lower()
         comparison_mode = params.get("mode", "single").lower()
         superposition_mode = params.get("superpositionMode", "outline").lower()
@@ -481,7 +473,6 @@ class CADComparisonRenderer:
         # Linear zoom mapping: 0 -> full window, 1 -> half, 2 -> one-third, etc.
         zoom_scale = 1.0 / (zoom_level + 1.0)
         camera_move = params.get("move_camera_center", "none")
-        print(camera_move)
 
         horizontal_dist = np.abs((self.view_limits[view_index][0][1] - self.view_limits[view_index][0][0]))
         vertical_dist = np.abs((self.view_limits[view_index][1][1] - self.view_limits[view_index][1][0]))
@@ -558,12 +549,6 @@ class CADComparisonRenderer:
         x_scroll_max = max(0.0, min(1.0, x_scroll_max))
         y_scroll_min = max(0.0, min(1.0, y_scroll_min))
         y_scroll_max = max(0.0, min(1.0, y_scroll_max))
-        print("zoom_level", zoom_level, zoom_scale)
-        print("imposed_zoom_ax_limits")
-        print(imposed_zoom_ax_limits)
-        print("self.view_limits[view_index]")
-        print(self.view_limits[view_index])
-        
         # Render based on comparison mode
         if comparison_mode == "superposition":
             superposition_keys = ["outline", "intersection", "difference before", "difference after"]
@@ -754,18 +739,6 @@ class CADComparisonRenderer:
                 marker_col = int(round(marker_position_int * (img_np.shape[1] - 1) / (len(view_diff_mat) - 1)))
                 marker_col = max(0, min(img_np.shape[1] - 1, marker_col))
                 img_np[:, marker_col, :] = [0, 0, 0, 255]
-            print("Slice graph")
-            print(view_diff_mat)
-            print(img_np.shape)
-            for i in range(img_np.shape[0]):
-                for j in range(img_np.shape[1]):
-                    if ~img_np[i,j,0] > 0:
-                        print(1, end='')
-                    else:
-                        print(0, end='')
-                print()
-            print()
-
             # Compose graph without an outline box. Keep only a horizontal divider
             # above the graph so the model and graph are clearly separated.
             graph_top = max(0, img_array.shape[0] - graph_height_px)

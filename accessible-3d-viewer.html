@@ -1038,6 +1038,9 @@
             });
         })();
 
+        // AbortController for in-flight render requests — cancels stale renders on rapid state changes
+        let renderAbortController = null;
+
         // Function to send current state to the server
         async function sendStateToServer() {
             try {
@@ -1046,6 +1049,12 @@
                 if (serverConnected === false) {
                     return;
                 }
+
+                // Cancel any in-flight render request so stale responses don't overwrite newer state
+                if (renderAbortController) {
+                    renderAbortController.abort();
+                }
+                renderAbortController = new AbortController();
 
                 const requestedGraphView = sliceGraphLocked ? sliceGraphAnchorView : currentView;
                 const requestedGraphDepth = sliceGraphLocked ? sliceGraphAnchorDepth : currentSliceDepth;
@@ -1066,7 +1075,7 @@
                     slicegraph_view: requestedGraphView,
                     slicegraph_depth: requestedGraphDepth,
                 };
-                
+
                 // Send to server and process response
                 fetch(`${SERVER_URL}/render`, {
                     method: 'POST',
@@ -1074,7 +1083,8 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify(state),
-                    mode: 'cors'
+                    mode: 'cors',
+                    signal: renderAbortController.signal,
                 })
                 .then(res => res.json())
                 .then(data => {
@@ -1106,6 +1116,7 @@
                     }
                 })
                 .catch(error => {
+                    if (error.name === 'AbortError') return; // Superseded by a newer request — ignore
                     console.warn('Failed to send state to server:', error);
                     if (serverConnected !== false) {
                         serverConnected = false;
@@ -1946,51 +1957,74 @@
             }
         });
 
-                // Poll server state and only apply UI changes when values changed.
+                // Apply a server state snapshot to local UI — shared by SSE and fallback poll.
+        function applyServerState(data) {
+            if (data.cube_value !== undefined && data.cube_value !== lastPolledView) {
+                lastPolledView = data.cube_value;
+                updateView(data.cube_value);
+            }
+            const modelDropdown = document.getElementById("model-list-dropdown");
+            const dropdownFocused = document.activeElement === modelDropdown;
+            if (data.model_list && !dropdownFocused) {
+                updateModelList(data.model_list);
+            }
+            if (data.bbox) {
+                updateBoundingBox(data.bbox);
+            }
+        }
+
+        // SSE: server pushes hardware state changes (GoDice, Slider) immediately
+        // instead of the client polling every second — reduces latency from ~1000 ms to ~10 ms.
+        (function connectSSE() {
+            const evtSource = new EventSource(`${SERVER_URL}/events`);
+            evtSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (serverConnected === false) {
+                        serverConnected = true;
+                        announce('Server reconnected.');
+                    } else {
+                        serverConnected = true;
+                    }
+                    applyServerState(data);
+                } catch(e) {
+                    console.warn('SSE parse error:', e);
+                }
+            };
+            evtSource.onerror = function() {
+                // Do NOT set serverConnected = false here. EventSource fires onerror on
+                // every reconnect attempt (normal behavior), which would block all renders.
+                // Render availability is tracked separately via render request failures.
+                console.warn('SSE connection error — will reconnect automatically.');
+            };
+        })();
+
+        // Slow fallback poll: keeps model list and bbox in sync for state that
+        // isn't pushed over SSE (e.g. model uploads). Runs every 5 s, far less
+        // traffic than the old 1 s loop.
         setInterval(() => {
-          fetch(`${SERVER_URL}/get_data`)
-            .then(res => {
-                if (!res.ok) {
-                    throw new Error(`Polling request failed (${res.status})`);
-                }
-                return res.json();
-            })
-            .then(data => {
-                if (serverConnected === false) {
-                    serverConnected = true;
-                    announce('Server reconnected.');
-                } else {
-                    serverConnected = true;
-                }
-
-                if (data.cube_value !== undefined && data.cube_value !== lastPolledView) {
-                    lastPolledView = data.cube_value;
-                    updateView(data.cube_value);
-                }
-                
-                // Keep the list synced, but do not rewrite options while user is interacting.
-                const modelDropdown = document.getElementById("model-list-dropdown");
-                const dropdownFocused = document.activeElement === modelDropdown;
-                if (data.model_list && !dropdownFocused) {
-                    updateModelList(data.model_list);
-                }
-
-                // Update bounding box if available
-                if (data.bbox) {
-                    updateBoundingBox(data.bbox);
-                }
-            })
-            .catch(error => {
-                console.warn('Failed to poll server state:', error);
-                if (serverConnected !== false) {
-                    serverConnected = false;
-                    announce('Server unavailable — rendering paused.');
-                }
-            });
-        }, SERVER_POLL_INTERVAL_MS);
+            fetch(`${SERVER_URL}/get_data`)
+                .then(res => res.ok ? res.json() : Promise.reject(res.status))
+                .then(data => {
+                    if (serverConnected === false) {
+                        serverConnected = true;
+                        announce('Server reconnected.');
+                    } else {
+                        serverConnected = true;
+                    }
+                    applyServerState(data);
+                })
+                .catch(error => {
+                    console.warn('Failed to poll server state:', error);
+                    if (serverConnected !== false) {
+                        serverConnected = false;
+                        announce('Server unavailable — rendering paused.');
+                    }
+                });
+        }, 5000);
 
         // Update zoom information
-        function updateZoom(newZoom, shouldAnnounce = true) {
+        function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
             const oldZoom = currentZoom;
             currentZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Number(newZoom)));
             const zoomText = currentZoom.toFixed(1);
@@ -2006,7 +2040,7 @@
                 announceStatus(`zoom ${zoomText}`);
             }
 
-            if (oldZoom !== currentZoom) {
+            if (sendToServer && oldZoom !== currentZoom) {
                 if (currentRepresentationMode === 'slice-graph') {
                     autoRefreshSliceGraph({ updateAnchor: false });
                 } else {
@@ -2220,13 +2254,20 @@
             }
         });
 
-        // Zoom slider
+        // Zoom slider — debounce server sends on drag; commit immediately on release
+        let zoomDebounceTimer = null;
+
         zoomSlider.addEventListener('input', function() {
-            updateZoom(this.value, false);
+            updateZoom(this.value, false, false); // Update UI immediately, skip server send
+            clearTimeout(zoomDebounceTimer);
+            zoomDebounceTimer = setTimeout(() => {
+                updateZoom(zoomSlider.value, false, true); // Send to server after 150ms idle
+            }, 150);
         });
 
         zoomSlider.addEventListener('change', function() {
-            updateZoom(this.value, true);
+            clearTimeout(zoomDebounceTimer);
+            updateZoom(this.value, true, true); // Dragging stopped — send immediately
         });
 
         showViewInfoBoxCheckbox.addEventListener('change', function() {

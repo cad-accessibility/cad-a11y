@@ -28,14 +28,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from flask import Flask, has_request_context, jsonify, request, send_file
+from flask import Flask, Response, has_request_context, jsonify, request, send_file, stream_with_context
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
 
 from braille_display import (
-    BrailleDisplayError,
-    send_to_braille_display,
     _pixels_to_braille_cells,
     _pixels_to_braille_cells_dotpad,
     _MONARCH_LINES,
@@ -113,11 +111,20 @@ current_render: np.ndarray | None = None
 commands_log: list[dict[str, Any]] = []
 state_lock = threading.Lock()
 models_lock = threading.Lock()
+# Serialize all engine.render() calls — matplotlib is not thread-safe, and
+# engine.render() mutates view_current_camera_center (camera pan state).
+# Concurrent renders corrupt that state, producing blank or wrong-view output.
+render_lock = threading.Lock()
 braille_log_lock = threading.Lock()
 commands_log_lock = threading.Lock()
 braille_send_sequence = 0
 last_render_fingerprint: str | None = None
 last_render_response: dict[str, Any] | None = None
+
+# SSE client registry — each connected browser tab gets its own queue.
+import queue as _queue_module
+_sse_clients: list[_queue_module.Queue] = []
+_sse_clients_lock = threading.Lock()
 
 # Quiet-by-default: set SERVER_VERBOSE=1 to see detailed logs.
 QUIET_MODE = os.getenv("SERVER_VERBOSE", "0").lower() not in {"1", "true", "yes", "on"}
@@ -126,6 +133,20 @@ QUIET_MODE = os.getenv("SERVER_VERBOSE", "0").lower() not in {"1", "true", "yes"
 def _log(message: str, *, force: bool = False) -> None:
     if force or not QUIET_MODE:
         print(message)
+
+
+def _push_sse(data: dict) -> None:
+    """Broadcast a hardware-state event to all connected SSE clients."""
+    message = f"data: {json.dumps(data)}\n\n"
+    with _sse_clients_lock:
+        stale = []
+        for q in _sse_clients:
+            try:
+                q.put_nowait(message)
+            except _queue_module.Full:
+                stale.append(q)
+        for q in stale:
+            _sse_clients.remove(q)
 
 
 def _renderer_stdio_guard():
@@ -171,13 +192,14 @@ def _normalize_model_index(raw_index: Any) -> int:
 
 def get_or_create_renderer(model_index: int | None = None) -> CADComparisonRenderer:
     index = _normalize_model_index(model_index)
-    if index not in renderers_by_model:
-        model_path = AVAILABLE_MODELS[index]
-        _log(f"Initializing CAD renderer with: {model_path}")
-        out_guard, err_guard = _renderer_stdio_guard()
-        with out_guard, err_guard:
-            renderers_by_model[index] = CADComparisonRenderer(str(model_path), str(model_path))
-    return renderers_by_model[index]
+    with models_lock:
+        if index not in renderers_by_model:
+            model_path = AVAILABLE_MODELS[index]
+            _log(f"Initializing CAD renderer with: {model_path}")
+            out_guard, err_guard = _renderer_stdio_guard()
+            with out_guard, err_guard:
+                renderers_by_model[index] = CADComparisonRenderer(str(model_path), str(model_path))
+        return renderers_by_model[index]
 
 
 def _to_braille_payload(rendered_rgba: np.ndarray) -> np.ndarray:
@@ -236,12 +258,12 @@ def _render_and_send(
 
     engine = get_or_create_renderer(model_index)
     out_guard, err_guard = _renderer_stdio_guard()
-    with out_guard, err_guard:
-        rendered = engine.render(params)
+    with render_lock:
+        with out_guard, err_guard:
+            rendered = engine.render(params)
     current_render = rendered
 
     braille_payload = _to_braille_payload(rendered)
-    started_at = time.perf_counter()
     sequence = _next_braille_send_sequence()
     with state_lock:
         state_snapshot = {
@@ -271,37 +293,9 @@ def _render_and_send(
         "request": _collect_request_context(),
     }
 
-    try:
-        output_device = str(params.get("output_device") or "monarch").strip().lower()
-        if output_device == "monarch_hid":
-            # Browser-side Web HID: server renders at Monarch resolution but defers
-            # hardware send to the browser (Web HID API).
-            elapsed_ms = 0.0
-            bytes_written = 0
-        else:
-            bytes_written = send_to_braille_display(braille_payload, preferred_device=output_device)
-            elapsed_ms = (time.perf_counter() - started_at) * 1000.0
-        event.update(
-            {
-                "status": "success",
-                "bytes_written": int(bytes_written),
-                "send_duration_ms": round(elapsed_ms, 3),
-            }
-        )
-        _write_braille_event(event)
-        _log(f"Braille write: {bytes_written} bytes")
-    except BrailleDisplayError as error:
-        elapsed_ms = (time.perf_counter() - started_at) * 1000.0
-        event.update(
-            {
-                "status": "error",
-                "error_type": type(error).__name__,
-                "error": str(error),
-                "send_duration_ms": round(elapsed_ms, 3),
-            }
-        )
-        _write_braille_event(event)
-        _log(f"Braille send failed: {error}", force=True)
+    # Device sends are handled browser-side (Web HID / Web BLE).
+    event.update({"status": "success", "send_duration_ms": 0.0})
+    _write_braille_event(event)
 
     bbox = getattr(engine, "bbox", None)
     return rendered, bbox, braille_payload
@@ -451,6 +445,7 @@ async def _godice_notification_callback(number, stability_descr):
     with state_lock:
         state.cube_value = VIEW_CUBE_MAPPING[number]
     _log(f"GoDice stable face {number} -> view {state.cube_value}")
+    _push_sse({"cube_value": state.cube_value})
 
 
 async def _godice_worker() -> None:
@@ -511,6 +506,7 @@ def _slider_worker() -> None:
                         continue
                     with state_lock:
                         state.slider_value = value
+                    _push_sse({"slider_value": value})
         except Exception as error:
             _log(f"Slider disconnected ({error}); retrying in 3s...", force=True)
             time.sleep(3)
@@ -773,6 +769,47 @@ def upload_model():
     }), 200
 
 
+@app.route("/events", methods=["GET"])
+def sse_events():
+    """Server-Sent Events stream for hardware state changes (GoDice, Slider).
+
+    Replaces 1-second polling for hardware input — events are pushed immediately
+    when device state changes, reducing perceived latency from ~1000 ms to ~10 ms.
+    """
+    def generate():
+        client_queue = _queue_module.Queue(maxsize=20)
+        with _sse_clients_lock:
+            _sse_clients.append(client_queue)
+        try:
+            # Send current state immediately on connect so the client is in sync.
+            with state_lock:
+                initial = {
+                    "cube_value": state.cube_value,
+                    "model_list": MODEL_NAME_LIST,
+                }
+            yield f"data: {json.dumps(initial)}\n\n"
+            while True:
+                try:
+                    msg = client_queue.get(timeout=25)
+                    yield msg
+                except _queue_module.Empty:
+                    yield ": heartbeat\n\n"  # Keep TCP alive through proxies
+        finally:
+            with _sse_clients_lock:
+                if client_queue in _sse_clients:
+                    _sse_clients.remove(client_queue)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @app.route("/get_data", methods=["GET"])
 def get_data():
     with state_lock:
@@ -808,13 +845,14 @@ def render_export_source():
         aspect_ratio = float(original_screen_size[1]) / float(original_screen_size[0])
         export_height = max(1, int(round(export_width * aspect_ratio)))
 
-        engine.screen_size = [export_width, export_height]
-        try:
-            out_guard, err_guard = _renderer_stdio_guard()
-            with out_guard, err_guard:
-                rendered = engine.render(merged_params)
-        finally:
-            engine.screen_size = original_screen_size
+        with render_lock:
+            engine.screen_size = [export_width, export_height]
+            try:
+                out_guard, err_guard = _renderer_stdio_guard()
+                with out_guard, err_guard:
+                    rendered = engine.render(merged_params)
+            finally:
+                engine.screen_size = original_screen_size
 
         tactile_payload = _to_braille_payload(rendered)
         response = {
@@ -849,13 +887,14 @@ def render_dotpad_hex():
 
         # Force DotPad screen size (60x40 pixels = 10 lines x 30 cols of braille cells).
         original_screen_size = list(engine.screen_size)
-        engine.screen_size = [60, 40]
-        try:
-            out_guard, err_guard = _renderer_stdio_guard()
-            with out_guard, err_guard:
-                rendered = engine.render(merged_params)
-        finally:
-            engine.screen_size = original_screen_size
+        with render_lock:
+            engine.screen_size = [60, 40]
+            try:
+                out_guard, err_guard = _renderer_stdio_guard()
+                with out_guard, err_guard:
+                    rendered = engine.render(merged_params)
+            finally:
+                engine.screen_size = original_screen_size
 
         braille_payload = _to_braille_payload(rendered)
         cells = _pixels_to_braille_cells_dotpad(
@@ -895,7 +934,9 @@ def main() -> int:
     open_viewer_in_browser()
 
     _log("Ready.", force=True)
-    app.run(debug=False, host="0.0.0.0", port=6969)
+    # threaded=True lets /events (SSE) and /get_data respond concurrently while
+    # a render is in progress; render_lock still serializes the renders themselves.
+    app.run(debug=False, host="0.0.0.0", port=6969, threaded=True)
     return 0
 
 
