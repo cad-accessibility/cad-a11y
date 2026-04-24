@@ -1,0 +1,11 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8635:6969"
+    volumes:
+      - uploads:/app/uploads
+
+volumes:
+  uploads:

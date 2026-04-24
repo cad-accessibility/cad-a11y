@@ -2627,10 +2627,13 @@
             showViewInfoBoxCheckbox.checked = showViewInfoBox;
             refreshStatusBar();
 
+            // Expose globally so display-connect handlers can trigger a send.
+            window.sendStateToServer = sendStateToServer;
+
             // Send initial state to server
             sendStateToServer();
             scheduleHighFidelityPreviewRefresh(true);
-            
+
         });
 
         // Ensure top focus is restored when returning via browser history cache.
@@ -2724,6 +2727,8 @@
                     disconnectBtn.disabled = false;
                     if (typeof switchOutputDevice === 'function') switchOutputDevice('monarch_hid');
                     if (typeof window.announce === 'function') window.announce('Monarch connected via USB.');
+                    // Send current model state immediately so the display shows the model on connect.
+                    if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
 
                     monarchHidDevice.addEventListener('inputreport', (e) => {
                         console.log('[Monarch HID] Input report:', e.reportId, e.data);
@@ -2803,6 +2808,8 @@
                     setStatus(`Connected: ${device.name || 'BLE DotPad'}`);
                     disconnectBtn.disabled = false;
                     if (typeof window.announce === 'function') window.announce('DotPad connected via Bluetooth.');
+                    // Send current model state immediately so the display shows the model on connect.
+                    if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
                 } else {
                     setStatus('BLE connection failed.');
                 }
@@ -2828,6 +2835,8 @@
                     setStatus(`Connected: USB DotPad`);
                     disconnectBtn.disabled = false;
                     if (typeof window.announce === 'function') window.announce('DotPad connected via USB.');
+                    // Send current model state immediately so the display shows the model on connect.
+                    if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
                 } else {
                     setStatus('USB connection failed.');
                 }
