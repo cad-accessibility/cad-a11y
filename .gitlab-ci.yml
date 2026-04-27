@@ -1,0 +1,26 @@
+stages:
+- deploy
+
+deploy_research_test:
+  stage: deploy
+  script:
+    - docker compose up -d --build
+  environment:
+    name: research test
+    url: https://cada11y-test.cs.washington.edu
+  tags:
+    - lab-docker-test
+  only:
+    - branches
+
+deploy_research_prod:
+  stage: deploy
+  script:
+    - docker compose up -d --build
+  environment:
+    name: research prod
+    url: https://cada11y.cs.washington.edu
+  tags:
+    - lab-docker-prod
+  only:
+    - tags
