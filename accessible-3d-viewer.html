@@ -981,10 +981,7 @@
 
     <script>
         // Configuration
-        // On localhost, hit Flask directly; on any deployed server nginx proxies all routes.
-        const SERVER_URL = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-            ? 'http://localhost:6969'
-            : window.location.origin;
+        const SERVER_URL = window.location.origin;
 
         // Drag-to-resize columns
         (function() {
@@ -2773,9 +2770,7 @@
     <script type="module">
         import { DotPadSDK, DotPadScanner, DataCodes, DisplayMode } from '/static/js/DotPadSDK-3.0.0.js';
 
-        const SERVER_URL = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-            ? 'http://localhost:6969'
-            : window.location.origin;
+        const SERVER_URL = window.location.origin;
 
         const sdk = new DotPadSDK();
         const scanner = new DotPadScanner();
