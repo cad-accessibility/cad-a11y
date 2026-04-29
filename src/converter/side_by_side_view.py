@@ -6,10 +6,16 @@ import io, PIL
 from PIL import Image
 import os, json
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
 import trimesh
 from .render_low_res import get_outlines
 from .plane_intersection_utils import depth_peeling_single_depth_with_bbox, faces_on_plane, compute_area
-from .single_view_stl import get_single_view
+from .single_view_stl import (
+    get_single_view,
+    project_vertices,
+    get_projected_feature_segments,
+    get_visible_face_mask,
+)
 
 from OCC.Core.STEPControl import STEPControl_Reader
 from OCC.Extend.DataExchange import write_stl_file
@@ -68,7 +74,18 @@ views = {
     }
 }
 
-def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cut="left",  rendering_mode="filled", imposed_ax_limits_legend=[], imposed_ax_limits_cut=[], screen_size=[60, 40]):
+def get_side_view(
+    shape,
+    bbox,
+    cut_depth=0.9,
+    view_key_legend="top",
+    view_key_cut="left",
+    rendering_mode="filled",
+    imposed_ax_limits_legend=[],
+    imposed_ax_limits_cut=[],
+    screen_size=[60, 40],
+    projection_mode="orthographic",
+):
 
     print("get_side_view: rendering mode", rendering_mode, "view_key_legend", view_key_legend, "view_key_cut", view_key_cut)
     #shape_brep_copy = deepcopy(shape_brep)
@@ -99,24 +116,37 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
         #write_stl_file(shape_brep_cut, "model.stl", linear_deflection=0.1)
         #shape = trimesh.load_mesh("model.stl")
 
-        colors = [0.0 for i in range(len(shape_cut.faces))]
-        if view_key_cut == "top":
-            coords = shape_cut.vertices[:,[0,1]]
-        if view_key_cut == "front":
-            coords = shape_cut.vertices[:,[0,2]]
-        if view_key_cut == "left":
-            coords = shape_cut.vertices[:,[1,2]]
-        if view_key_cut == "bottom":
-            coords = shape_cut.vertices[:,[0,1]]
-            coords[:,0] *= -1
-            coords[:,1] *= -1
-        if view_key_cut == "back":
-            coords = shape_cut.vertices[:,[0,2]]
-            coords[:,0] *= -1
-        if view_key_cut == "right":
-            coords = shape_cut.vertices[:,[1,2]]
-            coords[:,0] *= -1
-        ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape_cut.faces, aa=True)
+        coords = project_vertices(shape_cut.vertices, view_key_cut, projection_mode=projection_mode)
+        segments_2d = get_projected_feature_segments(
+            shape_cut,
+            view_key_cut,
+            projection_mode=projection_mode,
+            cull_hidden=(projection_mode in ["isometric", "oblique"]),
+            silhouette_only=(projection_mode in ["orthographic", "oblique", "isometric"]),
+        )
+
+        if rendering_mode in ["line", "outline"]:
+            if len(segments_2d) > 0:
+                ax.add_collection(LineCollection(segments_2d, colors="black", linewidths=1.0, antialiaseds=False))
+                ax.autoscale_view()
+        else:
+            cut_triangles = shape_cut.faces
+            if projection_mode in ["isometric", "oblique"]:
+                cut_face_mask = get_visible_face_mask(shape_cut, view_key_cut, projection_mode=projection_mode)
+                if np.any(cut_face_mask):
+                    cut_triangles = shape_cut.faces[cut_face_mask]
+            colors = [0.0 for i in range(len(cut_triangles))]
+            ax.tripcolor(
+                coords[:,0],
+                coords[:, 1],
+                facecolors=colors,
+                cmap="gray",
+                triangles=cut_triangles,
+                aa=False,
+                edgecolor="none",
+            )
+            if len(segments_2d) > 0:
+                ax.add_collection(LineCollection(segments_2d, colors="black", linewidths=1.0, antialiaseds=False))
 
     ax.set_aspect('equal')
     ax = plt.gca()
@@ -146,11 +176,8 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     if plt.fignum_exists(fig.number):
         plt.close(fig.number)
 
-    # Right panel (cut view) follows the selected render mode.
-    if rendering_mode == "outline":
-        cut_img = get_outlines(img_np)
-    else:
-        cut_img = img_np
+    # Right panel uses direct, explicit linework/fill rendering from this pass.
+    cut_img = img_np
 
     # Legend - view
     #shape_brep = shape_brep_copy
@@ -166,27 +193,35 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
 
     #area = compute_area(shape_brep)
     if not np.isclose(shape.area, 0.0):
-        #write_stl_file(shape_brep, "model.stl", linear_deflection=0.1)
-        #shape = trimesh.load_mesh("model.stl")
-
-        colors = [0.0 for i in range(len(shape.faces))]
-        if view_key_legend == "top":
-            coords = shape.vertices[:,[0,1]]
-        if view_key_legend == "front":
-            coords = shape.vertices[:,[0,2]]
-        if view_key_legend == "left":
-            coords = shape.vertices[:,[1,2]]
-        if view_key_legend == "bottom":
-            coords = shape.vertices[:,[0,1]]
-            coords[:,0] *= -1
-            coords[:,1] *= -1
-        if view_key_legend == "back":
-            coords = shape.vertices[:,[0,2]]
-            coords[:,0] *= -1
-        if view_key_legend == "right":
-            coords = shape.vertices[:,[1,2]]
-            coords[:,0] *= -1
-        ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape.faces, aa=True)
+        # Draw legend as explicit silhouette/feature lines for stable braille output.
+        legend_segments_2d = get_projected_feature_segments(
+            shape,
+            view_key_legend,
+            projection_mode=projection_mode,
+            cull_hidden=(projection_mode in ["isometric", "oblique"]),
+            silhouette_only=(projection_mode in ["orthographic", "oblique", "isometric"]),
+        )
+        if len(legend_segments_2d) > 0:
+            ax.add_collection(LineCollection(legend_segments_2d, colors="black", linewidths=1.0, antialiaseds=False))
+            ax.autoscale_view()
+        else:
+            # Fallback for degenerate meshes where edge extraction yields no segments.
+            legend_triangles = shape.faces
+            if projection_mode in ["isometric", "oblique"]:
+                legend_face_mask = get_visible_face_mask(shape, view_key_legend, projection_mode=projection_mode)
+                if np.any(legend_face_mask):
+                    legend_triangles = shape.faces[legend_face_mask]
+            colors = [0.0 for i in range(len(legend_triangles))]
+            coords = project_vertices(shape.vertices, view_key_legend, projection_mode=projection_mode)
+            ax.tripcolor(
+                coords[:,0],
+                coords[:, 1],
+                facecolors=colors,
+                cmap="gray",
+                triangles=legend_triangles,
+                aa=False,
+                edgecolor="none",
+            )
 
 
     ax.set_aspect('equal')
@@ -223,41 +258,22 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     #plt.show()
     if plt.fignum_exists(fig.number):
         plt.close(fig.number)
-    # Left panel (legend view) stays visually stable across render mode changes.
-    legend_img = get_outlines(img_np)
+    # Left panel (legend view) is already rendered as stable explicit linework.
+    legend_img = img_np
 
     # Line img (must match legend width)
     width_px, height_px = legend_width, total_height
-    dpi = 100 
+    dpi = 100
     fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
     ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
     ax.axis('off')
-    # Add line at plane_origin in legend_img
-    line_vec = np.cross(views[view_key_cut]["dir"], views[view_key_legend]["dir"])
 
+    # Add line at plane_origin in legend_img.
+    line_vec = np.cross(views[view_key_cut]["dir"], views[view_key_legend]["dir"])
     plane_origin_np = np.array(plane_origin)
-    #print("plane_origin_np", plane_origin_np)
-    #print("line_vec", line_vec)
     line_pts = np.array([plane_origin_np - 1000.0*line_vec, plane_origin_np + 1000.0*line_vec])
-    #print("view_limits_legend", imposed_ax_limits_legend)
-    #print("line pts", line_pts)
-    if view_key_legend == "top":
-        coords = line_pts[:,[0,1]]
-    if view_key_legend == "front":
-        coords = line_pts[:,[0,2]]
-    if view_key_legend == "left":
-        coords = line_pts[:,[1,2]]
-    if view_key_legend == "bottom":
-        coords = line_pts[:,[0,1]]
-        coords[:,0] *= -1
-        coords[:,1] *= -1
-    if view_key_legend == "back":
-        coords = line_pts[:,[0,2]]
-        coords[:,0] *= -1
-    if view_key_legend == "right":
-        coords = line_pts[:,[1,2]]
-        coords[:,0] *= -1
-    ax.plot(coords[:, 0], coords[:, 1], linewidth=0.5, color=(0.0,0.0,0.0,1.0), aa=False)
+    coords = project_vertices(line_pts, view_key_legend, projection_mode=projection_mode)
+    ax.plot(coords[:, 0], coords[:, 1], linewidth=1.0, color=(0.0,0.0,0.0,1.0), aa=False)
     #print("line coords", coords)
     ax.set_aspect('equal')
     ax = plt.gca()
