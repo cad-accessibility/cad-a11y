@@ -86,39 +86,30 @@ def send_to_braille_display(
         device: Already-connected device. If None, auto-discovers based on preferred_device.
         dot_text_hex_data: If provided and a DotPad is used, also write the DotPad
             text area (20 cells) using this hex-encoded braille data.
-            If no DotPad is available, raises BrailleDisplayError.
-        scan_timeout: BLE scan timeout (seconds) used when BLE discovery is needed.
+            If DotPad is unavailable, this field is ignored.
+        scan_timeout: BLE scan timeout (seconds) used when DotPad discovery is needed.
         preferred_device: Which device to target: "auto", "monarch", or "dotpad".
 
     Returns:
         Number of bytes written to the underlying transport.
 
     Raises:
-        BrailleDisplayError: Device connection or data transmission failure.
+        BrailleDisplayError: Data transmission failure for a detected device.
         ValueError: If array shape is incorrect.
     """
 
     array_2d = _normalize_array(array)
-    requested_device = (preferred_device or "auto").strip().lower()
-    if requested_device == "dot":
-        requested_device = "dotpad"
-    if requested_device not in {"auto", "monarch", "dotpad"}:
-        raise ValueError(
-            f"preferred_device must be one of 'auto', 'monarch', or 'dotpad'; got {preferred_device!r}"
-        )
-
-    if device is None:
-        device = _connect(
-            scan_timeout=scan_timeout,
-            prefer_dotpad=dot_text_hex_data is not None,
-            preferred_device=requested_device,
-        )
+    try:
+        # Best-effort behavior: if no hardware is connected, do nothing and allow
+        # callers (e.g., local dev servers) to continue running.
+        device = _connect(scan_timeout=scan_timeout, prefer_dotpad=False)
+    except BrailleDisplayError as exc:
+        if "No supported braille display detected" in str(exc):
+            return 0
+        raise
 
     if device.kind == "monarch":
-        if dot_text_hex_data is not None:
-            raise BrailleDisplayError(
-                "dot_text_hex_data was provided but the connected device is Monarch (no text area)"
-            )
+        # Monarch has no text area; ignore DotPad-only text payload.
         return _send_to_monarch(device.handle, array_2d)
 
     if device.kind == "dotpad":
@@ -762,7 +753,13 @@ def main() -> int:
     args = parser.parse_args()
 
     # Detect which device we will use, so we can size the image appropriately.
-    device = _connect(scan_timeout=args.scan_timeout, prefer_dotpad=False, preferred_device="auto")
+    try:
+        device = _connect(scan_timeout=args.scan_timeout, prefer_dotpad=False)
+    except BrailleDisplayError as exc:
+        if "No supported braille display detected" in str(exc):
+            print("No supported braille display detected; nothing to send.")
+            return 0
+        raise
     height, width = _device_pixel_dims(device.kind)
     print(f"Detected device: {device.kind} (image {height}x{width} pixels)")
 

@@ -263,10 +263,13 @@ def low_res_render(lines_0, lines_1, shape_regions_0, bounds=[0,0,1,1], filename
 
 def get_outlines_loop(img_np):
     outline_pixels = np.zeros(img_np.shape[:2], dtype=int)
+    # Only accept nearly pure black pixels; ignore any semitransparent halo.
+    # This keeps all lines to single-pixel width at low resolution.
+    dark_threshold = 32
     for i in range(img_np.shape[0]):
         for j in range(img_np.shape[1]):
             #if np.all(img_np[i][j] == [0,0,0,255]):
-            if img_np[i][j][0] < 255:
+            if img_np[i][j][0] < dark_threshold:
                 # check if there's a white_pixel neighbor
                 neighbors = [[i-1, j-1],
                              [i-1, j],
