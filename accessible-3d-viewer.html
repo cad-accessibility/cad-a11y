@@ -1893,26 +1893,20 @@
             if (!bbox || bbox.length !== 6) {
                 return;
             }
-            
+
             const [xmin, ymin, zmin, xmax, ymax, zmax] = bbox;
-            
-            // Format numbers to 2 decimal places
             const format = (num) => typeof num === 'number' ? num.toFixed(2) : '--';
-            
-            // Update X-axis
-            document.getElementById('bbox-x-min').textContent = format(xmin);
-            document.getElementById('bbox-x-max').textContent = format(xmax);
-            document.getElementById('bbox-x-width').textContent = format(xmax - xmin);
-            
-            // Update Y-axis
-            document.getElementById('bbox-y-min').textContent = format(ymin);
-            document.getElementById('bbox-y-max').textContent = format(ymax);
-            document.getElementById('bbox-y-height').textContent = format(ymax - ymin);
-            
-            // Update Z-axis
-            document.getElementById('bbox-z-min').textContent = format(zmin);
-            document.getElementById('bbox-z-max').textContent = format(zmax);
-            document.getElementById('bbox-z-depth').textContent = format(zmax - zmin);
+
+            const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+            setEl('bbox-x-min', format(xmin));
+            setEl('bbox-x-max', format(xmax));
+            setEl('bbox-x-width', format(xmax - xmin));
+            setEl('bbox-y-min', format(ymin));
+            setEl('bbox-y-max', format(ymax));
+            setEl('bbox-y-height', format(ymax - ymin));
+            setEl('bbox-z-min', format(zmin));
+            setEl('bbox-z-max', format(zmax));
+            setEl('bbox-z-depth', format(zmax - zmin));
 
             currentBBoxDimensionsText = `${format(xmax - xmin)} × ${format(ymax - ymin)} × ${format(zmax - zmin)}`;
             refreshViewInfoSummary();

@@ -30,7 +30,6 @@ from typing import Any
 import numpy as np
 from flask import Flask, Response, has_request_context, jsonify, request, send_file, stream_with_context
 from werkzeug.utils import secure_filename
-from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
 
@@ -348,15 +347,6 @@ def _img_to_png_bytes(img_array: np.ndarray) -> io.BytesIO:
     return buf
 
 
-def _img_to_png_bytes(img_array: np.ndarray) -> io.BytesIO:
-    """Return an in-memory PNG file (BytesIO) for send_file."""
-    image = Image.fromarray(img_array.astype("uint8"))
-    buf = io.BytesIO()
-    image.save(buf, format="PNG")
-    buf.seek(0)
-    return buf
-
-
 def _coerce_positive_int(value: Any, default: int) -> int:
     try:
         parsed = int(value)
@@ -425,10 +415,18 @@ def initialize_default_braille_render() -> None:
         _log(f"Initial render failed: {error}", force=True)
 
 
+def _record_command(data: dict[str, Any]) -> int:
+    entry = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "data": data,
+    }
+    with commands_log_lock:
+        commands_log.append(entry)
+        return len(commands_log)
+
+
 def open_viewer_in_browser() -> None:
     try:
-        webbrowser.open("http://localhost:6969/viewer", new=1)
-        _log("Opened viewer: http://localhost:6969/viewer", force=True)
         webbrowser.open("http://localhost:6969/viewer", new=1)
         _log("Opened viewer: http://localhost:6969/viewer", force=True)
     except Exception as error:
