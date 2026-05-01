@@ -831,6 +831,7 @@ def get_data():
             "cube_value": state.cube_value,
             "slider_value": state.slider_value,
             "current_model": state.current_model_index,
+            "model_list": MODEL_NAME_LIST,
         }
     return jsonify(payload), 200
 

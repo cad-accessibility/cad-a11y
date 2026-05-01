@@ -6,6 +6,7 @@ services:
       - "8635:6969"
     volumes:
       - uploads:/app/uploads
+      - ./accessible-3d-viewer.html:/app/accessible-3d-viewer.html:ro
 
 volumes:
   uploads:

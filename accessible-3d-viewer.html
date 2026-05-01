@@ -1256,13 +1256,20 @@
         const renderModes = ['Shaded', 'Outline', 'Cut'];
         const representationModes = ['single', 'side-by-side', 'slice-graph'];
         let currentModel = "none";
-       let composeScrollbar = true;
+        let composeScrollbar = true;
         let composeSliceGraph = false;
         let showViewInfoBox = false;
         let sliceGraphLocked = true;
         let sliceGraphAnchorView = 'y-';
         let sliceGraphAnchorDepth = 50;
-        
+
+        // Tracking variables
+        let serverConnected = null;       // null = unknown, true = up, false = confirmed down
+        let lastPolledView = null;        // last cube_value received from server
+        let lastModelListSignature = '';  // prevents redundant dropdown rebuilds
+        let currentBBoxDimensionsText = '';
+        let lastAnnouncementMessage = '';
+
         // Remove "Back" from available views
         //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
         const views = ['y-', 'x-', 'z+', 'z-', 'x+', 'y+'];
@@ -1847,7 +1854,7 @@
         function updateView(newView) {
             const oldView = currentView;
             currentView = newView;
-            currentViewSpan.textContent = currentView;
+            if (currentViewSpan) currentViewSpan.textContent = currentView;
             refreshViewInfoSummary();
             updateButtonLabels();
             updateSideBySideAxisLabels();
@@ -1945,11 +1952,9 @@
             if (Number.isInteger(currentModelIndex) && currentModelIndex >= 0 && currentModelIndex < model_list.length) {
                 dropdown.value = String(currentModelIndex);
                 if (sbModel) sbModel.textContent = model_list[currentModelIndex];
-                if (sbModel) sbModel.textContent = model_list[currentModelIndex];
             } else {
                 dropdown.selectedIndex = 0;
                 currentModel = dropdown.value;
-                if (sbModel && model_list.length > 0) sbModel.textContent = model_list[0];
                 if (sbModel && model_list.length > 0) sbModel.textContent = model_list[0];
             }
         }
@@ -1966,54 +1971,6 @@
                 autoRefreshSliceGraph({ updateAnchor: false });
             } else {
                 sendStateToServer();
-            }
-            }
-        );
-
-        // Handle STL/STEP file upload
-        document.getElementById('upload-model-input').addEventListener('change', async function() {
-            const file = this.files[0];
-            if (!file) return;
-
-            const statusEl = document.getElementById('upload-model-status');
-            const label = document.getElementById('upload-model-label');
-
-            statusEl.textContent = `Uploading ${file.name}…`;
-            label.setAttribute('aria-disabled', 'true');
-            this.disabled = true;
-
-            const formData = new FormData();
-            formData.append('file', file);
-
-            try {
-                const resp = await fetch(`${SERVER_URL}/upload`, {
-                    method: 'POST',
-                    body: formData,
-                    mode: 'cors',
-                });
-                const data = await resp.json();
-
-                if (data.status === 'success') {
-                    updateModelList(data.model_list);
-                    // Select the newly uploaded model
-                    const dropdown = document.getElementById('model-list-dropdown');
-                    dropdown.value = String(data.new_model_index);
-                    currentModel = String(data.new_model_index);
-                    statusEl.textContent = `✓ ${data.filename} uploaded`;
-                    announce(`Model ${data.filename} uploaded and selected.`);
-                    sendStateToServer();
-                } else {
-                    statusEl.textContent = `Upload failed: ${data.message}`;
-                    announce(`Upload failed: ${data.message}`);
-                }
-            } catch (err) {
-                statusEl.textContent = `Upload error: ${err.message}`;
-                announce(`Upload error: ${err.message}`);
-            } finally {
-                label.removeAttribute('aria-disabled');
-                this.disabled = false;
-                // Clear file input so re-uploading the same file fires change again
-                this.value = '';
             }
         });
 
@@ -2228,7 +2185,6 @@
         }
 
         // Announce a change: adds to visible history, shows toast, and speaks via SR live region.
-        // Announce a change: adds to visible history, shows toast, and speaks via SR live region.
         function announce(message, isUrgent = true) {
             const normalizedMessage = String(message);
 
@@ -2244,22 +2200,6 @@
                     const item = document.createElement('li');
                     if (isUrgent) item.style.fontWeight = '600';
 
-            // Always refresh the status bar so it reflects the latest state.
-            refreshStatusBar();
-
-            // Show the toast + push to screen-reader live region.
-            showToast(normalizedMessage);
-
-            // Append to visible history log.
-            if (announcementHistory) {
-                if (normalizedMessage !== lastAnnouncementMessage) {
-                    const item = document.createElement('li');
-                    if (isUrgent) item.style.fontWeight = '600';
-
-                    const time = new Date();
-                    const timestamp = document.createElement('span');
-                    timestamp.className = 'announcement-time';
-                    timestamp.textContent = `[${time.toLocaleTimeString()}]`;
                     const time = new Date();
                     const timestamp = document.createElement('span');
                     timestamp.className = 'announcement-time';
@@ -2267,15 +2207,7 @@
 
                     const text = document.createElement('span');
                     text.textContent = message;
-                    const text = document.createElement('span');
-                    text.textContent = message;
 
-                    item.appendChild(timestamp);
-                    item.appendChild(text);
-                    announcementHistory.appendChild(item);
-                    announcementHistory.scrollTop = announcementHistory.scrollHeight;
-                }
-            }
                     item.appendChild(timestamp);
                     item.appendChild(text);
                     announcementHistory.appendChild(item);
@@ -2285,8 +2217,6 @@
 
             lastAnnouncementMessage = normalizedMessage;
         }
-
-        // Announce status information (same mechanism, just non-urgent weight).
 
         // Announce status information (same mechanism, just non-urgent weight).
         function announceStatus(message) {
@@ -2541,19 +2471,23 @@
                 case '2':
                     // Go deeper (increase depth by 10%)
                     e.preventDefault();
-                    const previousDeeperDepth = currentSliceDepth;
-                    const newDeeperDepth = Math.min(100, currentSliceDepth + 10);
-                    updateSliceDepth(newDeeperDepth, false);
-                    announceDepthShortcut('2', previousDeeperDepth, newDeeperDepth);
+                    {
+                        const previousDeeperDepth = currentSliceDepth;
+                        const newDeeperDepth = Math.min(100, currentSliceDepth + 10);
+                        updateSliceDepth(newDeeperDepth, false);
+                        announceDepthShortcut('2', previousDeeperDepth, newDeeperDepth);
+                    }
                     break;
                     
                 case '1':
                     // Go shallower (decrease depth by 10%)
                     e.preventDefault();
-                    const previousShallowerDepth = currentSliceDepth;
-                    const newShallowerDepth = Math.max(0, currentSliceDepth - 10);
-                    updateSliceDepth(newShallowerDepth, false);
-                    announceDepthShortcut('1', previousShallowerDepth, newShallowerDepth);
+                    {
+                        const previousShallowerDepth = currentSliceDepth;
+                        const newShallowerDepth = Math.max(0, currentSliceDepth - 10);
+                        updateSliceDepth(newShallowerDepth, false);
+                        announceDepthShortcut('1', previousShallowerDepth, newShallowerDepth);
+                    }
                     break;
                     
                 // View shortcuts (first letter where available)
