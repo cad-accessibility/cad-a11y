@@ -535,12 +535,6 @@ def serve_viewer():
     return send_file(REPO_ROOT / "accessible-3d-viewer.html")
 
 
-@app.route("/viewer", methods=["GET"])
-def serve_viewer():
-    """Serve the main HTML viewer (needed for ES module imports)."""
-    return send_file(REPO_ROOT / "accessible-3d-viewer.html")
-
-
 @app.route("/", methods=["GET"])
 def home():
     return jsonify(
@@ -829,50 +823,6 @@ def sse_events():
     )
 
 
-_ALLOWED_EXTENSIONS = {".stl", ".step"}
-
-
-@app.route("/upload", methods=["POST"])
-def upload_model():
-    """Accept an STL or STEP file upload and add it to the model list."""
-    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response
-
-    if "file" not in request.files:
-        return jsonify({"status": "error", "message": "No file field in request"}), 400
-
-    file = request.files["file"]
-    if not file.filename:
-        return jsonify({"status": "error", "message": "No file selected"}), 400
-
-    filename = secure_filename(file.filename)
-    suffix = Path(filename).suffix.lower()
-    if suffix not in _ALLOWED_EXTENSIONS:
-        return jsonify({"status": "error", "message": f"Unsupported file type '{suffix}'. Use .stl or .step"}), 400
-
-    dest = MODEL_DIR / filename
-    try:
-        file.save(dest)
-    except Exception as error:
-        return jsonify({"status": "error", "message": f"Could not save file: {error}"}), 500
-
-    with models_lock:
-        AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
-        MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
-        new_index = next((i for i, p in enumerate(AVAILABLE_MODELS) if p == dest), 0)
-
-    with state_lock:
-        last_render_fingerprint = None
-        last_render_response = None
-
-    _log(f"Model uploaded: {filename} → index {new_index}", force=True)
-    return jsonify({
-        "status": "success",
-        "filename": filename,
-        "model_list": MODEL_NAME_LIST,
-        "new_model_index": new_index,
-    }), 200
-
-
 @app.route("/get_data", methods=["GET"])
 def get_data():
     with state_lock:
@@ -958,56 +908,6 @@ def render_dotpad_hex():
                     rendered = engine.render(merged_params)
             finally:
                 engine.screen_size = original_screen_size
-
-        braille_payload = _to_braille_payload(rendered)
-        cells = _pixels_to_braille_cells_dotpad(
-            braille_payload, lines=_DOTPAD_LINES, cols=_DOTPAD_COLS,
-        )
-        # Pad/truncate to exactly 300 cells.
-        cell_bytes = cells[:_DOTPAD_GRAPHIC_CELLS].ljust(_DOTPAD_GRAPHIC_CELLS, b"\x00")
-        hex_string = cell_bytes.hex().upper()
-
-        return jsonify({
-            "status": "success",
-            "dotpad_graphic_hex": hex_string,
-            "cell_count": _DOTPAD_GRAPHIC_CELLS,
-        }), 200
-    except Exception as error:
-        _log(f"Error rendering DotPad hex: {error}", force=True)
-        return jsonify({"status": "error", "message": str(error)}), 400
-
-
-@app.route("/static/js/<path:filename>", methods=["GET"])
-def serve_static_js(filename):
-    """Serve JavaScript files from the static/js directory."""
-    return send_file(REPO_ROOT / "static" / "js" / filename, mimetype="application/javascript")
-
-
-@app.route("/render/dotpad-hex", methods=["POST"])
-def render_dotpad_hex():
-    """Return the current render as a DotPad-compatible hex string.
-
-    The hex string can be passed directly to the DotPad Web SDK's
-    ``displayGraphicData(hexString)`` method.
-    """
-    try:
-        params = request.get_json(silent=True) or {}
-        merged_params = dict(DEFAULT_RENDER_PARAMS)
-        merged_params.update({k: v for k, v in params.items() if v is not None})
-        merged_params["view"] = str(merged_params.get("view", "")).lower()
-
-        model_index = _normalize_model_index(params.get("current_model"))
-        engine = get_or_create_renderer(model_index)
-
-        # Force DotPad screen size (60x40 pixels = 10 lines x 30 cols of braille cells).
-        original_screen_size = list(engine.screen_size)
-        engine.screen_size = [60, 40]
-        try:
-            out_guard, err_guard = _renderer_stdio_guard()
-            with out_guard, err_guard:
-                rendered = engine.render(merged_params)
-        finally:
-            engine.screen_size = original_screen_size
 
         braille_payload = _to_braille_payload(rendered)
         cells = _pixels_to_braille_cells_dotpad(
