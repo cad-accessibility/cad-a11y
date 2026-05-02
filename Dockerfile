@@ -1,9 +1,11 @@
-FROM continuumio/miniconda3:latest
+# Pin the base image to avoid silent breakage from upstream updates.
+FROM continuumio/miniconda3:24.11.1-0
 
-WORKDIR /app
+WORKDIR /project
 
-# Install system dependencies for hidapi, meshlib, and other native libs
+# System dependencies — curl is needed for the HEALTHCHECK.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
     libhidapi-hidraw0 \
     libhidapi-dev \
     libgl1 \
@@ -11,27 +13,47 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Create conda environment with pythonocc-core (conda-only package)
+# --- Dependency layers (cached until environment.yml / requirements.txt change) ---
+
+# Create conda environment with pythonocc-core (conda-only package).
 COPY environment.yml .
 RUN conda env create -f environment.yml && conda clean -afy
 
-# Make all subsequent RUN/CMD commands use the conda env
+# All subsequent RUN commands execute inside the conda env.
 SHELL ["conda", "run", "-n", "cad-a11y", "/bin/bash", "-c"]
 
-# Install pip dependencies — optional packages (godice, polyscope) may not be
-# available on all platforms; install them separately so failures don't block the rest.
+# Install pip dependencies.
+# godice and polyscope are optional — failures are non-fatal.
 COPY requirements.txt .
 RUN grep -vE '^\s*(#|godice|polyscope)' requirements.txt \
       | pip install --no-cache-dir -r /dev/stdin && \
     pip install --no-cache-dir godice polyscope || true
 
-# Copy application source
-COPY server.py braille_display.py cad_comparison_lib.py ./
+# --- Application source (invalidates only when code changes) ---
+
+COPY app/ ./app/
 COPY src/ ./src/
 COPY static/ ./static/
 COPY accessible-3d-viewer.html ./
-COPY model/ ./model/
+COPY data/models/ ./data/models/
+
+# Runtime write directories are created here so the non-root user owns them.
+RUN mkdir -p data/renders data/logs
+
+# --- Non-root user ---
+
+RUN groupadd --gid 1000 appuser \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash appuser \
+    && chown -R appuser:appuser /project
+
+USER appuser
+
+# --- Runtime ---
 
 EXPOSE 6969
 
-ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "cad-a11y", "python", "server.py"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:6969/ || exit 1
+
+# Exec-form ENTRYPOINT for correct signal handling (SIGTERM reaches the process).
+ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "cad-a11y", "python", "-m", "app.server"]

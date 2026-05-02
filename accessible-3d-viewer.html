@@ -1218,7 +1218,7 @@
                         updateTactilePreview(data.image_base64, data.image_shape);
                     }
                     renderPipelineDebug(data.debug_pipeline);
-                    updateHighFidelityPreviewFromDebugPipeline(data.debug_pipeline);
+                    updateHighFidelityPreview(data);
 
                     // Trigger DotPad web send if connected
                     if (typeof window._dotpadOnRender === 'function') {
@@ -1690,26 +1690,33 @@
             };
         }
 
-        function updateHighFidelityPreviewFromDebugPipeline(debugPipeline) {
-            if (!highFidelityPreviewImg || !highFidelityPreviewMeta) {
+        function updateHighFidelityPreview(data) {
+            if (!highFidelityPreviewImg || !highFidelityPreviewMeta) return;
+
+            // Prefer the direct render_preview_base64 field; fall back to the
+            // legacy debug_pipeline hf_binary_raw stage for older server versions.
+            let previewBase64 = data && data.render_preview_base64;
+            let shape = data && Array.isArray(data.render_preview_shape) ? data.render_preview_shape : null;
+
+            if (!previewBase64) {
+                const stages = Array.isArray(data && data.debug_pipeline && data.debug_pipeline.stages)
+                    ? data.debug_pipeline.stages : [];
+                const hfStage = stages.find(s => s && s.id === 'hf_binary_raw');
+                previewBase64 = hfStage && hfStage.preview_image_base64;
+                shape = hfStage && hfStage.data && Array.isArray(hfStage.data.shape) ? hfStage.data.shape : null;
+            }
+
+            if (!previewBase64) {
+                highFidelityPreviewMeta.textContent = 'Render preview unavailable';
                 return;
             }
 
-            const stages = Array.isArray(debugPipeline && debugPipeline.stages) ? debugPipeline.stages : [];
-            const hfStage = stages.find(stage => stage && stage.id === 'hf_binary_raw');
+            highFidelityPreviewImg.src = 'data:image/png;base64,' + previewBase64;
+            highFidelityPreviewImg.alt = `Render preview: ${currentView} view, ${currentSliceDepth}% depth, ${currentRenderMode}`;
 
-            if (!hfStage || !hfStage.preview_image_base64) {
-                highFidelityPreviewMeta.textContent = 'High-fidelity preview unavailable (hf_binary_raw missing)';
-                return;
-            }
-
-            highFidelityPreviewImg.src = 'data:image/png;base64,' + hfStage.preview_image_base64;
-            highFidelityPreviewImg.alt = `HF binary raw: ${currentView} view, ${currentSliceDepth}% depth, ${currentRenderMode}`;
-
-            const shape = hfStage.data && Array.isArray(hfStage.data.shape) ? hfStage.data.shape : null;
             const width = shape && shape.length > 1 ? shape[1] : '--';
             const height = shape && shape.length > 0 ? shape[0] : '--';
-            highFidelityPreviewMeta.textContent = `${currentView} · ${currentSliceDepth}% · ${currentRenderMode} · hf_binary_raw ${width}×${height}px`;
+            highFidelityPreviewMeta.textContent = `${currentView} · ${currentSliceDepth}% · ${currentRenderMode} · ${height}×${width}px`;
         }
 
         async function exportCurrentSliceAsPng() {

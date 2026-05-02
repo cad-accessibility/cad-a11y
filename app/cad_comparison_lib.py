@@ -253,9 +253,6 @@ class CADComparisonRenderer:
 
         self.view_limits = np.array(view_limits, dtype=float)
         self.view_current_camera_center = np.array(view_centers, dtype=float)
-        print("view_limits")
-        print(self.view_limits)
-        #exit()
         rendering_modes = ["outline", "filled", "slice"]
         
         xmin, ymin, zmin, xmax, ymax, zmax = self.bbox
@@ -598,8 +595,6 @@ class CADComparisonRenderer:
         effective_projection_mode = "orthographic" if projection_mode == "cut" else projection_mode
         if projection_mode == "cut":
             render_mode = "slice"
-        print(params)
-        print(params.get("renderMode", "Outline"))
         shape_choice = params.get("shape", "after").lower()
         comparison_mode = params.get("mode", "single").lower()
         superposition_mode = params.get("superpositionMode", "outline").lower()

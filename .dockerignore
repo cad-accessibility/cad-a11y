@@ -1,11 +1,37 @@
+# Version control
+.git/
+.github/
+.gitlab-ci.yml
+
+# Local tooling / IDE
+.claude/
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Python artifacts
 __pycache__/
 *.py[cod]
 *.egg-info/
-.git/
-.env
-study_logs/
-installer/
-scripts/
+.pytest_cache/
+.ruff_cache/
+
+# Build outputs
 build/
 dist/
-*.log
+
+# Runtime data (not needed in the image — handled by volumes)
+data/renders/
+data/logs/
+study_logs/
+renders/
+
+# Dev-only files
+scripts/
+tests/
+server_cube_slider.py
+requirements-dev.txt
+*.md
+*.spec
+*.ps1

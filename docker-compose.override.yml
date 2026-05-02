@@ -1,0 +1,12 @@
+# Local development overrides — automatically merged by `docker compose`.
+# Bind-mounts replace named volumes so local edits are reflected immediately
+# without rebuilding the image.
+services:
+  app:
+    volumes:
+      - ./data/models:/project/data/models
+      - ./data/renders:/project/data/renders
+      - ./data/logs:/project/data/logs
+      - ./accessible-3d-viewer.html:/project/accessible-3d-viewer.html:ro
+    environment:
+      SERVER_VERBOSE: "1"

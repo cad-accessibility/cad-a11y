@@ -63,7 +63,6 @@ def sample_edge(edge: TopoDS_Edge, deflection=0.01, angle_tol=0.01):
     last = adaptor.LastParameter()
 
     sampler = GCPnts_TangentialDeflection()
-    print(first, last, deflection, angle_tol)
     sampler.Initialize(adaptor, first, last, deflection, angle_tol)
 
     #if not sampler.IsDone():
@@ -122,7 +121,6 @@ def compute_area(shape):
 def boolean_diff(shape_0, shape_1):
     # Create the cutting plane face
 
-    print(shape_0, shape_1)
     cut_result = BRepAlgoAPI_Cut(shape_0, shape_1)
     cut_result.Build()
     
@@ -195,7 +193,6 @@ def get_bbox_from_shapes(shapes):
     #bbox = Bnd_Box()
     #brepbndlib.Add(shapes[0], bbox)
     bbox = shapes[0].bounds
-    print(bbox)
     #xmin_0, ymin_0, zmin_0, xmax_0, ymax_0, zmax_0 = bbox.Get()
     xmin_0, ymin_0, zmin_0 = bbox[0]
     xmax_0, ymax_0, zmax_0 = bbox[1]
@@ -331,7 +328,6 @@ def faces_on_plane(shape, plane_origin, plane_normal, tol=1e-3):
     plane_normal = np.array(plane_normal)
     plane_normal /= np.linalg.norm(plane_normal)
     selected_points = []
-    print(plane_normal)
     for i, tri in enumerate(shape.faces):
         # Compare normals
         n = copy(shape.face_normals[i])
@@ -348,7 +344,6 @@ def faces_on_plane(shape, plane_origin, plane_normal, tol=1e-3):
                 plane_face_ids.append(tri)
                 selected_points.append(shape.vertices[tri])
     submesh = Trimesh(vertices=shape.vertices, faces=plane_face_ids)
-    print("faces_on_plane time", time()-start_time)
     return submesh
 
 def faces_on_plane_fast(shape, plane_origin, plane_normal, tol=1e-3):
@@ -527,8 +522,6 @@ def fuse_solids_in_compounds(compounds):
 
     if len(solids) == 1:
         return solids[0]  # Nothing to fuse
-
-    print(len(solids))
 
     builder = BOPAlgo_Builder()
     builder.SetGlue(BOPAlgo_GlueFull)  # Enable gluing

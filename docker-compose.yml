@@ -3,10 +3,26 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "8635:6969"
+      - "${HOST_PORT:-8635}:6969"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SERVER_VERBOSE: "${SERVER_VERBOSE:-0}"
     volumes:
-      - uploads:/app/uploads
-      - ./accessible-3d-viewer.html:/app/accessible-3d-viewer.html:ro
+      # Named volumes persist uploaded models and runtime output across restarts.
+      # On first start, Docker copies the bundled model files from the image.
+      - model-data:/project/data/models
+      - renders:/project/data/renders
+      - logs:/project/data/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6969/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
 volumes:
-  uploads:
+  model-data:
+  renders:
+  logs:

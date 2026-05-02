@@ -33,7 +33,7 @@ from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
 
-from braille_display import (
+from .braille_display import (
     _pixels_to_braille_cells,
     _pixels_to_braille_cells_dotpad,
     _MONARCH_LINES,
@@ -42,7 +42,7 @@ from braille_display import (
     _DOTPAD_COLS,
     _DOTPAD_GRAPHIC_CELLS,
 )
-from cad_comparison_lib import CADComparisonRenderer
+from .cad_comparison_lib import CADComparisonRenderer
 from src.converter.render_low_res import save_binary_array_as_vector_pdf
 
 try:
@@ -80,10 +80,11 @@ if getattr(sys, "frozen", False):
     # In bundled mode, runtime assets are expected next to the executable.
     REPO_ROOT = Path(sys.executable).resolve().parent
 else:
-    REPO_ROOT = Path(__file__).resolve().parent
-MODEL_DIR = REPO_ROOT / "model"
-RENDERS_DIR = REPO_ROOT / "renders"
-STUDY_LOG_DIR = REPO_ROOT / "study_logs"
+    # app/server.py lives one level below the project root.
+    REPO_ROOT = Path(__file__).resolve().parent.parent
+MODEL_DIR = REPO_ROOT / "data" / "models"
+RENDERS_DIR = REPO_ROOT / "data" / "renders"
+STUDY_LOG_DIR = REPO_ROOT / "data" / "logs"
 BRAILLE_LOG_PATH = Path(os.getenv("BRAILLE_LOG_PATH", str(STUDY_LOG_DIR / "braille_send_events.jsonl")))
 
 DEFAULT_RENDER_PARAMS: dict[str, Any] = {
@@ -277,6 +278,32 @@ def _next_braille_send_sequence() -> int:
         return braille_send_sequence
 
 
+def _make_hifi_preview(
+    params: dict[str, Any], model_index: int, preview_width: int = 800
+) -> tuple[str, list[int]]:
+    """Render at high resolution and return (base64_png, [height, width]).
+
+    Channel 0 of the renderer output has background=255 and lines=0/dark,
+    so displaying it directly gives natural black-on-white appearance.
+    """
+    engine = get_or_create_renderer(model_index)
+    orig = list(engine.screen_size) if engine.screen_size else [96, 40]
+    w0, h0 = max(1, orig[0]), max(1, orig[1] if len(orig) > 1 else orig[0])
+    hifi_h = max(1, int(round(preview_width * h0 / w0)))
+
+    out_guard, err_guard = _renderer_stdio_guard()
+    with render_lock:
+        engine.screen_size = [preview_width, hifi_h]
+        try:
+            with out_guard, err_guard:
+                hifi = engine.render(params)
+        finally:
+            engine.screen_size = orig
+
+    channel = np.bitwise_not(hifi[:, :, 0])
+    return _img_to_base64_png(channel), list(channel.shape)
+
+
 def _render_and_send(
     params: dict[str, Any], *, source: str, model_index: int
 ) -> tuple[np.ndarray, list[float] | None, np.ndarray]:
@@ -416,10 +443,13 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     engine = get_or_create_renderer(model_index)
     _save_print_if_requested(params, engine, rendered)
 
+    preview_b64, preview_shape = _make_hifi_preview(params, model_index)
     response: dict[str, Any] = {
         "status": "success",
         "image_base64": _img_to_base64_png(braille_payload),
         "image_shape": list(braille_payload.shape),
+        "render_preview_base64": preview_b64,
+        "render_preview_shape": preview_shape,
         "model_list": MODEL_NAME_LIST,
     }
     if bbox is not None:
@@ -661,7 +691,6 @@ def render_view():
                 state.cube_value = view
             state.current_model_index = model_index
 
-        _log(f"Render request: {merged_params}")
         response = _render_response(merged_params, source="http_render")
 
         with state_lock:
