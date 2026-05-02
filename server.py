@@ -105,6 +105,32 @@ VIEW_CUBE_MAPPING = {
     6: "z+",
 }
 
+# WitMotion IMU orientation → view mapping
+_FACE_NORMALS = np.array([
+    [1, 0, 0],   # x+
+    [-1, 0, 0],  # x-
+    [0, 1, 0],   # y+
+    [0, -1, 0],  # y-
+    [0, 0, 1],   # z+
+    [0, 0, -1],  # z-
+], dtype=float)
+_FACE_NAMES = ["x+", "x-", "y+", "y-", "z+", "z-"]
+_WORLD_UP = np.array([0.0, 0.0, 1.0])
+
+
+def _euler_to_rotation_matrix(roll_deg: float, pitch_deg: float, yaw_deg: float) -> np.ndarray:
+    r, p, y = np.radians(roll_deg), np.radians(pitch_deg), np.radians(yaw_deg)
+    Rx = np.array([[1, 0, 0], [0, np.cos(r), -np.sin(r)], [0, np.sin(r), np.cos(r)]])
+    Ry = np.array([[np.cos(p), 0, np.sin(p)], [0, 1, 0], [-np.sin(p), 0, np.cos(p)]])
+    Rz = np.array([[np.cos(y), -np.sin(y), 0], [np.sin(y), np.cos(y), 0], [0, 0, 1]])
+    return Rz @ Ry @ Rx
+
+
+def _orientation_to_view(roll_deg: float, pitch_deg: float, yaw_deg: float) -> str:
+    R = _euler_to_rotation_matrix(roll_deg, pitch_deg, yaw_deg)
+    dots = (_FACE_NORMALS @ R.T) @ _WORLD_UP
+    return _FACE_NAMES[int(np.argmax(dots))]
+
 state = RuntimeState()
 renderers_by_model: dict[int, CADComparisonRenderer] = {}
 current_render: np.ndarray | None = None
@@ -506,14 +532,20 @@ def _slider_worker() -> None:
         _log(f"Slider Trinkey found at {trinkey_port.device}", force=True)
         try:
             with serial.Serial(trinkey_port.device, timeout=1) as trinkey:
+                # Average 10 consecutive readings to smooth jitter before reporting.
+                samples: list[int] = []
                 while True:
                     line = trinkey.readline().decode("utf-8", errors="ignore").strip()
                     if not line.startswith("Slider: "):
                         continue
                     try:
-                        value = int(float(line.split(": ", maxsplit=1)[1]))
+                        samples.append(int(float(line.split(": ", maxsplit=1)[1])))
                     except ValueError:
                         continue
+                    if len(samples) < 10:
+                        continue
+                    value = int(sum(samples) / len(samples))
+                    samples.clear()
                     with state_lock:
                         state.slider_value = value
                     _push_sse({"slider_value": value})
@@ -522,9 +554,58 @@ def _slider_worker() -> None:
             time.sleep(3)
 
 
+def _witmotion_worker() -> None:
+    """Read WitMotion IMU euler angles via serial and push view updates.
+
+    Supports WT901 and similar devices in ASCII CSV output mode.
+    Expected line format: Time,ax,ay,az,wx,wy,wz,Roll(deg),Pitch(deg),Yaw(deg)[,...]
+    """
+    if serial is None or list_ports is None:
+        _log("Serial dependencies unavailable; WitMotion input disabled.", force=True)
+        return
+
+    # WitMotion WT901 uses CH340 (vid=0x1a86) or CP2102 (vid=0x10c4) USB-serial chips.
+    witmotion_port = None
+    for port in list_ports.comports(include_links=False):
+        if getattr(port, "vid", None) in {0x1A86, 0x10C4}:
+            witmotion_port = port
+            break
+
+    if witmotion_port is None:
+        _log("WitMotion sensor not found; IMU orientation input disabled.", force=True)
+        return
+
+    _log(f"WitMotion sensor found at {witmotion_port.device}", force=True)
+    last_view: str | None = None
+    try:
+        with serial.Serial(witmotion_port.device, baudrate=9600, timeout=1) as sensor:
+            while True:
+                line = sensor.readline().decode("utf-8", errors="ignore").strip()
+                parts = line.split(",")
+                if len(parts) < 10:
+                    continue
+                try:
+                    roll = float(parts[7])
+                    pitch = float(parts[8])
+                    yaw = float(parts[9])
+                except (ValueError, IndexError):
+                    continue
+                view = _orientation_to_view(roll, pitch, yaw)
+                if view == last_view:
+                    continue
+                last_view = view
+                with state_lock:
+                    state.cube_value = view
+                _push_sse({"cube_value": view})
+                _log(f"WitMotion orientation ({roll:.1f}, {pitch:.1f}, {yaw:.1f}) -> view {view}")
+    except Exception as error:
+        _log(f"WitMotion integration disabled after error: {error}", force=True)
+
+
 def start_optional_hardware_watchers() -> None:
     threading.Thread(target=_run_godice_thread, daemon=True).start()
     threading.Thread(target=_slider_worker, daemon=True).start()
+    threading.Thread(target=_witmotion_worker, daemon=True).start()
 
 
 @app.route("/viewer", methods=["GET"])
