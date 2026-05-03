@@ -1,0 +1,133 @@
+import { DotPadSDK, DotPadScanner, DataCodes, DisplayMode } from '/static/js/DotPadSDK-3.0.0.js';
+
+const SERVER_URL = window.location.origin;
+
+const sdk = new DotPadSDK();
+const scanner = new DotPadScanner();
+let connectedDevice = null;   // DotDevice returned by SDK
+let connectionType = null;     // 'ble' | 'usb'
+let rawTarget = null;          // BluetoothDevice | SerialPort
+
+const statusEl = document.getElementById('dotpad-status');
+const bleScanBtn = document.getElementById('dotpad-scan-ble-btn');
+const usbScanBtn = document.getElementById('dotpad-scan-usb-btn');
+const disconnectBtn = document.getElementById('dotpad-disconnect-btn');
+const autoSendCheckbox = document.getElementById('dotpad-auto-send');
+
+function setStatus(msg) {
+    if (statusEl) statusEl.textContent = msg;
+    // Also update the top status bar DotPad field.
+    const sbDotPad = document.getElementById('sb-dotpad');
+    if (sbDotPad) sbDotPad.textContent = msg;
+}
+
+// --- BLE scan & connect ---
+bleScanBtn.addEventListener('click', async () => {
+    try {
+        setStatus('Scanning for BLE DotPad...');
+        const device = await scanner.startBleScan();
+        if (!device) { setStatus('No BLE device selected.'); return; }
+        rawTarget = device;
+        setStatus(`Connecting to ${device.name || 'BLE DotPad'}...`);
+        const dotDevice = await sdk.connectBleDevice(device);
+        if (dotDevice) {
+            connectedDevice = dotDevice;
+            connectionType = 'ble';
+            sdk.setCallBack(onMessage, onKey);
+            setStatus(`Connected: ${device.name || 'BLE DotPad'}`);
+            disconnectBtn.disabled = false;
+            if (typeof window.announce === 'function') window.announce('DotPad connected via Bluetooth.');
+            // Send current model state immediately so the display shows the model on connect.
+            if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
+        } else {
+            setStatus('BLE connection failed.');
+        }
+    } catch (err) {
+        console.error('BLE scan/connect error:', err);
+        setStatus('BLE error: ' + err.message);
+    }
+});
+
+// --- USB scan & connect ---
+usbScanBtn.addEventListener('click', async () => {
+    try {
+        setStatus('Requesting USB DotPad...');
+        const port = await scanner.startUsbScan();
+        if (!port) { setStatus('No USB device selected.'); return; }
+        rawTarget = port;
+        setStatus('Connecting to USB DotPad...');
+        const dotDevice = await sdk.connectUsbDevice(port);
+        if (dotDevice) {
+            connectedDevice = dotDevice;
+            connectionType = 'usb';
+            sdk.setCallBack(onMessage, onKey);
+            setStatus(`Connected: USB DotPad`);
+            disconnectBtn.disabled = false;
+            if (typeof window.announce === 'function') window.announce('DotPad connected via USB.');
+            // Send current model state immediately so the display shows the model on connect.
+            if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
+        } else {
+            setStatus('USB connection failed.');
+        }
+    } catch (err) {
+        console.error('USB scan/connect error:', err);
+        setStatus('USB error: ' + err.message);
+    }
+});
+
+// --- Disconnect ---
+disconnectBtn.addEventListener('click', () => {
+    sdk.disconnect(connectedDevice);
+    connectedDevice = null;
+    connectionType = null;
+    rawTarget = null;
+    disconnectBtn.disabled = true;
+    setStatus('Disconnected.');
+    if (typeof window.announce === 'function') window.announce('DotPad disconnected.');
+});
+
+// --- SDK callbacks ---
+function onMessage(device, dataCode, msg) {
+    if (dataCode === DataCodes.Disconnected) {
+        connectedDevice = null;
+        connectionType = null;
+        rawTarget = null;
+        disconnectBtn.disabled = true;
+        setStatus('DotPad disconnected unexpectedly.');
+        if (typeof window.announce === 'function') window.announce('DotPad disconnected.');
+    }
+    console.log('[DotPad]', dataCode, msg);
+}
+
+function onKey(device, keyCode, keyMsg) {
+    console.log('[DotPad key]', keyCode, keyMsg);
+}
+
+// --- Send hex data to DotPad ---
+let sendInFlight = false;
+
+async function sendHexToDotPad(renderParams) {
+    if (!connectedDevice || sendInFlight) return;
+    if (autoSendCheckbox && !autoSendCheckbox.checked) return;
+
+    sendInFlight = true;
+    try {
+        const resp = await fetch(`${SERVER_URL}/render/dotpad-hex`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(renderParams),
+            mode: 'cors',
+        });
+        const data = await resp.json();
+        if (data.status === 'success' && data.dotpad_graphic_hex) {
+            sdk.displayGraphicData(data.dotpad_graphic_hex, connectedDevice, DisplayMode.GraphicMode);
+        }
+    } catch (err) {
+        console.warn('DotPad hex send failed:', err);
+    } finally {
+        sendInFlight = false;
+    }
+}
+
+// Hook into the main render cycle
+window._dotpadOnRender = sendHexToDotPad;

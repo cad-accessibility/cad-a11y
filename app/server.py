@@ -1042,6 +1042,12 @@ def serve_static_js(filename):
     return send_file(REPO_ROOT / "static" / "js" / filename, mimetype="application/javascript")
 
 
+@app.route("/static/css/<path:filename>", methods=["GET"])
+def serve_static_css(filename):
+    """Serve CSS files from the static/css directory."""
+    return send_file(REPO_ROOT / "static" / "css" / filename, mimetype="text/css")
+
+
 def main() -> int:
     _log("Server starting on http://localhost:6969", force=True)
     _log(f"Model directory: {MODEL_DIR}", force=True)
