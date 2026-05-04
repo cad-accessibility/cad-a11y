@@ -8,7 +8,6 @@ scripts/*.stl
 scripts/*.step
 scripts/*.scad
 swell_prints
-data/
 backup_scripts
 .DS_Store
 
