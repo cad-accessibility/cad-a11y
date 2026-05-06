@@ -8,10 +8,18 @@
     const TRINKEY_PID = 0x8102;   // Slide Trinkey product ID (CircuitPython mode)
     const SAMPLE_COUNT = 10;
     const ADC_MAX = 65535;
+    // Minimum change (in percent) required before propagating a new depth to the
+    // viewer. ADC noise at a fixed physical position typically causes ±1% jitter;
+    // requiring ≥ 2% prevents a flood of ARIA mutations when the slider is held still.
+    const MIN_DEPTH_CHANGE = 2;
+    // After the slider has been idle for this long, announce the settled depth once.
+    const DEPTH_SETTLE_MS = 400;
 
     let port = null;
     let reader = null;
     let running = false;
+    let lastHardwareDepth = null;   // last depth value sent to updateSliceDepth
+    let depthSettleTimer = null;    // fires a single announcement after slider stops
 
     const connectBtn    = document.getElementById('trinkey-connect-btn');
     const disconnectBtn = document.getElementById('trinkey-disconnect-btn');
@@ -62,6 +70,8 @@
 
     async function disconnect(reason) {
         running = false;
+        clearTimeout(depthSettleTimer);
+        lastHardwareDepth = null;
         if (reader) {
             try { await reader.cancel(); } catch (_) {}
             reader = null;
@@ -113,9 +123,31 @@
                     const depth = Math.round(Math.max(0, Math.min(100, (avg / ADC_MAX) * 100)));
                     if (depthValueEl) depthValueEl.textContent = depth + '%';
 
-                    if (typeof updateSliceDepth === 'function') {
-                        updateSliceDepth(depth, false);
+                    // Only propagate when the position has moved by ≥ MIN_DEPTH_CHANGE.
+                    // This filters ADC jitter at a fixed physical position (typically ±1%)
+                    // so that holding the slider still produces no ARIA mutations and
+                    // therefore no screen reader announcements.
+                    if (lastHardwareDepth === null || Math.abs(depth - lastHardwareDepth) >= MIN_DEPTH_CHANGE) {
+                        lastHardwareDepth = depth;
+                        if (typeof updateSliceDepth === 'function') {
+                            window.pendingInputSource = 'slider';
+                            updateSliceDepth(depth, false);
+                        }
                     }
+
+                    // Announce the settled depth once after the slider has been idle.
+                    // While the slider is actively moving, this timer is cancelled and
+                    // rescheduled on every sample batch — so only the final resting
+                    // position produces an announcement.
+                    clearTimeout(depthSettleTimer);
+                    depthSettleTimer = setTimeout(() => {
+                        if (lastHardwareDepth !== null && typeof announce === 'function') {
+                            const msg = typeof depthAnnouncement === 'function'
+                                ? depthAnnouncement(lastHardwareDepth)
+                                : `depth ${lastHardwareDepth}%`;
+                            announce(msg);
+                        }
+                    }, DEPTH_SETTLE_MS);
                 }
             }
         } catch (err) {

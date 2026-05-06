@@ -328,6 +328,7 @@ def _render_and_send(
         "event": "braille_send",
         "sequence": sequence,
         "source": source,
+        "input_source": params.get("input_source", "unknown"),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "model": str(AVAILABLE_MODELS[model_index]),
         "model_index": model_index,

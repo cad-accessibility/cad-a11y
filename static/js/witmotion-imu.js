@@ -233,7 +233,10 @@
         if (view !== lastView) {
             lastView = view;
             if (viewValueEl) viewValueEl.textContent = view;
-            if (typeof updateView === 'function') updateView(view);
+            if (typeof updateView === 'function') {
+                window.pendingInputSource = 'witmotion';
+                updateView(view);
+            }
         }
     }
 })();

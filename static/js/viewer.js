@@ -92,7 +92,9 @@ async function sendStateToServer() {
             slicegraph_locked: sliceGraphLocked,
             slicegraph_view: requestedGraphView,
             slicegraph_depth: requestedGraphDepth,
+            input_source: pendingInputSource,
         };
+        pendingInputSource = 'keyboard'; // reset to default after consuming
 
         // Send to server and process response
         fetch(`${SERVER_URL}/render`, {
@@ -104,9 +106,15 @@ async function sendStateToServer() {
             mode: 'cors',
             signal: renderAbortController.signal,
         })
-        .then(res => res.json())
+        .then(res => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json();
+        })
         .then(data => {
+            // Render success is sufficient proof the server is reachable — clear
+            // any down state immediately rather than waiting for the next poll.
             if (serverConnected === false) {
+                serverConnected = true;
                 announce('Server reconnected.');
             }
             serverConnected = true;
@@ -136,11 +144,12 @@ async function sendStateToServer() {
         })
         .catch(error => {
             if (error.name === 'AbortError') return; // Superseded by a newer request — ignore
-            console.warn('Failed to send state to server:', error);
-            if (serverConnected !== false) {
-                serverConnected = false;
-                announce('Server unavailable — rendering paused.');
-            }
+            // A single render failure (busy server, transient network hiccup, scroll-time
+            // deprioritisation) does not mean the server is down. Announcing a disconnect
+            // here causes the spurious unavailable→reconnected cycle observed during normal
+            // use. Connection state is managed exclusively by the health poll below so that
+            // only sustained, confirmed outages interrupt the user.
+            console.warn('Render request failed:', error.message);
         });
         
     } catch (error) {
@@ -174,6 +183,7 @@ let lastPolledView = null;        // last cube_value received from server
 let lastModelListSignature = '';  // prevents redundant dropdown rebuilds
 let currentBBoxDimensionsText = '';
 let lastAnnouncementMessage = '';
+let pendingInputSource = 'keyboard'; // consumed once per sendStateToServer call
 
 // Remove "Back" from available views
 //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
@@ -207,6 +217,7 @@ const zoomSlider = document.getElementById('zoom-slider');
 const zoomLevelValue = document.getElementById('zoom-level-value');
 const sliceGraphLockBtn = document.getElementById('slice-graph-lock-btn');
 const sliceGraphRefreshBtn = document.getElementById('slice-graph-refresh-btn');
+const resetPositionBtn = document.getElementById('reset-position-btn');
 const sliceGraphLockStatus = document.getElementById('slice-graph-lock-status');
 const showViewInfoBoxCheckbox = document.getElementById('show-view-info-box');
 const exportSliceSvgBtn = document.getElementById('export-slice-svg-btn');
@@ -263,11 +274,12 @@ function refreshStatusBar() {
 
 /** Show a brief on-screen toast and push text to the SR live region. */
 function showToast(message) {
-    // Screen reader: always push to assertive live region.
+    // Screen reader: always push to live region.
     if (srLiveAnnounce) {
-        // Clear then set (forces re-read even for same text).
+        // Clear then set after a short delay — rAF (~16 ms) is too fast for some
+        // AT implementations to detect the mutation as a new announcement.
         srLiveAnnounce.textContent = '';
-        requestAnimationFrame(() => { srLiveAnnounce.textContent = message; });
+        setTimeout(() => { srLiveAnnounce.textContent = message; }, 50);
     }
 
     // Visual toast: respect user-chosen duration.
@@ -674,16 +686,18 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
     sliceSlider.value = currentSliceDepth;
     slicePercentage.textContent = currentSliceDepth;
     refreshViewInfoSummary();
-    
-    // Update ARIA attributes
-    sliceSlider.setAttribute('aria-valuenow', currentSliceDepth);
-    sliceSlider.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
-    
-    // Update button labels with new state
-    updateButtonLabels();
 
-    // Send state to server if changed
+    // Only mutate ARIA attributes, button labels, and trigger a render when the
+    // value actually changed. setAttribute fires a DOM mutation even when the
+    // string value is identical, and NVDA announces every aria-valuetext mutation
+    // on range inputs regardless of focus — unconditional calls here were the
+    // source of the Braille display flood when the hardware slider was held at a
+    // noisy ADC position (same rounded depth → repeated identical mutations →
+    // screen reader flood).
     if (oldDepth !== currentSliceDepth) {
+        sliceSlider.setAttribute('aria-valuenow', currentSliceDepth);
+        sliceSlider.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
+        updateButtonLabels();
         sendStateToServer();
     }
 
@@ -763,7 +777,7 @@ function updateSideBySideAxisLabels() {
 }
 
 // Update view information
-function updateView(newView) {
+function updateView(newView, shouldAnnounce = true) {
     const oldView = currentView;
     currentView = newView;
     if (currentViewSpan) currentViewSpan.textContent = currentView;
@@ -771,7 +785,7 @@ function updateView(newView) {
     updateButtonLabels();
     updateSideBySideAxisLabels();
     syncRadios();
-    if (oldView !== currentView) {
+    if (oldView !== currentView && shouldAnnounce) {
         announce(`${currentView.toLowerCase()} view`);
     }
     
@@ -873,6 +887,7 @@ document.getElementById("model-list-dropdown").addEventListener("input", functio
 document.getElementById("model-list-dropdown").addEventListener("change", function() {
     const selectedItem = this.value;
     currentModel = selectedItem;
+    pendingInputSource = 'ui';
     if (currentRepresentationMode === 'slice-graph') {
         autoRefreshSliceGraph({ updateAnchor: false });
     } else {
@@ -911,6 +926,7 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             currentModel = String(data.new_model_index);
             statusEl.textContent = `✓ ${data.filename} uploaded`;
             announce(`Model ${data.filename} uploaded and selected.`);
+            pendingInputSource = 'upload';
             sendStateToServer();
         } else {
             statusEl.textContent = `Upload failed: ${data.message}`;
@@ -931,6 +947,7 @@ document.getElementById('upload-model-input').addEventListener('change', async f
 function applyServerState(data) {
     if (data.cube_value !== undefined && data.cube_value !== lastPolledView) {
         lastPolledView = data.cube_value;
+        pendingInputSource = 'cube';
         updateView(data.cube_value);
     }
     const modelDropdown = document.getElementById("model-list-dropdown");
@@ -964,18 +981,27 @@ function applyServerState(data) {
     evtSource.onerror = function() {
         // Do NOT set serverConnected = false here. EventSource fires onerror on
         // every reconnect attempt (normal behavior), which would block all renders.
-        // Render availability is tracked separately via render request failures.
+        // Connection state is managed exclusively by the health poll below.
         console.warn('SSE connection error — will reconnect automatically.');
     };
 })();
 
-// Slow fallback poll: keeps model list and bbox in sync for state that
-// isn't pushed over SSE (e.g. model uploads). Runs every 5 s, far less
-// traffic than the old 1 s loop.
+// Number of consecutive /get_data failures required before declaring the server
+// unreachable. A single failure can be a transient hiccup (busy server, brief
+// network interruption, browser scroll-time fetch deprioritisation) — requiring
+// two in a row prevents spurious "Server unavailable" announcements on the
+// Braille display during normal use.
+let pollFailCount = 0;
+const POLL_FAIL_THRESHOLD = 2;
+
+// Slow fallback poll: the sole authority for serverConnected state changes.
+// Keeps model list and bbox in sync for state that isn't pushed over SSE
+// (e.g. model uploads). Runs every 5 s.
 setInterval(() => {
     fetch(`${SERVER_URL}/get_data`)
-        .then(res => res.ok ? res.json() : Promise.reject(res.status))
+        .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
         .then(data => {
+            pollFailCount = 0;
             if (serverConnected === false) {
                 serverConnected = true;
                 announce('Server reconnected.');
@@ -985,8 +1011,9 @@ setInterval(() => {
             applyServerState(data);
         })
         .catch(error => {
-            console.warn('Failed to poll server state:', error);
-            if (serverConnected !== false) {
+            pollFailCount++;
+            console.warn(`Poll failed (${pollFailCount}/${POLL_FAIL_THRESHOLD}):`, error.message);
+            if (pollFailCount >= POLL_FAIL_THRESHOLD && serverConnected !== false) {
                 serverConnected = false;
                 announce('Server unavailable — rendering paused.');
             }
@@ -1024,9 +1051,9 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
 }
 
 // Switch to a specific render mode
-function switchToRenderMode(targetMode) {
+function switchToRenderMode(targetMode, shouldAnnounce = true) {
     if (currentRenderMode === targetMode) {
-        announceStatus(`already ${targetMode.toLowerCase()}`);
+        if (shouldAnnounce) announceStatus(`already ${targetMode.toLowerCase()}`);
         return;
     }
     const previousMode = currentRenderMode;
@@ -1034,18 +1061,17 @@ function switchToRenderMode(targetMode) {
     refreshViewInfoSummary();
     updateButtonLabels();
     syncRadios();
-    announce(`${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
-    
+    if (shouldAnnounce) announce(`${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
+
     // Send state to server
     sendStateToServer();
     return true;
 }
 
-// Cycle to next render mode (used if needed)
-function cycleRenderMode() {
+function cycleRenderMode(shouldAnnounce = true) {
     const currentIndex = renderModes.indexOf(currentRenderMode);
     const nextIndex = (currentIndex + 1) % renderModes.length;
-    switchToRenderMode(renderModes[nextIndex]);
+    switchToRenderMode(renderModes[nextIndex], shouldAnnounce);
 }
 
 function switchToProjectionMode(targetMode) {
@@ -1060,16 +1086,15 @@ function switchToProjectionMode(targetMode) {
     sendStateToServer();
 }
 
-function switchToRepresentationMode(targetMode) {
+function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
     if (currentRepresentationMode === targetMode) {
-        announceStatus(`already ${targetMode.toLowerCase()}`);
+        if (shouldAnnounce) announceStatus(`already ${targetMode.toLowerCase()}`);
         return;
     }
     const previousMode = currentRepresentationMode;
     currentRepresentationMode = targetMode;
     updateDisplayOptions();
     if (targetMode === 'slice-graph') {
-        // Entering slice-graph mode captures an initial locked snapshot.
         sliceGraphLocked = true;
         captureSliceGraphAnchor(false);
     }
@@ -1077,17 +1102,17 @@ function switchToRepresentationMode(targetMode) {
     updateSliceGraphLockUI();
     updateSideBySideAxisLabels();
     syncRadios();
-    announce(`${previousMode.toLowerCase()} to ${currentRepresentationMode.toLowerCase()}`);
-    
+    if (shouldAnnounce) announce(`${previousMode.toLowerCase()} to ${currentRepresentationMode.toLowerCase()}`);
+
     // Send state to server
     sendStateToServer();
     return true;
 }
 
-function cycleRepresentationMode() {
+function cycleRepresentationMode(shouldAnnounce = true) {
     const currentIndex = representationModes.indexOf(currentRepresentationMode);
     const nextIndex = (currentIndex + 1) % representationModes.length;
-    switchToRepresentationMode(representationModes[nextIndex]);
+    switchToRepresentationMode(representationModes[nextIndex], shouldAnnounce);
 }
 
 // Announce a change: adds to visible history, shows toast, and speaks via SR live region.
@@ -1163,7 +1188,7 @@ sliceSlider.addEventListener('input', function() {
 
 sliceSlider.addEventListener('change', function() {
     clearTimeout(sliderUpdateTimeout);
-    // Send state to server
+    pendingInputSource = 'ui';
     sendStateToServer();
 });
 
@@ -1204,6 +1229,7 @@ sliceSlider.addEventListener('keydown', function(e) {
 document.addEventListener('change', function(e) {
     if (e.target && e.target.matches('input[name="render-mode"]')) {
         if (e.target.checked) {
+            pendingInputSource = 'ui';
             switchToRenderMode(e.target.value);
         }
     }
@@ -1213,6 +1239,7 @@ document.addEventListener('change', function(e) {
 document.addEventListener('change', function(e) {
     if (e.target && e.target.matches('input[name="projection-mode"]')) {
         if (e.target.checked) {
+            pendingInputSource = 'ui';
             switchToProjectionMode(e.target.value);
         }
     }
@@ -1222,6 +1249,7 @@ document.addEventListener('change', function(e) {
 document.addEventListener('change', function(e) {
     if (e.target && e.target.matches('input[name="view-mode"]')) {
         if (e.target.checked) {
+            pendingInputSource = 'ui';
             switchToRepresentationMode(e.target.value);
             updateDisplayOptions();
             sendStateToServer();
@@ -1233,6 +1261,7 @@ document.addEventListener('change', function(e) {
 document.addEventListener('change', function(e) {
     if (e.target && e.target.matches('input[name="view-select"]')) {
         if (e.target.checked) {
+            pendingInputSource = 'ui';
             updateView(e.target.value);
         }
     }
@@ -1242,6 +1271,7 @@ document.addEventListener('change', function(e) {
 document.addEventListener('change', function(e) {
     if (e.target && e.target.matches('input[name="output-device"]')) {
         if (e.target.checked) {
+            pendingInputSource = 'ui';
             switchOutputDevice(e.target.value);
         }
     }
@@ -1254,27 +1284,32 @@ zoomSlider.addEventListener('input', function() {
     //updateZoom(this.value, false, false); // Update UI immediately, skip server send
     clearTimeout(zoomDebounceTimer);
     zoomDebounceTimer = setTimeout(() => {
+        pendingInputSource = 'ui';
         updateZoom(zoomSlider.value, false, true); // Send to server after 150ms idle
     }, 150);
 });
 
 zoomSlider.addEventListener('change', function() {
     clearTimeout(zoomDebounceTimer);
+    pendingInputSource = 'ui';
     updateZoom(this.value, true, true); // Dragging stopped — send immediately
 });
 
 showViewInfoBoxCheckbox.addEventListener('change', function() {
     showViewInfoBox = this.checked;
+    pendingInputSource = 'ui';
     sendStateToServer();
 });
 
 // Deeper depth button
 deeperBtn.addEventListener('click', function() {
+    pendingInputSource = 'ui';
     updateSliceDepth(currentSliceDepth + 10, true);
 });
 
 // Shallower depth button
 shallowerBtn.addEventListener('click', function() {
+    pendingInputSource = 'ui';
     updateSliceDepth(currentSliceDepth - 10, true);
 });
 
@@ -1288,8 +1323,19 @@ sliceGraphRefreshBtn.addEventListener('click', function() {
         return;
     }
     captureSliceGraphAnchor(true);
+    pendingInputSource = 'ui';
     sendStateToServer();
 });
+
+if (resetPositionBtn) {
+    resetPositionBtn.addEventListener('click', function() {
+        pendingInputSource = 'ui';
+        currentMoveCamera = "reset";
+        sendStateToServer();
+        currentMoveCamera = "none";
+        announce('Position reset');
+    });
+}
 
 exportSliceSvgBtn.addEventListener('click', function() {
     exportCurrentSliceAsPng();
@@ -1345,7 +1391,7 @@ document.addEventListener('keydown', function(e) {
     );
     const supportedShortcuts = new Set([
         '1', '2', '4', '5', '7', '8', '9', '0', '-', '=',
-        'q', 'e', 'f', 'r', 't', 'l', 'g', 'o', 'c',
+        'q', 'e', 'f', 'r', 't', 'l', 'g', 'o', 'c', 'z',
         'w', 'a', 's', 'd', '[', ']', 'i', 'h', 'p', 'escape'
     ]);
 
@@ -1399,45 +1445,44 @@ document.addEventListener('keydown', function(e) {
         // View shortcuts (first letter where available)
         case '7':
             e.preventDefault();
-            if (updateView('x-')) {
+            if (updateView('x-', false)) {
                 announceStatus('shortcut 7: view x-');
             }
             break;
         case '8':
             e.preventDefault();
-            if (updateView('x+')) {
+            if (updateView('x+', false)) {
                 announceStatus('shortcut 8: view x+');
             }
             break;
         case '9':
             e.preventDefault();
-            if (updateView('z+')) {
+            if (updateView('z+', false)) {
                 announceStatus('shortcut 9: view z+');
             }
             break;
         case '0':
             e.preventDefault();
-            if (updateView('z-')) {
+            if (updateView('z-', false)) {
                 announceStatus('shortcut 0: view z-');
             }
             break;
         case '-':
             e.preventDefault();
-            if (updateView('y-')) {
+            if (updateView('y-', false)) {
                 announceStatus('shortcut -: view y-');
             }
             break;
         case '=':
             e.preventDefault();
-            if (updateView('y+')) {
+            if (updateView('y+', false)) {
                 announceStatus('shortcut =: view y+');
             }
             break;
             
         case 'f':
-            // Switch to filled/shaded view
             e.preventDefault();
-            if (switchToRenderMode('Shaded')) {
+            if (switchToRenderMode('Shaded', false)) {
                 announceStatus('shortcut F: mode shaded');
             } else {
                 announceStatus('shortcut F: mode unchanged (shaded)');
@@ -1445,21 +1490,19 @@ document.addEventListener('keydown', function(e) {
             break;
 
         case 'r':
-            // Switch to filled/shaded view
             e.preventDefault();
             {
                 const previousMode = currentRenderMode;
-            cycleRenderMode();
+                cycleRenderMode(false);
                 announceStatus(`shortcut R: mode ${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
             }
             break;
 
         case 't':
-            // Switch to filled/shaded view
             e.preventDefault();
             {
                 const previousViewMode = currentRepresentationMode;
-            cycleRepresentationMode();
+                cycleRepresentationMode(false);
                 announceStatus(`shortcut T: view mode ${previousViewMode} to ${currentRepresentationMode}`);
             }
             break;
@@ -1482,9 +1525,8 @@ document.addEventListener('keydown', function(e) {
             break;
             
         case 'o':
-            // Switch to outline view
             e.preventDefault();
-            if (switchToRenderMode('Outline')) {
+            if (switchToRenderMode('Outline', false)) {
                 announceStatus('shortcut O: mode outline');
             } else {
                 announceStatus('shortcut O: mode unchanged (outline)');
@@ -1580,14 +1622,35 @@ document.addEventListener('keydown', function(e) {
             break;
 
         case 'h':
-            // Shortcut reminder
             e.preventDefault();
-            announceStatus('shortcut H: 1 shallower 10%, 2 deeper 10%, Q shallower 1%, E deeper 1%, 4 zoom out, 5 zoom in, 7 x-, 8 x+, 9 z+, 0 z-, - y-, = y+, F shaded, O outline, C cut, R cycle render, T cycle view mode, L lock graph, G refresh graph, W/A/S/D move, [ scrollbar toggle, ] slice-graph toggle, I status, P print, Esc clear focus');
+            {
+                const shortcutsHeading = document.getElementById('shortcuts-heading');
+                if (shortcutsHeading) {
+                    shortcutsHeading.focus();
+                }
+            }
             break;
 
         case 'p':
             announceStatus('shortcut P: printing current render');
             print_view();
+            break;
+
+        case 'c':
+            e.preventDefault();
+            if (switchToRenderMode('Cut', false)) {
+                announceStatus('shortcut C: render cut');
+            } else {
+                announceStatus('shortcut C: render unchanged (cut)');
+            }
+            break;
+
+        case 'z':
+            e.preventDefault();
+            currentMoveCamera = "reset";
+            sendStateToServer();
+            currentMoveCamera = "none";
+            announceStatus('shortcut Z: position reset');
             break;
 
         default:
@@ -1629,6 +1692,7 @@ document.addEventListener('DOMContentLoaded', function() {
     initializeDebugPipelineVisibility();
 
     // Send initial state to server
+    pendingInputSource = 'init';
     sendStateToServer();
 
 });
@@ -1637,28 +1701,6 @@ document.addEventListener('DOMContentLoaded', function() {
 window.addEventListener('pageshow', function() {
     focusTopOfPage();
 });
-
-// Additional accessibility features
-
-// Handle focus management for better screen reader experience
-function manageFocus() {
-    // Ensure focus is visible and properly announced
-    const focusableElements = document.querySelectorAll(
-        'button, input[type="range"], [tabindex]:not([tabindex="-1"])'
-    );
-    
-    focusableElements.forEach(element => {
-        element.addEventListener('focus', function() {
-            // Add a slight delay to ensure screen readers announce the element
-            setTimeout(() => {
-                this.setAttribute('aria-describedby', this.getAttribute('aria-describedby') || '');
-            }, 100);
-        });
-    });
-}
-
-// Initialize focus management
-document.addEventListener('DOMContentLoaded', manageFocus);
 
 // Handle browser zoom and text scaling
 function handleZoomChanges() {

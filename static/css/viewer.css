@@ -192,14 +192,22 @@ button:active {
     margin-bottom: 0;
 }
 
-.shortcuts-list strong {
+.shortcuts-list kbd {
+    display: inline-block;
     color: #495057;
     background: #e9ecef;
-    padding: 2px 6px;
+    border: 1px solid #adb5bd;
+    border-bottom-width: 2px;
     border-radius: 3px;
+    padding: 1px 6px;
     font-family: 'Courier New', monospace;
-    font-size: 0.9em;
+    font-size: 0.85em;
+    font-weight: 600;
+    line-height: 1.4;
+    min-width: 1.6em;
+    text-align: center;
     margin-right: 8px;
+    box-shadow: none;
 }
 
 /* Label styling */
