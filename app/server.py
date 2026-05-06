@@ -287,12 +287,11 @@ def _make_hifi_preview(
     so displaying it directly gives natural black-on-white appearance.
     """
     engine = get_or_create_renderer(model_index)
-    orig = list(engine.screen_size) if engine.screen_size else [96, 40]
-    w0, h0 = max(1, orig[0]), max(1, orig[1] if len(orig) > 1 else orig[0])
-    hifi_h = max(1, int(round(preview_width * h0 / w0)))
-
     out_guard, err_guard = _renderer_stdio_guard()
     with render_lock:
+        orig = list(engine.screen_size) if engine.screen_size else [96, 40]
+        w0, h0 = max(1, orig[0]), max(1, orig[1] if len(orig) > 1 else orig[0])
+        hifi_h = max(1, int(round(preview_width * h0 / w0)))
         engine.screen_size = [preview_width, hifi_h]
         try:
             with out_guard, err_guard:
@@ -961,14 +960,13 @@ def render_export_source():
         export_width = _coerce_positive_int(params.get("export_width", 1000), 1000)
 
         engine = get_or_create_renderer()
-        original_screen_size = list(engine.screen_size)
-        if not original_screen_size or original_screen_size[0] <= 0:
-            original_screen_size = [96, 40]
-
-        aspect_ratio = float(original_screen_size[1]) / float(original_screen_size[0])
-        export_height = max(1, int(round(export_width * aspect_ratio)))
 
         with render_lock:
+            original_screen_size = list(engine.screen_size)
+            if not original_screen_size or original_screen_size[0] <= 0:
+                original_screen_size = [96, 40]
+            aspect_ratio = float(original_screen_size[1]) / float(original_screen_size[0])
+            export_height = max(1, int(round(export_width * aspect_ratio)))
             engine.screen_size = [export_width, export_height]
             try:
                 out_guard, err_guard = _renderer_stdio_guard()
@@ -1009,8 +1007,8 @@ def render_dotpad_hex():
         engine = get_or_create_renderer(model_index)
 
         # Force DotPad screen size (60x40 pixels = 10 lines x 30 cols of braille cells).
-        original_screen_size = list(engine.screen_size)
         with render_lock:
+            original_screen_size = list(engine.screen_size)
             engine.screen_size = [60, 40]
             try:
                 out_guard, err_guard = _renderer_stdio_guard()

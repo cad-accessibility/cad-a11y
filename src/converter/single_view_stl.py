@@ -239,10 +239,13 @@ def get_projected_feature_segments(
             pass
 
         if len(feature_edges) == 0:
-            # Fallback to open-boundary-only approximation if adjacency data is unavailable.
+            # Robust fallback: compute boundary edges directly from face data.
+            # This handles flat cross-sections where trimesh property caching may fail.
             try:
-                boundary_edges = shape.edges_boundary
-                for edge in boundary_edges:
+                all_edges = shape.faces[:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2)
+                all_edges_sorted = np.sort(all_edges, axis=1)
+                unique_edges, counts = np.unique(all_edges_sorted, axis=0, return_counts=True)
+                for edge in unique_edges[counts == 1]:
                     feature_edges.add(tuple(sorted((int(edge[0]), int(edge[1])))))
             except Exception:
                 pass
