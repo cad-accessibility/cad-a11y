@@ -6,7 +6,7 @@ It processes STEP files and returns rendered image arrays based on specified par
 """
 
 import numpy as np
-import os
+import os, sys
 import json
 from OCC.Core.STEPControl import STEPControl_Reader
 import trimesh as tm
@@ -214,8 +214,52 @@ class CADComparisonRenderer:
         if len(self.view_diff_mats) == 0:
             self._compute_slice_graphs()
             self._save_precompute_cache(self._model_signature())
-    
+
     def _calculate_view_limits(self):
+        """Calculate axis limits for all views for both shapes."""
+        #view_keys = ["top", "front", "side"]
+        view_keys = ["top", "front", "left", "bottom", "back", "right"]
+        rendering_modes = ["outline", "filled", "slice"]
+        
+        xmin, ymin, zmin, xmax, ymax, zmax = self.bbox
+        
+        view_limits = [
+            [[xmin, xmax], [ymin, ymax]],  # top
+            [[xmin, xmax], [ymin, ymax]],  # front
+            [[xmin, xmax], [ymin, ymax]],  # side
+            [[xmin, xmax], [ymin, ymax]],  # top
+            [[xmin, xmax], [ymin, ymax]],  # front
+            [[xmin, xmax], [ymin, ymax]],  # side
+        ]
+        self.view_current_camera_center = [
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+        ]
+        
+        shape_before, shape_after = self.shapes
+        
+        for i, view_key in enumerate(view_keys):
+            _, ax_limits_before = get_single_view(
+                shape_before, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
+            )
+            _, ax_limits_after = get_single_view(
+                shape_after, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
+            )
+            view_limits[i][0][0] = min(ax_limits_before[0][0], ax_limits_after[0][0])
+            view_limits[i][0][1] = max(ax_limits_before[0][1], ax_limits_after[0][1])
+            view_limits[i][1][0] = min(ax_limits_before[1][0], ax_limits_after[1][0])
+            view_limits[i][1][1] = max(ax_limits_before[1][1], ax_limits_after[1][1])
+            self.view_current_camera_center[i][0] = (view_limits[i][0][0] + view_limits[i][0][1])/2.0
+            self.view_current_camera_center[i][1] = (view_limits[i][1][0] + view_limits[i][1][1])/2.0
+        
+        self.view_limits = np.array(view_limits)
+        self.view_current_camera_center = np.array(self.view_current_camera_center)
+    
+    def _calculate_view_limits_v2(self):
         """Calculate tight orthographic limits for each axis view across both shapes."""
         view_keys = ["top", "front", "left", "bottom", "back", "right"]
         view_limits = []
@@ -322,6 +366,7 @@ class CADComparisonRenderer:
         return np.array(projected_limits)
 
     def _compute_slice_graphs(self):
+        print("_compute_slice_graphs")
 
         shape = copy(self.shapes[0])
         cut_depth = 0.0
