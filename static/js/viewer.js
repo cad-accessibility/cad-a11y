@@ -276,10 +276,11 @@ function refreshStatusBar() {
 function showToast(message) {
     // Screen reader: always push to live region.
     if (srLiveAnnounce) {
-        // Clear then set after a short delay — rAF (~16 ms) is too fast for some
-        // AT implementations to detect the mutation as a new announcement.
+        // Clear then set after a delay so AT detects a fresh mutation even when the
+        // message repeats. 150 ms is more reliable than 50 ms across NVDA/JAWS and
+        // braille displays, which can miss rapid successive mutations.
         srLiveAnnounce.textContent = '';
-        setTimeout(() => { srLiveAnnounce.textContent = message; }, 50);
+        setTimeout(() => { srLiveAnnounce.textContent = message; }, 150);
     }
 
     // Visual toast: respect user-chosen duration.
@@ -944,11 +945,25 @@ document.getElementById('upload-model-input').addEventListener('change', async f
 });
 
         // Apply a server state snapshot to local UI — shared by SSE and fallback poll.
+let lastSliderRaw = null; // null = never received a server-side slider value yet
 function applyServerState(data) {
     if (data.cube_value !== undefined && data.cube_value !== lastPolledView) {
         lastPolledView = data.cube_value;
         pendingInputSource = 'cube';
         updateView(data.cube_value);
+    }
+    if (data.slider_value !== undefined) {
+        const rawValue = data.slider_value;
+        if (lastSliderRaw === null) {
+            // First reading — record but skip to avoid jumping depth to the
+            // server default (0) before the slider hardware has been moved.
+            lastSliderRaw = rawValue;
+        } else if (rawValue !== lastSliderRaw) {
+            lastSliderRaw = rawValue;
+            const newDepth = Math.round(Math.max(0, Math.min(100, (rawValue / 65535) * 100)));
+            pendingInputSource = 'slider';
+            updateSliceDepth(newDepth, false);
+        }
     }
     const modelDropdown = document.getElementById("model-list-dropdown");
     const dropdownFocused = document.activeElement === modelDropdown;
@@ -1533,12 +1548,6 @@ document.addEventListener('keydown', function(e) {
             }
             break;
 
-        case 'n':
-            // Switch to line view
-            e.preventDefault();
-            switchToRenderMode('Line');
-            break;
-            
         //case '0':
         //    // Jump to 0% depth (surface)
         //    e.preventDefault();
@@ -1606,7 +1615,7 @@ document.addEventListener('keydown', function(e) {
             break;
             
         case 'escape':
-            // Allow Escape key to remove focus from any element
+            e.preventDefault();
             document.activeElement.blur();
             announceStatus('Focus cleared');
             break;

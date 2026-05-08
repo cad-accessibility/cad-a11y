@@ -95,6 +95,10 @@ function onMessage(device, dataCode, msg) {
         disconnectBtn.disabled = true;
         setStatus('DotPad disconnected unexpectedly.');
         if (typeof window.announce === 'function') window.announce('DotPad disconnected.');
+    } else if (dataCode === DataCodes.Connected) {
+        // Device fully initialised (board info received, cell dimensions set).
+        // Send initial render so the display shows the current model immediately.
+        if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
     }
     console.log('[DotPad]', dataCode, msg);
 }
@@ -110,12 +114,17 @@ async function sendHexToDotPad(renderParams) {
     if (!connectedDevice || sendInFlight) return;
     if (autoSendCheckbox && !autoSendCheckbox.checked) return;
 
+    // Read the actual cell grid from the connected device so the server renders
+    // at the correct pixel size. Falls back to DotPad 300A defaults (30×10).
+    const dotpadCols = connectedDevice.numberCellColumns || 30;
+    const dotpadRows = connectedDevice.numberCellRows || 10;
+
     sendInFlight = true;
     try {
         const resp = await fetch(`${SERVER_URL}/render/dotpad-hex`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(renderParams),
+            body: JSON.stringify({ ...renderParams, dotpad_cols: dotpadCols, dotpad_rows: dotpadRows }),
             mode: 'cors',
         });
         const data = await resp.json();

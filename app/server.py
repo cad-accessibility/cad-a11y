@@ -1006,10 +1006,17 @@ def render_dotpad_hex():
         model_index = _normalize_model_index(params.get("current_model"))
         engine = get_or_create_renderer(model_index)
 
-        # Force DotPad screen size (60x40 pixels = 10 lines x 30 cols of braille cells).
+        # Use device-reported cell grid if provided; fall back to DotPad 300A defaults.
+        dotpad_cols = max(1, min(int(params.get("dotpad_cols", _DOTPAD_COLS)), 128))
+        dotpad_rows = max(1, min(int(params.get("dotpad_rows", _DOTPAD_LINES)), 64))
+        total_cells = dotpad_cols * dotpad_rows
+        # Each braille cell is 2 px wide × 4 px tall.
+        pixel_width  = dotpad_cols * 2
+        pixel_height = dotpad_rows * 4
+
         with render_lock:
             original_screen_size = list(engine.screen_size)
-            engine.screen_size = [60, 40]
+            engine.screen_size = [pixel_width, pixel_height]
             try:
                 out_guard, err_guard = _renderer_stdio_guard()
                 with out_guard, err_guard:
@@ -1019,16 +1026,15 @@ def render_dotpad_hex():
 
         braille_payload = _to_braille_payload(rendered)
         cells = _pixels_to_braille_cells_dotpad(
-            braille_payload, lines=_DOTPAD_LINES, cols=_DOTPAD_COLS,
+            braille_payload, lines=dotpad_rows, cols=dotpad_cols,
         )
-        # Pad/truncate to exactly 300 cells.
-        cell_bytes = cells[:_DOTPAD_GRAPHIC_CELLS].ljust(_DOTPAD_GRAPHIC_CELLS, b"\x00")
+        cell_bytes = cells[:total_cells].ljust(total_cells, b"\x00")
         hex_string = cell_bytes.hex().upper()
 
         return jsonify({
             "status": "success",
             "dotpad_graphic_hex": hex_string,
-            "cell_count": _DOTPAD_GRAPHIC_CELLS,
+            "cell_count": total_cells,
         }), 200
     except Exception as error:
         _log(f"Error rendering DotPad hex: {error}", force=True)
