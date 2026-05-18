@@ -247,7 +247,14 @@ const sbDotPad = document.getElementById('sb-dotpad');
 
 // Toast / live-region elements
 const announcementToast = document.getElementById('announcement-toast');
-const srLiveAnnounce = document.getElementById('sr-live-announce');
+// Two-slot live-region swap: toggling which element receives text each time
+// guarantees AT sees a fresh DOM mutation for every announcement, including
+// consecutive identical messages, without any clear+setTimeout race.
+const srLiveSlots = [
+    document.getElementById('sr-live-a'),
+    document.getElementById('sr-live-b')
+];
+let srLiveActiveSlot = 0;
 const toastDurationSlider = document.getElementById('toast-duration-slider');
 const toastDurationValue = document.getElementById('toast-duration-value');
 let toastDurationSec = 3;  // default 3 seconds; 0 = off
@@ -274,14 +281,15 @@ function refreshStatusBar() {
 
 /** Show a brief on-screen toast and push text to the SR live region. */
 function showToast(message) {
-    // Screen reader: always push to live region.
-    if (srLiveAnnounce) {
-        // Clear then set after a delay so AT detects a fresh mutation even when the
-        // message repeats. 150 ms is more reliable than 50 ms across NVDA/JAWS and
-        // braille displays, which can miss rapid successive mutations.
-        srLiveAnnounce.textContent = '';
-        setTimeout(() => { srLiveAnnounce.textContent = message; }, 150);
-    }
+    // Two-slot swap: write to the next slot and clear the previous one.
+    // AT always sees a genuine new-content mutation regardless of whether the
+    // message is identical to the last one, and there is no setTimeout race to
+    // lose when keys are pressed in rapid succession.
+    srLiveActiveSlot = 1 - srLiveActiveSlot;
+    const activeEl = srLiveSlots[srLiveActiveSlot];
+    const idleEl   = srLiveSlots[1 - srLiveActiveSlot];
+    if (activeEl) activeEl.textContent = message;
+    if (idleEl)   idleEl.textContent   = '';
 
     // Visual toast: respect user-chosen duration.
     if (!announcementToast || toastDurationSec <= 0) return;
@@ -689,15 +697,19 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
     refreshViewInfoSummary();
 
     // Only mutate ARIA attributes, button labels, and trigger a render when the
-    // value actually changed. setAttribute fires a DOM mutation even when the
-    // string value is identical, and NVDA announces every aria-valuetext mutation
-    // on range inputs regardless of focus — unconditional calls here were the
-    // source of the Braille display flood when the hardware slider was held at a
-    // noisy ADC position (same rounded depth → repeated identical mutations →
-    // screen reader flood).
+    // value actually changed.
     if (oldDepth !== currentSliceDepth) {
         sliceSlider.setAttribute('aria-valuenow', currentSliceDepth);
-        sliceSlider.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
+        // aria-valuetext is announced by NVDA on every mutation of a range input
+        // regardless of focus. When shouldAnnounce=false the caller (a keyboard
+        // shortcut handler) will push the announcement through the assertive live
+        // region instead, so we must NOT mutate aria-valuetext here — doing so
+        // would cause a second, racing announcement on NVDA/JAWS.
+        // When shouldAnnounce=true (slider focused, hardware input) the mutation
+        // IS the correct announcement channel, so we set it as before.
+        if (shouldAnnounce) {
+            sliceSlider.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
+        }
         updateButtonLabels();
         sendStateToServer();
     }
@@ -1171,10 +1183,17 @@ function announceStatus(message) {
 
 function announceDepthShortcut(shortcutLabel, previousDepth, depthValue) {
     if (previousDepth === depthValue) {
-        announceStatus(`shortcut ${shortcutLabel}: depth unchanged at ${depthValue}%`);
+        announce(`Cut depth unchanged: ${depthValue}%`);
         return;
     }
-    announceStatus(`shortcut ${shortcutLabel}: ${depthAnnouncement(depthValue)}`);
+    const direction = depthValue > previousDepth ? 'deeper' : 'shallower';
+    if (depthValue === 0) {
+        announce('Cut depth: surface');
+    } else if (depthValue === 100) {
+        announce('Cut depth: full depth');
+    } else {
+        announce(`Cut depth ${direction}: ${depthValue}%`);
+    }
 }
 
 if (clearAnnouncementsBtn && announcementHistory) {
@@ -1205,6 +1224,13 @@ sliceSlider.addEventListener('change', function() {
     clearTimeout(sliderUpdateTimeout);
     pendingInputSource = 'ui';
     sendStateToServer();
+});
+
+// Sync aria-valuetext when the slider receives focus so it reflects any depth
+// changes made via keyboard shortcuts while focus was elsewhere.
+sliceSlider.addEventListener('focus', function() {
+    this.setAttribute('aria-valuenow', currentSliceDepth);
+    this.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
 });
 
 // Keyboard support for slider
@@ -1457,50 +1483,62 @@ document.addEventListener('keydown', function(e) {
             }
             break;
             
-        // View shortcuts (first letter where available)
+        // View shortcuts
         case '7':
             e.preventDefault();
             if (updateView('x-', false)) {
-                announceStatus('shortcut 7: view x-');
+                announce('View changed: x-');
+            } else {
+                announce('View unchanged: x-');
             }
             break;
         case '8':
             e.preventDefault();
             if (updateView('x+', false)) {
-                announceStatus('shortcut 8: view x+');
+                announce('View changed: x+');
+            } else {
+                announce('View unchanged: x+');
             }
             break;
         case '9':
             e.preventDefault();
             if (updateView('z+', false)) {
-                announceStatus('shortcut 9: view z+');
+                announce('View changed: z+');
+            } else {
+                announce('View unchanged: z+');
             }
             break;
         case '0':
             e.preventDefault();
             if (updateView('z-', false)) {
-                announceStatus('shortcut 0: view z-');
+                announce('View changed: z-');
+            } else {
+                announce('View unchanged: z-');
             }
             break;
         case '-':
             e.preventDefault();
             if (updateView('y-', false)) {
-                announceStatus('shortcut -: view y-');
+                announce('View changed: y-');
+            } else {
+                announce('View unchanged: y-');
             }
             break;
         case '=':
             e.preventDefault();
             if (updateView('y+', false)) {
-                announceStatus('shortcut =: view y+');
+                announce('View changed: y+');
+            } else {
+                announce('View unchanged: y+');
             }
             break;
-            
+
         case 'f':
             e.preventDefault();
             if (switchToRenderMode('Shaded', false)) {
-                announceStatus('shortcut F: mode shaded');
+                announce('Render mode: shaded');
             } else {
-                announceStatus('shortcut F: mode unchanged (shaded)');
+                announce('Render mode unchanged: shaded');
             }
             break;
 
@@ -1509,7 +1547,7 @@ document.addEventListener('keydown', function(e) {
             {
                 const previousMode = currentRenderMode;
                 cycleRenderMode(false);
-                announceStatus(`shortcut R: mode ${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
+                announce(`Render mode changed: ${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
             }
             break;
 
@@ -1518,33 +1556,33 @@ document.addEventListener('keydown', function(e) {
             {
                 const previousViewMode = currentRepresentationMode;
                 cycleRepresentationMode(false);
-                announceStatus(`shortcut T: view mode ${previousViewMode} to ${currentRepresentationMode}`);
+                announce(`Display mode changed: ${previousViewMode} to ${currentRepresentationMode}`);
             }
             break;
 
         case 'l':
             e.preventDefault();
             toggleSliceGraphLock();
-            announceStatus(`shortcut L: slice graph lock ${sliceGraphLocked ? 'on' : 'off'}`);
+            announce(`Slice graph lock ${sliceGraphLocked ? 'on' : 'off'}`);
             break;
 
         case 'g':
             e.preventDefault();
             if (currentRepresentationMode !== 'slice-graph') {
-                announceStatus('shortcut G: no change, not in slice-graph mode');
+                announce('Slice graph refresh: not in slice-graph mode');
                 break;
             }
             captureSliceGraphAnchor(true);
             sendStateToServer();
-            announceStatus(`shortcut G: slice graph refreshed at ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
+            announce(`Slice graph refreshed: view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
             break;
-            
+
         case 'o':
             e.preventDefault();
             if (switchToRenderMode('Outline', false)) {
-                announceStatus('shortcut O: mode outline');
+                announce('Render mode: outline');
             } else {
-                announceStatus('shortcut O: mode unchanged (outline)');
+                announce('Render mode unchanged: outline');
             }
             break;
 
@@ -1553,40 +1591,40 @@ document.addEventListener('keydown', function(e) {
         //    e.preventDefault();
         //    updateSliceDepth(0, true);
         //    break;
-        //    
+        //
         case 'w':
             currentMoveCamera = "up";
             sendStateToServer();
             currentMoveCamera = "none";
-            announceStatus('shortcut W: moved scene up');
+            announce('Scene moved up');
             break;
         case 'd':
             currentMoveCamera = "right";
             sendStateToServer();
             currentMoveCamera = "none";
-            announceStatus('shortcut D   moved scene right');
+            announce('Scene moved right');
             break;
         case 's':
             currentMoveCamera = "down";
             sendStateToServer();
             currentMoveCamera = "none";
-            announceStatus('shortcut S: moved scene down');
+            announce('Scene moved down');
             break;
         case '[':
             composeScrollbar = !composeScrollbar;
             sendStateToServer();
-            announceStatus(`shortcut [: compose scrollbar ${composeScrollbar ? 'on' : 'off'}`);
+            announce(`Compose scrollbar ${composeScrollbar ? 'on' : 'off'}`);
             break;
         case ']':
             composeSliceGraph = !composeSliceGraph;
             sendStateToServer();
-            announceStatus(`shortcut ]: compose slice graph ${composeSliceGraph ? 'on' : 'off'}`);
+            announce(`Compose slice graph ${composeSliceGraph ? 'on' : 'off'}`);
             break;
         case 'a':
             currentMoveCamera = "left";
             sendStateToServer();
             currentMoveCamera = "none";
-            announceStatus('shortcut A: moved scene left');
+            announce('Scene moved left');
             break;
 
         case '4':
@@ -1595,9 +1633,9 @@ document.addEventListener('keydown', function(e) {
                 const previousZoom = currentZoom;
                 const zoomChanged = updateZoom(currentZoom - ZOOM_STEP, false);
                 if (zoomChanged) {
-                    announceStatus(`shortcut 4: zoom ${currentZoom.toFixed(1)}`);
+                    announce(`Zoom out: ${currentZoom.toFixed(1)}`);
                 } else {
-                    announceStatus(`shortcut 4: zoom unchanged at ${previousZoom.toFixed(1)}`);
+                    announce(`Zoom unchanged: ${previousZoom.toFixed(1)}`);
                 }
             }
             break;
@@ -1607,26 +1645,27 @@ document.addEventListener('keydown', function(e) {
                 const previousZoom = currentZoom;
                 const zoomChanged = updateZoom(currentZoom + ZOOM_STEP, false);
                 if (zoomChanged) {
-                    announceStatus(`shortcut 5: zoom ${currentZoom.toFixed(1)}`);
+                    announce(`Zoom in: ${currentZoom.toFixed(1)}`);
                 } else {
-                    announceStatus(`shortcut 5: zoom unchanged at ${previousZoom.toFixed(1)}`);
+                    announce(`Zoom unchanged: ${previousZoom.toFixed(1)}`);
                 }
             }
             break;
-            
+
         case 'escape':
             e.preventDefault();
             document.activeElement.blur();
-            announceStatus('Focus cleared');
+            announce('Focus cleared');
             break;
 
         case 'i':
             // Concise current status
             e.preventDefault();
             {
-                const depthState = depthAnnouncement(currentSliceDepth).replace('depth ', '');
-                const statusMsg = `state: ${currentView}, ${depthState}, ${currentRenderMode.toLowerCase()}`;
-                announceStatus(`shortcut I: ${statusMsg}`);
+                const depthLabel = currentSliceDepth === 0 ? 'surface' :
+                                   currentSliceDepth === 100 ? 'full depth' :
+                                   `${currentSliceDepth}%`;
+                announce(`View: ${currentView}, Cut depth: ${depthLabel}, Render: ${currentRenderMode.toLowerCase()}`);
             }
             break;
 
@@ -1641,16 +1680,16 @@ document.addEventListener('keydown', function(e) {
             break;
 
         case 'p':
-            announceStatus('shortcut P: printing current render');
+            announce('Printing current render');
             print_view();
             break;
 
         case 'c':
             e.preventDefault();
             if (switchToRenderMode('Cut', false)) {
-                announceStatus('shortcut C: render cut');
+                announce('Render mode: cut');
             } else {
-                announceStatus('shortcut C: render unchanged (cut)');
+                announce('Render mode unchanged: cut');
             }
             break;
 
@@ -1659,7 +1698,7 @@ document.addEventListener('keydown', function(e) {
             currentMoveCamera = "reset";
             sendStateToServer();
             currentMoveCamera = "none";
-            announceStatus('shortcut Z: position reset');
+            announce('Position reset');
             break;
 
         default:

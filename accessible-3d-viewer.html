@@ -58,11 +58,13 @@
             </span>
         </div>
 
-        <!-- SR live region: assertive so state-change notifications reach the Braille
-             display and screen reader immediately. polite defers announcements until
-             the user is idle — but exploration users are constantly pressing keys, so
-             polite updates are overwritten before AT ever presents them. -->
-        <div id="sr-live-announce" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
+        <!-- SR live regions: two-slot swap pattern. Alternating which element receives
+             text guarantees AT sees a fresh DOM mutation for every announcement,
+             including identical consecutive messages, without any clear+setTimeout
+             race. aria-live="assertive" so Braille displays and screen readers surface
+             state changes immediately even while the user is actively pressing keys. -->
+        <div id="sr-live-a" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
+        <div id="sr-live-b" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
 
         <!-- Visual toast for sighted users (hidden from SR – the live region above handles it) -->
         <div id="announcement-toast" aria-hidden="true"></div>
