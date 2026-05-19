@@ -474,6 +474,7 @@ def initialize_default_braille_render() -> None:
 def _record_command(data: dict[str, Any]) -> int:
     entry = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "request": _collect_request_context(),
         "data": data,
     }
     with commands_log_lock:
