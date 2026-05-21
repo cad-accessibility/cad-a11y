@@ -202,6 +202,22 @@ def _find_default_model() -> Path:
 DEFAULT_MODEL = _find_default_model()
 AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
 MODEL_NAME_LIST = [model_path.stem for model_path in AVAILABLE_MODELS]
+_model_list_last_refresh: float = 0.0
+_MODEL_LIST_REFRESH_INTERVAL = 2.0  # seconds
+
+
+def _refresh_model_list_if_stale() -> None:
+    """Refresh AVAILABLE_MODELS/MODEL_NAME_LIST from disk at most every 2 s."""
+    global AVAILABLE_MODELS, MODEL_NAME_LIST, _model_list_last_refresh
+    now = time.monotonic()
+    if now - _model_list_last_refresh < _MODEL_LIST_REFRESH_INTERVAL:
+        return
+    with models_lock:
+        if now - _model_list_last_refresh < _MODEL_LIST_REFRESH_INTERVAL:
+            return  # another thread already refreshed
+        AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
+        MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
+        _model_list_last_refresh = time.monotonic()
 
 
 def _normalize_model_index(raw_index: Any) -> int:
@@ -437,6 +453,7 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
 
 def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     """Render, send to braille display, and build JSON response dict."""
+    _refresh_model_list_if_stale()
     model_index = _normalize_model_index(params.get("current_model"))
     rendered, bbox, braille_payload = _render_and_send(params, source=source, model_index=model_index)
 
@@ -675,6 +692,7 @@ def render_view():
     global last_render_fingerprint, last_render_response
 
     try:
+        _refresh_model_list_if_stale()
         merged_params, model_index, is_pan_request, fingerprint = _prepare_render_params(request.get_json(silent=True))
 
         with state_lock:
@@ -684,6 +702,7 @@ def render_view():
                 and last_render_fingerprint == fingerprint
                 and last_render_response is not None
             ):
+                last_render_response["model_list"] = MODEL_NAME_LIST
                 return jsonify(last_render_response), 200
 
         with state_lock:
@@ -812,9 +831,12 @@ def get_stats():
 
 @app.route("/models", methods=["GET", "POST"])
 def models_endpoint():
-    global last_render_fingerprint, last_render_response
+    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response
 
     if request.method == "GET":
+        with models_lock:
+            AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
+            MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
         with state_lock:
             current_index = state.current_model_index
         return jsonify(
