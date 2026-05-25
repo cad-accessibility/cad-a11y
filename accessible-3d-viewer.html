@@ -63,8 +63,8 @@
              including identical consecutive messages, without any clear+setTimeout
              race. aria-live="assertive" so Braille displays and screen readers surface
              state changes immediately even while the user is actively pressing keys. -->
-        <div id="sr-live-a" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
-        <div id="sr-live-b" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
+        <div id="sr-live-a" role="alert" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
+        <div id="sr-live-b" role="alert" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
 
         <!-- Visual toast for sighted users (hidden from SR – the live region above handles it) -->
         <div id="announcement-toast" aria-hidden="true"></div>

@@ -860,6 +860,13 @@ function updateModelList(model_list) {
 
     const signature = model_list.join('||');
     if (signature === lastModelListSignature && dropdown.options.length > 0) {
+        const currentModelIndex = Number(currentModel);
+        if (Number.isInteger(currentModelIndex) && currentModelIndex >= 0 && currentModelIndex < dropdown.options.length) {
+            dropdown.value = String(currentModelIndex);
+        }
+        if (sbModel && dropdown.selectedIndex >= 0) {
+            sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
+        }
         return;
     }
 
@@ -895,11 +902,17 @@ function updateModelList(model_list) {
 document.getElementById("model-list-dropdown").addEventListener("input", function() {
     // Keep local state in sync while keyboard arrows navigate options.
     currentModel = this.value;
+    if (sbModel && this.selectedIndex >= 0) {
+        sbModel.textContent = this.options[this.selectedIndex].text;
+    }
 });
 
 document.getElementById("model-list-dropdown").addEventListener("change", function() {
     const selectedItem = this.value;
     currentModel = selectedItem;
+    if (sbModel && this.selectedIndex >= 0) {
+        sbModel.textContent = this.options[this.selectedIndex].text;
+    }
     pendingInputSource = 'ui';
     if (currentRepresentationMode === 'slice-graph') {
         autoRefreshSliceGraph({ updateAnchor: false });
@@ -937,6 +950,9 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             const dropdown = document.getElementById('model-list-dropdown');
             dropdown.value = String(data.new_model_index);
             currentModel = String(data.new_model_index);
+            if (sbModel && dropdown.selectedIndex >= 0) {
+                sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
+            }
             statusEl.textContent = `✓ ${data.filename} uploaded`;
             announce(`Model ${data.filename} uploaded and selected.`);
             pendingInputSource = 'upload';
