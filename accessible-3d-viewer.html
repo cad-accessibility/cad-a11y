@@ -21,7 +21,7 @@
             Sighted users see the full styled bar.
             SR live region (polite) so it doesn't interrupt reading.
         -->
-        <div id="status-bar" role="status" aria-live="polite" aria-atomic="true" aria-label="Current state">
+        <div id="status-bar" role="status" aria-live="assertive" aria-atomic="true" aria-label="Current state">
             <span class="status-item">
                 <span class="status-label">View:</span>
                 <span class="status-value highlight" id="sb-view">x+</span>
@@ -58,8 +58,8 @@
             </span>
         </div>
 
-        <!-- SR live region: polite for state changes (doesn't interrupt braille reading) -->
-        <div id="sr-live-announce" aria-live="polite" aria-atomic="true" class="sr-only"></div>
+        <!-- SR live region: assertive so announcements are prioritized on SR/braille output. -->
+        <div id="sr-live-announce" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
 
         <!-- Visual toast for sighted users (hidden from SR – the live region above handles it) -->
         <div id="announcement-toast" aria-hidden="true"></div>
@@ -238,7 +238,7 @@
                         Refresh Graph
                     </button>
                 </div>
-                <div class="help-text" id="slice-graph-lock-status" aria-live="polite">Graph lock ON.</div>
+                <div class="help-text" id="slice-graph-lock-status" aria-live="assertive">Graph lock ON.</div>
 
                 <fieldset style="margin-top: 8px;">
                     <legend class="sr-only">Output device</legend>
@@ -269,7 +269,7 @@
                     <input type="file" id="upload-model-input" accept=".stl,.step,.STEP"
                         aria-label="Upload an STL or STEP model file">
                     <label for="upload-model-input" id="upload-model-label">Upload model…</label>
-                    <div id="upload-model-status" class="help-text" aria-live="polite" aria-atomic="true"></div>
+                    <div id="upload-model-status" class="help-text" aria-live="assertive" aria-atomic="true"></div>
                 </div>
             </section>
 
@@ -282,7 +282,7 @@
                     <button type="button" id="monarch-hid-connect-btn">Connect USB</button>
                     <button type="button" id="monarch-hid-disconnect-btn" disabled>Disconnect</button>
                 </div>
-                <div id="monarch-hid-status" role="status" aria-live="polite" aria-atomic="true" class="help-text">
+                <div id="monarch-hid-status" role="status" aria-live="assertive" aria-atomic="true" class="help-text">
                     Not connected.
                 </div>
             </section>
@@ -296,7 +296,7 @@
                     <button type="button" id="trinkey-connect-btn">Connect USB</button>
                     <button type="button" id="trinkey-disconnect-btn" disabled>Disconnect</button>
                 </div>
-                <div id="trinkey-status" role="status" aria-live="polite" aria-atomic="true" class="help-text">
+                <div id="trinkey-status" role="status" aria-live="assertive" aria-atomic="true" class="help-text">
                     Not connected.
                 </div>
                 <div class="help-text">Depth: <span id="trinkey-depth-value">--</span></div>
@@ -311,7 +311,7 @@
                     <button type="button" id="witmotion-connect-btn">Connect BLE</button>
                     <button type="button" id="witmotion-disconnect-btn" disabled>Disconnect</button>
                 </div>
-                <div id="witmotion-status" role="status" aria-live="polite" aria-atomic="true" class="help-text">
+                <div id="witmotion-status" role="status" aria-live="assertive" aria-atomic="true" class="help-text">
                     Not connected.
                 </div>
                 <div class="help-text">View: <span id="witmotion-view-value">--</span></div>
@@ -328,7 +328,7 @@
                     <button type="button" id="dotpad-scan-usb-btn">Connect USB</button>
                     <button type="button" id="dotpad-disconnect-btn" disabled>Disconnect</button>
                 </div>
-                <div id="dotpad-status" role="status" aria-live="polite" aria-atomic="true" class="help-text">
+                <div id="dotpad-status" role="status" aria-live="assertive" aria-atomic="true" class="help-text">
                     Not connected.
                 </div>
                 <label class="checkbox-label" for="dotpad-auto-send">
@@ -392,7 +392,7 @@
                     <div class="help-text" id="debug-pipeline-summary">
                         Waiting for render debug data...
                     </div>
-                    <div id="debug-stage-list" class="debug-stage-list" aria-live="polite"></div>
+                    <div id="debug-stage-list" class="debug-stage-list" aria-live="assertive"></div>
                 </div>
             </section>
         </main>
