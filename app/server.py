@@ -26,6 +26,7 @@ import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import uuid
 
 import numpy as np
 from flask import Flask, Response, has_request_context, jsonify, request, send_file, stream_with_context
@@ -86,6 +87,49 @@ MODEL_DIR = REPO_ROOT / "data" / "models"
 RENDERS_DIR = REPO_ROOT / "data" / "renders"
 STUDY_LOG_DIR = REPO_ROOT / "data" / "logs"
 BRAILLE_LOG_PATH = Path(os.getenv("BRAILLE_LOG_PATH", str(STUDY_LOG_DIR / "braille_send_events.jsonl")))
+
+
+def _is_writable_directory(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return False
+
+    # Write/unlink probe catches bind mounts that exist but are not writable.
+    probe = path / f".cad_a11y_write_test_{uuid.uuid4().hex}"
+    try:
+        with probe.open("wb") as handle:
+            handle.write(b"ok")
+        probe.unlink(missing_ok=True)
+        return True
+    except Exception:
+        with contextlib.suppress(Exception):
+            probe.unlink(missing_ok=True)
+        return False
+
+
+def _resolve_upload_dir() -> Path:
+    env_dir = os.getenv("UPLOAD_MODEL_DIR", "").strip()
+    candidates: list[Path] = []
+    if env_dir:
+        candidates.append(Path(env_dir))
+    candidates.extend(
+        [
+            MODEL_DIR,
+            REPO_ROOT / "data" / "uploads",
+            Path("/tmp/cad-a11y/models"),
+        ]
+    )
+
+    # Preserve order while removing duplicates.
+    deduped_candidates = list(dict.fromkeys(candidates))
+    for candidate in deduped_candidates:
+        if _is_writable_directory(candidate):
+            return candidate
+    return MODEL_DIR
+
+
+UPLOAD_DIR = _resolve_upload_dir()
 
 DEFAULT_RENDER_PARAMS: dict[str, Any] = {
     "view": "y-",
@@ -186,8 +230,10 @@ def _renderer_stdio_guard():
 def _discover_models() -> list[Path]:
     patterns = ("*.stl", "*.step", "*.STEP")
     models: list[Path] = []
-    for pattern in patterns:
-        models.extend(sorted(MODEL_DIR.glob(pattern)))
+    search_dirs = list(dict.fromkeys([MODEL_DIR, UPLOAD_DIR]))
+    for model_dir in search_dirs:
+        for pattern in patterns:
+            models.extend(sorted(model_dir.glob(pattern)))
     # Deduplicate while preserving order.
     return list(dict.fromkeys(models))
 
@@ -889,11 +935,17 @@ def upload_model():
     if suffix not in _ALLOWED_EXTENSIONS:
         return jsonify({"status": "error", "message": f"Unsupported file type '{suffix}'. Use .stl or .step"}), 400
 
-    dest = MODEL_DIR / filename
+    dest = UPLOAD_DIR / filename
     try:
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         file.save(dest)
     except Exception as error:
-        return jsonify({"status": "error", "message": f"Could not save file: {error}"}), 500
+        return jsonify(
+            {
+                "status": "error",
+                "message": f"Could not save file in '{UPLOAD_DIR}': {error}",
+            }
+        ), 500
 
     with models_lock:
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
@@ -1079,6 +1131,8 @@ def serve_static_css(filename):
 def main() -> int:
     _log("Server starting on http://localhost:6969", force=True)
     _log(f"Model directory: {MODEL_DIR}", force=True)
+    _log(f"Upload directory: {UPLOAD_DIR}", force=True)
+    _log(f"Upload directory writable: {_is_writable_directory(UPLOAD_DIR)}", force=True)
     _log(f"Models found: {len(AVAILABLE_MODELS)}", force=True)
     _log("Endpoints: POST /render, POST /command, GET /get_data", force=True)
     _log(f"Braille send logs: {BRAILLE_LOG_PATH}", force=True)
