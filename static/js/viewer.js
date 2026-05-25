@@ -1665,6 +1665,15 @@ document.addEventListener('keydown', function(e) {
 
         case 'o':
             e.preventDefault();
+            if (switchToRenderMode('Orthographic', false)) {
+                announce('Render mode: orthographic');
+            } else {
+                announce('Render mode unchanged: orthographic');
+            }
+            break;
+
+        case 'n':
+            e.preventDefault();
             if (switchToRenderMode('Outline', false)) {
                 announce('Render mode: outline');
             } else {
