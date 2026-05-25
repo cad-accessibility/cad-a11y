@@ -288,6 +288,13 @@ fieldset label {
     cursor: pointer;
 }
 
+.top-mode-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    align-items: center;
+}
+
 /* Info display styling */
 #view-info div {
     margin-bottom: 10px;

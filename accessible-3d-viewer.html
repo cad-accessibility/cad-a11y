@@ -143,10 +143,10 @@
             <section class="section" aria-labelledby="render-heading">
                 <h2 id="render-heading">Rendering Mode</h2>
                 <div id="render-help" class="help-text">
-                    Choose between Shaded (filled surfaces), Outline (silhouette), and Cut (cross-section slice)
+                    Choose one top-level mode: Shaded, Outline, Cut, or Orthographic
                 </div>
                 <div aria-describedby="render-help">
-                    <fieldset role="radiogroup" aria-labelledby="render-heading">
+                    <fieldset role="radiogroup" aria-labelledby="render-heading" class="top-mode-row">
                         <legend class="sr-only">Rendering Mode Options</legend>
                         <label>
                             <input type="radio" name="render-mode" id="render-mode-shaded" value="Shaded" checked>
@@ -160,22 +160,9 @@
                             <input type="radio" name="render-mode" id="render-mode-cut" value="Cut">
                             Cut
                         </label>
-                    </fieldset>
-                </div>
-
-                <div id="projection-mode-help" class="help-text" style="margin-top: 10px;">
-                    Choose projection: Orthographic or Slice
-                </div>
-                <div aria-describedby="projection-mode-help">
-                    <fieldset role="radiogroup" aria-labelledby="render-heading">
-                        <legend class="sr-only">Projection Mode Options</legend>
                         <label>
-                            <input type="radio" name="projection-mode" id="projection-mode-orthographic" value="orthographic" checked>
+                            <input type="radio" name="render-mode" id="render-mode-orthographic" value="Orthographic">
                             Orthographic
-                        </label>
-                        <label>
-                            <input type="radio" name="projection-mode" id="projection-mode-slice" value="slice">
-                            Slice
                         </label>
                     </fieldset>
                 </div>

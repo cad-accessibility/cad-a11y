@@ -287,14 +287,21 @@ def get_or_create_renderer(model_index: int | None = None) -> CADComparisonRende
             _log(f"Initializing CAD renderer with: {model_path}")
             out_guard, err_guard = _renderer_stdio_guard()
             with out_guard, err_guard:
-                renderers_by_model[index] = CADComparisonRenderer(str(model_path), str(model_path))
+                renderer = CADComparisonRenderer(
+                    str(model_path),
+                    str(model_path),
+                    defer_slice_graph_precompute=True,
+                )
+                renderer.start_background_slice_precompute()
+                renderers_by_model[index] = renderer
         return renderers_by_model[index]
 
 
 def _to_braille_payload(rendered_rgba: np.ndarray) -> np.ndarray:
-    # Existing flow from previous server: invert first channel and convert to 0/255.
-    payload = np.bitwise_not(rendered_rgba[:, :, 0])
-    return np.where(payload > 0, 255, 0).astype(np.uint8)
+    # Convert renderer output to braille payload using a single deterministic
+    # rule for all modes: any non-white pixel is raised.
+    channel = rendered_rgba[:, :, 0].astype(np.uint8, copy=False)
+    return np.where(channel < 255, 255, 0).astype(np.uint8)
 
 
 def _payload_stats(payload: np.ndarray) -> dict[str, Any]:
@@ -487,7 +494,7 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
     is_pan_request = str(merged.get("move_camera_center", "none")).lower() != "none"
 
     # Fingerprint for caching (excludes transient fields).
-    fp_keys = ("view", "zoom", "depth", "renderMode", "mode", "current_model",
+    fp_keys = ("view", "zoom", "depth", "renderMode", "projectionMode", "mode", "current_model",
                "compose_scrollbar", "compose_slicegraph", "show_view_info_box",
                "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth")
     fp_dict = {k: merged.get(k) for k in fp_keys}
@@ -506,13 +513,10 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     engine = get_or_create_renderer(model_index)
     _save_print_if_requested(params, engine, rendered)
 
-    preview_b64, preview_shape = _make_hifi_preview(params, model_index)
     response: dict[str, Any] = {
         "status": "success",
         "image_base64": _img_to_base64_png(braille_payload),
         "image_shape": list(braille_payload.shape),
-        "render_preview_base64": preview_b64,
-        "render_preview_shape": preview_shape,
         "model_list": MODEL_NAME_LIST,
     }
     if bbox is not None:
@@ -921,7 +925,7 @@ _ALLOWED_EXTENSIONS = {".stl", ".step"}
 @app.route("/upload", methods=["POST"])
 def upload_model():
     """Accept an STL or STEP file upload and add it to the model list."""
-    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response
+    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response, renderers_by_model
 
     if "file" not in request.files:
         return jsonify({"status": "error", "message": "No file field in request"}), 400
@@ -950,6 +954,9 @@ def upload_model():
     with models_lock:
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
+        # Uploads can overwrite an existing filename or reorder the discovered
+        # model list, so any renderer cached by index may now point at stale data.
+        renderers_by_model.clear()
         new_index = next((i for i, p in enumerate(AVAILABLE_MODELS) if p == dest), 0)
 
     with state_lock:
@@ -1062,6 +1069,30 @@ def render_export_source():
         return jsonify(response), 200
     except Exception as error:
         _log(f"Error rendering export source: {error}", force=True)
+        return jsonify({"status": "error", "message": str(error)}), 400
+
+
+@app.route("/render/preview", methods=["POST"])
+def render_preview():
+    """Render only the high-fidelity browser preview.
+
+    This endpoint avoids braille-device work so the main tactile render can
+    return immediately and the preview can be fetched afterward.
+    """
+    try:
+        _refresh_model_list_if_stale()
+        merged_params, model_index, _is_pan_request, _fingerprint = _prepare_render_params(request.get_json(silent=True))
+        preview_width = _coerce_positive_int(merged_params.get("preview_width", 800), 800)
+        preview_b64, preview_shape = _make_hifi_preview(merged_params, model_index, preview_width=preview_width)
+        return jsonify(
+            {
+                "status": "success",
+                "render_preview_base64": preview_b64,
+                "render_preview_shape": preview_shape,
+            }
+        ), 200
+    except Exception as error:
+        _log(f"Error rendering preview: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
 
 

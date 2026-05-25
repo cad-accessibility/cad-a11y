@@ -57,6 +57,41 @@ const SERVER_URL = window.location.origin;
 
 // AbortController for in-flight render requests — cancels stale renders on rapid state changes
 let renderAbortController = null;
+let previewAbortController = null;
+let previewRequestSequence = 0;
+
+function requestHighFidelityPreview(state) {
+    if (previewAbortController) {
+        previewAbortController.abort();
+    }
+    previewAbortController = new AbortController();
+    previewRequestSequence += 1;
+    const requestId = previewRequestSequence;
+
+    fetch(`${SERVER_URL}/render/preview`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(state),
+        mode: 'cors',
+        signal: previewAbortController.signal,
+    })
+    .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+    })
+    .then(data => {
+        if (requestId !== previewRequestSequence) {
+            return;
+        }
+        updateHighFidelityPreview(data);
+    })
+    .catch(error => {
+        if (error.name === 'AbortError') return;
+        console.warn('Preview request failed:', error.message);
+    });
+}
 
 // Function to send current state to the server
 async function sendStateToServer() {
@@ -75,12 +110,13 @@ async function sendStateToServer() {
 
         const requestedGraphView = sliceGraphLocked ? sliceGraphAnchorView : currentView;
         const requestedGraphDepth = sliceGraphLocked ? sliceGraphAnchorDepth : currentSliceDepth;
+        const renderPipelineParams = getRenderPipelineParams(currentRenderMode);
         const state = {
             view: currentView,
             zoom: currentZoom,
             depth: currentSliceDepth,
-            renderMode: currentRenderMode,
-            projectionMode: currentProjectionMode,
+            renderMode: renderPipelineParams.renderMode,
+            projectionMode: renderPipelineParams.projectionMode,
             mode: currentRepresentationMode,
             move_camera_center: currentMoveCamera,
             print_view: currentPrintView,
@@ -94,6 +130,12 @@ async function sendStateToServer() {
             slicegraph_depth: requestedGraphDepth,
             input_source: pendingInputSource,
         };
+        const activeModelLoadTask = modelLoadAnnouncement
+            ? { ...modelLoadAnnouncement }
+            : null;
+        if (activeModelLoadTask) {
+            announceStatus(`${activeModelLoadTask.label}: generating render.`);
+        }
         pendingInputSource = 'keyboard'; // reset to default after consuming
 
         // Send to server and process response
@@ -129,9 +171,14 @@ async function sendStateToServer() {
             // Update tactile display preview
             if (data.image_base64) {
                 updateTactilePreview(data.image_base64, data.image_shape);
+                if (isActiveModelLoadTask(activeModelLoadTask)) {
+                    announceStatus(`${activeModelLoadTask.label}: tactile preview ready.`);
+                    announce(`${activeModelLoadTask.label} loaded.`);
+                    clearModelLoadTask(activeModelLoadTask);
+                }
             }
             renderPipelineDebug(data.debug_pipeline);
-            updateHighFidelityPreview(data);
+            requestHighFidelityPreview(state);
 
             // Trigger DotPad web send if connected
             if (typeof window._dotpadOnRender === 'function') {
@@ -150,6 +197,10 @@ async function sendStateToServer() {
             // use. Connection state is managed exclusively by the health poll below so that
             // only sustained, confirmed outages interrupt the user.
             console.warn('Render request failed:', error.message);
+            if (isActiveModelLoadTask(activeModelLoadTask)) {
+                announce(`Processing failed for ${activeModelLoadTask.label}.`);
+                clearModelLoadTask(activeModelLoadTask);
+            }
         });
         
     } catch (error) {
@@ -162,12 +213,11 @@ let currentSliceDepth = 50;
 let currentView = 'x+';
 let currentZoom = 0.0;
 let currentRenderMode = 'Shaded';
-let currentProjectionMode = 'orthographic';
 let currentRepresentationMode = 'single';
 let currentMoveCamera = "none";
 let currentPrintView = false;
 let currentOutputDevice = 'monarch_hid';
-const renderModes = ['Shaded', 'Outline', 'Cut'];
+const renderModes = ['Shaded', 'Outline', 'Cut', 'Orthographic'];
 const representationModes = ['single', 'side-by-side', 'slice-graph'];
 let currentModel = "none";
 let composeScrollbar = true;
@@ -184,6 +234,29 @@ let lastModelListSignature = '';  // prevents redundant dropdown rebuilds
 let currentBBoxDimensionsText = '';
 let lastAnnouncementMessage = '';
 let pendingInputSource = 'keyboard'; // consumed once per sendStateToServer call
+let modelLoadAnnouncement = null;
+let modelLoadAnnouncementSeq = 0;
+
+function beginModelLoadAnnouncement(modelLabel, source = 'selection') {
+    const label = String(modelLabel || 'model').trim();
+    modelLoadAnnouncementSeq += 1;
+    modelLoadAnnouncement = {
+        id: modelLoadAnnouncementSeq,
+        label,
+        source,
+    };
+    announce(`Starting processing for ${label}.`);
+}
+
+function isActiveModelLoadTask(task) {
+    return Boolean(task && modelLoadAnnouncement && modelLoadAnnouncement.id === task.id);
+}
+
+function clearModelLoadTask(task) {
+    if (isActiveModelLoadTask(task)) {
+        modelLoadAnnouncement = null;
+    }
+}
 
 // Remove "Back" from available views
 //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
@@ -232,9 +305,23 @@ const DEBUG_PIPELINE_VISIBILITY_KEY = 'debugPipelineVisible';
 // New radio group references
 const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
 const viewModeRadios = () => document.querySelectorAll('input[name="view-mode"]');
-const projectionModeRadios = () => document.querySelectorAll('input[name="projection-mode"]');
 const viewRadios = () => document.querySelectorAll('input[name="view-select"]');
 const outputDeviceRadios = () => document.querySelectorAll('input[name="output-device"]');
+
+function getRenderPipelineParams(uiRenderMode) {
+    // Single-mode UI mapping: projection is no longer a separate user control.
+    switch ((uiRenderMode || 'Shaded').toLowerCase()) {
+        case 'orthographic':
+            return { renderMode: 'Outline', projectionMode: 'orthographic' };
+        case 'cut':
+            return { renderMode: 'Cut', projectionMode: 'orthographic' };
+        case 'outline':
+            return { renderMode: 'Outline', projectionMode: 'silhouette' };
+        case 'shaded':
+        default:
+            return { renderMode: 'Shaded', projectionMode: 'orthographic' };
+    }
+}
 
 // Status bar elements
 const sbView = document.getElementById('sb-view');
@@ -596,11 +683,13 @@ function renderPipelineDebug(debugPipeline) {
 function fetchExportSourceState() {
     const requestedGraphView = sliceGraphLocked ? sliceGraphAnchorView : currentView;
     const requestedGraphDepth = sliceGraphLocked ? sliceGraphAnchorDepth : currentSliceDepth;
+    const renderPipelineParams = getRenderPipelineParams(currentRenderMode);
     return {
         view: currentView,
         zoom: currentZoom,
         depth: currentSliceDepth,
-        renderMode: currentRenderMode,
+        renderMode: renderPipelineParams.renderMode,
+        projectionMode: renderPipelineParams.projectionMode,
         mode: currentRepresentationMode,
         move_camera_center: 'none',
         print_view: false,
@@ -721,7 +810,6 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
 function syncRadios() {
     renderModeRadios().forEach(r => { r.checked = (r.value === currentRenderMode); });
     viewModeRadios().forEach(r => { r.checked = (r.value === currentRepresentationMode); });
-    projectionModeRadios().forEach(r => { r.checked = (r.value === currentProjectionMode); });
     viewRadios().forEach(r => { r.checked = (r.value === currentView); });
     outputDeviceRadios().forEach(r => { r.checked = (r.value === currentOutputDevice); });
 }
@@ -910,9 +998,11 @@ document.getElementById("model-list-dropdown").addEventListener("input", functio
 document.getElementById("model-list-dropdown").addEventListener("change", function() {
     const selectedItem = this.value;
     currentModel = selectedItem;
+    const selectedLabel = this.selectedIndex >= 0 ? this.options[this.selectedIndex].text : `model ${selectedItem}`;
     if (sbModel && this.selectedIndex >= 0) {
         sbModel.textContent = this.options[this.selectedIndex].text;
     }
+    beginModelLoadAnnouncement(selectedLabel, 'selection');
     pendingInputSource = 'ui';
     if (currentRepresentationMode === 'slice-graph') {
         autoRefreshSliceGraph({ updateAnchor: false });
@@ -950,11 +1040,13 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             const dropdown = document.getElementById('model-list-dropdown');
             dropdown.value = String(data.new_model_index);
             currentModel = String(data.new_model_index);
+            const selectedLabel = dropdown.selectedIndex >= 0 ? dropdown.options[dropdown.selectedIndex].text : data.filename;
             if (sbModel && dropdown.selectedIndex >= 0) {
                 sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
             }
             statusEl.textContent = `✓ ${data.filename} uploaded`;
-            announce(`Model ${data.filename} uploaded and selected.`);
+            announce(`Model ${data.filename} uploaded.`);
+            beginModelLoadAnnouncement(selectedLabel, 'upload');
             pendingInputSource = 'upload';
             sendStateToServer();
         } else {
@@ -1117,18 +1209,6 @@ function cycleRenderMode(shouldAnnounce = true) {
     switchToRenderMode(renderModes[nextIndex], shouldAnnounce);
 }
 
-function switchToProjectionMode(targetMode) {
-    if (currentProjectionMode === targetMode) {
-        announceStatus(`already ${targetMode}`);
-        return;
-    }
-    const previousMode = currentProjectionMode;
-    currentProjectionMode = targetMode;
-    syncRadios();
-    announce(`${previousMode} to ${currentProjectionMode} projection`);
-    sendStateToServer();
-}
-
 function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
     if (currentRepresentationMode === targetMode) {
         if (shouldAnnounce) announceStatus(`already ${targetMode.toLowerCase()}`);
@@ -1288,16 +1368,6 @@ document.addEventListener('change', function(e) {
         if (e.target.checked) {
             pendingInputSource = 'ui';
             switchToRenderMode(e.target.value);
-        }
-    }
-});
-
-// Projection mode radios
-document.addEventListener('change', function(e) {
-    if (e.target && e.target.matches('input[name="projection-mode"]')) {
-        if (e.target.checked) {
-            pendingInputSource = 'ui';
-            switchToProjectionMode(e.target.value);
         }
     }
 });

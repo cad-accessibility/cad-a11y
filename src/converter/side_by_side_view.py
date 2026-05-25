@@ -78,6 +78,10 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     cut_width = total_width - legend_width  # Ensures exact fit
     total_height = screen_size[1]
     
+    requested_projection_mode = (projection_mode or "orthographic").lower()
+    if requested_projection_mode == "none":
+        requested_projection_mode = "orthographic"
+
     # Cut view
     #cut_depth = 0.5
     normal_dir = views[view_key_cut]["dir"]
@@ -88,142 +92,36 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
         shape_cut = faces_on_plane_fast(shape_cut, plane_origin, normal_dir)
 
     # Target pixel resolution (cut view gets 2/3 of width)
-    width_px, height_px = cut_width, total_height
-    dpi = 100 
-    fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
-    ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
-    ax.axis('off')
+    cut_render_mode = rendering_mode
+    if requested_projection_mode == "cut":
+        cut_render_mode = "slice"
+        requested_projection_mode = "orthographic"
 
-    #area = compute_area(shape_brep_cut)
-    #if not np.isclose(area, 0.0):
-    if type(shape_cut) != list and len(shape_cut.faces) > 0 and not np.isclose(shape_cut.area, 0.0):
-        #write_stl_file(shape_brep_cut, "model.stl", linear_deflection=0.1)
-        #shape = trimesh.load_mesh("model.stl")
-
-        colors = [0.0 for i in range(len(shape_cut.faces))]
-        if view_key_cut == "top":
-            coords = shape_cut.vertices[:,[0,1]]
-        if view_key_cut == "front":
-            coords = shape_cut.vertices[:,[0,2]]
-        if view_key_cut == "left":
-            coords = shape_cut.vertices[:,[1,2]]
-        if view_key_cut == "bottom":
-            coords = shape_cut.vertices[:,[0,1]]
-            coords[:,0] *= -1
-            coords[:,1] *= -1
-        if view_key_cut == "back":
-            coords = shape_cut.vertices[:,[0,2]]
-            coords[:,0] *= -1
-        if view_key_cut == "right":
-            coords = shape_cut.vertices[:,[1,2]]
-            coords[:,0] *= -1
-        ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape_cut.faces, aa=True)
-
-    ax.set_aspect('equal')
-    ax = plt.gca()
-    if len(imposed_ax_limits_cut) > 0:
-        ax.set_xlim(imposed_ax_limits_cut[0])
-        ax.set_ylim(imposed_ax_limits_cut[1])
-    ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=dpi, pad_inches=0)
-    fig.clear()
-    buf.seek(0)
-
-    img = Image.open(buf)
-    img_np = np.array(img)
-    #for i in range(img_np.shape[0]):
-    #    for j in range(img_np.shape[1]):
-    #        if img_np[i,j,0] == 255:
-    #            print(1, end='')
-    #        else:
-    #            print(0, end='')
-    #    print()
-
-    #plt.imshow(img_np)
-    #plt.show()
-    if plt.fignum_exists(fig.number):
-        plt.close(fig.number)
-
-    # Right panel (cut view) follows the selected render mode.
-    if rendering_mode == "outline":
-        cut_img = get_outlines(img_np)
-    else:
-        cut_img = img_np
+    cut_img, _ = get_single_view(
+        shape_cut,
+        bbox,
+        cut_depth=0.0,
+        view_key=view_key_cut,
+        rendering_mode=cut_render_mode,
+        imposed_ax_limits=imposed_ax_limits_cut,
+        screen_size=[cut_width, total_height],
+        projection_mode=requested_projection_mode,
+    )
 
     # Legend - view
     #shape_brep = shape_brep_copy
 
-    normal_dir = views[view_key_legend]["dir"]
-
-    # Target pixel resolution (legend view gets 1/3 of width)
-    width_px, height_px = legend_width, total_height
-    dpi = 100 
-    fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
-    ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
-    ax.axis('off')
-
-    #area = compute_area(shape_brep)
-    if not np.isclose(shape.area, 0.0):
-        #write_stl_file(shape_brep, "model.stl", linear_deflection=0.1)
-        #shape = trimesh.load_mesh("model.stl")
-
-        colors = [0.0 for i in range(len(shape.faces))]
-        if view_key_legend == "top":
-            coords = shape.vertices[:,[0,1]]
-        if view_key_legend == "front":
-            coords = shape.vertices[:,[0,2]]
-        if view_key_legend == "left":
-            coords = shape.vertices[:,[1,2]]
-        if view_key_legend == "bottom":
-            coords = shape.vertices[:,[0,1]]
-            coords[:,0] *= -1
-            coords[:,1] *= -1
-        if view_key_legend == "back":
-            coords = shape.vertices[:,[0,2]]
-            coords[:,0] *= -1
-        if view_key_legend == "right":
-            coords = shape.vertices[:,[1,2]]
-            coords[:,0] *= -1
-        ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape.faces, aa=True)
-
-
-    ax.set_aspect('equal')
-    ax = plt.gca()
-    if len(imposed_ax_limits_legend) > 0:
-        ax.set_xlim(imposed_ax_limits_legend[0])
-        ax.set_ylim(imposed_ax_limits_legend[1])
-    ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
-    # Expand by 1 pixel on each side so the model never fills the full width,
-    # ensuring the slice line is always visible at the edge.
-    x_margin = (ax_limits[0][1] - ax_limits[0][0]) / legend_width
-    y_margin = (ax_limits[1][1] - ax_limits[1][0]) / total_height
-    ax.set_xlim(ax_limits[0][0] - x_margin, ax_limits[0][1] + x_margin)
-    ax.set_ylim(ax_limits[1][0] - y_margin, ax_limits[1][1] + y_margin)
-    legend_ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=dpi, pad_inches=0)
-    fig.clear()
-    buf.seek(0)
-
-    img = Image.open(buf)
-    img_np = np.array(img)
-    #for i in range(img_np.shape[0]):
-    #    for j in range(img_np.shape[1]):
-    #        if img_np[i,j,0] == 255:
-    #            print(1, end='')
-    #        else:
-    #            print(0, end='')
-    #    print()
-
-    #plt.imshow(img_np)
-    #plt.show()
-    if plt.fignum_exists(fig.number):
-        plt.close(fig.number)
-    # Left panel (legend view) stays visually stable across render mode changes.
-    legend_img = get_outlines(img_np)
+    legend_img, _ = get_single_view(
+        shape,
+        bbox,
+        cut_depth=0.0,
+        view_key=view_key_legend,
+        rendering_mode="outline",
+        imposed_ax_limits=imposed_ax_limits_legend,
+        screen_size=[legend_width, total_height],
+        projection_mode="orthographic",
+    )
+    legend_ax_limits = np.array(imposed_ax_limits_legend) if len(imposed_ax_limits_legend) > 0 else np.array([[0.0, float(legend_width)], [0.0, float(total_height)]])
 
     # Line img (must match legend width)
     width_px, height_px = legend_width, total_height
@@ -263,7 +161,6 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     ax.set_xlim(legend_ax_limits[0])
     ax.set_ylim(legend_ax_limits[1])
     ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
-    print(ax_limits)
 
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=dpi, pad_inches=0)
