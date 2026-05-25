@@ -96,6 +96,16 @@ Then, open accessible-3d-viewer.html in a browser.
 
 You should now be able to interact with the website and your terminal and your monarch should serve as displays.
 
+### Uploads on managed/locked-down servers
+
+If the app cannot write to `/project/data/models`, uploads now automatically fall back to a writable directory (`/tmp/cad-a11y/models`).
+
+To force a specific upload path, set:
+
+```bash
+UPLOAD_MODEL_DIR=/some/writable/path
+```
+
 ## Windows One-Click Installer (EXE)
 
 This repository includes a Constructor-based Windows installer configuration that builds a downloadable EXE.
