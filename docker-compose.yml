@@ -10,9 +10,8 @@ services:
     environment:
       SERVER_VERBOSE: "${SERVER_VERBOSE:-0}"
     volumes:
-      # Named volumes persist uploaded models and runtime output across restarts.
-      # On first start, Docker copies the bundled model files from the image.
-      - model-data:/project/data/models
+      # Bind mount so the container reads directly from the local data/models folder.
+      - ./data/models:/project/data/models
       - renders:/project/data/renders
       - logs:/project/data/logs
     healthcheck:
@@ -23,6 +22,5 @@ services:
       start_period: 60s
 
 volumes:
-  model-data:
   renders:
   logs:

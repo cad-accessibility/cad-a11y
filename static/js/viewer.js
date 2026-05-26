@@ -57,6 +57,41 @@ const SERVER_URL = window.location.origin;
 
 // AbortController for in-flight render requests — cancels stale renders on rapid state changes
 let renderAbortController = null;
+let previewAbortController = null;
+let previewRequestSequence = 0;
+
+function requestHighFidelityPreview(state) {
+    if (previewAbortController) {
+        previewAbortController.abort();
+    }
+    previewAbortController = new AbortController();
+    previewRequestSequence += 1;
+    const requestId = previewRequestSequence;
+
+    fetch(`${SERVER_URL}/render/preview`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(state),
+        mode: 'cors',
+        signal: previewAbortController.signal,
+    })
+    .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+    })
+    .then(data => {
+        if (requestId !== previewRequestSequence) {
+            return;
+        }
+        updateHighFidelityPreview(data);
+    })
+    .catch(error => {
+        if (error.name === 'AbortError') return;
+        console.warn('Preview request failed:', error.message);
+    });
+}
 
 // Function to send current state to the server
 async function sendStateToServer() {
@@ -75,12 +110,13 @@ async function sendStateToServer() {
 
         const requestedGraphView = sliceGraphLocked ? sliceGraphAnchorView : currentView;
         const requestedGraphDepth = sliceGraphLocked ? sliceGraphAnchorDepth : currentSliceDepth;
+        const renderPipelineParams = getRenderPipelineParams(currentRenderMode);
         const state = {
             view: currentView,
             zoom: currentZoom,
             depth: currentSliceDepth,
-            renderMode: currentRenderMode,
-            projectionMode: currentProjectionMode,
+            renderMode: renderPipelineParams.renderMode,
+            projectionMode: renderPipelineParams.projectionMode,
             mode: currentRepresentationMode,
             move_camera_center: currentMoveCamera,
             print_view: currentPrintView,
@@ -92,7 +128,15 @@ async function sendStateToServer() {
             slicegraph_locked: sliceGraphLocked,
             slicegraph_view: requestedGraphView,
             slicegraph_depth: requestedGraphDepth,
+            input_source: pendingInputSource,
         };
+        const activeModelLoadTask = modelLoadAnnouncement
+            ? { ...modelLoadAnnouncement }
+            : null;
+        if (activeModelLoadTask) {
+            announceStatus(`${activeModelLoadTask.label}: generating render.`);
+        }
+        pendingInputSource = 'keyboard'; // reset to default after consuming
 
         // Send to server and process response
         fetch(`${SERVER_URL}/render`, {
@@ -104,9 +148,15 @@ async function sendStateToServer() {
             mode: 'cors',
             signal: renderAbortController.signal,
         })
-        .then(res => res.json())
+        .then(res => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json();
+        })
         .then(data => {
+            // Render success is sufficient proof the server is reachable — clear
+            // any down state immediately rather than waiting for the next poll.
             if (serverConnected === false) {
+                serverConnected = true;
                 announce('Server reconnected.');
             }
             serverConnected = true;
@@ -121,9 +171,14 @@ async function sendStateToServer() {
             // Update tactile display preview
             if (data.image_base64) {
                 updateTactilePreview(data.image_base64, data.image_shape);
+                if (isActiveModelLoadTask(activeModelLoadTask)) {
+                    announceStatus(`${activeModelLoadTask.label}: tactile preview ready.`);
+                    announce(`${activeModelLoadTask.label} loaded.`);
+                    clearModelLoadTask(activeModelLoadTask);
+                }
             }
             renderPipelineDebug(data.debug_pipeline);
-            updateHighFidelityPreview(data);
+            requestHighFidelityPreview(state);
 
             // Trigger DotPad web send if connected
             if (typeof window._dotpadOnRender === 'function') {
@@ -136,10 +191,15 @@ async function sendStateToServer() {
         })
         .catch(error => {
             if (error.name === 'AbortError') return; // Superseded by a newer request — ignore
-            console.warn('Failed to send state to server:', error);
-            if (serverConnected !== false) {
-                serverConnected = false;
-                announce('Server unavailable — rendering paused.');
+            // A single render failure (busy server, transient network hiccup, scroll-time
+            // deprioritisation) does not mean the server is down. Announcing a disconnect
+            // here causes the spurious unavailable→reconnected cycle observed during normal
+            // use. Connection state is managed exclusively by the health poll below so that
+            // only sustained, confirmed outages interrupt the user.
+            console.warn('Render request failed:', error.message);
+            if (isActiveModelLoadTask(activeModelLoadTask)) {
+                announce(`Processing failed for ${activeModelLoadTask.label}.`);
+                clearModelLoadTask(activeModelLoadTask);
             }
         });
         
@@ -153,12 +213,11 @@ let currentSliceDepth = 50;
 let currentView = 'x+';
 let currentZoom = 0.0;
 let currentRenderMode = 'Shaded';
-let currentProjectionMode = 'orthographic';
 let currentRepresentationMode = 'single';
 let currentMoveCamera = "none";
 let currentPrintView = false;
 let currentOutputDevice = 'monarch_hid';
-const renderModes = ['Shaded', 'Outline', 'Cut'];
+const renderModes = ['Shaded', 'Outline', 'Cut', 'Orthographic'];
 const representationModes = ['single', 'side-by-side', 'slice-graph'];
 let currentModel = "none";
 let composeScrollbar = true;
@@ -174,14 +233,144 @@ let lastPolledView = null;        // last cube_value received from server
 let lastModelListSignature = '';  // prevents redundant dropdown rebuilds
 let currentBBoxDimensionsText = '';
 let lastAnnouncementMessage = '';
+let lastAnnouncedParameterKey = null;
+let pendingInputSource = 'keyboard'; // consumed once per sendStateToServer call
+let modelLoadAnnouncement = null;
+let modelLoadAnnouncementSeq = 0;
+
+function beginModelLoadAnnouncement(modelLabel, source = 'selection') {
+    const label = String(modelLabel || 'model').trim();
+    modelLoadAnnouncementSeq += 1;
+    modelLoadAnnouncement = {
+        id: modelLoadAnnouncementSeq,
+        label,
+        source,
+    };
+    announce(`Starting processing for ${label}.`);
+}
+
+function isActiveModelLoadTask(task) {
+    return Boolean(task && modelLoadAnnouncement && modelLoadAnnouncement.id === task.id);
+}
+
+function clearModelLoadTask(task) {
+    if (isActiveModelLoadTask(task)) {
+        modelLoadAnnouncement = null;
+    }
+}
+
+function formatZoomPercent(zoomValue) {
+    const percent = Math.round(Number(zoomValue) * 100);
+    return `${percent}%`;
+}
 
 // Remove "Back" from available views
 //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
 const views = ['y-', 'x-', 'z+', 'z-', 'x+', 'y+'];
 const MIN_ZOOM = 0.0;
-const MAX_ZOOM = 3.0;
+const MAX_ZOOM = Number.POSITIVE_INFINITY;
 const ZOOM_STEP = 0.1;
 //const views = ['front', 'side', 'top'];
+
+const VIEW_FORWARD_VECTORS = {
+    'x+': [1, 0, 0],
+    'x-': [-1, 0, 0],
+    'y+': [0, 1, 0],
+    'y-': [0, -1, 0],
+    'z+': [0, 0, 1],
+    'z-': [0, 0, -1],
+};
+
+const CANONICAL_UP_FOR_VIEW = {
+    'x+': [0, 0, 1],
+    'x-': [0, 0, 1],
+    'y+': [0, 0, 1],
+    'y-': [0, 0, 1],
+    'z+': [0, 1, 0],
+    'z-': [0, 1, 0],
+};
+
+let orientationForward = [...VIEW_FORWARD_VECTORS['x+']];
+let orientationUp = [...CANONICAL_UP_FOR_VIEW['x+']];
+
+function dotVec3(a, b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+function crossVec3(a, b) {
+    return [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ];
+}
+
+function normalizeAxisVector(v) {
+    const rounded = [Math.round(v[0]), Math.round(v[1]), Math.round(v[2])];
+    const mag = Math.abs(rounded[0]) + Math.abs(rounded[1]) + Math.abs(rounded[2]);
+    if (mag === 0) return [1, 0, 0];
+    if (mag === 1) return rounded;
+    // Safety net for numerical drift; choose the dominant axis.
+    const absVals = rounded.map(Math.abs);
+    const maxIndex = absVals.indexOf(Math.max(...absVals));
+    return [
+        maxIndex === 0 ? Math.sign(rounded[0]) || 1 : 0,
+        maxIndex === 1 ? Math.sign(rounded[1]) || 1 : 0,
+        maxIndex === 2 ? Math.sign(rounded[2]) || 1 : 0,
+    ];
+}
+
+function rotateVectorByAxis90(vector, axis, quarterTurns) {
+    const turns = ((quarterTurns % 4) + 4) % 4;
+    if (turns === 0) return [...vector];
+    let out = [...vector];
+    const k = normalizeAxisVector(axis);
+    for (let i = 0; i < turns; i += 1) {
+        const projection = dotVec3(k, out);
+        const cross = crossVec3(k, out);
+        out = [
+            k[0] * projection + cross[0],
+            k[1] * projection + cross[1],
+            k[2] * projection + cross[2],
+        ];
+    }
+    return normalizeAxisVector(out);
+}
+
+function orientationViewFromForward(forwardVector) {
+    for (const [viewToken, vec] of Object.entries(VIEW_FORWARD_VECTORS)) {
+        if (dotVec3(vec, forwardVector) === 1) {
+            return viewToken;
+        }
+    }
+    return 'x+';
+}
+
+function setOrientationFromView(viewToken) {
+    orientationForward = [...(VIEW_FORWARD_VECTORS[viewToken] || VIEW_FORWARD_VECTORS['x+'])];
+    orientationUp = [...(CANONICAL_UP_FOR_VIEW[viewToken] || CANONICAL_UP_FOR_VIEW['x+'])];
+}
+
+function applyRelativeRotation(kind, direction, announcementText) {
+    // direction: +1 or -1 indicates ±90 degree about the local axis.
+    let rotationAxis;
+    if (kind === 'yaw') {
+        rotationAxis = orientationUp;
+    } else if (kind === 'pitch') {
+        rotationAxis = normalizeAxisVector(crossVec3(orientationUp, orientationForward));
+    } else if (kind === 'roll') {
+        rotationAxis = orientationForward;
+    } else {
+        return;
+    }
+
+    orientationForward = rotateVectorByAxis90(orientationForward, rotationAxis, direction);
+    orientationUp = rotateVectorByAxis90(orientationUp, rotationAxis, direction);
+
+    const newView = orientationViewFromForward(orientationForward);
+    updateView(newView, false, { syncOrientation: false });
+    announce(announcementText);
+}
 
 const axisInfo = {
     'Front': 'X-axis: left-right, Y-axis: up-down, Z-axis: forward-back (viewing from front)',
@@ -203,10 +392,13 @@ const announcementHistory = document.getElementById('announcement-history');
 const clearAnnouncementsBtn = document.getElementById('clear-announcements-btn');
 const deeperBtn = document.getElementById('deeper-btn');
 const shallowerBtn = document.getElementById('shallower-btn');
-const zoomSlider = document.getElementById('zoom-slider');
+const zoomInput = document.getElementById('zoom-input');
 const zoomLevelValue = document.getElementById('zoom-level-value');
+const zoomOutBtn = document.getElementById('zoom-out-btn');
+const zoomInBtn = document.getElementById('zoom-in-btn');
 const sliceGraphLockBtn = document.getElementById('slice-graph-lock-btn');
 const sliceGraphRefreshBtn = document.getElementById('slice-graph-refresh-btn');
+const resetPositionBtn = document.getElementById('reset-position-btn');
 const sliceGraphLockStatus = document.getElementById('slice-graph-lock-status');
 const showViewInfoBoxCheckbox = document.getElementById('show-view-info-box');
 const exportSliceSvgBtn = document.getElementById('export-slice-svg-btn');
@@ -221,9 +413,23 @@ const DEBUG_PIPELINE_VISIBILITY_KEY = 'debugPipelineVisible';
 // New radio group references
 const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
 const viewModeRadios = () => document.querySelectorAll('input[name="view-mode"]');
-const projectionModeRadios = () => document.querySelectorAll('input[name="projection-mode"]');
 const viewRadios = () => document.querySelectorAll('input[name="view-select"]');
 const outputDeviceRadios = () => document.querySelectorAll('input[name="output-device"]');
+
+function getRenderPipelineParams(uiRenderMode) {
+    // Single-mode UI mapping: projection is no longer a separate user control.
+    switch ((uiRenderMode || 'Shaded').toLowerCase()) {
+        case 'orthographic':
+            return { renderMode: 'Outline', projectionMode: 'orthographic' };
+        case 'cut':
+            return { renderMode: 'Cut', projectionMode: 'orthographic' };
+        case 'outline':
+            return { renderMode: 'Outline', projectionMode: 'silhouette' };
+        case 'shaded':
+        default:
+            return { renderMode: 'Shaded', projectionMode: 'orthographic' };
+    }
+}
 
 // Status bar elements
 const sbView = document.getElementById('sb-view');
@@ -236,7 +442,14 @@ const sbDotPad = document.getElementById('sb-dotpad');
 
 // Toast / live-region elements
 const announcementToast = document.getElementById('announcement-toast');
-const srLiveAnnounce = document.getElementById('sr-live-announce');
+// Two-slot live-region swap: toggling which element receives text each time
+// guarantees AT sees a fresh DOM mutation for every announcement, including
+// consecutive identical messages, without any clear+setTimeout race.
+const srLiveSlots = [
+    document.getElementById('sr-live-a'),
+    document.getElementById('sr-live-b')
+];
+let srLiveActiveSlot = 0;
 const toastDurationSlider = document.getElementById('toast-duration-slider');
 const toastDurationValue = document.getElementById('toast-duration-value');
 let toastDurationSec = 3;  // default 3 seconds; 0 = off
@@ -263,12 +476,15 @@ function refreshStatusBar() {
 
 /** Show a brief on-screen toast and push text to the SR live region. */
 function showToast(message) {
-    // Screen reader: always push to assertive live region.
-    if (srLiveAnnounce) {
-        // Clear then set (forces re-read even for same text).
-        srLiveAnnounce.textContent = '';
-        requestAnimationFrame(() => { srLiveAnnounce.textContent = message; });
-    }
+    // Two-slot swap: write to the next slot and clear the previous one.
+    // AT always sees a genuine new-content mutation regardless of whether the
+    // message is identical to the last one, and there is no setTimeout race to
+    // lose when keys are pressed in rapid succession.
+    srLiveActiveSlot = 1 - srLiveActiveSlot;
+    const activeEl = srLiveSlots[srLiveActiveSlot];
+    const idleEl   = srLiveSlots[1 - srLiveActiveSlot];
+    if (activeEl) activeEl.textContent = message;
+    if (idleEl)   idleEl.textContent   = '';
 
     // Visual toast: respect user-chosen duration.
     if (!announcementToast || toastDurationSec <= 0) return;
@@ -282,9 +498,23 @@ function showToast(message) {
 
 // Consistent depth announcement formatter
 function depthAnnouncement(pct) {
-    if (pct === 0) return 'surface';
-    if (pct === 100) return 'full depth';
-    return `depth ${pct}%`;
+    return `${pct}%`;
+}
+
+function announceParameterValue(parameterKey, parameterLabel, valueText, isUrgent = true) {
+    const normalizedKey = String(parameterKey || '').trim().toLowerCase();
+    const normalizedLabel = String(parameterLabel || '').trim();
+    const normalizedValue = String(valueText || '').trim();
+    const shouldIncludeLabel = normalizedKey !== '' && normalizedKey !== lastAnnouncedParameterKey;
+    const message = shouldIncludeLabel && normalizedLabel
+        ? `${normalizedLabel}: ${normalizedValue}`
+        : normalizedValue;
+
+    if (normalizedKey) {
+        lastAnnouncedParameterKey = normalizedKey;
+    }
+
+    announce(message, isUrgent);
 }
 
 function refreshViewInfoSummary() {
@@ -301,6 +531,25 @@ function refreshViewInfoSummary() {
         currentBBoxDimensionsInfo.textContent = currentBBoxDimensionsText;
     }
     refreshStatusBar();
+}
+
+function getStatusBarAnnouncement() {
+    const readText = (element, fallback = '--') => {
+        const text = element && typeof element.textContent === 'string'
+            ? element.textContent.trim()
+            : '';
+        return text || fallback;
+    };
+
+    return [
+        `View: ${readText(sbView, currentView)}`,
+        `Depth: ${readText(sbDepth, `${currentSliceDepth}%`)}`,
+        `Render: ${readText(sbRenderMode, currentRenderMode)}`,
+        `Zoom: ${readText(sbZoom, Number(currentZoom).toFixed(1))}`,
+        `Layout: ${readText(sbViewMode, currentRepresentationMode)}`,
+        `Model: ${readText(sbModel)}`,
+        `DotPad: ${readText(sbDotPad)}`,
+    ].join('. ');
 }
 
 // Update button labels with current state information
@@ -575,11 +824,13 @@ function renderPipelineDebug(debugPipeline) {
 function fetchExportSourceState() {
     const requestedGraphView = sliceGraphLocked ? sliceGraphAnchorView : currentView;
     const requestedGraphDepth = sliceGraphLocked ? sliceGraphAnchorDepth : currentSliceDepth;
+    const renderPipelineParams = getRenderPipelineParams(currentRenderMode);
     return {
         view: currentView,
         zoom: currentZoom,
         depth: currentSliceDepth,
-        renderMode: currentRenderMode,
+        renderMode: renderPipelineParams.renderMode,
+        projectionMode: renderPipelineParams.projectionMode,
         mode: currentRepresentationMode,
         move_camera_center: 'none',
         print_view: false,
@@ -674,16 +925,22 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
     sliceSlider.value = currentSliceDepth;
     slicePercentage.textContent = currentSliceDepth;
     refreshViewInfoSummary();
-    
-    // Update ARIA attributes
-    sliceSlider.setAttribute('aria-valuenow', currentSliceDepth);
-    sliceSlider.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
-    
-    // Update button labels with new state
-    updateButtonLabels();
 
-    // Send state to server if changed
+    // Only mutate ARIA attributes, button labels, and trigger a render when the
+    // value actually changed.
     if (oldDepth !== currentSliceDepth) {
+        sliceSlider.setAttribute('aria-valuenow', currentSliceDepth);
+        // aria-valuetext is announced by NVDA on every mutation of a range input
+        // regardless of focus. When shouldAnnounce=false the caller (a keyboard
+        // shortcut handler) will push the announcement through the assertive live
+        // region instead, so we must NOT mutate aria-valuetext here — doing so
+        // would cause a second, racing announcement on NVDA/JAWS.
+        // When shouldAnnounce=true (slider focused, hardware input) the mutation
+        // IS the correct announcement channel, so we set it as before.
+        if (shouldAnnounce) {
+            sliceSlider.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
+        }
+        updateButtonLabels();
         sendStateToServer();
     }
 
@@ -694,7 +951,6 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
 function syncRadios() {
     renderModeRadios().forEach(r => { r.checked = (r.value === currentRenderMode); });
     viewModeRadios().forEach(r => { r.checked = (r.value === currentRepresentationMode); });
-    projectionModeRadios().forEach(r => { r.checked = (r.value === currentProjectionMode); });
     viewRadios().forEach(r => { r.checked = (r.value === currentView); });
     outputDeviceRadios().forEach(r => { r.checked = (r.value === currentOutputDevice); });
 }
@@ -763,15 +1019,19 @@ function updateSideBySideAxisLabels() {
 }
 
 // Update view information
-function updateView(newView) {
+function updateView(newView, shouldAnnounce = true, options = {}) {
+    const syncOrientation = options.syncOrientation !== false;
     const oldView = currentView;
     currentView = newView;
+    if (syncOrientation && oldView !== currentView) {
+        setOrientationFromView(currentView);
+    }
     if (currentViewSpan) currentViewSpan.textContent = currentView;
     refreshViewInfoSummary();
     updateButtonLabels();
     updateSideBySideAxisLabels();
     syncRadios();
-    if (oldView !== currentView) {
+    if (oldView !== currentView && shouldAnnounce) {
         announce(`${currentView.toLowerCase()} view`);
     }
     
@@ -833,6 +1093,13 @@ function updateModelList(model_list) {
 
     const signature = model_list.join('||');
     if (signature === lastModelListSignature && dropdown.options.length > 0) {
+        const currentModelIndex = Number(currentModel);
+        if (Number.isInteger(currentModelIndex) && currentModelIndex >= 0 && currentModelIndex < dropdown.options.length) {
+            dropdown.value = String(currentModelIndex);
+        }
+        if (sbModel && dropdown.selectedIndex >= 0) {
+            sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
+        }
         return;
     }
 
@@ -868,11 +1135,20 @@ function updateModelList(model_list) {
 document.getElementById("model-list-dropdown").addEventListener("input", function() {
     // Keep local state in sync while keyboard arrows navigate options.
     currentModel = this.value;
+    if (sbModel && this.selectedIndex >= 0) {
+        sbModel.textContent = this.options[this.selectedIndex].text;
+    }
 });
 
 document.getElementById("model-list-dropdown").addEventListener("change", function() {
     const selectedItem = this.value;
     currentModel = selectedItem;
+    const selectedLabel = this.selectedIndex >= 0 ? this.options[this.selectedIndex].text : `model ${selectedItem}`;
+    if (sbModel && this.selectedIndex >= 0) {
+        sbModel.textContent = this.options[this.selectedIndex].text;
+    }
+    beginModelLoadAnnouncement(selectedLabel, 'selection');
+    pendingInputSource = 'ui';
     if (currentRepresentationMode === 'slice-graph') {
         autoRefreshSliceGraph({ updateAnchor: false });
     } else {
@@ -909,8 +1185,14 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             const dropdown = document.getElementById('model-list-dropdown');
             dropdown.value = String(data.new_model_index);
             currentModel = String(data.new_model_index);
+            const selectedLabel = dropdown.selectedIndex >= 0 ? dropdown.options[dropdown.selectedIndex].text : data.filename;
+            if (sbModel && dropdown.selectedIndex >= 0) {
+                sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
+            }
             statusEl.textContent = `✓ ${data.filename} uploaded`;
-            announce(`Model ${data.filename} uploaded and selected.`);
+            announce(`Model ${data.filename} uploaded.`);
+            beginModelLoadAnnouncement(selectedLabel, 'upload');
+            pendingInputSource = 'upload';
             sendStateToServer();
         } else {
             statusEl.textContent = `Upload failed: ${data.message}`;
@@ -928,10 +1210,25 @@ document.getElementById('upload-model-input').addEventListener('change', async f
 });
 
         // Apply a server state snapshot to local UI — shared by SSE and fallback poll.
+let lastSliderRaw = null; // null = never received a server-side slider value yet
 function applyServerState(data) {
     if (data.cube_value !== undefined && data.cube_value !== lastPolledView) {
         lastPolledView = data.cube_value;
+        pendingInputSource = 'cube';
         updateView(data.cube_value);
+    }
+    if (data.slider_value !== undefined) {
+        const rawValue = data.slider_value;
+        if (lastSliderRaw === null) {
+            // First reading — record but skip to avoid jumping depth to the
+            // server default (0) before the slider hardware has been moved.
+            lastSliderRaw = rawValue;
+        } else if (rawValue !== lastSliderRaw) {
+            lastSliderRaw = rawValue;
+            const newDepth = Math.round(Math.max(0, Math.min(100, (rawValue / 65535) * 100)));
+            pendingInputSource = 'slider';
+            updateSliceDepth(newDepth, false);
+        }
     }
     const modelDropdown = document.getElementById("model-list-dropdown");
     const dropdownFocused = document.activeElement === modelDropdown;
@@ -964,18 +1261,27 @@ function applyServerState(data) {
     evtSource.onerror = function() {
         // Do NOT set serverConnected = false here. EventSource fires onerror on
         // every reconnect attempt (normal behavior), which would block all renders.
-        // Render availability is tracked separately via render request failures.
+        // Connection state is managed exclusively by the health poll below.
         console.warn('SSE connection error — will reconnect automatically.');
     };
 })();
 
-// Slow fallback poll: keeps model list and bbox in sync for state that
-// isn't pushed over SSE (e.g. model uploads). Runs every 5 s, far less
-// traffic than the old 1 s loop.
+// Number of consecutive /get_data failures required before declaring the server
+// unreachable. A single failure can be a transient hiccup (busy server, brief
+// network interruption, browser scroll-time fetch deprioritisation) — requiring
+// two in a row prevents spurious "Server unavailable" announcements on the
+// Braille display during normal use.
+let pollFailCount = 0;
+const POLL_FAIL_THRESHOLD = 2;
+
+// Slow fallback poll: the sole authority for serverConnected state changes.
+// Keeps model list and bbox in sync for state that isn't pushed over SSE
+// (e.g. model uploads). Runs every 5 s.
 setInterval(() => {
     fetch(`${SERVER_URL}/get_data`)
-        .then(res => res.ok ? res.json() : Promise.reject(res.status))
+        .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
         .then(data => {
+            pollFailCount = 0;
             if (serverConnected === false) {
                 serverConnected = true;
                 announce('Server reconnected.');
@@ -985,8 +1291,9 @@ setInterval(() => {
             applyServerState(data);
         })
         .catch(error => {
-            console.warn('Failed to poll server state:', error);
-            if (serverConnected !== false) {
+            pollFailCount++;
+            console.warn(`Poll failed (${pollFailCount}/${POLL_FAIL_THRESHOLD}):`, error.message);
+            if (pollFailCount >= POLL_FAIL_THRESHOLD && serverConnected !== false) {
                 serverConnected = false;
                 announce('Server unavailable — rendering paused.');
             }
@@ -996,18 +1303,22 @@ setInterval(() => {
 // Update zoom information
 function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
     const oldZoom = currentZoom;
-    currentZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Number(newZoom)));
+    const parsedZoom = Number(newZoom);
+    if (!Number.isFinite(parsedZoom)) {
+        return false;
+    }
+    currentZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, parsedZoom));
+
     const zoomText = currentZoom.toFixed(1);
-    zoomSlider.value = zoomText;
+    zoomInput.value = zoomText;
     zoomLevelValue.textContent = zoomText;
     refreshViewInfoSummary();
-    zoomSlider.setAttribute('aria-valuenow', zoomText);
-    zoomSlider.setAttribute('aria-valuetext', `zoom level ${zoomText}`);
+    zoomInput.setAttribute('aria-valuetext', `zoom ${formatZoomPercent(currentZoom)}`);
 
     updateButtonLabels();
 
     if (shouldAnnounce) {
-        announceStatus(`zoom ${zoomText}`);
+        announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom), false);
     }
 
     console.log(oldZoom, currentZoom);
@@ -1024,9 +1335,9 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
 }
 
 // Switch to a specific render mode
-function switchToRenderMode(targetMode) {
+function switchToRenderMode(targetMode, shouldAnnounce = true) {
     if (currentRenderMode === targetMode) {
-        announceStatus(`already ${targetMode.toLowerCase()}`);
+        if (shouldAnnounce) announceStatus(`already ${targetMode.toLowerCase()}`);
         return;
     }
     const previousMode = currentRenderMode;
@@ -1034,42 +1345,28 @@ function switchToRenderMode(targetMode) {
     refreshViewInfoSummary();
     updateButtonLabels();
     syncRadios();
-    announce(`${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
-    
+    if (shouldAnnounce) announce(`${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
+
     // Send state to server
     sendStateToServer();
     return true;
 }
 
-// Cycle to next render mode (used if needed)
-function cycleRenderMode() {
+function cycleRenderMode(shouldAnnounce = true) {
     const currentIndex = renderModes.indexOf(currentRenderMode);
     const nextIndex = (currentIndex + 1) % renderModes.length;
-    switchToRenderMode(renderModes[nextIndex]);
+    switchToRenderMode(renderModes[nextIndex], shouldAnnounce);
 }
 
-function switchToProjectionMode(targetMode) {
-    if (currentProjectionMode === targetMode) {
-        announceStatus(`already ${targetMode}`);
-        return;
-    }
-    const previousMode = currentProjectionMode;
-    currentProjectionMode = targetMode;
-    syncRadios();
-    announce(`${previousMode} to ${currentProjectionMode} projection`);
-    sendStateToServer();
-}
-
-function switchToRepresentationMode(targetMode) {
+function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
     if (currentRepresentationMode === targetMode) {
-        announceStatus(`already ${targetMode.toLowerCase()}`);
+        if (shouldAnnounce) announceStatus(`already ${targetMode.toLowerCase()}`);
         return;
     }
     const previousMode = currentRepresentationMode;
     currentRepresentationMode = targetMode;
     updateDisplayOptions();
     if (targetMode === 'slice-graph') {
-        // Entering slice-graph mode captures an initial locked snapshot.
         sliceGraphLocked = true;
         captureSliceGraphAnchor(false);
     }
@@ -1077,17 +1374,17 @@ function switchToRepresentationMode(targetMode) {
     updateSliceGraphLockUI();
     updateSideBySideAxisLabels();
     syncRadios();
-    announce(`${previousMode.toLowerCase()} to ${currentRepresentationMode.toLowerCase()}`);
-    
+    if (shouldAnnounce) announce(`${previousMode.toLowerCase()} to ${currentRepresentationMode.toLowerCase()}`);
+
     // Send state to server
     sendStateToServer();
     return true;
 }
 
-function cycleRepresentationMode() {
+function cycleRepresentationMode(shouldAnnounce = true) {
     const currentIndex = representationModes.indexOf(currentRepresentationMode);
     const nextIndex = (currentIndex + 1) % representationModes.length;
-    switchToRepresentationMode(representationModes[nextIndex]);
+    switchToRepresentationMode(representationModes[nextIndex], shouldAnnounce);
 }
 
 // Announce a change: adds to visible history, shows toast, and speaks via SR live region.
@@ -1130,11 +1427,7 @@ function announceStatus(message) {
 }
 
 function announceDepthShortcut(shortcutLabel, previousDepth, depthValue) {
-    if (previousDepth === depthValue) {
-        announceStatus(`shortcut ${shortcutLabel}: depth unchanged at ${depthValue}%`);
-        return;
-    }
-    announceStatus(`shortcut ${shortcutLabel}: ${depthAnnouncement(depthValue)}`);
+    announceParameterValue('slice-depth', 'Slice depth', depthAnnouncement(depthValue));
 }
 
 if (clearAnnouncementsBtn && announcementHistory) {
@@ -1163,8 +1456,15 @@ sliceSlider.addEventListener('input', function() {
 
 sliceSlider.addEventListener('change', function() {
     clearTimeout(sliderUpdateTimeout);
-    // Send state to server
+    pendingInputSource = 'ui';
     sendStateToServer();
+});
+
+// Sync aria-valuetext when the slider receives focus so it reflects any depth
+// changes made via keyboard shortcuts while focus was elsewhere.
+sliceSlider.addEventListener('focus', function() {
+    this.setAttribute('aria-valuenow', currentSliceDepth);
+    this.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
 });
 
 // Keyboard support for slider
@@ -1204,16 +1504,8 @@ sliceSlider.addEventListener('keydown', function(e) {
 document.addEventListener('change', function(e) {
     if (e.target && e.target.matches('input[name="render-mode"]')) {
         if (e.target.checked) {
+            pendingInputSource = 'ui';
             switchToRenderMode(e.target.value);
-        }
-    }
-});
-
-// Projection mode radios
-document.addEventListener('change', function(e) {
-    if (e.target && e.target.matches('input[name="projection-mode"]')) {
-        if (e.target.checked) {
-            switchToProjectionMode(e.target.value);
         }
     }
 });
@@ -1222,6 +1514,7 @@ document.addEventListener('change', function(e) {
 document.addEventListener('change', function(e) {
     if (e.target && e.target.matches('input[name="view-mode"]')) {
         if (e.target.checked) {
+            pendingInputSource = 'ui';
             switchToRepresentationMode(e.target.value);
             updateDisplayOptions();
             sendStateToServer();
@@ -1233,6 +1526,7 @@ document.addEventListener('change', function(e) {
 document.addEventListener('change', function(e) {
     if (e.target && e.target.matches('input[name="view-select"]')) {
         if (e.target.checked) {
+            pendingInputSource = 'ui';
             updateView(e.target.value);
         }
     }
@@ -1242,39 +1536,62 @@ document.addEventListener('change', function(e) {
 document.addEventListener('change', function(e) {
     if (e.target && e.target.matches('input[name="output-device"]')) {
         if (e.target.checked) {
+            pendingInputSource = 'ui';
             switchOutputDevice(e.target.value);
         }
     }
 });
 
-// Zoom slider — debounce server sends on drag; commit immediately on release
+// Zoom number input — debounce while typing; commit on change/stepper controls
 let zoomDebounceTimer = null;
 
-zoomSlider.addEventListener('input', function() {
-    //updateZoom(this.value, false, false); // Update UI immediately, skip server send
+zoomInput.addEventListener('input', function() {
     clearTimeout(zoomDebounceTimer);
+    if (!Number.isFinite(this.valueAsNumber)) {
+        return;
+    }
     zoomDebounceTimer = setTimeout(() => {
-        updateZoom(zoomSlider.value, false, true); // Send to server after 150ms idle
+        pendingInputSource = 'ui';
+        updateZoom(this.valueAsNumber, false, true);
     }, 150);
 });
 
-zoomSlider.addEventListener('change', function() {
+zoomInput.addEventListener('change', function() {
     clearTimeout(zoomDebounceTimer);
-    updateZoom(this.value, true, true); // Dragging stopped — send immediately
+    if (!Number.isFinite(this.valueAsNumber)) {
+        this.value = currentZoom.toFixed(1);
+        announceStatus('zoom value unchanged');
+        return;
+    }
+    pendingInputSource = 'ui';
+    updateZoom(this.valueAsNumber, true, true);
+});
+
+zoomOutBtn.addEventListener('click', function() {
+    pendingInputSource = 'ui';
+    updateZoom(currentZoom - ZOOM_STEP, true, true);
+});
+
+zoomInBtn.addEventListener('click', function() {
+    pendingInputSource = 'ui';
+    updateZoom(currentZoom + ZOOM_STEP, true, true);
 });
 
 showViewInfoBoxCheckbox.addEventListener('change', function() {
     showViewInfoBox = this.checked;
+    pendingInputSource = 'ui';
     sendStateToServer();
 });
 
 // Deeper depth button
 deeperBtn.addEventListener('click', function() {
+    pendingInputSource = 'ui';
     updateSliceDepth(currentSliceDepth + 10, true);
 });
 
 // Shallower depth button
 shallowerBtn.addEventListener('click', function() {
+    pendingInputSource = 'ui';
     updateSliceDepth(currentSliceDepth - 10, true);
 });
 
@@ -1288,8 +1605,19 @@ sliceGraphRefreshBtn.addEventListener('click', function() {
         return;
     }
     captureSliceGraphAnchor(true);
+    pendingInputSource = 'ui';
     sendStateToServer();
 });
+
+if (resetPositionBtn) {
+    resetPositionBtn.addEventListener('click', function() {
+        pendingInputSource = 'ui';
+        currentMoveCamera = "reset";
+        sendStateToServer();
+        currentMoveCamera = "none";
+        announce('Position reset');
+    });
+}
 
 exportSliceSvgBtn.addEventListener('click', function() {
     exportCurrentSliceAsPng();
@@ -1344,9 +1672,12 @@ document.addEventListener('keydown', function(e) {
         key
     );
     const supportedShortcuts = new Set([
-        '1', '2', '4', '5', '7', '8', '9', '0', '-', '=',
-        'q', 'e', 'f', 'r', 't', 'l', 'g', 'o', 'c',
-        'w', 'a', 's', 'd', '[', ']', 'i', 'h', 'p', 'escape'
+        'arrowup', 'arrowright', 'arrowdown', 'arrowleft', 'pageup', 'pagedown',
+        '1', '2', 'q', 'e',
+        'u', 'i', 'o', 'j', 'k', 'l',
+        '4', '5', '7', '8', '9', '0', '-', '=',
+        'r', 't', 'g', 'z',
+        'w', 'a', 's', 'd', '[', ']', 'h', 'p', '.', 'escape'
     ]);
 
     if (!supportedShortcuts.has(normalizedKey)) {
@@ -1354,6 +1685,8 @@ document.addEventListener('keydown', function(e) {
     }
 
     switch(normalizedKey) {
+        case 'arrowup':
+        case 'arrowright':
         case 'e':
             // Go deeper (increase depth by 1%)
             e.preventDefault();
@@ -1361,9 +1694,11 @@ document.addEventListener('keydown', function(e) {
                 const previousDepth = currentSliceDepth;
                 const nextDepth = Math.min(100, currentSliceDepth + 1);
                 updateSliceDepth(nextDepth, false);
-                announceDepthShortcut('E', previousDepth, nextDepth);
+                announceDepthShortcut('ArrowUp/ArrowRight/E', previousDepth, nextDepth);
             }
             break;
+        case 'arrowdown':
+        case 'arrowleft':
         case 'q':
             // Go shallower (decrease depth by 1%)
             e.preventDefault();
@@ -1371,9 +1706,10 @@ document.addEventListener('keydown', function(e) {
                 const previousDepth = currentSliceDepth;
                 const nextDepth = Math.max(0, currentSliceDepth - 1);
                 updateSliceDepth(nextDepth, false);
-                announceDepthShortcut('Q', previousDepth, nextDepth);
+                announceDepthShortcut('ArrowDown/ArrowLeft/Q', previousDepth, nextDepth);
             }
             break;
+        case 'pageup':
         case '2':
             // Go deeper (increase depth by 10%)
             e.preventDefault();
@@ -1381,10 +1717,10 @@ document.addEventListener('keydown', function(e) {
                 const previousDeeperDepth = currentSliceDepth;
                 const newDeeperDepth = Math.min(100, currentSliceDepth + 10);
                 updateSliceDepth(newDeeperDepth, false);
-                announceDepthShortcut('2', previousDeeperDepth, newDeeperDepth);
+                announceDepthShortcut('PageUp/2', previousDeeperDepth, newDeeperDepth);
             }
             break;
-            
+        case 'pagedown':
         case '1':
             // Go shallower (decrease depth by 10%)
             e.preventDefault();
@@ -1392,150 +1728,166 @@ document.addEventListener('keydown', function(e) {
                 const previousShallowerDepth = currentSliceDepth;
                 const newShallowerDepth = Math.max(0, currentSliceDepth - 10);
                 updateSliceDepth(newShallowerDepth, false);
-                announceDepthShortcut('1', previousShallowerDepth, newShallowerDepth);
+                announceDepthShortcut('PageDown/1', previousShallowerDepth, newShallowerDepth);
             }
             break;
             
-        // View shortcuts (first letter where available)
+        // View shortcuts
         case '7':
             e.preventDefault();
-            if (updateView('x-')) {
-                announceStatus('shortcut 7: view x-');
+            if (updateView('x-', false)) {
+                announce('View changed: x-');
+            } else {
+                announce('View unchanged: x-');
             }
             break;
         case '8':
             e.preventDefault();
-            if (updateView('x+')) {
-                announceStatus('shortcut 8: view x+');
+            if (updateView('x+', false)) {
+                announce('View changed: x+');
+            } else {
+                announce('View unchanged: x+');
             }
             break;
         case '9':
             e.preventDefault();
-            if (updateView('z+')) {
-                announceStatus('shortcut 9: view z+');
+            if (updateView('z+', false)) {
+                announce('View changed: z+');
+            } else {
+                announce('View unchanged: z+');
             }
             break;
         case '0':
             e.preventDefault();
-            if (updateView('z-')) {
-                announceStatus('shortcut 0: view z-');
+            if (updateView('z-', false)) {
+                announce('View changed: z-');
+            } else {
+                announce('View unchanged: z-');
             }
             break;
         case '-':
             e.preventDefault();
-            if (updateView('y-')) {
-                announceStatus('shortcut -: view y-');
+            if (updateView('y-', false)) {
+                announce('View changed: y-');
+            } else {
+                announce('View unchanged: y-');
             }
             break;
         case '=':
             e.preventDefault();
-            if (updateView('y+')) {
-                announceStatus('shortcut =: view y+');
-            }
-            break;
-            
-        case 'f':
-            // Switch to filled/shaded view
-            e.preventDefault();
-            if (switchToRenderMode('Shaded')) {
-                announceStatus('shortcut F: mode shaded');
+            if (updateView('y+', false)) {
+                announce('View changed: y+');
             } else {
-                announceStatus('shortcut F: mode unchanged (shaded)');
+                announce('View unchanged: y+');
             }
             break;
 
         case 'r':
-            // Switch to filled/shaded view
             e.preventDefault();
             {
                 const previousMode = currentRenderMode;
-            cycleRenderMode();
-                announceStatus(`shortcut R: mode ${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
+                cycleRenderMode(false);
+                announce(`Render mode changed: ${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
             }
             break;
 
         case 't':
-            // Switch to filled/shaded view
             e.preventDefault();
             {
                 const previousViewMode = currentRepresentationMode;
-            cycleRepresentationMode();
-                announceStatus(`shortcut T: view mode ${previousViewMode} to ${currentRepresentationMode}`);
+                cycleRepresentationMode(false);
+                announce(`Display mode changed: ${previousViewMode} to ${currentRepresentationMode}`);
             }
+            break;
+
+        case 'u':
+            e.preventDefault();
+            // Roll counterclockwise around current view direction.
+            applyRelativeRotation('roll', 1, 'Roll counterclockwise');
+            break;
+
+        case 'o':
+            e.preventDefault();
+            // Roll clockwise around current view direction.
+            applyRelativeRotation('roll', -1, 'Roll clockwise');
+            break;
+
+        case 'i':
+            e.preventDefault();
+            applyRelativeRotation('pitch', -1, 'Rotate up');
+            break;
+
+        case 'k':
+            e.preventDefault();
+            applyRelativeRotation('pitch', 1, 'Rotate down');
+            break;
+
+        case 'j':
+            e.preventDefault();
+            applyRelativeRotation('yaw', -1, 'Rotate left');
             break;
 
         case 'l':
             e.preventDefault();
-            toggleSliceGraphLock();
-            announceStatus(`shortcut L: slice graph lock ${sliceGraphLocked ? 'on' : 'off'}`);
+            applyRelativeRotation('yaw', 1, 'Rotate right');
+            break;
+
+        case '.':
+            // Read the full top-of-page status bar.
+            e.preventDefault();
+            announceStatus(getStatusBarAnnouncement());
             break;
 
         case 'g':
             e.preventDefault();
             if (currentRepresentationMode !== 'slice-graph') {
-                announceStatus('shortcut G: no change, not in slice-graph mode');
+                announce('Slice graph refresh: not in slice-graph mode');
                 break;
             }
             captureSliceGraphAnchor(true);
             sendStateToServer();
-            announceStatus(`shortcut G: slice graph refreshed at ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
-            break;
-            
-        case 'o':
-            // Switch to outline view
-            e.preventDefault();
-            if (switchToRenderMode('Outline')) {
-                announceStatus('shortcut O: mode outline');
-            } else {
-                announceStatus('shortcut O: mode unchanged (outline)');
-            }
+            announce(`Slice graph refreshed: view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
             break;
 
-        case 'n':
-            // Switch to line view
-            e.preventDefault();
-            switchToRenderMode('Line');
-            break;
-            
         //case '0':
         //    // Jump to 0% depth (surface)
         //    e.preventDefault();
         //    updateSliceDepth(0, true);
         //    break;
-        //    
+        //
         case 'w':
             currentMoveCamera = "up";
             sendStateToServer();
             currentMoveCamera = "none";
-            announceStatus('shortcut W: moved scene up');
+            announce('Object panned up');
             break;
         case 'd':
             currentMoveCamera = "right";
             sendStateToServer();
             currentMoveCamera = "none";
-            announceStatus('shortcut D   moved scene right');
+            announce('Object panned right');
             break;
         case 's':
             currentMoveCamera = "down";
             sendStateToServer();
             currentMoveCamera = "none";
-            announceStatus('shortcut S: moved scene down');
+            announce('Object panned down');
             break;
         case '[':
             composeScrollbar = !composeScrollbar;
             sendStateToServer();
-            announceStatus(`shortcut [: compose scrollbar ${composeScrollbar ? 'on' : 'off'}`);
+            announce(`Compose scrollbar ${composeScrollbar ? 'on' : 'off'}`);
             break;
         case ']':
             composeSliceGraph = !composeSliceGraph;
             sendStateToServer();
-            announceStatus(`shortcut ]: compose slice graph ${composeSliceGraph ? 'on' : 'off'}`);
+            announce(`Compose slice graph ${composeSliceGraph ? 'on' : 'off'}`);
             break;
         case 'a':
             currentMoveCamera = "left";
             sendStateToServer();
             currentMoveCamera = "none";
-            announceStatus('shortcut A: moved scene left');
+            announce('Object panned left');
             break;
 
         case '4':
@@ -1544,9 +1896,9 @@ document.addEventListener('keydown', function(e) {
                 const previousZoom = currentZoom;
                 const zoomChanged = updateZoom(currentZoom - ZOOM_STEP, false);
                 if (zoomChanged) {
-                    announceStatus(`shortcut 4: zoom ${currentZoom.toFixed(1)}`);
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom));
                 } else {
-                    announceStatus(`shortcut 4: zoom unchanged at ${previousZoom.toFixed(1)}`);
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(previousZoom));
                 }
             }
             break;
@@ -1556,38 +1908,40 @@ document.addEventListener('keydown', function(e) {
                 const previousZoom = currentZoom;
                 const zoomChanged = updateZoom(currentZoom + ZOOM_STEP, false);
                 if (zoomChanged) {
-                    announceStatus(`shortcut 5: zoom ${currentZoom.toFixed(1)}`);
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom));
                 } else {
-                    announceStatus(`shortcut 5: zoom unchanged at ${previousZoom.toFixed(1)}`);
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(previousZoom));
                 }
             }
             break;
-            
-        case 'escape':
-            // Allow Escape key to remove focus from any element
-            document.activeElement.blur();
-            announceStatus('Focus cleared');
-            break;
 
-        case 'i':
-            // Concise current status
+        case 'escape':
             e.preventDefault();
-            {
-                const depthState = depthAnnouncement(currentSliceDepth).replace('depth ', '');
-                const statusMsg = `state: ${currentView}, ${depthState}, ${currentRenderMode.toLowerCase()}`;
-                announceStatus(`shortcut I: ${statusMsg}`);
-            }
+            document.activeElement.blur();
+            announce('Focus cleared');
             break;
 
         case 'h':
-            // Shortcut reminder
             e.preventDefault();
-            announceStatus('shortcut H: 1 shallower 10%, 2 deeper 10%, Q shallower 1%, E deeper 1%, 4 zoom out, 5 zoom in, 7 x-, 8 x+, 9 z+, 0 z-, - y-, = y+, F shaded, O outline, C cut, R cycle render, T cycle view mode, L lock graph, G refresh graph, W/A/S/D move, [ scrollbar toggle, ] slice-graph toggle, I status, P print, Esc clear focus');
+            {
+                const shortcutsHeading = document.getElementById('shortcuts-heading');
+                if (shortcutsHeading) {
+                    shortcutsHeading.focus();
+                }
+            }
             break;
 
         case 'p':
-            announceStatus('shortcut P: printing current render');
+            announce('Printing current render');
             print_view();
+            break;
+
+        case 'z':
+            e.preventDefault();
+            currentMoveCamera = "reset";
+            sendStateToServer();
+            currentMoveCamera = "none";
+            announce('Position reset');
             break;
 
         default:
@@ -1629,6 +1983,7 @@ document.addEventListener('DOMContentLoaded', function() {
     initializeDebugPipelineVisibility();
 
     // Send initial state to server
+    pendingInputSource = 'init';
     sendStateToServer();
 
 });
@@ -1637,28 +1992,6 @@ document.addEventListener('DOMContentLoaded', function() {
 window.addEventListener('pageshow', function() {
     focusTopOfPage();
 });
-
-// Additional accessibility features
-
-// Handle focus management for better screen reader experience
-function manageFocus() {
-    // Ensure focus is visible and properly announced
-    const focusableElements = document.querySelectorAll(
-        'button, input[type="range"], [tabindex]:not([tabindex="-1"])'
-    );
-    
-    focusableElements.forEach(element => {
-        element.addEventListener('focus', function() {
-            // Add a slight delay to ensure screen readers announce the element
-            setTimeout(() => {
-                this.setAttribute('aria-describedby', this.getAttribute('aria-describedby') || '');
-            }, 100);
-        });
-    });
-}
-
-// Initialize focus management
-document.addEventListener('DOMContentLoaded', manageFocus);
 
 // Handle browser zoom and text scaling
 function handleZoomChanges() {

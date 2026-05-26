@@ -1,0 +1,86 @@
+solid Mesh
+  facet normal 0 0 -1
+    outer loop
+      vertex 0.0477707 -0.0490191 0
+      vertex -0.0522293 -0.0490191 0
+      vertex 0.0477707 0.0509809 0
+    endloop
+  endfacet
+  facet normal 0 0 -1
+    outer loop
+      vertex -0.0522293 -0.0490191 0
+      vertex -0.0522293 0.0509809 0
+      vertex 0.0477707 0.0509809 0
+    endloop
+  endfacet
+  facet normal 0 0 1
+    outer loop
+      vertex -0.0522293 -0.0490191 0.1
+      vertex 0.0477707 -0.0490191 0.1
+      vertex -0.0522293 0.0509809 0.1
+    endloop
+  endfacet
+  facet normal 0 0 1
+    outer loop
+      vertex 0.0477707 -0.0490191 0.1
+      vertex 0.0477707 0.0509809 0.1
+      vertex -0.0522293 0.0509809 0.1
+    endloop
+  endfacet
+  facet normal 1 0 0
+    outer loop
+      vertex 0.0477707 0.0509809 0.1
+      vertex 0.0477707 -0.0490191 0.1
+      vertex 0.0477707 0.0509809 0
+    endloop
+  endfacet
+  facet normal 1 0 0
+    outer loop
+      vertex 0.0477707 -0.0490191 0.1
+      vertex 0.0477707 -0.0490191 0
+      vertex 0.0477707 0.0509809 0
+    endloop
+  endfacet
+  facet normal 0 -1 0
+    outer loop
+      vertex 0.0477707 -0.0490191 0.1
+      vertex -0.0522293 -0.0490191 0.1
+      vertex 0.0477707 -0.0490191 0
+    endloop
+  endfacet
+  facet normal 0 -1 0
+    outer loop
+      vertex -0.0522293 -0.0490191 0.1
+      vertex -0.0522293 -0.0490191 0
+      vertex 0.0477707 -0.0490191 0
+    endloop
+  endfacet
+  facet normal 0 1 0
+    outer loop
+      vertex -0.0522293 0.0509809 0.1
+      vertex 0.0477707 0.0509809 0.1
+      vertex -0.0522293 0.0509809 0
+    endloop
+  endfacet
+  facet normal 0 1 0
+    outer loop
+      vertex 0.0477707 0.0509809 0.1
+      vertex 0.0477707 0.0509809 0
+      vertex -0.0522293 0.0509809 0
+    endloop
+  endfacet
+  facet normal -1 0 0
+    outer loop
+      vertex -0.0522293 -0.0490191 0.1
+      vertex -0.0522293 0.0509809 0.1
+      vertex -0.0522293 -0.0490191 0
+    endloop
+  endfacet
+  facet normal -1 0 0
+    outer loop
+      vertex -0.0522293 0.0509809 0.1
+      vertex -0.0522293 0.0509809 0
+      vertex -0.0522293 -0.0490191 0
+    endloop
+  endfacet
+endsolid Mesh

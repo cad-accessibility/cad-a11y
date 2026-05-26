@@ -8,10 +8,19 @@
     const TRINKEY_PID = 0x8102;   // Slide Trinkey product ID (CircuitPython mode)
     const SAMPLE_COUNT = 10;
     const ADC_MAX = 65535;
+    // Minimum change (in percent) required before propagating a new depth to the
+    // viewer. ADC noise at a fixed physical position typically causes ±1% jitter;
+    // requiring ≥ 2% prevents a flood of ARIA mutations when the slider is held still.
+    const MIN_DEPTH_CHANGE = 2;
+    // After the slider has been idle for this long, announce the settled depth once.
+    const DEPTH_SETTLE_MS = 400;
 
     let port = null;
     let reader = null;
     let running = false;
+    let readLoopDone = Promise.resolve(); // resolves when startReading has released its reader lock
+    let lastHardwareDepth = null;   // last depth value sent to updateSliceDepth
+    let depthSettleTimer = null;    // fires a single announcement after slider stops
 
     const connectBtn    = document.getElementById('trinkey-connect-btn');
     const disconnectBtn = document.getElementById('trinkey-disconnect-btn');
@@ -62,10 +71,15 @@
 
     async function disconnect(reason) {
         running = false;
+        clearTimeout(depthSettleTimer);
+        lastHardwareDepth = null;
         if (reader) {
             try { await reader.cancel(); } catch (_) {}
             reader = null;
         }
+        // Wait for startReading's finally block to release the reader lock before
+        // closing the port — port.close() throws if port.readable is still locked.
+        await readLoopDone;
         if (port) {
             try { await port.close(); } catch (_) {}
             port = null;
@@ -80,19 +94,23 @@
     async function startReading() {
         running = true;
 
-        // Stream readable bytes through a text decoder.
-        const decoder = new TextDecoderStream();
-        const pipePromise = port.readable.pipeTo(decoder.writable);
-        reader = decoder.readable.getReader();
-
+        // Use port.readable directly (no TextDecoderStream/pipeTo) so that
+        // reader.releaseLock() in the finally block frees port.readable before
+        // disconnect() calls port.close(). The pipeTo pattern locks port.readable
+        // for the lifetime of the pipe, causing port.close() to throw when called
+        // from disconnect() before the pipe has fully unwound.
+        reader = port.readable.getReader();
+        const textDecoder = new TextDecoder();
         let buffer = '';
         let samples = [];
+        let resolveReadLoopDone;
+        readLoopDone = new Promise(r => { resolveReadLoopDone = r; });
 
         try {
             while (running) {
                 const { value, done } = await reader.read();
                 if (done) break;
-                if (value) buffer += value;
+                if (value) buffer += textDecoder.decode(value, { stream: true });
 
                 // Process all complete lines in the buffer.
                 let nl;
@@ -113,17 +131,36 @@
                     const depth = Math.round(Math.max(0, Math.min(100, (avg / ADC_MAX) * 100)));
                     if (depthValueEl) depthValueEl.textContent = depth + '%';
 
-                    if (typeof updateSliceDepth === 'function') {
-                        updateSliceDepth(depth, false);
+                    // Only propagate when the position has moved by ≥ MIN_DEPTH_CHANGE.
+                    if (lastHardwareDepth === null || Math.abs(depth - lastHardwareDepth) >= MIN_DEPTH_CHANGE) {
+                        lastHardwareDepth = depth;
+                        if (typeof updateSliceDepth === 'function') {
+                            window.pendingInputSource = 'slider';
+                            updateSliceDepth(depth, false);
+                        }
                     }
+
+                    // Announce the settled depth once after the slider has been idle.
+                    clearTimeout(depthSettleTimer);
+                    depthSettleTimer = setTimeout(() => {
+                        if (lastHardwareDepth !== null && typeof announce === 'function') {
+                            if (typeof announceParameterValue === 'function') {
+                                announceParameterValue('slice-depth', 'Slice depth', `${lastHardwareDepth}%`);
+                            } else {
+                                const msg = typeof depthAnnouncement === 'function'
+                                    ? depthAnnouncement(lastHardwareDepth)
+                                    : `${lastHardwareDepth}%`;
+                                announce(msg);
+                            }
+                        }
+                    }, DEPTH_SETTLE_MS);
                 }
             }
         } catch (err) {
-            if (running) {
-                await disconnect('Lost connection: ' + err.message);
-            }
+            if (running) disconnect('Lost connection: ' + err.message);
+        } finally {
+            try { reader.releaseLock(); } catch (_) {}
+            resolveReadLoopDone();
         }
-
-        try { await pipePromise; } catch (_) {}
     }
 })();

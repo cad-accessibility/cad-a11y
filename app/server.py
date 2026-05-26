@@ -248,6 +248,22 @@ def _find_default_model() -> Path:
 DEFAULT_MODEL = _find_default_model()
 AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
 MODEL_NAME_LIST = [model_path.stem for model_path in AVAILABLE_MODELS]
+_model_list_last_refresh: float = 0.0
+_MODEL_LIST_REFRESH_INTERVAL = 2.0  # seconds
+
+
+def _refresh_model_list_if_stale() -> None:
+    """Refresh AVAILABLE_MODELS/MODEL_NAME_LIST from disk at most every 2 s."""
+    global AVAILABLE_MODELS, MODEL_NAME_LIST, _model_list_last_refresh
+    now = time.monotonic()
+    if now - _model_list_last_refresh < _MODEL_LIST_REFRESH_INTERVAL:
+        return
+    with models_lock:
+        if now - _model_list_last_refresh < _MODEL_LIST_REFRESH_INTERVAL:
+            return  # another thread already refreshed
+        AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
+        MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
+        _model_list_last_refresh = time.monotonic()
 
 
 def _normalize_model_index(raw_index: Any) -> int:
@@ -271,14 +287,21 @@ def get_or_create_renderer(model_index: int | None = None) -> CADComparisonRende
             _log(f"Initializing CAD renderer with: {model_path}")
             out_guard, err_guard = _renderer_stdio_guard()
             with out_guard, err_guard:
-                renderers_by_model[index] = CADComparisonRenderer(str(model_path), str(model_path))
+                renderer = CADComparisonRenderer(
+                    str(model_path),
+                    str(model_path),
+                    defer_slice_graph_precompute=True,
+                )
+                renderer.start_background_slice_precompute()
+                renderers_by_model[index] = renderer
         return renderers_by_model[index]
 
 
 def _to_braille_payload(rendered_rgba: np.ndarray) -> np.ndarray:
-    # Existing flow from previous server: invert first channel and convert to 0/255.
-    payload = np.bitwise_not(rendered_rgba[:, :, 0])
-    return np.where(payload > 0, 255, 0).astype(np.uint8)
+    # Convert renderer output to braille payload using a single deterministic
+    # rule for all modes: any non-white pixel is raised.
+    channel = rendered_rgba[:, :, 0].astype(np.uint8, copy=False)
+    return np.where(channel < 255, 255, 0).astype(np.uint8)
 
 
 def _payload_stats(payload: np.ndarray) -> dict[str, Any]:
@@ -333,12 +356,11 @@ def _make_hifi_preview(
     so displaying it directly gives natural black-on-white appearance.
     """
     engine = get_or_create_renderer(model_index)
-    orig = list(engine.screen_size) if engine.screen_size else [96, 40]
-    w0, h0 = max(1, orig[0]), max(1, orig[1] if len(orig) > 1 else orig[0])
-    hifi_h = max(1, int(round(preview_width * h0 / w0)))
-
     out_guard, err_guard = _renderer_stdio_guard()
     with render_lock:
+        orig = list(engine.screen_size) if engine.screen_size else [96, 40]
+        w0, h0 = max(1, orig[0]), max(1, orig[1] if len(orig) > 1 else orig[0])
+        hifi_h = max(1, int(round(preview_width * h0 / w0)))
         engine.screen_size = [preview_width, hifi_h]
         try:
             with out_guard, err_guard:
@@ -374,6 +396,7 @@ def _render_and_send(
         "event": "braille_send",
         "sequence": sequence,
         "source": source,
+        "input_source": params.get("input_source", "unknown"),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "model": str(AVAILABLE_MODELS[model_index]),
         "model_index": model_index,
@@ -471,7 +494,7 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
     is_pan_request = str(merged.get("move_camera_center", "none")).lower() != "none"
 
     # Fingerprint for caching (excludes transient fields).
-    fp_keys = ("view", "zoom", "depth", "renderMode", "mode", "current_model",
+    fp_keys = ("view", "zoom", "depth", "renderMode", "projectionMode", "mode", "current_model",
                "compose_scrollbar", "compose_slicegraph", "show_view_info_box",
                "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth")
     fp_dict = {k: merged.get(k) for k in fp_keys}
@@ -483,19 +506,17 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
 
 def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     """Render, send to braille display, and build JSON response dict."""
+    _refresh_model_list_if_stale()
     model_index = _normalize_model_index(params.get("current_model"))
     rendered, bbox, braille_payload = _render_and_send(params, source=source, model_index=model_index)
 
     engine = get_or_create_renderer(model_index)
     _save_print_if_requested(params, engine, rendered)
 
-    preview_b64, preview_shape = _make_hifi_preview(params, model_index)
     response: dict[str, Any] = {
         "status": "success",
         "image_base64": _img_to_base64_png(braille_payload),
         "image_shape": list(braille_payload.shape),
-        "render_preview_base64": preview_b64,
-        "render_preview_shape": preview_shape,
         "model_list": MODEL_NAME_LIST,
     }
     if bbox is not None:
@@ -520,6 +541,7 @@ def initialize_default_braille_render() -> None:
 def _record_command(data: dict[str, Any]) -> int:
     entry = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "request": _collect_request_context(),
         "data": data,
     }
     with commands_log_lock:
@@ -720,6 +742,7 @@ def render_view():
     global last_render_fingerprint, last_render_response
 
     try:
+        _refresh_model_list_if_stale()
         merged_params, model_index, is_pan_request, fingerprint = _prepare_render_params(request.get_json(silent=True))
 
         with state_lock:
@@ -729,6 +752,7 @@ def render_view():
                 and last_render_fingerprint == fingerprint
                 and last_render_response is not None
             ):
+                last_render_response["model_list"] = MODEL_NAME_LIST
                 return jsonify(last_render_response), 200
 
         with state_lock:
@@ -857,9 +881,12 @@ def get_stats():
 
 @app.route("/models", methods=["GET", "POST"])
 def models_endpoint():
-    global last_render_fingerprint, last_render_response
+    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response
 
     if request.method == "GET":
+        with models_lock:
+            AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
+            MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
         with state_lock:
             current_index = state.current_model_index
         return jsonify(
@@ -898,7 +925,7 @@ _ALLOWED_EXTENSIONS = {".stl", ".step"}
 @app.route("/upload", methods=["POST"])
 def upload_model():
     """Accept an STL or STEP file upload and add it to the model list."""
-    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response
+    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response, renderers_by_model
 
     if "file" not in request.files:
         return jsonify({"status": "error", "message": "No file field in request"}), 400
@@ -927,6 +954,9 @@ def upload_model():
     with models_lock:
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
+        # Uploads can overwrite an existing filename or reorder the discovered
+        # model list, so any renderer cached by index may now point at stale data.
+        renderers_by_model.clear()
         new_index = next((i for i, p in enumerate(AVAILABLE_MODELS) if p == dest), 0)
 
     with state_lock:
@@ -1012,14 +1042,13 @@ def render_export_source():
         export_width = _coerce_positive_int(params.get("export_width", 1000), 1000)
 
         engine = get_or_create_renderer()
-        original_screen_size = list(engine.screen_size)
-        if not original_screen_size or original_screen_size[0] <= 0:
-            original_screen_size = [96, 40]
-
-        aspect_ratio = float(original_screen_size[1]) / float(original_screen_size[0])
-        export_height = max(1, int(round(export_width * aspect_ratio)))
 
         with render_lock:
+            original_screen_size = list(engine.screen_size)
+            if not original_screen_size or original_screen_size[0] <= 0:
+                original_screen_size = [96, 40]
+            aspect_ratio = float(original_screen_size[1]) / float(original_screen_size[0])
+            export_height = max(1, int(round(export_width * aspect_ratio)))
             engine.screen_size = [export_width, export_height]
             try:
                 out_guard, err_guard = _renderer_stdio_guard()
@@ -1043,6 +1072,30 @@ def render_export_source():
         return jsonify({"status": "error", "message": str(error)}), 400
 
 
+@app.route("/render/preview", methods=["POST"])
+def render_preview():
+    """Render only the high-fidelity browser preview.
+
+    This endpoint avoids braille-device work so the main tactile render can
+    return immediately and the preview can be fetched afterward.
+    """
+    try:
+        _refresh_model_list_if_stale()
+        merged_params, model_index, _is_pan_request, _fingerprint = _prepare_render_params(request.get_json(silent=True))
+        preview_width = _coerce_positive_int(merged_params.get("preview_width", 800), 800)
+        preview_b64, preview_shape = _make_hifi_preview(merged_params, model_index, preview_width=preview_width)
+        return jsonify(
+            {
+                "status": "success",
+                "render_preview_base64": preview_b64,
+                "render_preview_shape": preview_shape,
+            }
+        ), 200
+    except Exception as error:
+        _log(f"Error rendering preview: {error}", force=True)
+        return jsonify({"status": "error", "message": str(error)}), 400
+
+
 @app.route("/render/dotpad-hex", methods=["POST"])
 def render_dotpad_hex():
     """Return the current render as a DotPad-compatible hex string.
@@ -1059,10 +1112,17 @@ def render_dotpad_hex():
         model_index = _normalize_model_index(params.get("current_model"))
         engine = get_or_create_renderer(model_index)
 
-        # Force DotPad screen size (60x40 pixels = 10 lines x 30 cols of braille cells).
-        original_screen_size = list(engine.screen_size)
+        # Use device-reported cell grid if provided; fall back to DotPad 300A defaults.
+        dotpad_cols = max(1, min(int(params.get("dotpad_cols", _DOTPAD_COLS)), 128))
+        dotpad_rows = max(1, min(int(params.get("dotpad_rows", _DOTPAD_LINES)), 64))
+        total_cells = dotpad_cols * dotpad_rows
+        # Each braille cell is 2 px wide × 4 px tall.
+        pixel_width  = dotpad_cols * 2
+        pixel_height = dotpad_rows * 4
+
         with render_lock:
-            engine.screen_size = [60, 40]
+            original_screen_size = list(engine.screen_size)
+            engine.screen_size = [pixel_width, pixel_height]
             try:
                 out_guard, err_guard = _renderer_stdio_guard()
                 with out_guard, err_guard:
@@ -1072,16 +1132,15 @@ def render_dotpad_hex():
 
         braille_payload = _to_braille_payload(rendered)
         cells = _pixels_to_braille_cells_dotpad(
-            braille_payload, lines=_DOTPAD_LINES, cols=_DOTPAD_COLS,
+            braille_payload, lines=dotpad_rows, cols=dotpad_cols,
         )
-        # Pad/truncate to exactly 300 cells.
-        cell_bytes = cells[:_DOTPAD_GRAPHIC_CELLS].ljust(_DOTPAD_GRAPHIC_CELLS, b"\x00")
+        cell_bytes = cells[:total_cells].ljust(total_cells, b"\x00")
         hex_string = cell_bytes.hex().upper()
 
         return jsonify({
             "status": "success",
             "dotpad_graphic_hex": hex_string,
-            "cell_count": _DOTPAD_GRAPHIC_CELLS,
+            "cell_count": total_cells,
         }), 200
     except Exception as error:
         _log(f"Error rendering DotPad hex: {error}", force=True)

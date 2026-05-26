@@ -6,7 +6,7 @@ It processes STEP files and returns rendered image arrays based on specified par
 """
 
 import numpy as np
-import os
+import os, sys
 import json
 from OCC.Core.STEPControl import STEPControl_Reader
 import trimesh as tm
@@ -24,16 +24,14 @@ from shapely.ops import unary_union
 from shapely import union_all
 from shapely.plotting import plot_polygon
 from shapely import symmetric_difference
-import matplotlib.pyplot as plt
-import io, PIL
-from PIL import Image
+import threading
 
 class CADComparisonRenderer:
     """
     Renderer for CAD model comparisons.
     """
     
-    def __init__(self, before_model_path, after_model_path):
+    def __init__(self, before_model_path, after_model_path, defer_slice_graph_precompute=False):
         """
         Initialize the renderer with two STEP model files.
         
@@ -62,11 +60,17 @@ class CADComparisonRenderer:
             "renders",
             "cad_precompute_cache.json",
         )
+        self._model_signature_value = None
+        self._slice_graphs_ready = False
+        self._precompute_in_progress = False
+        self._precompute_lock = threading.Lock()
+        self._precompute_done = threading.Event()
+        self._precompute_done.set()
         
         # Load and normalize shapes
-        self._load_models()
+        self._load_models(defer_slice_graph_precompute=defer_slice_graph_precompute)
         
-    def _load_models(self):
+    def _load_models(self, defer_slice_graph_precompute=False):
         """Load mesh files and prepare shapes."""
         shapes = []
         for model_file in [self.before_model_path, self.after_model_path]:
@@ -110,8 +114,11 @@ class CADComparisonRenderer:
         )
         self.bbox = [xmin, ymin, zmin, xmax, ymax, zmax]
 
-        # Precompute or load from cache for startup performance.
-        self._precompute_with_cache()
+        self._model_signature_value = self._model_signature()
+
+        # Load cached precompute data when available. If deferred, only the
+        # view limits are required synchronously for immediate first render.
+        self._initialize_precompute_state(defer_slice_graph_precompute=defer_slice_graph_precompute)
 
     def _model_signature(self):
         """Build a lightweight signature that changes when source STL files change."""
@@ -136,23 +143,63 @@ class CADComparisonRenderer:
                 "mtime_ns": -1,
             }
 
-    def _precompute_with_cache(self):
-        """Load precomputed slice/orthographic data, or recompute if stale/missing."""
+    def _initialize_precompute_state(self, defer_slice_graph_precompute=False):
+        """Load cached precompute data, or compute only what first render needs."""
         cache = self._load_precompute_cache()
-        signature = self._model_signature()
+        signature = self._model_signature_value or self._model_signature()
 
         if cache and cache.get("model_signature") == signature:
             try:
                 self._hydrate_precomputed_from_cache(cache)
+                self._slice_graphs_ready = True
+                self._precompute_done.set()
                 print("Loaded precomputed slices/view limits from cache")
                 return
             except Exception as error:
                 print("Ignoring invalid precompute cache:", error)
 
-        print("Precomputing slices and orthographic view limits...")
+        if defer_slice_graph_precompute:
+            print("Precomputing orthographic view limits...")
+        else:
+            print("Precomputing slices and orthographic view limits...")
         self._calculate_view_limits()
+        if defer_slice_graph_precompute:
+            self._slice_graphs_ready = False
+            self.view_diff_mats = {}
+            self.view_cut_polygons = {}
+            self._precompute_done.set()
+            return
+
         self._compute_slice_graphs()
         self._save_precompute_cache(signature)
+        self._slice_graphs_ready = True
+        self._precompute_done.set()
+
+    def start_background_slice_precompute(self):
+        """Kick off slice-graph precompute without blocking first render."""
+        with self._precompute_lock:
+            if self._slice_graphs_ready or self._precompute_in_progress:
+                return False
+            self._precompute_in_progress = True
+            self._precompute_done.clear()
+
+        worker = threading.Thread(
+            target=self._finish_slice_graph_precompute,
+            name="cad-slice-precompute",
+            daemon=True,
+        )
+        worker.start()
+        return True
+
+    def _finish_slice_graph_precompute(self):
+        try:
+            self._compute_slice_graphs()
+            self._save_precompute_cache(self._model_signature_value or self._model_signature())
+            self._slice_graphs_ready = True
+        finally:
+            with self._precompute_lock:
+                self._precompute_in_progress = False
+                self._precompute_done.set()
 
     def _load_precompute_cache(self):
         if not os.path.exists(self.cache_path):
@@ -211,11 +258,76 @@ class CADComparisonRenderer:
 
     def _ensure_slice_graphs(self):
         """Compute slice graph matrices only when a render path needs them."""
-        if len(self.view_diff_mats) == 0:
-            self._compute_slice_graphs()
-            self._save_precompute_cache(self._model_signature())
-    
+        if self._slice_graphs_ready:
+            return
+
+        should_compute = False
+        with self._precompute_lock:
+            if self._slice_graphs_ready:
+                return
+            if not self._precompute_in_progress:
+                self._precompute_in_progress = True
+                self._precompute_done.clear()
+                should_compute = True
+
+        if should_compute:
+            try:
+                self._compute_slice_graphs()
+                self._save_precompute_cache(self._model_signature_value or self._model_signature())
+                self._slice_graphs_ready = True
+            finally:
+                with self._precompute_lock:
+                    self._precompute_in_progress = False
+                    self._precompute_done.set()
+            return
+
+        self._precompute_done.wait()
+
     def _calculate_view_limits(self):
+        """Calculate axis limits for all views for both shapes."""
+        #view_keys = ["top", "front", "side"]
+        view_keys = ["top", "front", "left", "bottom", "back", "right"]
+        rendering_modes = ["outline", "filled", "slice"]
+        
+        xmin, ymin, zmin, xmax, ymax, zmax = self.bbox
+        
+        view_limits = [
+            [[xmin, xmax], [ymin, ymax]],  # top
+            [[xmin, xmax], [ymin, ymax]],  # front
+            [[xmin, xmax], [ymin, ymax]],  # side
+            [[xmin, xmax], [ymin, ymax]],  # top
+            [[xmin, xmax], [ymin, ymax]],  # front
+            [[xmin, xmax], [ymin, ymax]],  # side
+        ]
+        self.view_current_camera_center = [
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+            [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
+        ]
+        
+        shape_before, shape_after = self.shapes
+        
+        for i, view_key in enumerate(view_keys):
+            _, ax_limits_before = get_single_view(
+                shape_before, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
+            )
+            _, ax_limits_after = get_single_view(
+                shape_after, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
+            )
+            view_limits[i][0][0] = min(ax_limits_before[0][0], ax_limits_after[0][0])
+            view_limits[i][0][1] = max(ax_limits_before[0][1], ax_limits_after[0][1])
+            view_limits[i][1][0] = min(ax_limits_before[1][0], ax_limits_after[1][0])
+            view_limits[i][1][1] = max(ax_limits_before[1][1], ax_limits_after[1][1])
+            self.view_current_camera_center[i][0] = (view_limits[i][0][0] + view_limits[i][0][1])/2.0
+            self.view_current_camera_center[i][1] = (view_limits[i][1][0] + view_limits[i][1][1])/2.0
+        
+        self.view_limits = np.array(view_limits)
+        self.view_current_camera_center = np.array(self.view_current_camera_center)
+    
+    def _calculate_view_limits_v2(self):
         """Calculate tight orthographic limits for each axis view across both shapes."""
         view_keys = ["top", "front", "left", "bottom", "back", "right"]
         view_limits = []
@@ -322,6 +434,7 @@ class CADComparisonRenderer:
         return np.array(projected_limits)
 
     def _compute_slice_graphs(self):
+        print("_compute_slice_graphs")
 
         shape = copy(self.shapes[0])
         cut_depth = 0.0
@@ -413,6 +526,8 @@ class CADComparisonRenderer:
     
     def _map_view_name(self, view_name):
         """Map view name from JSON format to internal format."""
+        key = (view_name or "top").lower()
+        # Accept both named views and signed-axis aliases, then normalize.
         view_mapping = {
             "top": "top",
             "front": "front",
@@ -420,16 +535,6 @@ class CADComparisonRenderer:
             "right": "right",
             "back": "back",
             "bottom": "bottom",
-        }
-        view_mapping = {
-            "top": "z+",
-            "front": "y-",
-            "left": "x-",
-            "right": "x+",
-            "back": "y+",
-            "bottom": "z-",
-        }
-        view_mapping = {
             "z+": "top",
             "y-": "front",
             "x-": "left",
@@ -437,7 +542,20 @@ class CADComparisonRenderer:
             "y+": "back",
             "z-": "bottom",
         }
-        return view_mapping.get(view_name.lower(), "top")
+        return view_mapping.get(key, "top")
+
+    def _view_to_axis_token(self, view_name):
+        """Convert a view name to a signed axis token for braille labels."""
+        normalized = self._map_view_name(view_name)
+        mapping = {
+            "top": "z+",
+            "front": "y-",
+            "left": "x-",
+            "right": "x+",
+            "back": "y+",
+            "bottom": "z-",
+        }
+        return mapping.get(normalized, "z+")
     
     def _map_render_mode(self, render_mode):
         """Map render mode from JSON format to internal format."""
@@ -456,6 +574,7 @@ class CADComparisonRenderer:
         mode = (projection_mode or "orthographic").lower()
         mapping = {
             "orthographic": "orthographic",
+            "silhouette": "silhouette",
             "oblique": "oblique",
             "isometric": "isometric",
             "slice": "cut",
@@ -511,19 +630,51 @@ class CADComparisonRenderer:
             cursor_x += cell_advance
 
     def _overlay_side_by_side_view_labels(self, img_array, left_axis, right_axis):
-        """Overlay compact braille axis markers at the top of each side-by-side panel."""
+        """Overlay fixed braille-cell axis markers in side-by-side mode.
+
+        Labels are written as explicit dot cells inside small white boxes so
+        they are pure pixel masks (no font/text rendering artifacts).
+        """
         if img_array is None or len(img_array.shape) != 3:
             return
         h, w = img_array.shape[0], img_array.shape[1]
-        if h < 6 or w < 12:
+        if h < 8 or w < 16:
             return
 
+        char_to_dots = {
+            "x": [1, 3, 4, 6],
+            "y": [1, 3, 4, 5, 6],
+            "z": [1, 3, 5, 6],
+            "+": [3, 4, 6],
+            "-": [3, 6],
+        }
+
+        def _draw_axis_token_box(axis_text, box_x0, box_y0):
+            token = (axis_text or "x+").lower()[:2]
+            # Two braille cells (2x4 each) + 1px gap, with 1px padding.
+            box_w, box_h = 7, 6
+            box_x1 = min(w - 1, box_x0 + box_w - 1)
+            box_y1 = min(h - 1, box_y0 + box_h - 1)
+            if box_x0 < 0 or box_y0 < 0 or box_x1 <= box_x0 or box_y1 <= box_y0:
+                return
+
+            # Clear a local box so braille dots are deterministic and readable.
+            img_array[box_y0:box_y1 + 1, box_x0:box_x1 + 1, 0:3] = 255
+            if img_array.shape[2] > 3:
+                img_array[box_y0:box_y1 + 1, box_x0:box_x1 + 1, 3] = 255
+
+            if len(token) >= 1 and token[0] in char_to_dots:
+                self._draw_braille_cell(img_array, box_x0 + 1, box_y0 + 1, char_to_dots[token[0]])
+            if len(token) >= 2 and token[1] in char_to_dots:
+                self._draw_braille_cell(img_array, box_x0 + 4, box_y0 + 1, char_to_dots[token[1]])
+
         legend_width = int(w / 3)
-        y = 1
-        left_x = 1
-        right_x = legend_width + 1
-        self._draw_braille_text(img_array, left_axis, left_x, y)
-        self._draw_braille_text(img_array, right_axis, right_x, y)
+        box_y = 0
+        left_box_x = 0
+        right_box_x = min(w - 7, legend_width)
+
+        _draw_axis_token_box(left_axis, left_box_x, box_y)
+        _draw_axis_token_box(right_axis, right_box_x, box_y)
 
     def _overlay_view_info_box(self, img_array, axis_text):
         """Overlay a compact 7x5 top-left info box with axis text (e.g., x+)."""
@@ -561,6 +712,67 @@ class CADComparisonRenderer:
             self._draw_braille_cell(img_array, box_x0 + 1, box_y0 + 1, char_to_dots[axis_text[0]])
         if len(axis_text) >= 2 and axis_text[1] in char_to_dots:
             self._draw_braille_cell(img_array, box_x0 + 4, box_y0 + 1, char_to_dots[axis_text[1]])
+
+    def _draw_binary_line(self, img_array, x0, y0, x1, y1):
+        """Draw a 1px black line into an RGBA image using integer rasterization."""
+        height, width = img_array.shape[0], img_array.shape[1]
+        x0 = int(x0)
+        y0 = int(y0)
+        x1 = int(x1)
+        y1 = int(y1)
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        step_x = 1 if x0 < x1 else -1
+        step_y = 1 if y0 < y1 else -1
+        err = dx - dy
+
+        while True:
+            if 0 <= x0 < width and 0 <= y0 < height:
+                img_array[y0, x0, 0:3] = 0
+                if img_array.shape[2] > 3:
+                    img_array[y0, x0, 3] = 255
+            if x0 == x1 and y0 == y1:
+                break
+            err2 = 2 * err
+            if err2 > -dy:
+                err -= dy
+                x0 += step_x
+            if err2 < dx:
+                err += dx
+                y0 += step_y
+
+    def _render_slice_graph_bitmap(self, view_diff_mat, width_px, graph_height_px, marker_position_int):
+        """Render the slice graph directly to a binary RGBA bitmap."""
+        img_np = np.full((graph_height_px, width_px, 4), 255, dtype=np.uint8)
+        if width_px <= 0 or graph_height_px <= 0:
+            return img_np
+
+        values = np.asarray(view_diff_mat, dtype=float).reshape(-1)
+        if values.size == 0:
+            return img_np
+
+        values = np.clip(values, 0.0, 1.0)
+        if values.size == 1:
+            y_coord = int(round((1.0 - values[0]) * (graph_height_px - 1)))
+            self._draw_binary_line(img_np, 0, y_coord, width_px - 1, y_coord)
+        else:
+            last_x = 0
+            last_y = int(round((1.0 - values[0]) * (graph_height_px - 1)))
+            for idx in range(1, values.size):
+                x_coord = int(round(idx * (width_px - 1) / (values.size - 1)))
+                y_coord = int(round((1.0 - values[idx]) * (graph_height_px - 1)))
+                self._draw_binary_line(img_np, last_x, last_y, x_coord, y_coord)
+                last_x = x_coord
+                last_y = y_coord
+
+        img_np = np.flip(img_np, axis=1)
+
+        if img_np.shape[1] > 0 and values.size > 1:
+            marker_col = int(round(marker_position_int * (img_np.shape[1] - 1) / (values.size - 1)))
+            marker_col = max(0, min(img_np.shape[1] - 1, marker_col))
+            img_np[:, marker_col, :] = [0, 0, 0, 255]
+
+        return img_np
     
     def render(self, params):
         """
@@ -569,7 +781,8 @@ class CADComparisonRenderer:
         Args:
             params: Dictionary containing:
                 - view: "Top", "Front", or "Side" (case-insensitive)
-                - zoom: Float in [0, 3], where 0 is no zoom and larger values zoom in
+                                - zoom: Float >= 0 where 0 is fully zoomed out and larger
+                                    values zoom in
                 - depth: Integer 0-100 representing depth percentage
                 - renderMode: "Outline", "Filled"/"Shaded", or "Slice" (case-insensitive)
                 - shape: (optional) "before" or "after", defaults to "after"
@@ -659,8 +872,10 @@ class CADComparisonRenderer:
             view_index = self._get_view_index(view_name_cut)
 
         zoom_level = float(params.get("zoom", 0.0))
-        zoom_level = max(0.0, min(10.0, zoom_level))
-        # Linear zoom mapping: 0 -> full window, 1 -> half, 2 -> one-third, etc.
+        if not np.isfinite(zoom_level):
+            zoom_level = 0.0
+        zoom_level = max(0.0, zoom_level)
+        # Higher zoom levels shrink the viewing window (zoom in).
         zoom_scale = 1.0 / (zoom_level + 1.0)
         camera_move = params.get("move_camera_center", "none")
 
@@ -681,16 +896,23 @@ class CADComparisonRenderer:
                 (active_view_limits[view_index][1][0] + active_view_limits[view_index][1][1]) / 2.0,
             ])
         # arrow-key stepping
+        # Keys are interpreted as object motion, so apply the inverse camera
+        # translation to make the object appear to move in the pressed direction.
         pan_step_scale = 0.5 * zoom_scale
         #self.view_current_camera_center[view_index][1] -= pan_step_scale*vertical_half_span
         if camera_move == "left":
-            current_center[0] -= pan_step_scale*horizontal_half_span
-        if camera_move == "right":
             current_center[0] += pan_step_scale*horizontal_half_span
-        if camera_move == "up":
-            current_center[1] += pan_step_scale*vertical_half_span
-        if camera_move == "down":
+        elif camera_move == "right":
+            current_center[0] -= pan_step_scale*horizontal_half_span
+        elif camera_move == "up":
             current_center[1] -= pan_step_scale*vertical_half_span
+        elif camera_move == "down":
+            current_center[1] += pan_step_scale*vertical_half_span
+        elif camera_move == "reset":
+            current_center = np.array([
+                (self.view_limits[view_index][0][0] + self.view_limits[view_index][0][1]) / 2.0,
+                (self.view_limits[view_index][1][0] + self.view_limits[view_index][1][1]) / 2.0,
+            ])
 
         if effective_projection_mode == "orthographic":
             self.view_current_camera_center[view_index] = current_center
@@ -716,10 +938,14 @@ class CADComparisonRenderer:
         y_scroll_min = 0.0
         y_scroll_max = 1.0
 
-        # This needs to account for the aspect ratio of the monarch
+        # This needs to account for the panel aspect ratio. In side-by-side,
+        # the cut view uses the right panel width (2/3 of total, matching get_side_view).
         current_aspect_ratio = render_screen_size[0]/render_screen_size[1]
         if comparison_mode == "side-by-side":
-            current_aspect_ratio = 0.5*render_screen_size[0]/render_screen_size[1]
+            total_width = max(1, int(render_screen_size[0]))
+            legend_width = max(1, int(total_width / 3))
+            cut_width = max(1, total_width - legend_width)
+            current_aspect_ratio = cut_width / render_screen_size[1]
         safe_horizontal_range = max(horizontal_range, 1e-12)
         safe_vertical_range = max(vertical_range, 1e-12)
         if safe_horizontal_range/safe_vertical_range < current_aspect_ratio:
@@ -797,8 +1023,11 @@ class CADComparisonRenderer:
             legend_center_x = (legend_limits[0][0] + legend_limits[0][1]) / 2.0
             legend_center_y = (legend_limits[1][0] + legend_limits[1][1]) / 2.0
             
-            # Apply same aspect ratio correction as used for cut view (0.5 aspect ratio for side-by-side)
-            side_by_side_aspect_ratio = 0.5 * render_screen_size[0] / render_screen_size[1]
+            # Match legend view correction to the actual left panel width
+            # used by get_side_view (1/3 of total width).
+            total_width = max(1, int(render_screen_size[0]))
+            legend_width = max(1, int(total_width / 3))
+            side_by_side_aspect_ratio = legend_width / render_screen_size[1]
             
             # Adjust legend limits to match the aspect ratio of half-screen
             if legend_horizontal_dist / legend_vertical_dist < side_by_side_aspect_ratio:
@@ -920,39 +1149,13 @@ class CADComparisonRenderer:
             # current render for it, regardless of device resolution.
             width_px = int(img_array.shape[1])
             graph_height_px = max(1, int(round(img_array.shape[0] * 0.25)))
-            dpi = 100 
+            img_np = self._render_slice_graph_bitmap(
+                view_diff_mat,
+                width_px,
+                graph_height_px,
+                marker_position_int,
+            )
 
-            fig = plt.figure(figsize=(width_px / dpi, graph_height_px / dpi), dpi=dpi)
-            #fig = plt.figure(figsize=(1080 / dpi, 920 / dpi), dpi=dpi)
-            ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
-            ax.axis('off')
-            # Render graph strokes as a single pixel (no anti-aliasing expansion).
-            ax.plot(range(len(view_diff_mat)), view_diff_mat, aa=False, c="black", lw=.15)
-            ax = plt.gca()
-            #if len(imposed_ax_limits) > 0:
-
-            ax.set_xlim((0, len(view_diff_mat)))
-            ax.set_ylim((0, 1))
-
-            #ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
-            #print(ax_limits)
-            fig.savefig('test.png', dpi=dpi, pad_inches=0)
-
-            buf = io.BytesIO()
-            fig.savefig(buf, format='png', dpi=dpi, pad_inches=0)
-            fig.clear()
-            buf.seek(0)
-
-            img = Image.open(buf)
-            img_np = np.array(img)
-            img_np = np.flip(img_np, axis=1)
-
-            # Enforce a 1px slice marker column in the graph bitmap.
-            # This avoids anti-aliased or multi-pixel marker thickness from plotting.
-            if img_np.shape[1] > 0 and len(view_diff_mat) > 1:
-                marker_col = int(round(marker_position_int * (img_np.shape[1] - 1) / (len(view_diff_mat) - 1)))
-                marker_col = max(0, min(img_np.shape[1] - 1, marker_col))
-                img_np[:, marker_col, :] = [0, 0, 0, 255]
             # Compose graph without an outline box. Keep only a horizontal divider
             # above the graph so the model and graph are clearly separated.
             graph_top = max(0, img_array.shape[0] - graph_height_px)
@@ -971,7 +1174,9 @@ class CADComparisonRenderer:
 
         show_side_by_side_labels = bool(params.get("show_side_by_side_labels", True))
         if comparison_mode == "side-by-side" and show_side_by_side_labels:
-            self._overlay_side_by_side_view_labels(img_array, view_legend, view_cut)
+            left_axis = self._view_to_axis_token(view_legend)
+            right_axis = self._view_to_axis_token(view_cut)
+            self._overlay_side_by_side_view_labels(img_array, left_axis, right_axis)
 
         show_view_info_box = bool(params.get("show_view_info_box", False))
         if show_view_info_box and comparison_mode in ["single", "slice-graph"]:

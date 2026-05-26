@@ -1,4 +1,5 @@
-# Local development overrides — automatically merged by `docker compose`.
+# Local development overrides — NOT auto-merged by docker compose.
+# Use explicitly: docker compose -f docker-compose.yml -f localoverrides.yml
 # Bind-mounts replace named volumes so local edits are reflected immediately
 # without rebuilding the image.
 services:

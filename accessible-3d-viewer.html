@@ -21,45 +21,50 @@
             Sighted users see the full styled bar.
             SR live region (polite) so it doesn't interrupt reading.
         -->
-        <div id="status-bar" role="status" aria-live="assertive" aria-atomic="true" aria-label="Current state">
+        <div id="status-bar" role="region" aria-label="Viewer status">
             <span class="status-item">
-                <span class="status-label">View:</span>
+                <span class="status-label">View<span aria-hidden="true">:</span></span>
                 <span class="status-value highlight" id="sb-view">x+</span>
             </span>
             <span class="status-separator" aria-hidden="true">|</span>
             <span class="status-item">
-                <span class="status-label">Depth:</span>
+                <span class="status-label">Depth<span aria-hidden="true">:</span></span>
                 <span class="status-value highlight" id="sb-depth">50%</span>
             </span>
             <span class="status-separator" aria-hidden="true">|</span>
             <span class="status-item">
-                <span class="status-label">Render:</span>
+                <span class="status-label">Render<span aria-hidden="true">:</span></span>
                 <span class="status-value" id="sb-render-mode">Shaded</span>
             </span>
             <span class="status-separator" aria-hidden="true">|</span>
             <span class="status-item">
-                <span class="status-label">Zoom:</span>
+                <span class="status-label">Zoom<span aria-hidden="true">:</span></span>
                 <span class="status-value" id="sb-zoom">0.0</span>
             </span>
             <span class="status-separator" aria-hidden="true">|</span>
             <span class="status-item">
-                <span class="status-label">Layout:</span>
+                <span class="status-label">Layout<span aria-hidden="true">:</span></span>
                 <span class="status-value" id="sb-view-mode">single</span>
             </span>
             <span class="status-separator" aria-hidden="true">|</span>
             <span class="status-item">
-                <span class="status-label">Model:</span>
+                <span class="status-label">Model<span aria-hidden="true">:</span></span>
                 <span class="status-value" id="sb-model">--</span>
             </span>
             <span class="status-separator" aria-hidden="true">|</span>
             <span class="status-item">
-                <span class="status-label">DotPad:</span>
+                <span class="status-label">DotPad<span aria-hidden="true">:</span></span>
                 <span class="status-value" id="sb-dotpad">--</span>
             </span>
         </div>
 
-        <!-- SR live region: assertive so announcements are prioritized on SR/braille output. -->
-        <div id="sr-live-announce" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
+        <!-- SR live regions: two-slot swap pattern. Alternating which element receives
+             text guarantees AT sees a fresh DOM mutation for every announcement,
+             including identical consecutive messages, without any clear+setTimeout
+             race. aria-live="assertive" so Braille displays and screen readers surface
+             state changes immediately even while the user is actively pressing keys. -->
+        <div id="sr-live-a" role="alert" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
+        <div id="sr-live-b" role="alert" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
 
         <!-- Visual toast for sighted users (hidden from SR – the live region above handles it) -->
         <div id="announcement-toast" aria-hidden="true"></div>
@@ -125,7 +130,7 @@
                     aria-valuetext="50 percent depth"
                     aria-describedby="slice-help"
                 >
-                <div id="slice-help" class="help-text sr-only">0% surface, 100% full depth. Keys: 1/2 coarse, Q/E fine.</div>
+                <div id="slice-help" class="help-text sr-only">0% surface, 100% full depth. Keys: Arrow keys or Q/E for fine steps (1%), Page Up/Down or 1/2 for coarse steps (10%).</div>
                 <div class="button-group">
                     <button type="button" id="deeper-btn" aria-describedby="deeper-help">Deeper: 50%</button>
                     <button type="button" id="shallower-btn" aria-describedby="shallower-help">Shallower: 50%</button>
@@ -138,10 +143,10 @@
             <section class="section" aria-labelledby="render-heading">
                 <h2 id="render-heading">Rendering Mode</h2>
                 <div id="render-help" class="help-text">
-                    Choose between Shaded (filled surfaces), Outline (silhouette), and Line (all projected edges)
+                    Choose one top-level mode: Shaded, Outline, Cut, or Orthographic
                 </div>
                 <div aria-describedby="render-help">
-                    <fieldset role="radiogroup" aria-labelledby="render-heading">
+                    <fieldset role="radiogroup" aria-labelledby="render-heading" class="top-mode-row">
                         <legend class="sr-only">Rendering Mode Options</legend>
                         <label>
                             <input type="radio" name="render-mode" id="render-mode-shaded" value="Shaded" checked>
@@ -152,25 +157,12 @@
                             Outline
                         </label>
                         <label>
-                            <input type="radio" name="render-mode" id="render-mode-line" value="Line">
-                            Line
+                            <input type="radio" name="render-mode" id="render-mode-cut" value="Cut">
+                            Cut
                         </label>
-                    </fieldset>
-                </div>
-
-                <div id="projection-mode-help" class="help-text" style="margin-top: 10px;">
-                    Choose projection: Orthographic or Slice
-                </div>
-                <div aria-describedby="projection-mode-help">
-                    <fieldset role="radiogroup" aria-labelledby="render-heading">
-                        <legend class="sr-only">Projection Mode Options</legend>
                         <label>
-                            <input type="radio" name="projection-mode" id="projection-mode-orthographic" value="orthographic" checked>
+                            <input type="radio" name="render-mode" id="render-mode-orthographic" value="Orthographic">
                             Orthographic
-                        </label>
-                        <label>
-                            <input type="radio" name="projection-mode" id="projection-mode-slice" value="slice">
-                            Slice
                         </label>
                     </fieldset>
                 </div>
@@ -200,23 +192,28 @@
             <!-- 1d. Zoom -->
             <section class="section" aria-labelledby="zoom-select-heading">
                 <h2 id="zoom-select-heading">Zoom</h2>
-                <label for="zoom-slider">
+                <label for="zoom-input">Zoom level
                     <span id="zoom-level-value">0.0</span>
                 </label>
                 <input
-                    type="range"
-                    id="zoom-slider"
+                    type="number"
+                    id="zoom-input"
                     min="0"
-                    max="3"
                     value="0"
                     step="0.1"
-                    aria-valuemin="0"
-                    aria-valuemax="3"
-                    aria-valuenow="0"
-                    aria-valuetext="zoom 0.0"
+                    inputmode="decimal"
                     aria-describedby="zoom-help"
+                    aria-valuetext="zoom 0%"
                 >
-                <div id="zoom-help" class="help-text sr-only">0 none, 3 max. Keys: 4 out, 5 in.</div>
+                <div id="zoom-help" class="help-text sr-only">0 is fully zoomed out. Enter a number or use the zoom buttons. Keys: 4 out, 5 in. Zoom cannot go below 0.</div>
+                <div class="zoom-stepper-row" role="group" aria-label="Zoom adjustment controls">
+                    <button type="button" id="zoom-out-btn">Zoom Out</button>
+                    <button type="button" id="zoom-in-btn">Zoom In</button>
+                </div>
+                <div class="button-group zoom-reset-row" style="margin-top: 8px;">
+                    <button type="button" id="reset-position-btn">Reset Position</button>
+                </div>
+                <div class="help-text sr-only">Snaps the view back to the default centered position. Key: Z.</div>
             </section>
 
             <!-- ============================================================
@@ -335,6 +332,102 @@
                     <input type="checkbox" id="dotpad-auto-send" checked>
                     Auto-send to DotPad
                 </label>
+            </section>
+
+            <!-- ============================================================
+                 6. KEYBOARD SHORTCUTS REFERENCE
+                 ============================================================ -->
+            <section class="section" aria-labelledby="shortcuts-heading" id="shortcuts-section">
+                <h2 id="shortcuts-heading" tabindex="-1">Keyboard Shortcuts</h2>
+                <p class="help-text">Press <kbd>H</kbd> at any time to return focus here. Use your screen reader's reading keys to move through the list.</p>
+                <ul class="shortcuts-list">
+                    <li><kbd>Arrow Left/Down</kbd> Shallower 1%</li>
+                    <li><kbd>Arrow Right/Up</kbd> Deeper 1%</li>
+                    <li><kbd>Page Down</kbd> Shallower 10%</li>
+                    <li><kbd>Page Up</kbd> Deeper 10%</li>
+                    <li><kbd>Q</kbd> Shallower 1%</li>
+                    <li><kbd>E</kbd> Deeper 1%</li>
+                    <li><kbd>1</kbd> Shallower 10%</li>
+                    <li><kbd>2</kbd> Deeper 10%</li>
+                    <li><kbd>4</kbd> Zoom out</li>
+                    <li><kbd>5</kbd> Zoom in</li>
+                    <li><kbd>7</kbd> View x−</li>
+                    <li><kbd>8</kbd> View x+</li>
+                    <li><kbd>9</kbd> View z+</li>
+                    <li><kbd>0</kbd> View z−</li>
+                    <li><kbd>−</kbd> View y−</li>
+                    <li><kbd>=</kbd> View y+</li>
+                    <li><kbd>U</kbd> Roll counterclockwise (90°)</li>
+                    <li><kbd>O</kbd> Roll clockwise (90°)</li>
+                    <li><kbd>I</kbd> Rotate up (pitch, 90°)</li>
+                    <li><kbd>K</kbd> Rotate down (pitch, 90°)</li>
+                    <li><kbd>J</kbd> Rotate left (yaw, 90°)</li>
+                    <li><kbd>L</kbd> Rotate right (yaw, 90°)</li>
+                    <li><kbd>R</kbd> Cycle render mode</li>
+                    <li><kbd>T</kbd> Cycle view mode</li>
+                    <li><kbd>G</kbd> Refresh slice graph</li>
+                    <li><kbd>Z</kbd> Reset position</li>
+                    <li><kbd>W</kbd> Pan object up</li>
+                    <li><kbd>A</kbd> Pan object left</li>
+                    <li><kbd>S</kbd> Pan object down</li>
+                    <li><kbd>D</kbd> Pan object right</li>
+                    <li><kbd>[</kbd> Toggle scrollbar overlay</li>
+                    <li><kbd>]</kbd> Toggle slice-graph overlay</li>
+                    <li><kbd>.</kbd> Read current status</li>
+                    <li><kbd>P</kbd> Print current render</li>
+                    <li><kbd>H</kbd> Focus this shortcuts list</li>
+                    <li><kbd>Esc</kbd> Clear focus</li>
+                </ul>
+            </section>
+
+            <!-- ============================================================
+                 7. MODEL DESCRIPTION
+                 ============================================================ -->
+            <section class="section" aria-labelledby="model-desc-heading">
+                <h2 id="model-desc-heading">Model Description</h2>
+                <div id="model-description">
+                    Load a model to see its description here.
+                </div>
+            </section>
+
+            <!-- State summary — kept in DOM for JS references; visually mirrored in status bar -->
+            <section class="section" aria-labelledby="view-info-heading">
+                <h2 id="view-info-heading">State Summary</h2>
+                <div id="view-info">
+                    <span id="current-view" class="sr-only">x+</span>
+                    <span id="current-slice-depth-info" class="sr-only">50%</span>
+                    <span id="current-render-mode-info" class="sr-only">Shaded</span>
+                    <span id="current-zoom-info" class="sr-only">0.0</span>
+                    <span id="current-bbox-dimensions-info" class="sr-only">--</span>
+                </div>
+            </section>
+
+            <!-- ============================================================
+                 8. BOUNDING BOX
+                 ============================================================ -->
+            <section class="section" aria-labelledby="bbox-heading">
+                <h2 id="bbox-heading">Bounding Box</h2>
+                <div id="bbox-info">
+                    <div>X: <span id="bbox-x-min">--</span> to <span id="bbox-x-max">--</span> (w: <span id="bbox-x-width">--</span>)</div>
+                    <div>Y: <span id="bbox-y-min">--</span> to <span id="bbox-y-max">--</span> (h: <span id="bbox-y-height">--</span>)</div>
+                    <div>Z: <span id="bbox-z-min">--</span> to <span id="bbox-z-max">--</span> (d: <span id="bbox-z-depth">--</span>)</div>
+                </div>
+            </section>
+
+            <!-- ============================================================
+                 9. ANNOUNCEMENTS LOG (command palette)
+                 ============================================================ -->
+            <section class="section" aria-labelledby="announcements-heading">
+                <h2 id="announcements-heading">Log</h2>
+                <div id="announcement-duration-control">
+                    <label for="toast-duration-slider">Toast time:</label>
+                    <input type="range" id="toast-duration-slider" min="0" max="10" value="3" step="0.5"
+                           aria-valuemin="0" aria-valuemax="10" aria-valuenow="3"
+                           aria-valuetext="3 seconds">
+                    <span class="duration-value" id="toast-duration-value">3s</span>
+                </div>
+                <button type="button" id="clear-announcements-btn" style="margin-top:6px;">Clear</button>
+                <ul id="announcement-history" aria-label="Announcement history"></ul>
             </section>
 
                 </div><!-- end left-col -->
