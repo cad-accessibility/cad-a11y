@@ -533,6 +533,25 @@ function refreshViewInfoSummary() {
     refreshStatusBar();
 }
 
+function getStatusBarAnnouncement() {
+    const readText = (element, fallback = '--') => {
+        const text = element && typeof element.textContent === 'string'
+            ? element.textContent.trim()
+            : '';
+        return text || fallback;
+    };
+
+    return [
+        `View: ${readText(sbView, currentView)}`,
+        `Depth: ${readText(sbDepth, `${currentSliceDepth}%`)}`,
+        `Render: ${readText(sbRenderMode, currentRenderMode)}`,
+        `Zoom: ${readText(sbZoom, Number(currentZoom).toFixed(1))}`,
+        `Layout: ${readText(sbViewMode, currentRepresentationMode)}`,
+        `Model: ${readText(sbModel)}`,
+        `DotPad: ${readText(sbDotPad)}`,
+    ].join('. ');
+}
+
 // Update button labels with current state information
 function updateButtonLabels() {
     const depthText = `${currentSliceDepth}%`;
@@ -1814,14 +1833,9 @@ document.addEventListener('keydown', function(e) {
             break;
 
         case '.':
-            // Concise current status
+            // Read the full top-of-page status bar.
             e.preventDefault();
-            {
-                const depthLabel = currentSliceDepth === 0 ? 'surface' :
-                                   currentSliceDepth === 100 ? 'full depth' :
-                                   `${currentSliceDepth}%`;
-                announce(`View: ${currentView}, Cut depth: ${depthLabel}, Render: ${currentRenderMode.toLowerCase()}`);
-            }
+            announceStatus(getStatusBarAnnouncement());
             break;
 
         case 'g':

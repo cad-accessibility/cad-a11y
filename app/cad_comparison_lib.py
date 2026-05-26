@@ -938,10 +938,14 @@ class CADComparisonRenderer:
         y_scroll_min = 0.0
         y_scroll_max = 1.0
 
-        # This needs to account for the aspect ratio of the monarch
+        # This needs to account for the panel aspect ratio. In side-by-side,
+        # the cut view uses the right panel width (2/3 of total, matching get_side_view).
         current_aspect_ratio = render_screen_size[0]/render_screen_size[1]
         if comparison_mode == "side-by-side":
-            current_aspect_ratio = 0.5*render_screen_size[0]/render_screen_size[1]
+            total_width = max(1, int(render_screen_size[0]))
+            legend_width = max(1, int(total_width / 3))
+            cut_width = max(1, total_width - legend_width)
+            current_aspect_ratio = cut_width / render_screen_size[1]
         safe_horizontal_range = max(horizontal_range, 1e-12)
         safe_vertical_range = max(vertical_range, 1e-12)
         if safe_horizontal_range/safe_vertical_range < current_aspect_ratio:
@@ -1019,8 +1023,11 @@ class CADComparisonRenderer:
             legend_center_x = (legend_limits[0][0] + legend_limits[0][1]) / 2.0
             legend_center_y = (legend_limits[1][0] + legend_limits[1][1]) / 2.0
             
-            # Apply same aspect ratio correction as used for cut view (0.5 aspect ratio for side-by-side)
-            side_by_side_aspect_ratio = 0.5 * render_screen_size[0] / render_screen_size[1]
+            # Match legend view correction to the actual left panel width
+            # used by get_side_view (1/3 of total width).
+            total_width = max(1, int(render_screen_size[0]))
+            legend_width = max(1, int(total_width / 3))
+            side_by_side_aspect_ratio = legend_width / render_screen_size[1]
             
             # Adjust legend limits to match the aspect ratio of half-screen
             if legend_horizontal_dist / legend_vertical_dist < side_by_side_aspect_ratio:
