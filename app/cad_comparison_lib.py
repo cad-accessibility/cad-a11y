@@ -896,16 +896,18 @@ class CADComparisonRenderer:
                 (active_view_limits[view_index][1][0] + active_view_limits[view_index][1][1]) / 2.0,
             ])
         # arrow-key stepping
+        # Keys are interpreted as object motion, so apply the inverse camera
+        # translation to make the object appear to move in the pressed direction.
         pan_step_scale = 0.5 * zoom_scale
         #self.view_current_camera_center[view_index][1] -= pan_step_scale*vertical_half_span
         if camera_move == "left":
-            current_center[0] -= pan_step_scale*horizontal_half_span
-        elif camera_move == "right":
             current_center[0] += pan_step_scale*horizontal_half_span
+        elif camera_move == "right":
+            current_center[0] -= pan_step_scale*horizontal_half_span
         elif camera_move == "up":
-            current_center[1] += pan_step_scale*vertical_half_span
-        elif camera_move == "down":
             current_center[1] -= pan_step_scale*vertical_half_span
+        elif camera_move == "down":
+            current_center[1] += pan_step_scale*vertical_half_span
         elif camera_move == "reset":
             current_center = np.array([
                 (self.view_limits[view_index][0][0] + self.view_limits[view_index][0][1]) / 2.0,

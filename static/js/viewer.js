@@ -1719,19 +1719,19 @@ document.addEventListener('keydown', function(e) {
             currentMoveCamera = "up";
             sendStateToServer();
             currentMoveCamera = "none";
-            announce('Scene moved up');
+            announce('Object panned up');
             break;
         case 'd':
             currentMoveCamera = "right";
             sendStateToServer();
             currentMoveCamera = "none";
-            announce('Scene moved right');
+            announce('Object panned right');
             break;
         case 's':
             currentMoveCamera = "down";
             sendStateToServer();
             currentMoveCamera = "none";
-            announce('Scene moved down');
+            announce('Object panned down');
             break;
         case '[':
             composeScrollbar = !composeScrollbar;
@@ -1747,7 +1747,7 @@ document.addEventListener('keydown', function(e) {
             currentMoveCamera = "left";
             sendStateToServer();
             currentMoveCamera = "none";
-            announce('Scene moved left');
+            announce('Object panned left');
             break;
 
         case '4':
