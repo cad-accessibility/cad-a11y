@@ -1545,8 +1545,10 @@ document.addEventListener('keydown', function(e) {
         key
     );
     const supportedShortcuts = new Set([
-        '1', '2', '4', '5', '7', '8', '9', '0', '-', '=',
-        'q', 'e', 'f', 'r', 't', 'l', 'g', 'o', 'c', 'z',
+        'arrowup', 'arrowright', 'arrowdown', 'arrowleft', 'pageup', 'pagedown',
+        '1', '2', 'q', 'e',
+        '4', '5', '7', '8', '9', '0', '-', '=',
+        'f', 'r', 't', 'l', 'g', 'o', 'c', 'z',
         'w', 'a', 's', 'd', '[', ']', 'i', 'h', 'p', 'escape'
     ]);
 
@@ -1555,6 +1557,8 @@ document.addEventListener('keydown', function(e) {
     }
 
     switch(normalizedKey) {
+        case 'arrowup':
+        case 'arrowright':
         case 'e':
             // Go deeper (increase depth by 1%)
             e.preventDefault();
@@ -1562,9 +1566,11 @@ document.addEventListener('keydown', function(e) {
                 const previousDepth = currentSliceDepth;
                 const nextDepth = Math.min(100, currentSliceDepth + 1);
                 updateSliceDepth(nextDepth, false);
-                announceDepthShortcut('E', previousDepth, nextDepth);
+                announceDepthShortcut('ArrowUp/ArrowRight/E', previousDepth, nextDepth);
             }
             break;
+        case 'arrowdown':
+        case 'arrowleft':
         case 'q':
             // Go shallower (decrease depth by 1%)
             e.preventDefault();
@@ -1572,9 +1578,10 @@ document.addEventListener('keydown', function(e) {
                 const previousDepth = currentSliceDepth;
                 const nextDepth = Math.max(0, currentSliceDepth - 1);
                 updateSliceDepth(nextDepth, false);
-                announceDepthShortcut('Q', previousDepth, nextDepth);
+                announceDepthShortcut('ArrowDown/ArrowLeft/Q', previousDepth, nextDepth);
             }
             break;
+        case 'pageup':
         case '2':
             // Go deeper (increase depth by 10%)
             e.preventDefault();
@@ -1582,10 +1589,10 @@ document.addEventListener('keydown', function(e) {
                 const previousDeeperDepth = currentSliceDepth;
                 const newDeeperDepth = Math.min(100, currentSliceDepth + 10);
                 updateSliceDepth(newDeeperDepth, false);
-                announceDepthShortcut('2', previousDeeperDepth, newDeeperDepth);
+                announceDepthShortcut('PageUp/2', previousDeeperDepth, newDeeperDepth);
             }
             break;
-            
+        case 'pagedown':
         case '1':
             // Go shallower (decrease depth by 10%)
             e.preventDefault();
@@ -1593,7 +1600,7 @@ document.addEventListener('keydown', function(e) {
                 const previousShallowerDepth = currentSliceDepth;
                 const newShallowerDepth = Math.max(0, currentSliceDepth - 10);
                 updateSliceDepth(newShallowerDepth, false);
-                announceDepthShortcut('1', previousShallowerDepth, newShallowerDepth);
+                announceDepthShortcut('PageDown/1', previousShallowerDepth, newShallowerDepth);
             }
             break;
             
