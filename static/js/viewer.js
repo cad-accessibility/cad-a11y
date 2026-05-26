@@ -272,6 +272,106 @@ const MAX_ZOOM = Number.POSITIVE_INFINITY;
 const ZOOM_STEP = 0.1;
 //const views = ['front', 'side', 'top'];
 
+const VIEW_FORWARD_VECTORS = {
+    'x+': [1, 0, 0],
+    'x-': [-1, 0, 0],
+    'y+': [0, 1, 0],
+    'y-': [0, -1, 0],
+    'z+': [0, 0, 1],
+    'z-': [0, 0, -1],
+};
+
+const CANONICAL_UP_FOR_VIEW = {
+    'x+': [0, 0, 1],
+    'x-': [0, 0, 1],
+    'y+': [0, 0, 1],
+    'y-': [0, 0, 1],
+    'z+': [0, 1, 0],
+    'z-': [0, 1, 0],
+};
+
+let orientationForward = [...VIEW_FORWARD_VECTORS['x+']];
+let orientationUp = [...CANONICAL_UP_FOR_VIEW['x+']];
+
+function dotVec3(a, b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+function crossVec3(a, b) {
+    return [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ];
+}
+
+function normalizeAxisVector(v) {
+    const rounded = [Math.round(v[0]), Math.round(v[1]), Math.round(v[2])];
+    const mag = Math.abs(rounded[0]) + Math.abs(rounded[1]) + Math.abs(rounded[2]);
+    if (mag === 0) return [1, 0, 0];
+    if (mag === 1) return rounded;
+    // Safety net for numerical drift; choose the dominant axis.
+    const absVals = rounded.map(Math.abs);
+    const maxIndex = absVals.indexOf(Math.max(...absVals));
+    return [
+        maxIndex === 0 ? Math.sign(rounded[0]) || 1 : 0,
+        maxIndex === 1 ? Math.sign(rounded[1]) || 1 : 0,
+        maxIndex === 2 ? Math.sign(rounded[2]) || 1 : 0,
+    ];
+}
+
+function rotateVectorByAxis90(vector, axis, quarterTurns) {
+    const turns = ((quarterTurns % 4) + 4) % 4;
+    if (turns === 0) return [...vector];
+    let out = [...vector];
+    const k = normalizeAxisVector(axis);
+    for (let i = 0; i < turns; i += 1) {
+        const projection = dotVec3(k, out);
+        const cross = crossVec3(k, out);
+        out = [
+            k[0] * projection + cross[0],
+            k[1] * projection + cross[1],
+            k[2] * projection + cross[2],
+        ];
+    }
+    return normalizeAxisVector(out);
+}
+
+function orientationViewFromForward(forwardVector) {
+    for (const [viewToken, vec] of Object.entries(VIEW_FORWARD_VECTORS)) {
+        if (dotVec3(vec, forwardVector) === 1) {
+            return viewToken;
+        }
+    }
+    return 'x+';
+}
+
+function setOrientationFromView(viewToken) {
+    orientationForward = [...(VIEW_FORWARD_VECTORS[viewToken] || VIEW_FORWARD_VECTORS['x+'])];
+    orientationUp = [...(CANONICAL_UP_FOR_VIEW[viewToken] || CANONICAL_UP_FOR_VIEW['x+'])];
+}
+
+function applyRelativeRotation(kind, direction, announcementText) {
+    // direction: +1 or -1 indicates ±90 degree about the local axis.
+    let rotationAxis;
+    if (kind === 'yaw') {
+        rotationAxis = orientationUp;
+    } else if (kind === 'pitch') {
+        rotationAxis = normalizeAxisVector(crossVec3(orientationUp, orientationForward));
+    } else if (kind === 'roll') {
+        rotationAxis = orientationForward;
+    } else {
+        return;
+    }
+
+    orientationForward = rotateVectorByAxis90(orientationForward, rotationAxis, direction);
+    orientationUp = rotateVectorByAxis90(orientationUp, rotationAxis, direction);
+
+    const newView = orientationViewFromForward(orientationForward);
+    updateView(newView, false, { syncOrientation: false });
+    announce(announcementText);
+}
+
 const axisInfo = {
     'Front': 'X-axis: left-right, Y-axis: up-down, Z-axis: forward-back (viewing from front)',
     'Left': 'Z-axis: left-right, Y-axis: up-down, X-axis: back-forward (viewing from left side)',
@@ -900,9 +1000,13 @@ function updateSideBySideAxisLabels() {
 }
 
 // Update view information
-function updateView(newView, shouldAnnounce = true) {
+function updateView(newView, shouldAnnounce = true, options = {}) {
+    const syncOrientation = options.syncOrientation !== false;
     const oldView = currentView;
     currentView = newView;
+    if (syncOrientation && oldView !== currentView) {
+        setOrientationFromView(currentView);
+    }
     if (currentViewSpan) currentViewSpan.textContent = currentView;
     refreshViewInfoSummary();
     updateButtonLabels();
@@ -1551,9 +1655,10 @@ document.addEventListener('keydown', function(e) {
     const supportedShortcuts = new Set([
         'arrowup', 'arrowright', 'arrowdown', 'arrowleft', 'pageup', 'pagedown',
         '1', '2', 'q', 'e',
+        'u', 'i', 'o', 'j', 'k', 'l',
         '4', '5', '7', '8', '9', '0', '-', '=',
-        'f', 'r', 't', 'l', 'g', 'o', 'c', 'z',
-        'w', 'a', 's', 'd', '[', ']', 'i', 'h', 'p', 'escape'
+        'r', 't', 'g', 'z',
+        'w', 'a', 's', 'd', '[', ']', 'h', 'p', '.', 'escape'
     ]);
 
     if (!supportedShortcuts.has(normalizedKey)) {
@@ -1658,15 +1763,6 @@ document.addEventListener('keydown', function(e) {
             }
             break;
 
-        case 'f':
-            e.preventDefault();
-            if (switchToRenderMode('Shaded', false)) {
-                announce('Render mode: shaded');
-            } else {
-                announce('Render mode unchanged: shaded');
-            }
-            break;
-
         case 'r':
             e.preventDefault();
             {
@@ -1685,10 +1781,47 @@ document.addEventListener('keydown', function(e) {
             }
             break;
 
+        case 'u':
+            e.preventDefault();
+            // Roll counterclockwise around current view direction.
+            applyRelativeRotation('roll', 1, 'Roll counterclockwise');
+            break;
+
+        case 'o':
+            e.preventDefault();
+            // Roll clockwise around current view direction.
+            applyRelativeRotation('roll', -1, 'Roll clockwise');
+            break;
+
+        case 'i':
+            e.preventDefault();
+            applyRelativeRotation('pitch', -1, 'Rotate up');
+            break;
+
+        case 'k':
+            e.preventDefault();
+            applyRelativeRotation('pitch', 1, 'Rotate down');
+            break;
+
+        case 'j':
+            e.preventDefault();
+            applyRelativeRotation('yaw', -1, 'Rotate left');
+            break;
+
         case 'l':
             e.preventDefault();
-            toggleSliceGraphLock();
-            announce(`Slice graph lock ${sliceGraphLocked ? 'on' : 'off'}`);
+            applyRelativeRotation('yaw', 1, 'Rotate right');
+            break;
+
+        case '.':
+            // Concise current status
+            e.preventDefault();
+            {
+                const depthLabel = currentSliceDepth === 0 ? 'surface' :
+                                   currentSliceDepth === 100 ? 'full depth' :
+                                   `${currentSliceDepth}%`;
+                announce(`View: ${currentView}, Cut depth: ${depthLabel}, Render: ${currentRenderMode.toLowerCase()}`);
+            }
             break;
 
         case 'g':
@@ -1700,24 +1833,6 @@ document.addEventListener('keydown', function(e) {
             captureSliceGraphAnchor(true);
             sendStateToServer();
             announce(`Slice graph refreshed: view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
-            break;
-
-        case 'o':
-            e.preventDefault();
-            if (switchToRenderMode('Orthographic', false)) {
-                announce('Render mode: orthographic');
-            } else {
-                announce('Render mode unchanged: orthographic');
-            }
-            break;
-
-        case 'n':
-            e.preventDefault();
-            if (switchToRenderMode('Outline', false)) {
-                announce('Render mode: outline');
-            } else {
-                announce('Render mode unchanged: outline');
-            }
             break;
 
         //case '0':
@@ -1792,17 +1907,6 @@ document.addEventListener('keydown', function(e) {
             announce('Focus cleared');
             break;
 
-        case 'i':
-            // Concise current status
-            e.preventDefault();
-            {
-                const depthLabel = currentSliceDepth === 0 ? 'surface' :
-                                   currentSliceDepth === 100 ? 'full depth' :
-                                   `${currentSliceDepth}%`;
-                announce(`View: ${currentView}, Cut depth: ${depthLabel}, Render: ${currentRenderMode.toLowerCase()}`);
-            }
-            break;
-
         case 'h':
             e.preventDefault();
             {
@@ -1816,15 +1920,6 @@ document.addEventListener('keydown', function(e) {
         case 'p':
             announce('Printing current render');
             print_view();
-            break;
-
-        case 'c':
-            e.preventDefault();
-            if (switchToRenderMode('Cut', false)) {
-                announce('Render mode: cut');
-            } else {
-                announce('Render mode unchanged: cut');
-            }
             break;
 
         case 'z':
