@@ -2,16 +2,16 @@
 const SERVER_URL = window.location.origin;
 
 // Drag-to-resize columns
-(function() {
+(function () {
     const divider = document.getElementById('col-divider');
     const leftCol = document.getElementById('left-col');
-    const layout  = divider && divider.parentElement;
+    const layout = divider && divider.parentElement;
     if (!divider || !leftCol || !layout) return;
 
     let dragging = false;
     let startX, startWidth;
 
-    divider.addEventListener('mousedown', function(e) {
+    divider.addEventListener('mousedown', function (e) {
         dragging = true;
         startX = e.clientX;
         startWidth = leftCol.getBoundingClientRect().width;
@@ -21,7 +21,7 @@ const SERVER_URL = window.location.origin;
         e.preventDefault();
     });
 
-    document.addEventListener('mousemove', function(e) {
+    document.addEventListener('mousemove', function (e) {
         if (!dragging) return;
         const delta = e.clientX - startX;
         const layoutWidth = layout.getBoundingClientRect().width;
@@ -30,7 +30,7 @@ const SERVER_URL = window.location.origin;
         leftCol.style.flex = '0 0 auto';
     });
 
-    document.addEventListener('mouseup', function() {
+    document.addEventListener('mouseup', function () {
         if (!dragging) return;
         dragging = false;
         divider.classList.remove('dragging');
@@ -39,7 +39,7 @@ const SERVER_URL = window.location.origin;
     });
 
     // Keyboard resize support (arrow keys on the divider)
-    divider.addEventListener('keydown', function(e) {
+    divider.addEventListener('keydown', function (e) {
         const step = e.shiftKey ? 50 : 10;
         const layoutWidth = layout.getBoundingClientRect().width;
         const currentWidth = leftCol.getBoundingClientRect().width;
@@ -77,20 +77,20 @@ function requestHighFidelityPreview(state) {
         mode: 'cors',
         signal: previewAbortController.signal,
     })
-    .then(res => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-    })
-    .then(data => {
-        if (requestId !== previewRequestSequence) {
-            return;
-        }
-        updateHighFidelityPreview(data);
-    })
-    .catch(error => {
-        if (error.name === 'AbortError') return;
-        console.warn('Preview request failed:', error.message);
-    });
+        .then(res => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json();
+        })
+        .then(data => {
+            if (requestId !== previewRequestSequence) {
+                return;
+            }
+            updateHighFidelityPreview(data);
+        })
+        .catch(error => {
+            if (error.name === 'AbortError') return;
+            console.warn('Preview request failed:', error.message);
+        });
 }
 
 // Function to send current state to the server
@@ -148,61 +148,61 @@ async function sendStateToServer() {
             mode: 'cors',
             signal: renderAbortController.signal,
         })
-        .then(res => {
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            return res.json();
-        })
-        .then(data => {
-            // Render success is sufficient proof the server is reachable — clear
-            // any down state immediately rather than waiting for the next poll.
-            if (serverConnected === false) {
+            .then(res => {
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                return res.json();
+            })
+            .then(data => {
+                // Render success is sufficient proof the server is reachable — clear
+                // any down state immediately rather than waiting for the next poll.
+                if (serverConnected === false) {
+                    serverConnected = true;
+                    announce('Server reconnected.');
+                }
                 serverConnected = true;
-                announce('Server reconnected.');
-            }
-            serverConnected = true;
 
-            // Update bounding box if available in response
-            if (data.bbox) {
-                updateBoundingBox(data.bbox);
-            }
-            if (data.model_list) {
-                updateModelList(data.model_list);
-            }
-            // Update tactile display preview
-            if (data.image_base64) {
-                updateTactilePreview(data.image_base64, data.image_shape);
+                // Update bounding box if available in response
+                if (data.bbox) {
+                    updateBoundingBox(data.bbox);
+                }
+                if (data.model_list) {
+                    updateModelList(data.model_list);
+                }
+                // Update tactile display preview
+                if (data.image_base64) {
+                    updateTactilePreview(data.image_base64, data.image_shape);
+                    if (isActiveModelLoadTask(activeModelLoadTask)) {
+                        announceStatus(`${activeModelLoadTask.label}: tactile preview ready.`);
+                        announce(`${activeModelLoadTask.label} loaded.`);
+                        clearModelLoadTask(activeModelLoadTask);
+                    }
+                }
+                renderPipelineDebug(data.debug_pipeline);
+                requestHighFidelityPreview(state);
+
+                // Trigger DotPad web send if connected
+                if (typeof window._dotpadOnRender === 'function') {
+                    window._dotpadOnRender(state);
+                }
+                // Trigger Monarch browser Web HID send if connected
+                if (typeof window._monarchHidOnRender === 'function' && data.monarch_cells_hex) {
+                    window._monarchHidOnRender(data.monarch_cells_hex);
+                }
+            })
+            .catch(error => {
+                if (error.name === 'AbortError') return; // Superseded by a newer request — ignore
+                // A single render failure (busy server, transient network hiccup, scroll-time
+                // deprioritisation) does not mean the server is down. Announcing a disconnect
+                // here causes the spurious unavailable→reconnected cycle observed during normal
+                // use. Connection state is managed exclusively by the health poll below so that
+                // only sustained, confirmed outages interrupt the user.
+                console.warn('Render request failed:', error.message);
                 if (isActiveModelLoadTask(activeModelLoadTask)) {
-                    announceStatus(`${activeModelLoadTask.label}: tactile preview ready.`);
-                    announce(`${activeModelLoadTask.label} loaded.`);
+                    announce(`Processing failed for ${activeModelLoadTask.label}.`);
                     clearModelLoadTask(activeModelLoadTask);
                 }
-            }
-            renderPipelineDebug(data.debug_pipeline);
-            requestHighFidelityPreview(state);
+            });
 
-            // Trigger DotPad web send if connected
-            if (typeof window._dotpadOnRender === 'function') {
-                window._dotpadOnRender(state);
-            }
-            // Trigger Monarch browser Web HID send if connected
-            if (typeof window._monarchHidOnRender === 'function' && data.monarch_cells_hex) {
-                window._monarchHidOnRender(data.monarch_cells_hex);
-            }
-        })
-        .catch(error => {
-            if (error.name === 'AbortError') return; // Superseded by a newer request — ignore
-            // A single render failure (busy server, transient network hiccup, scroll-time
-            // deprioritisation) does not mean the server is down. Announcing a disconnect
-            // here causes the spurious unavailable→reconnected cycle observed during normal
-            // use. Connection state is managed exclusively by the health poll below so that
-            // only sustained, confirmed outages interrupt the user.
-            console.warn('Render request failed:', error.message);
-            if (isActiveModelLoadTask(activeModelLoadTask)) {
-                announce(`Processing failed for ${activeModelLoadTask.label}.`);
-                clearModelLoadTask(activeModelLoadTask);
-            }
-        });
-        
     } catch (error) {
         console.warn('Error sending state:', error);
     }
@@ -457,7 +457,7 @@ let toastTimer = null;
 
 // Toast duration slider handler
 if (toastDurationSlider) {
-    toastDurationSlider.addEventListener('input', function() {
+    toastDurationSlider.addEventListener('input', function () {
         toastDurationSec = parseFloat(this.value);
         if (toastDurationValue) toastDurationValue.textContent = toastDurationSec === 0 ? 'off' : toastDurationSec + 's';
         this.setAttribute('aria-valuenow', toastDurationSec);
@@ -482,9 +482,9 @@ function showToast(message) {
     // lose when keys are pressed in rapid succession.
     srLiveActiveSlot = 1 - srLiveActiveSlot;
     const activeEl = srLiveSlots[srLiveActiveSlot];
-    const idleEl   = srLiveSlots[1 - srLiveActiveSlot];
+    const idleEl = srLiveSlots[1 - srLiveActiveSlot];
     if (activeEl) activeEl.textContent = message;
-    if (idleEl)   idleEl.textContent   = '';
+    if (idleEl) idleEl.textContent = '';
 
     // Visual toast: respect user-chosen duration.
     if (!announcementToast || toastDurationSec <= 0) return;
@@ -613,7 +613,7 @@ function toggleSliceGraphLock() {
     sendStateToServer();
 }
 
-function print_view(){
+function print_view() {
     currentPrintView = true;
     sendStateToServer();
     currentPrintView = !currentPrintView;
@@ -996,7 +996,7 @@ function getLegendAxisForSliceAxis(cutAxis) {
         'y-': 'x-',
         'z-': 'y-',
     };
-    return legendFromSlice [cutAxis] || 'x+';
+    return legendFromSlice[cutAxis] || 'x+';
 }
 
 function updateSideBySideAxisLabels() {
@@ -1034,7 +1034,7 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
     if (oldView !== currentView && shouldAnnounce) {
         announce(`${currentView.toLowerCase()} view`);
     }
-    
+
     // Send state to server if changed
     if (oldView !== currentView) {
         if (currentRepresentationMode === 'slice-graph') {
@@ -1132,7 +1132,7 @@ function updateModelList(model_list) {
     }
 }
 
-document.getElementById("model-list-dropdown").addEventListener("input", function() {
+document.getElementById("model-list-dropdown").addEventListener("input", function () {
     // Keep local state in sync while keyboard arrows navigate options.
     currentModel = this.value;
     if (sbModel && this.selectedIndex >= 0) {
@@ -1140,7 +1140,7 @@ document.getElementById("model-list-dropdown").addEventListener("input", functio
     }
 });
 
-document.getElementById("model-list-dropdown").addEventListener("change", function() {
+document.getElementById("model-list-dropdown").addEventListener("change", function () {
     const selectedItem = this.value;
     currentModel = selectedItem;
     const selectedLabel = this.selectedIndex >= 0 ? this.options[this.selectedIndex].text : `model ${selectedItem}`;
@@ -1157,7 +1157,7 @@ document.getElementById("model-list-dropdown").addEventListener("change", functi
 });
 
 // Handle STL/STEP file upload
-document.getElementById('upload-model-input').addEventListener('change', async function() {
+document.getElementById('upload-model-input').addEventListener('change', async function () {
     const file = this.files[0];
     if (!file) return;
 
@@ -1209,7 +1209,7 @@ document.getElementById('upload-model-input').addEventListener('change', async f
     }
 });
 
-        // Apply a server state snapshot to local UI — shared by SSE and fallback poll.
+// Apply a server state snapshot to local UI — shared by SSE and fallback poll.
 let lastSliderRaw = null; // null = never received a server-side slider value yet
 function applyServerState(data) {
     if (data.cube_value !== undefined && data.cube_value !== lastPolledView) {
@@ -1244,7 +1244,7 @@ function applyServerState(data) {
 // instead of the client polling every second — reduces latency from ~1000 ms to ~10 ms.
 (function connectSSE() {
     const evtSource = new EventSource(`${SERVER_URL}/events`);
-    evtSource.onmessage = function(event) {
+    evtSource.onmessage = function (event) {
         try {
             const data = JSON.parse(event.data);
             if (serverConnected === false) {
@@ -1254,11 +1254,11 @@ function applyServerState(data) {
                 serverConnected = true;
             }
             applyServerState(data);
-        } catch(e) {
+        } catch (e) {
             console.warn('SSE parse error:', e);
         }
     };
-    evtSource.onerror = function() {
+    evtSource.onerror = function () {
         // Do NOT set serverConnected = false here. EventSource fires onerror on
         // every reconnect attempt (normal behavior), which would block all renders.
         // Connection state is managed exclusively by the health poll below.
@@ -1431,7 +1431,7 @@ function announceDepthShortcut(shortcutLabel, previousDepth, depthValue) {
 }
 
 if (clearAnnouncementsBtn && announcementHistory) {
-    clearAnnouncementsBtn.addEventListener('click', function() {
+    clearAnnouncementsBtn.addEventListener('click', function () {
         announcementHistory.innerHTML = '';
     });
 }
@@ -1441,20 +1441,20 @@ if (clearAnnouncementsBtn && announcementHistory) {
 // Slice depth slider with enhanced feedback
 let sliderUpdateTimeout = null;
 
-sliceSlider.addEventListener('input', function() {
+sliceSlider.addEventListener('input', function () {
     const newValue = parseInt(this.value);
     currentSliceDepth = newValue;
     slicePercentage.textContent = currentSliceDepth;
-    
+
     // Update ARIA attributes immediately
     this.setAttribute('aria-valuenow', currentSliceDepth);
     this.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
-    
+
     // Update button labels immediately
     updateButtonLabels();
 });
 
-sliceSlider.addEventListener('change', function() {
+sliceSlider.addEventListener('change', function () {
     clearTimeout(sliderUpdateTimeout);
     pendingInputSource = 'ui';
     sendStateToServer();
@@ -1462,16 +1462,16 @@ sliceSlider.addEventListener('change', function() {
 
 // Sync aria-valuetext when the slider receives focus so it reflects any depth
 // changes made via keyboard shortcuts while focus was elsewhere.
-sliceSlider.addEventListener('focus', function() {
+sliceSlider.addEventListener('focus', function () {
     this.setAttribute('aria-valuenow', currentSliceDepth);
     this.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
 });
 
 // Keyboard support for slider
-sliceSlider.addEventListener('keydown', function(e) {
+sliceSlider.addEventListener('keydown', function (e) {
     let newValue = currentSliceDepth;
-    
-    switch(e.key) {
+
+    switch (e.key) {
         case 'ArrowUp':
         case 'ArrowRight':
             newValue += 1;
@@ -1495,13 +1495,13 @@ sliceSlider.addEventListener('keydown', function(e) {
         default:
             return; // Don't prevent default for other keys
     }
-    
+
     e.preventDefault();
     updateSliceDepth(newValue, true);
 });
 
 // Render mode radios
-document.addEventListener('change', function(e) {
+document.addEventListener('change', function (e) {
     if (e.target && e.target.matches('input[name="render-mode"]')) {
         if (e.target.checked) {
             pendingInputSource = 'ui';
@@ -1511,7 +1511,7 @@ document.addEventListener('change', function(e) {
 });
 
 // View mode radios (Single, Side-by-side, Slice graph)
-document.addEventListener('change', function(e) {
+document.addEventListener('change', function (e) {
     if (e.target && e.target.matches('input[name="view-mode"]')) {
         if (e.target.checked) {
             pendingInputSource = 'ui';
@@ -1523,7 +1523,7 @@ document.addEventListener('change', function(e) {
 });
 
 // View selection radios
-document.addEventListener('change', function(e) {
+document.addEventListener('change', function (e) {
     if (e.target && e.target.matches('input[name="view-select"]')) {
         if (e.target.checked) {
             pendingInputSource = 'ui';
@@ -1533,7 +1533,7 @@ document.addEventListener('change', function(e) {
 });
 
 // Output device radios (Monarch, DotPad, Auto)
-document.addEventListener('change', function(e) {
+document.addEventListener('change', function (e) {
     if (e.target && e.target.matches('input[name="output-device"]')) {
         if (e.target.checked) {
             pendingInputSource = 'ui';
@@ -1545,7 +1545,7 @@ document.addEventListener('change', function(e) {
 // Zoom number input — debounce while typing; commit on change/stepper controls
 let zoomDebounceTimer = null;
 
-zoomInput.addEventListener('input', function() {
+zoomInput.addEventListener('input', function () {
     clearTimeout(zoomDebounceTimer);
     if (!Number.isFinite(this.valueAsNumber)) {
         return;
@@ -1556,7 +1556,7 @@ zoomInput.addEventListener('input', function() {
     }, 150);
 });
 
-zoomInput.addEventListener('change', function() {
+zoomInput.addEventListener('change', function () {
     clearTimeout(zoomDebounceTimer);
     if (!Number.isFinite(this.valueAsNumber)) {
         this.value = currentZoom.toFixed(1);
@@ -1567,39 +1567,39 @@ zoomInput.addEventListener('change', function() {
     updateZoom(this.valueAsNumber, true, true);
 });
 
-zoomOutBtn.addEventListener('click', function() {
+zoomOutBtn.addEventListener('click', function () {
     pendingInputSource = 'ui';
     updateZoom(currentZoom - ZOOM_STEP, true, true);
 });
 
-zoomInBtn.addEventListener('click', function() {
+zoomInBtn.addEventListener('click', function () {
     pendingInputSource = 'ui';
     updateZoom(currentZoom + ZOOM_STEP, true, true);
 });
 
-showViewInfoBoxCheckbox.addEventListener('change', function() {
+showViewInfoBoxCheckbox.addEventListener('change', function () {
     showViewInfoBox = this.checked;
     pendingInputSource = 'ui';
     sendStateToServer();
 });
 
 // Deeper depth button
-deeperBtn.addEventListener('click', function() {
+deeperBtn.addEventListener('click', function () {
     pendingInputSource = 'ui';
     updateSliceDepth(currentSliceDepth + 10, true);
 });
 
 // Shallower depth button
-shallowerBtn.addEventListener('click', function() {
+shallowerBtn.addEventListener('click', function () {
     pendingInputSource = 'ui';
     updateSliceDepth(currentSliceDepth - 10, true);
 });
 
-sliceGraphLockBtn.addEventListener('click', function() {
+sliceGraphLockBtn.addEventListener('click', function () {
     toggleSliceGraphLock();
 });
 
-sliceGraphRefreshBtn.addEventListener('click', function() {
+sliceGraphRefreshBtn.addEventListener('click', function () {
     if (currentRepresentationMode !== 'slice-graph') {
         announceStatus('refresh only available in slice-graph mode');
         return;
@@ -1610,7 +1610,7 @@ sliceGraphRefreshBtn.addEventListener('click', function() {
 });
 
 if (resetPositionBtn) {
-    resetPositionBtn.addEventListener('click', function() {
+    resetPositionBtn.addEventListener('click', function () {
         pendingInputSource = 'ui';
         currentMoveCamera = "reset";
         sendStateToServer();
@@ -1619,18 +1619,18 @@ if (resetPositionBtn) {
     });
 }
 
-exportSliceSvgBtn.addEventListener('click', function() {
+exportSliceSvgBtn.addEventListener('click', function () {
     exportCurrentSliceAsPng();
 });
 
 if (debugPipelineToggleBtn) {
-    debugPipelineToggleBtn.addEventListener('click', function() {
+    debugPipelineToggleBtn.addEventListener('click', function () {
         toggleDebugPipelineVisibility();
     });
 }
 
 // Global keyboard navigation support for accessibility
-document.addEventListener('keydown', function(e) {
+document.addEventListener('keydown', function (e) {
     const target = e.target;
     const tagName = target && target.tagName ? target.tagName.toLowerCase() : '';
     const inputType = target && tagName === 'input' ? String(target.type || '').toLowerCase() : '';
@@ -1668,8 +1668,8 @@ document.addEventListener('keydown', function(e) {
     const code = String(e.code || '');
     const normalizedKey = (
         code === 'Digit1' || code === 'Numpad1' ? '1' :
-        code === 'Digit2' || code === 'Numpad2' ? '2' :
-        key
+            code === 'Digit2' || code === 'Numpad2' ? '2' :
+                key
     );
     const supportedShortcuts = new Set([
         'arrowup', 'arrowright', 'arrowdown', 'arrowleft', 'pageup', 'pagedown',
@@ -1684,7 +1684,7 @@ document.addEventListener('keydown', function(e) {
         return;
     }
 
-    switch(normalizedKey) {
+    switch (normalizedKey) {
         case 'arrowup':
         case 'arrowright':
         case 'e':
@@ -1731,7 +1731,7 @@ document.addEventListener('keydown', function(e) {
                 announceDepthShortcut('PageDown/1', previousShallowerDepth, newShallowerDepth);
             }
             break;
-            
+
         // View shortcuts
         case '7':
             e.preventDefault();
@@ -1962,10 +1962,10 @@ function focusTopOfPage() {
 }
 
 // Initialize the interface
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', function () {
     // Move focus to the top element (page title) on load.
     focusTopOfPage();
-    
+
     // Set initial values
     updateSliceDepth(50, false);
     updateView('x+');
@@ -1989,7 +1989,7 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // Ensure top focus is restored when returning via browser history cache.
-window.addEventListener('pageshow', function() {
+window.addEventListener('pageshow', function () {
     focusTopOfPage();
 });
 
@@ -1997,7 +1997,7 @@ window.addEventListener('pageshow', function() {
 function handleZoomChanges() {
     // Ensure the interface remains usable at different zoom levels
     const container = document.querySelector('.container');
-    
+
     function checkZoom() {
         const devicePixelRatio = window.devicePixelRatio || 1;
         if (devicePixelRatio !== 1) {
@@ -2006,7 +2006,7 @@ function handleZoomChanges() {
             container.style.maxWidth = '900px';
         }
     }
-    
+
     window.addEventListener('resize', checkZoom);
     checkZoom();
 }
