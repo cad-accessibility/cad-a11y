@@ -192,24 +192,25 @@
             <!-- 1d. Zoom -->
             <section class="section" aria-labelledby="zoom-select-heading">
                 <h2 id="zoom-select-heading">Zoom</h2>
-                <label for="zoom-slider">
+                <label for="zoom-input">Zoom level
                     <span id="zoom-level-value">0.0</span>
                 </label>
                 <input
-                    type="range"
-                    id="zoom-slider"
+                    type="number"
+                    id="zoom-input"
                     min="0"
-                    max="3"
                     value="0"
                     step="0.1"
-                    aria-valuemin="0"
-                    aria-valuemax="3"
-                    aria-valuenow="0"
-                    aria-valuetext="zoom 0.0"
+                    inputmode="decimal"
                     aria-describedby="zoom-help"
+                    aria-valuetext="zoom 0%"
                 >
-                <div id="zoom-help" class="help-text sr-only">0 none, 3 max. Keys: 4 out, 5 in.</div>
-                <div class="button-group" style="margin-top: 8px;">
+                <div id="zoom-help" class="help-text sr-only">0 is fully zoomed out. Enter a number or use the zoom buttons. Keys: 4 out, 5 in. Zoom cannot go below 0.</div>
+                <div class="zoom-stepper-row" role="group" aria-label="Zoom adjustment controls">
+                    <button type="button" id="zoom-out-btn">Zoom Out</button>
+                    <button type="button" id="zoom-in-btn">Zoom In</button>
+                </div>
+                <div class="button-group zoom-reset-row" style="margin-top: 8px;">
                     <button type="button" id="reset-position-btn">Reset Position</button>
                 </div>
                 <div class="help-text sr-only">Snaps the view back to the default centered position. Key: Z.</div>

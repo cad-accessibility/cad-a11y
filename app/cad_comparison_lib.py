@@ -781,7 +781,8 @@ class CADComparisonRenderer:
         Args:
             params: Dictionary containing:
                 - view: "Top", "Front", or "Side" (case-insensitive)
-                - zoom: Float in [0, 3], where 0 is no zoom and larger values zoom in
+                                - zoom: Float >= 0 where 0 is fully zoomed out and larger
+                                    values zoom in
                 - depth: Integer 0-100 representing depth percentage
                 - renderMode: "Outline", "Filled"/"Shaded", or "Slice" (case-insensitive)
                 - shape: (optional) "before" or "after", defaults to "after"
@@ -871,8 +872,10 @@ class CADComparisonRenderer:
             view_index = self._get_view_index(view_name_cut)
 
         zoom_level = float(params.get("zoom", 0.0))
-        zoom_level = max(0.0, min(10.0, zoom_level))
-        # Linear zoom mapping: 0 -> full window, 1 -> half, 2 -> one-third, etc.
+        if not np.isfinite(zoom_level):
+            zoom_level = 0.0
+        zoom_level = max(0.0, zoom_level)
+        # Higher zoom levels shrink the viewing window (zoom in).
         zoom_scale = 1.0 / (zoom_level + 1.0)
         camera_move = params.get("move_camera_center", "none")
 

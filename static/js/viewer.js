@@ -258,11 +258,16 @@ function clearModelLoadTask(task) {
     }
 }
 
+function formatZoomPercent(zoomValue) {
+    const percent = Math.round(Number(zoomValue) * 100);
+    return `${percent}%`;
+}
+
 // Remove "Back" from available views
 //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
 const views = ['y-', 'x-', 'z+', 'z-', 'x+', 'y+'];
 const MIN_ZOOM = 0.0;
-const MAX_ZOOM = 3.0;
+const MAX_ZOOM = Number.POSITIVE_INFINITY;
 const ZOOM_STEP = 0.1;
 //const views = ['front', 'side', 'top'];
 
@@ -286,8 +291,10 @@ const announcementHistory = document.getElementById('announcement-history');
 const clearAnnouncementsBtn = document.getElementById('clear-announcements-btn');
 const deeperBtn = document.getElementById('deeper-btn');
 const shallowerBtn = document.getElementById('shallower-btn');
-const zoomSlider = document.getElementById('zoom-slider');
+const zoomInput = document.getElementById('zoom-input');
 const zoomLevelValue = document.getElementById('zoom-level-value');
+const zoomOutBtn = document.getElementById('zoom-out-btn');
+const zoomInBtn = document.getElementById('zoom-in-btn');
 const sliceGraphLockBtn = document.getElementById('slice-graph-lock-btn');
 const sliceGraphRefreshBtn = document.getElementById('slice-graph-refresh-btn');
 const resetPositionBtn = document.getElementById('reset-position-btn');
@@ -1158,18 +1165,22 @@ setInterval(() => {
 // Update zoom information
 function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
     const oldZoom = currentZoom;
-    currentZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Number(newZoom)));
+    const parsedZoom = Number(newZoom);
+    if (!Number.isFinite(parsedZoom)) {
+        return false;
+    }
+    currentZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, parsedZoom));
+
     const zoomText = currentZoom.toFixed(1);
-    zoomSlider.value = zoomText;
+    zoomInput.value = zoomText;
     zoomLevelValue.textContent = zoomText;
     refreshViewInfoSummary();
-    zoomSlider.setAttribute('aria-valuenow', zoomText);
-    zoomSlider.setAttribute('aria-valuetext', `zoom level ${zoomText}`);
+    zoomInput.setAttribute('aria-valuetext', `zoom ${formatZoomPercent(currentZoom)}`);
 
     updateButtonLabels();
 
     if (shouldAnnounce) {
-        announceStatus(`zoom ${zoomText}`);
+        announceStatus(`zoom ${formatZoomPercent(currentZoom)}`);
     }
 
     console.log(oldZoom, currentZoom);
@@ -1404,22 +1415,39 @@ document.addEventListener('change', function(e) {
     }
 });
 
-// Zoom slider — debounce server sends on drag; commit immediately on release
+// Zoom number input — debounce while typing; commit on change/stepper controls
 let zoomDebounceTimer = null;
 
-zoomSlider.addEventListener('input', function() {
-    //updateZoom(this.value, false, false); // Update UI immediately, skip server send
+zoomInput.addEventListener('input', function() {
     clearTimeout(zoomDebounceTimer);
+    if (!Number.isFinite(this.valueAsNumber)) {
+        return;
+    }
     zoomDebounceTimer = setTimeout(() => {
         pendingInputSource = 'ui';
-        updateZoom(zoomSlider.value, false, true); // Send to server after 150ms idle
+        updateZoom(this.valueAsNumber, false, true);
     }, 150);
 });
 
-zoomSlider.addEventListener('change', function() {
+zoomInput.addEventListener('change', function() {
     clearTimeout(zoomDebounceTimer);
+    if (!Number.isFinite(this.valueAsNumber)) {
+        this.value = currentZoom.toFixed(1);
+        announceStatus('zoom value unchanged');
+        return;
+    }
     pendingInputSource = 'ui';
-    updateZoom(this.value, true, true); // Dragging stopped — send immediately
+    updateZoom(this.valueAsNumber, true, true);
+});
+
+zoomOutBtn.addEventListener('click', function() {
+    pendingInputSource = 'ui';
+    updateZoom(currentZoom - ZOOM_STEP, true, true);
+});
+
+zoomInBtn.addEventListener('click', function() {
+    pendingInputSource = 'ui';
+    updateZoom(currentZoom + ZOOM_STEP, true, true);
 });
 
 showViewInfoBoxCheckbox.addEventListener('change', function() {
@@ -1728,9 +1756,9 @@ document.addEventListener('keydown', function(e) {
                 const previousZoom = currentZoom;
                 const zoomChanged = updateZoom(currentZoom - ZOOM_STEP, false);
                 if (zoomChanged) {
-                    announce(`Zoom out: ${currentZoom.toFixed(1)}`);
+                    announce(`Zoom out: ${formatZoomPercent(currentZoom)}`);
                 } else {
-                    announce(`Zoom unchanged: ${previousZoom.toFixed(1)}`);
+                    announce(`Zoom unchanged: ${formatZoomPercent(previousZoom)}`);
                 }
             }
             break;
@@ -1740,9 +1768,9 @@ document.addEventListener('keydown', function(e) {
                 const previousZoom = currentZoom;
                 const zoomChanged = updateZoom(currentZoom + ZOOM_STEP, false);
                 if (zoomChanged) {
-                    announce(`Zoom in: ${currentZoom.toFixed(1)}`);
+                    announce(`Zoom in: ${formatZoomPercent(currentZoom)}`);
                 } else {
-                    announce(`Zoom unchanged: ${previousZoom.toFixed(1)}`);
+                    announce(`Zoom unchanged: ${formatZoomPercent(previousZoom)}`);
                 }
             }
             break;
