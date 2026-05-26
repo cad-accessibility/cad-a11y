@@ -233,6 +233,7 @@ let lastPolledView = null;        // last cube_value received from server
 let lastModelListSignature = '';  // prevents redundant dropdown rebuilds
 let currentBBoxDimensionsText = '';
 let lastAnnouncementMessage = '';
+let lastAnnouncedParameterKey = null;
 let pendingInputSource = 'keyboard'; // consumed once per sendStateToServer call
 let modelLoadAnnouncement = null;
 let modelLoadAnnouncementSeq = 0;
@@ -397,9 +398,23 @@ function showToast(message) {
 
 // Consistent depth announcement formatter
 function depthAnnouncement(pct) {
-    if (pct === 0) return 'surface';
-    if (pct === 100) return 'full depth';
-    return `depth ${pct}%`;
+    return `${pct}%`;
+}
+
+function announceParameterValue(parameterKey, parameterLabel, valueText, isUrgent = true) {
+    const normalizedKey = String(parameterKey || '').trim().toLowerCase();
+    const normalizedLabel = String(parameterLabel || '').trim();
+    const normalizedValue = String(valueText || '').trim();
+    const shouldIncludeLabel = normalizedKey !== '' && normalizedKey !== lastAnnouncedParameterKey;
+    const message = shouldIncludeLabel && normalizedLabel
+        ? `${normalizedLabel}: ${normalizedValue}`
+        : normalizedValue;
+
+    if (normalizedKey) {
+        lastAnnouncedParameterKey = normalizedKey;
+    }
+
+    announce(message, isUrgent);
 }
 
 function refreshViewInfoSummary() {
@@ -1180,7 +1195,7 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
     updateButtonLabels();
 
     if (shouldAnnounce) {
-        announceStatus(`zoom ${formatZoomPercent(currentZoom)}`);
+        announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom), false);
     }
 
     console.log(oldZoom, currentZoom);
@@ -1289,18 +1304,7 @@ function announceStatus(message) {
 }
 
 function announceDepthShortcut(shortcutLabel, previousDepth, depthValue) {
-    if (previousDepth === depthValue) {
-        announce(`Cut depth unchanged: ${depthValue}%`);
-        return;
-    }
-    const direction = depthValue > previousDepth ? 'deeper' : 'shallower';
-    if (depthValue === 0) {
-        announce('Cut depth: surface');
-    } else if (depthValue === 100) {
-        announce('Cut depth: full depth');
-    } else {
-        announce(`Cut depth ${direction}: ${depthValue}%`);
-    }
+    announceParameterValue('slice-depth', 'Slice depth', depthAnnouncement(depthValue));
 }
 
 if (clearAnnouncementsBtn && announcementHistory) {
@@ -1763,9 +1767,9 @@ document.addEventListener('keydown', function(e) {
                 const previousZoom = currentZoom;
                 const zoomChanged = updateZoom(currentZoom - ZOOM_STEP, false);
                 if (zoomChanged) {
-                    announce(`Zoom out: ${formatZoomPercent(currentZoom)}`);
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom));
                 } else {
-                    announce(`Zoom unchanged: ${formatZoomPercent(previousZoom)}`);
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(previousZoom));
                 }
             }
             break;
@@ -1775,9 +1779,9 @@ document.addEventListener('keydown', function(e) {
                 const previousZoom = currentZoom;
                 const zoomChanged = updateZoom(currentZoom + ZOOM_STEP, false);
                 if (zoomChanged) {
-                    announce(`Zoom in: ${formatZoomPercent(currentZoom)}`);
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom));
                 } else {
-                    announce(`Zoom unchanged: ${formatZoomPercent(previousZoom)}`);
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(previousZoom));
                 }
             }
             break;
