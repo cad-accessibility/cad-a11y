@@ -1760,7 +1760,7 @@ document.addEventListener('keydown', function(e) {
         '1', '2', 'q', 'e',
         'u', 'i', 'o', 'j', 'k', 'l',
         '4', '5', '7', '8', '9', '0', '-', '=',
-        'r', 't', 'g', 'z',
+        'r', 't', 'g', 'v', 'z',
         'w', 'a', 's', 'd', '[', ']', 'h', 'p', '.', 'escape'
     ]);
 
@@ -1931,6 +1931,16 @@ document.addEventListener('keydown', function(e) {
             captureSliceGraphAnchor(true);
             sendStateToServer();
             announce(`Slice graph refreshed: view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
+            break;
+
+        case 'v':
+            e.preventDefault();
+            if (!isSliceGraphRepresentationMode()) {
+                announce('Slice graph lock: not in slice-graph mode');
+                break;
+            }
+            toggleSliceGraphLock();
+            announce(`Slice graph lock ${sliceGraphLocked ? 'on' : 'off'}`);
             break;
 
         //case '0':
