@@ -47,13 +47,16 @@ class CADComparisonRenderer:
         self.view_current_camera_center = []
         self.view_current_axis = -1
         self.view_current_view_limits = -1
+        self.orientation_view_current_camera_centers = {}
         self.current_render_mode = None
         self.screen_size = [96,40]
         self.view_diff_mats = {}
         self.view_cut_polygons = {}
+        self.rendered_slice_area_profiles = {}
         self.current_render = None
         self.current_ax_limits = []
         self.current_zoom_level = None
+        self.last_render_debug = {}
         self.cache_version = 2
         self.cache_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
@@ -405,7 +408,7 @@ class CADComparisonRenderer:
         self.view_limits = np.array(view_limits)
         self.view_current_camera_center = np.array(self.view_current_camera_center)
 
-    def _calculate_projected_view_limits(self, projection_mode):
+    def _calculate_projected_view_limits(self, projection_mode, orientation_basis=None):
         """Calculate per-view axis limits for a given projection mode."""
         view_keys = ["top", "front", "left", "bottom", "back", "right"]
         projected_limits = []
@@ -414,7 +417,12 @@ class CADComparisonRenderer:
             all_x = []
             all_y = []
             for shape in self.shapes:
-                coords = project_vertices(shape.vertices, view_key, projection_mode=projection_mode)
+                coords = project_vertices(
+                    shape.vertices,
+                    view_key,
+                    projection_mode=projection_mode,
+                    orientation_basis=orientation_basis,
+                )
                 if coords.shape[0] == 0:
                     continue
                 all_x.append(coords[:, 0])
@@ -523,7 +531,91 @@ class CADComparisonRenderer:
         if max_profile > 0:
             profile /= max_profile
         return profile
-    
+
+    def _get_zoom_filtered_slice_occupancy_profile(self, view_key, zoom_ax_limits):
+        """Compute per-depth occupancy (filled area) profile inside current zoom limits."""
+        cut_polygons = self.view_cut_polygons.get(view_key)
+        if cut_polygons is None or len(cut_polygons) == 0:
+            return np.zeros(101, dtype=float)
+
+        x0 = min(float(zoom_ax_limits[0][0]), float(zoom_ax_limits[0][1]))
+        x1 = max(float(zoom_ax_limits[0][0]), float(zoom_ax_limits[0][1]))
+        y0 = min(float(zoom_ax_limits[1][0]), float(zoom_ax_limits[1][1]))
+        y1 = max(float(zoom_ax_limits[1][0]), float(zoom_ax_limits[1][1]))
+        zoom_window = box(x0, y0, x1, y1)
+
+        profile = np.zeros(len(cut_polygons), dtype=float)
+        for depth_index, depth_poly in enumerate(cut_polygons):
+            profile[depth_index] = depth_poly.intersection(zoom_window).area
+
+        max_profile = np.max(profile)
+        if max_profile > 0:
+            profile /= max_profile
+        return profile
+
+    def _get_rendered_slice_area_profile(
+        self,
+        shape_index,
+        view_name,
+        render_mode,
+        projection_mode,
+        zoom_ax_limits,
+        render_screen_size,
+        orientation_basis=None,
+    ):
+        """Compute per-depth raised-pixel profile from rendered slices.
+
+        This profile is based on the same rendering path as the preview, so graph
+        values stay consistent with what the user sees for a given view/mode.
+        """
+        ax_key = (
+            (round(float(zoom_ax_limits[0][0]), 6), round(float(zoom_ax_limits[0][1]), 6)),
+            (round(float(zoom_ax_limits[1][0]), 6), round(float(zoom_ax_limits[1][1]), 6)),
+        )
+        cache_key = (
+            int(shape_index),
+            str(view_name),
+            str(render_mode),
+            str(projection_mode),
+            int(render_screen_size[0]),
+            int(render_screen_size[1]),
+            ax_key,
+            json.dumps(orientation_basis, sort_keys=True) if orientation_basis is not None else None,
+        )
+        cached = self.rendered_slice_area_profiles.get(cache_key)
+        if cached is not None:
+            return cached
+
+        profile = np.zeros(101, dtype=float)
+        for depth_percent in range(101):
+            cut_depth = depth_percent / 100.0
+            slice_img, _ = get_single_view(
+                self.shapes[shape_index],
+                self.bbox,
+                1.0 - cut_depth,
+                view_name,
+                render_mode,
+                imposed_ax_limits=zoom_ax_limits,
+                screen_size=render_screen_size,
+                projection_mode=projection_mode,
+                orientation_basis=orientation_basis,
+            )
+
+            rgb_mean = np.mean(slice_img[:, :, :3], axis=2)
+            if slice_img.shape[2] > 3:
+                opaque_mask = slice_img[:, :, 3] > 0
+            else:
+                opaque_mask = np.ones_like(rgb_mean, dtype=bool)
+            raised_mask = (rgb_mean < 128.0) & opaque_mask
+            profile[depth_percent] = float(np.count_nonzero(raised_mask))
+
+        max_profile = np.max(profile)
+        if max_profile > 0:
+            profile /= max_profile
+
+        self.rendered_slice_area_profiles[cache_key] = profile
+        return profile
+
     def _map_view_name(self, view_name):
         """Map view name from JSON format to internal format."""
         key = (view_name or "top").lower()
@@ -806,6 +898,7 @@ class CADComparisonRenderer:
         render_mode = self._map_render_mode(params.get("renderMode", "Outline"))
         projection_mode = self._map_projection_mode(params.get("projectionMode", "orthographic"))
         effective_projection_mode = "orthographic" if projection_mode == "cut" else projection_mode
+        orientation_basis = params.get("orientation")
         if projection_mode == "cut":
             render_mode = "slice"
         shape_choice = params.get("shape", "after").lower()
@@ -824,6 +917,11 @@ class CADComparisonRenderer:
         active_view_limits = self.view_limits
         if effective_projection_mode in ["oblique", "isometric"]:
             active_view_limits = self._calculate_projected_view_limits(effective_projection_mode)
+        elif isinstance(orientation_basis, dict):
+            active_view_limits = self._calculate_projected_view_limits(
+                "orthographic",
+                orientation_basis=orientation_basis,
+            )
 
         # Define a per-view viewing window. When scrollbars are enabled we reserve
         # the last row/column for bars and the second-to-last row/column as spacer.
@@ -889,7 +987,21 @@ class CADComparisonRenderer:
         if effective_projection_mode in ["oblique", "isometric"] and zoom_level == 0:
             horizontal_half_span *= 1.05
             vertical_half_span *= 1.05
-        current_center = np.array(self.view_current_camera_center[view_index], dtype=float)
+        orientation_key = json.dumps(orientation_basis, sort_keys=True) if isinstance(orientation_basis, dict) else None
+        if orientation_key is not None:
+            orientation_centers = self.orientation_view_current_camera_centers.get(orientation_key)
+            if orientation_centers is None:
+                orientation_centers = np.array([
+                    [
+                        (limits[0][0] + limits[0][1]) / 2.0,
+                        (limits[1][0] + limits[1][1]) / 2.0,
+                    ]
+                    for limits in active_view_limits
+                ], dtype=float)
+                self.orientation_view_current_camera_centers[orientation_key] = orientation_centers
+            current_center = np.array(orientation_centers[view_index], dtype=float)
+        else:
+            current_center = np.array(self.view_current_camera_center[view_index], dtype=float)
         if effective_projection_mode in ["oblique", "isometric"] and zoom_level == 0:
             current_center = np.array([
                 (active_view_limits[view_index][0][0] + active_view_limits[view_index][0][1]) / 2.0,
@@ -910,12 +1022,15 @@ class CADComparisonRenderer:
             current_center[1] += pan_step_scale*vertical_half_span
         elif camera_move == "reset":
             current_center = np.array([
-                (self.view_limits[view_index][0][0] + self.view_limits[view_index][0][1]) / 2.0,
-                (self.view_limits[view_index][1][0] + self.view_limits[view_index][1][1]) / 2.0,
+                (active_view_limits[view_index][0][0] + active_view_limits[view_index][0][1]) / 2.0,
+                (active_view_limits[view_index][1][0] + active_view_limits[view_index][1][1]) / 2.0,
             ])
 
         if effective_projection_mode == "orthographic":
-            self.view_current_camera_center[view_index] = current_center
+            if orientation_key is not None:
+                self.orientation_view_current_camera_centers[orientation_key][view_index] = current_center
+            else:
+                self.view_current_camera_center[view_index] = current_center
 
         translational_ax_limits = [
             [current_center[0] - horizontal_half_span,
@@ -1061,6 +1176,7 @@ class CADComparisonRenderer:
                 imposed_ax_limits_cut=imposed_zoom_ax_limits,
                 screen_size=render_screen_size,
                 projection_mode=effective_projection_mode,
+                orientation_basis_cut=orientation_basis,
             )
         else:  # single mode
             #print(self.view_limits[view_index])
@@ -1078,6 +1194,7 @@ class CADComparisonRenderer:
                 imposed_ax_limits=imposed_zoom_ax_limits,
                 screen_size=render_screen_size,
                 projection_mode=effective_projection_mode,
+                orientation_basis=orientation_basis,
             )
             self.current_cut_depth = 1.0-cut_depth
             self.view_current_axis = view_name
@@ -1117,9 +1234,14 @@ class CADComparisonRenderer:
             self._ensure_slice_graphs()
             # Optionally use an anchored slice graph location while the user explores.
             slice_graph_locked = bool(params.get("slicegraph_locked", False))
+            slice_graph_mode = str(params.get("slicegraph_mode", "difference")).lower()
+            is_slice_area_mode = slice_graph_mode in ("column-count", "slice-area", "slice_area")
             graph_view_name = view_name
             graph_depth_percent = depth_percent
-            if slice_graph_locked:
+            # Locking is meaningful only for relative/difference graphs.
+            # Slice-area graphs are absolute per-depth counts and should always
+            # follow the live view/depth context.
+            if slice_graph_locked and not is_slice_area_mode:
                 graph_view_name = self._map_view_name(params.get("slicegraph_view", params.get("view", "Top")))
                 graph_depth_percent = int(params.get("slicegraph_depth", depth_percent))
 
@@ -1131,11 +1253,27 @@ class CADComparisonRenderer:
             if graph_view_name != view_name:
                 graph_view_index = self._get_view_index(graph_view_name)
                 graph_zoom_ax_limits = self.view_limits[graph_view_index]
-            view_diff_mat = self._get_zoom_filtered_slice_profile(
-                graph_view_name,
-                cut_position_int,
-                graph_zoom_ax_limits,
-            )
+            if is_slice_area_mode:
+                view_diff_mat = self._get_rendered_slice_area_profile(
+                    shape_index,
+                    graph_view_name,
+                    render_mode,
+                    effective_projection_mode,
+                    graph_zoom_ax_limits,
+                    render_screen_size,
+                    orientation_basis=orientation_basis,
+                )
+                # Legacy graph rendering flips the bitmap horizontally after plotting.
+                # The new rendered slice-area profile is generated in live depth
+                # order (0 -> 100), so reverse it here to keep graph/marker depth
+                # semantics consistent with the existing renderer behavior.
+                view_diff_mat = np.flip(view_diff_mat)
+            else:
+                view_diff_mat = self._get_zoom_filtered_slice_profile(
+                    graph_view_name,
+                    cut_position_int,
+                    graph_zoom_ax_limits,
+                )
 
             # The marker always reflects the current (live) slice position,
             # even when the graph data is locked to an anchor depth.

@@ -113,11 +113,12 @@ async function sendStateToServer() {
         const renderPipelineParams = getRenderPipelineParams(currentRenderMode);
         const state = {
             view: currentView,
+            orientation: getOrientationPayload(),
             zoom: currentZoom,
             depth: currentSliceDepth,
             renderMode: renderPipelineParams.renderMode,
             projectionMode: renderPipelineParams.projectionMode,
-            mode: currentRepresentationMode,
+            mode: getServerRepresentationMode(),
             move_camera_center: currentMoveCamera,
             print_view: currentPrintView,
             current_model: currentModel,
@@ -128,6 +129,7 @@ async function sendStateToServer() {
             slicegraph_locked: sliceGraphLocked,
             slicegraph_view: requestedGraphView,
             slicegraph_depth: requestedGraphDepth,
+            slicegraph_mode: sliceGraphMode,
             input_source: pendingInputSource,
         };
         const activeModelLoadTask = modelLoadAnnouncement
@@ -177,7 +179,7 @@ async function sendStateToServer() {
                     clearModelLoadTask(activeModelLoadTask);
                 }
             }
-            renderPipelineDebug(data.debug_pipeline);
+            renderPipelineDebug(data.debug_pipeline, data.debug);
             requestHighFidelityPreview(state);
 
             // Trigger DotPad web send if connected
@@ -218,7 +220,7 @@ let currentMoveCamera = "none";
 let currentPrintView = false;
 let currentOutputDevice = 'monarch_hid';
 const renderModes = ['Shaded', 'Outline', 'Cut', 'Orthographic'];
-const representationModes = ['single', 'side-by-side', 'slice-graph'];
+const representationModes = ['single', 'side-by-side', 'slice-graph-difference', 'slice-graph-column-count'];
 let currentModel = "none";
 let composeScrollbar = true;
 let composeSliceGraph = false;
@@ -226,6 +228,7 @@ let showViewInfoBox = false;
 let sliceGraphLocked = true;
 let sliceGraphAnchorView = 'y-';
 let sliceGraphAnchorDepth = 50;
+let sliceGraphMode = 'difference';
 
 // Tracking variables
 let serverConnected = null;       // null = unknown, true = up, false = confirmed down
@@ -237,6 +240,14 @@ let lastAnnouncedParameterKey = null;
 let pendingInputSource = 'keyboard'; // consumed once per sendStateToServer call
 let modelLoadAnnouncement = null;
 let modelLoadAnnouncementSeq = 0;
+
+function isSliceGraphRepresentationMode(modeValue = currentRepresentationMode) {
+    return modeValue === 'slice-graph-difference' || modeValue === 'slice-graph-column-count';
+}
+
+function getServerRepresentationMode(modeValue = currentRepresentationMode) {
+    return isSliceGraphRepresentationMode(modeValue) ? 'slice-graph' : modeValue;
+}
 
 function beginModelLoadAnnouncement(modelLabel, source = 'selection') {
     const label = String(modelLabel || 'model').trim();
@@ -372,6 +383,18 @@ function applyRelativeRotation(kind, direction, announcementText) {
     announce(announcementText);
 }
 
+function getOrientationPayload() {
+    const forward = normalizeAxisVector(orientationForward);
+    const up = normalizeAxisVector(orientationUp);
+    const right = normalizeAxisVector(crossVec3(up, forward));
+    return {
+        scheme: 'basis-v1',
+        forward,
+        up,
+        right,
+    };
+}
+
 const axisInfo = {
     'Front': 'X-axis: left-right, Y-axis: up-down, Z-axis: forward-back (viewing from front)',
     'Left': 'Z-axis: left-right, Y-axis: up-down, X-axis: back-forward (viewing from left side)',
@@ -398,6 +421,7 @@ const zoomOutBtn = document.getElementById('zoom-out-btn');
 const zoomInBtn = document.getElementById('zoom-in-btn');
 const sliceGraphLockBtn = document.getElementById('slice-graph-lock-btn');
 const sliceGraphRefreshBtn = document.getElementById('slice-graph-refresh-btn');
+const sliceGraphModeBtn = document.getElementById('slice-graph-mode-btn');
 const resetPositionBtn = document.getElementById('reset-position-btn');
 const sliceGraphLockStatus = document.getElementById('slice-graph-lock-status');
 const showViewInfoBoxCheckbox = document.getElementById('show-view-info-box');
@@ -562,7 +586,7 @@ function updateButtonLabels() {
 }
 
 function updateSliceGraphLockUI() {
-    const isSliceGraphMode = currentRepresentationMode === 'slice-graph';
+    const isSliceGraphMode = isSliceGraphRepresentationMode();
     sliceGraphRefreshBtn.disabled = !isSliceGraphMode;
     if (sliceGraphLocked) {
         sliceGraphLockBtn.textContent = 'Slice Graph Lock: On';
@@ -583,6 +607,24 @@ function updateSliceGraphLockUI() {
     }
 }
 
+function updateSliceGraphModeUI() {
+    if (!sliceGraphModeBtn) {
+        return;
+    }
+    const isColumnCountMode = sliceGraphMode === 'column-count';
+    sliceGraphModeBtn.textContent = isColumnCountMode
+        ? 'Graph Mode: Slice Area'
+        : 'Graph Mode: Difference';
+    sliceGraphModeBtn.setAttribute('aria-pressed', isColumnCountMode ? 'true' : 'false');
+}
+
+function toggleSliceGraphMode() {
+    sliceGraphMode = sliceGraphMode === 'difference' ? 'column-count' : 'difference';
+    updateSliceGraphModeUI();
+    pendingInputSource = 'ui';
+    sendStateToServer();
+}
+
 function captureSliceGraphAnchor(shouldAnnounce = true) {
     sliceGraphAnchorView = currentView;
     sliceGraphAnchorDepth = currentSliceDepth;
@@ -591,7 +633,7 @@ function captureSliceGraphAnchor(shouldAnnounce = true) {
 
 function autoRefreshSliceGraph(options = {}) {
     const { updateAnchor = false } = options;
-    if (currentRepresentationMode !== 'slice-graph') {
+    if (!isSliceGraphRepresentationMode()) {
         return;
     }
 
@@ -673,15 +715,38 @@ function initializeDebugPipelineVisibility() {
     setDebugPipelineVisible(isVisible);
 }
 
-function renderPipelineDebug(debugPipeline) {
+function renderPipelineDebug(debugPipeline, debugInfo = null) {
     if (!debugPipelineSummary || !debugStageList) {
         return;
     }
 
     const stages = Array.isArray(debugPipeline && debugPipeline.stages) ? debugPipeline.stages : [];
     if (stages.length === 0) {
-        debugPipelineSummary.textContent = 'No stage data returned by server.';
         debugStageList.innerHTML = '';
+
+        const totalMs = debugInfo && typeof debugInfo.phase1_total_ms === 'number'
+            ? `${debugInfo.phase1_total_ms.toFixed(1)}ms`
+            : '--';
+        const exactHit = Boolean(debugInfo && debugInfo.phase1_exact_cache_hit);
+        const quantizedHit = Boolean(debugInfo && debugInfo.phase1_quantized_cache_hit);
+        debugPipelineSummary.textContent = `Live debug: total ${totalMs} | exact cache: ${exactHit ? 'yes' : 'no'} | quantized cache: ${quantizedHit ? 'yes' : 'no'}`;
+
+        const telemetryCard = document.createElement('article');
+        telemetryCard.className = 'debug-stage ok';
+        telemetryCard.innerHTML = [
+            '<div class="debug-stage-title">1. Realtime Render Telemetry</div>',
+            '<div class="debug-stage-status">ok</div>',
+            '<div class="debug-stage-explanation"><div><strong>What:</strong> Live backend timing and cache status from /render.</div><div><strong>Inputs:</strong> Current viewpoint, depth, mode.</div><div><strong>Outputs:</strong> End-to-end latency and cache hit type.</div></div>',
+        ].join('');
+        const telemetryPre = document.createElement('pre');
+        telemetryPre.textContent = JSON.stringify({
+            phase1_total_ms: debugInfo ? debugInfo.phase1_total_ms : null,
+            phase1_exact_cache_hit: debugInfo ? debugInfo.phase1_exact_cache_hit : null,
+            phase1_quantized_cache_hit: debugInfo ? debugInfo.phase1_quantized_cache_hit : null,
+            side_by_side_orientation_fallback: debugInfo ? debugInfo.side_by_side_orientation_fallback : null,
+        }, null, 2);
+        telemetryCard.appendChild(telemetryPre);
+        debugStageList.appendChild(telemetryCard);
         return;
     }
 
@@ -827,11 +892,12 @@ function fetchExportSourceState() {
     const renderPipelineParams = getRenderPipelineParams(currentRenderMode);
     return {
         view: currentView,
+        orientation: getOrientationPayload(),
         zoom: currentZoom,
         depth: currentSliceDepth,
         renderMode: renderPipelineParams.renderMode,
         projectionMode: renderPipelineParams.projectionMode,
-        mode: currentRepresentationMode,
+        mode: getServerRepresentationMode(),
         move_camera_center: 'none',
         print_view: false,
         current_model: currentModel,
@@ -842,6 +908,7 @@ function fetchExportSourceState() {
         slicegraph_locked: sliceGraphLocked,
         slicegraph_view: requestedGraphView,
         slicegraph_depth: requestedGraphDepth,
+        slicegraph_mode: sliceGraphMode,
         export_width: 1000,
     };
 }
@@ -979,7 +1046,8 @@ function updateDisplayOptions() {
             composeScrollbar = false;
             composeSliceGraph = false;
             break;
-        case 'slice-graph':
+        case 'slice-graph-difference':
+        case 'slice-graph-column-count':
             composeScrollbar = false;
             composeSliceGraph = true;
             break;
@@ -1037,7 +1105,7 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
     
     // Send state to server if changed
     if (oldView !== currentView) {
-        if (currentRepresentationMode === 'slice-graph') {
+        if (isSliceGraphRepresentationMode()) {
             autoRefreshSliceGraph({ updateAnchor: true });
         } else {
             sendStateToServer();
@@ -1149,7 +1217,7 @@ document.getElementById("model-list-dropdown").addEventListener("change", functi
     }
     beginModelLoadAnnouncement(selectedLabel, 'selection');
     pendingInputSource = 'ui';
-    if (currentRepresentationMode === 'slice-graph') {
+    if (isSliceGraphRepresentationMode()) {
         autoRefreshSliceGraph({ updateAnchor: false });
     } else {
         sendStateToServer();
@@ -1323,7 +1391,7 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
 
     console.log(oldZoom, currentZoom);
     if (sendToServer && oldZoom !== currentZoom) {
-        if (currentRepresentationMode === 'slice-graph') {
+        if (isSliceGraphRepresentationMode()) {
             autoRefreshSliceGraph({ updateAnchor: false });
         } else {
             console.log("sendStateToServer");
@@ -1364,14 +1432,23 @@ function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
         return;
     }
     const previousMode = currentRepresentationMode;
+    const enteringSliceGraph = !isSliceGraphRepresentationMode(previousMode) && isSliceGraphRepresentationMode(targetMode);
+
+    if (targetMode === 'slice-graph-difference') {
+        sliceGraphMode = 'difference';
+    } else if (targetMode === 'slice-graph-column-count') {
+        sliceGraphMode = 'column-count';
+    }
+
     currentRepresentationMode = targetMode;
     updateDisplayOptions();
-    if (targetMode === 'slice-graph') {
+    if (enteringSliceGraph) {
         sliceGraphLocked = true;
         captureSliceGraphAnchor(false);
     }
     updateButtonLabels();
     updateSliceGraphLockUI();
+    updateSliceGraphModeUI();
     updateSideBySideAxisLabels();
     syncRadios();
     if (shouldAnnounce) announce(`${previousMode.toLowerCase()} to ${currentRepresentationMode.toLowerCase()}`);
@@ -1516,8 +1593,6 @@ document.addEventListener('change', function(e) {
         if (e.target.checked) {
             pendingInputSource = 'ui';
             switchToRepresentationMode(e.target.value);
-            updateDisplayOptions();
-            sendStateToServer();
         }
     }
 });
@@ -1600,7 +1675,7 @@ sliceGraphLockBtn.addEventListener('click', function() {
 });
 
 sliceGraphRefreshBtn.addEventListener('click', function() {
-    if (currentRepresentationMode !== 'slice-graph') {
+    if (!isSliceGraphRepresentationMode()) {
         announceStatus('refresh only available in slice-graph mode');
         return;
     }
@@ -1608,6 +1683,13 @@ sliceGraphRefreshBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
     sendStateToServer();
 });
+
+if (sliceGraphModeBtn) {
+    sliceGraphModeBtn.addEventListener('click', function() {
+        toggleSliceGraphMode();
+        announce(`Slice graph mode ${sliceGraphMode === 'column-count' ? 'column count' : 'difference'}`);
+    });
+}
 
 if (resetPositionBtn) {
     resetPositionBtn.addEventListener('click', function() {
@@ -1669,6 +1751,8 @@ document.addEventListener('keydown', function(e) {
     const normalizedKey = (
         code === 'Digit1' || code === 'Numpad1' ? '1' :
         code === 'Digit2' || code === 'Numpad2' ? '2' :
+        code === 'Digit4' || code === 'Numpad4' ? '4' :
+        code === 'Digit5' || code === 'Numpad5' ? '5' :
         key
     );
     const supportedShortcuts = new Set([
@@ -1840,7 +1924,7 @@ document.addEventListener('keydown', function(e) {
 
         case 'g':
             e.preventDefault();
-            if (currentRepresentationMode !== 'slice-graph') {
+            if (!isSliceGraphRepresentationMode()) {
                 announce('Slice graph refresh: not in slice-graph mode');
                 break;
             }
@@ -1974,6 +2058,7 @@ document.addEventListener('DOMContentLoaded', function() {
     syncRadios();
     updateButtonLabels();
     updateSliceGraphLockUI();
+    updateSliceGraphModeUI();
     refreshViewInfoSummary();
     showViewInfoBoxCheckbox.checked = showViewInfoBox;
     refreshStatusBar();

@@ -72,8 +72,65 @@ views = {
     }
 }
 
-def _get_view_basis(view_key):
-    """Return (right, up, depth) axes for the selected orthographic view."""
+def _safe_unit(vec):
+    arr = np.asarray(vec, dtype=float).reshape(-1)
+    if arr.size != 3:
+        return None
+    if not np.all(np.isfinite(arr)):
+        return None
+    norm = np.linalg.norm(arr)
+    if norm < 1e-12:
+        return None
+    return arr / norm
+
+
+def _resolve_orientation_basis(orientation_basis):
+    """Return an orthonormal (right, up, depth) basis from orientation metadata.
+
+    Accepted keys:
+    - depth or forward: viewing direction
+    - up: camera-up hint
+    - right: optional camera-right hint used when up is missing/degenerate
+    """
+    if not isinstance(orientation_basis, dict):
+        return None
+
+    depth_hint = orientation_basis.get("depth", orientation_basis.get("forward"))
+    depth_axis = _safe_unit(depth_hint)
+    if depth_axis is None:
+        return None
+
+    up_hint = _safe_unit(orientation_basis.get("up"))
+    right_hint = _safe_unit(orientation_basis.get("right"))
+
+    if up_hint is not None:
+        right_axis = np.cross(up_hint, depth_axis)
+        right_axis = _safe_unit(right_axis)
+        if right_axis is not None:
+            up_axis = _safe_unit(np.cross(depth_axis, right_axis))
+            if up_axis is not None:
+                return right_axis, up_axis, depth_axis
+
+    if right_hint is not None:
+        up_axis = np.cross(depth_axis, right_hint)
+        up_axis = _safe_unit(up_axis)
+        if up_axis is not None:
+            right_axis = _safe_unit(np.cross(up_axis, depth_axis))
+            if right_axis is not None:
+                return right_axis, up_axis, depth_axis
+
+    return None
+
+
+def _get_view_basis(view_key, orientation_basis=None):
+    """Return (right, up, depth) axes for the selected view.
+
+    If orientation_basis is provided and valid, it takes precedence.
+    """
+    custom_basis = _resolve_orientation_basis(orientation_basis)
+    if custom_basis is not None:
+        return custom_basis
+
     basis = {
         "top": (
             np.array([1.0, 0.0, 0.0]),
@@ -109,12 +166,12 @@ def _get_view_basis(view_key):
     return basis.get(view_key, basis["top"])
 
 
-def project_vertices(vertices, view_key, projection_mode="orthographic"):
+def project_vertices(vertices, view_key, projection_mode="orthographic", orientation_basis=None):
     """Project 3D vertices into 2D for the selected view/projection."""
     if vertices is None or len(vertices) == 0:
         return np.zeros((0, 2), dtype=float)
 
-    right_axis, up_axis, depth_axis = _get_view_basis(view_key)
+    right_axis, up_axis, depth_axis = _get_view_basis(view_key, orientation_basis=orientation_basis)
     x = vertices @ right_axis
     y = vertices @ up_axis
     z = vertices @ depth_axis
@@ -136,19 +193,18 @@ def project_vertices(vertices, view_key, projection_mode="orthographic"):
     return np.column_stack((x, y))
 
 
-def _collect_feature_edges(shape, view_key, projection_mode="orthographic", crease_degrees=22.5):
+def _collect_feature_edges(shape, view_key, projection_mode="orthographic", crease_degrees=22.5, orientation_basis=None):
     """Return projected line segments for silhouette + crease edges."""
     if shape is None or len(shape.faces) == 0:
         return []
 
-    vertices_2d = project_vertices(shape.vertices, view_key, projection_mode=projection_mode)
+    vertices_2d = project_vertices(shape.vertices, view_key, projection_mode=projection_mode, orientation_basis=orientation_basis)
     unique_edges = shape.edges_unique
     if unique_edges is None or len(unique_edges) == 0:
         return []
 
     face_normals = np.asarray(shape.face_normals)
-    view_dir = np.asarray(views[view_key]["dir"], dtype=float)
-    view_dir = view_dir / (np.linalg.norm(view_dir) + 1e-12)
+    _, _, view_dir = _get_view_basis(view_key, orientation_basis=orientation_basis)
     front_facing = (face_normals @ view_dir) < -1e-6
 
     edge_to_faces = [[] for _ in range(len(unique_edges))]
@@ -187,12 +243,12 @@ def _collect_feature_edges(shape, view_key, projection_mode="orthographic", crea
     return segments
 
 
-def _collect_silhouette_edges(shape, view_key, projection_mode="orthographic"):
+def _collect_silhouette_edges(shape, view_key, projection_mode="orthographic", orientation_basis=None):
     """Return projected outer contour only (no interior/occlusion lines)."""
     if shape is None or len(shape.faces) == 0:
         return []
 
-    coords_2d = project_vertices(shape.vertices, view_key, projection_mode=projection_mode)
+    coords_2d = project_vertices(shape.vertices, view_key, projection_mode=projection_mode, orientation_basis=orientation_basis)
     if coords_2d.shape[0] == 0:
         return []
 
@@ -248,12 +304,12 @@ def _collect_silhouette_edges(shape, view_key, projection_mode="orthographic"):
     return segments
 
 
-def _collect_boundary_edges(shape, view_key, projection_mode="orthographic"):
+def _collect_boundary_edges(shape, view_key, projection_mode="orthographic", orientation_basis=None):
     """Return projected boundary-only segments for planar/slice meshes."""
     if shape is None or len(shape.faces) == 0:
         return []
 
-    vertices_2d = project_vertices(shape.vertices, view_key, projection_mode=projection_mode)
+    vertices_2d = project_vertices(shape.vertices, view_key, projection_mode=projection_mode, orientation_basis=orientation_basis)
     unique_edges = shape.edges_unique
     if unique_edges is None or len(unique_edges) == 0:
         return []
@@ -276,7 +332,7 @@ def _collect_boundary_edges(shape, view_key, projection_mode="orthographic"):
     return segments
 
 
-def _collect_slice_outline_segments(shape, view_key, projection_mode="orthographic"):
+def _collect_slice_outline_segments(shape, view_key, projection_mode="orthographic", orientation_basis=None):
     """Return clean slice outlines by unioning projected triangle polygons.
 
     This removes internal triangulation diagonals that can appear when relying
@@ -285,7 +341,7 @@ def _collect_slice_outline_segments(shape, view_key, projection_mode="orthograph
     if shape is None or len(shape.faces) == 0:
         return []
 
-    coords_2d = project_vertices(shape.vertices, view_key, projection_mode=projection_mode)
+    coords_2d = project_vertices(shape.vertices, view_key, projection_mode=projection_mode, orientation_basis=orientation_basis)
     if coords_2d.shape[0] == 0:
         return []
 
@@ -397,21 +453,21 @@ def _segments_to_binary_rgba(segments, imposed_ax_limits, screen_size):
     return rgba
 
 
-def get_cut_faces(shape, view_key, cut_depth, bbox):
-    normal_dir = views[view_key]["dir"]
+def get_cut_faces(shape, view_key, cut_depth, bbox, orientation_basis=None):
+    _, _, normal_dir = _get_view_basis(view_key, orientation_basis=orientation_basis)
     shape_cut, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
     shape_faces = faces_on_plane_fast(shape_cut, plane_origin, normal_dir)
     #print(shape_cut.area, shape_faces.area, plane_origin, bbox)
     return shape_faces
 
-def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="filled", imposed_ax_limits=[], screen_size=[96,40], projection_mode="none"):
+def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="filled", imposed_ax_limits=[], screen_size=[96,40], projection_mode="none", orientation_basis=None):
 
     shape = copy(shape)
     original_shape = shape
     #print("rendering mode", rendering_mode, "view key", view_key)
     #print("cut depth", cut_depth)
     #cut_depth = 0.5
-    normal_dir = views[view_key]["dir"]
+    _, _, normal_dir = _get_view_basis(view_key, orientation_basis=orientation_basis)
     projection_mode = (projection_mode or "orthographic").lower()
     if projection_mode == "none":
         projection_mode = "orthographic"
@@ -430,13 +486,13 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
     if projection_mode in ["orthographic", "silhouette"] and len(imposed_ax_limits) > 0 and rendering_mode in ["outline", "slice"]:
         if rendering_mode == "outline":
             if projection_mode == "silhouette":
-                segments = _collect_silhouette_edges(shape, view_key, projection_mode=projection_mode)
+                segments = _collect_silhouette_edges(shape, view_key, projection_mode=projection_mode, orientation_basis=orientation_basis)
             else:
-                segments = _collect_feature_edges(shape, view_key, projection_mode=projection_mode)
+                segments = _collect_feature_edges(shape, view_key, projection_mode=projection_mode, orientation_basis=orientation_basis)
         else:
-            segments = _collect_slice_outline_segments(shape, view_key, projection_mode=projection_mode)
+            segments = _collect_slice_outline_segments(shape, view_key, projection_mode=projection_mode, orientation_basis=orientation_basis)
             if len(segments) == 0:
-                segments = _collect_boundary_edges(shape, view_key, projection_mode=projection_mode)
+                segments = _collect_boundary_edges(shape, view_key, projection_mode=projection_mode, orientation_basis=orientation_basis)
         binary_rgba = _segments_to_binary_rgba(segments, imposed_ax_limits, screen_size)
         return binary_rgba, np.array([imposed_ax_limits[0], imposed_ax_limits[1]], dtype=float)
 
@@ -454,13 +510,13 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
         #shape = trimesh.load_mesh("model.stl")
 
         colors = [0.0 for i in range(len(shape.faces))]
-        coords = project_vertices(shape.vertices, view_key, projection_mode=projection_mode)
+        coords = project_vertices(shape.vertices, view_key, projection_mode=projection_mode, orientation_basis=orientation_basis)
 
         if rendering_mode == "outline" and projection_mode in ["orthographic", "silhouette"]:
             if projection_mode == "silhouette":
-                feature_segments = _collect_silhouette_edges(shape, view_key, projection_mode=projection_mode)
+                feature_segments = _collect_silhouette_edges(shape, view_key, projection_mode=projection_mode, orientation_basis=orientation_basis)
             else:
-                feature_segments = _collect_feature_edges(shape, view_key, projection_mode=projection_mode)
+                feature_segments = _collect_feature_edges(shape, view_key, projection_mode=projection_mode, orientation_basis=orientation_basis)
             if len(feature_segments) > 0:
                 ax.add_collection(LineCollection(feature_segments, colors="black", linewidths=0.6, antialiased=True))
         else:

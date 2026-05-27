@@ -130,7 +130,7 @@
                     aria-valuetext="50 percent depth"
                     aria-describedby="slice-help"
                 >
-                <div id="slice-help" class="help-text sr-only">0% surface, 100% full depth. Keys: Arrow keys or Q/E for fine steps (1%), Page Up/Down or 1/2 for coarse steps (10%).</div>
+                <div id="slice-help" class="help-text sr-only">0% surface, 100% full depth. Keys: Arrow keys for fine steps (1%), Page Up/Down for coarse steps (10%).</div>
                 <div class="button-group">
                     <button type="button" id="deeper-btn" aria-describedby="deeper-help">Deeper: 50%</button>
                     <button type="button" id="shallower-btn" aria-describedby="shallower-help">Shallower: 50%</button>
@@ -182,8 +182,12 @@
                             Side-by-Side
                         </label>
                         <label>
-                            <input type="radio" name="view-mode" id="view-mode-slice-graph" value="slice-graph">
-                            Slice Graph
+                            <input type="radio" name="view-mode" id="view-mode-slice-graph-difference" value="slice-graph-difference">
+                            Slice Graph (Difference)
+                        </label>
+                        <label>
+                            <input type="radio" name="view-mode" id="view-mode-slice-graph-column-count" value="slice-graph-column-count">
+                            Slice Graph (Slice Area)
                         </label>
                     </fieldset>
                 </div>
@@ -233,6 +237,9 @@
                     </button>
                     <button type="button" id="slice-graph-refresh-btn">
                         Refresh Graph
+                    </button>
+                    <button type="button" id="slice-graph-mode-btn" aria-pressed="false">
+                        Graph Mode: Difference
                     </button>
                 </div>
                 <div class="help-text" id="slice-graph-lock-status" aria-live="assertive">Graph lock ON.</div>
@@ -345,18 +352,8 @@
                     <li><kbd>Arrow Right/Up</kbd> Deeper 1%</li>
                     <li><kbd>Page Down</kbd> Shallower 10%</li>
                     <li><kbd>Page Up</kbd> Deeper 10%</li>
-                    <li><kbd>Q</kbd> Shallower 1%</li>
-                    <li><kbd>E</kbd> Deeper 1%</li>
-                    <li><kbd>1</kbd> Shallower 10%</li>
-                    <li><kbd>2</kbd> Deeper 10%</li>
                     <li><kbd>4</kbd> Zoom out</li>
                     <li><kbd>5</kbd> Zoom in</li>
-                    <li><kbd>7</kbd> View x−</li>
-                    <li><kbd>8</kbd> View x+</li>
-                    <li><kbd>9</kbd> View z+</li>
-                    <li><kbd>0</kbd> View z−</li>
-                    <li><kbd>−</kbd> View y−</li>
-                    <li><kbd>=</kbd> View y+</li>
                     <li><kbd>U</kbd> Roll counterclockwise (90°)</li>
                     <li><kbd>O</kbd> Roll clockwise (90°)</li>
                     <li><kbd>I</kbd> Rotate up (pitch, 90°)</li>
@@ -366,6 +363,7 @@
                     <li><kbd>R</kbd> Cycle render mode</li>
                     <li><kbd>T</kbd> Cycle view mode</li>
                     <li><kbd>G</kbd> Refresh slice graph</li>
+                    <li><kbd>V</kbd> Toggle slice-graph lock</li>
                     <li><kbd>Z</kbd> Reset position</li>
                     <li><kbd>W</kbd> Pan object up</li>
                     <li><kbd>A</kbd> Pan object left</li>

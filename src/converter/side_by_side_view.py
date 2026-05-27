@@ -69,7 +69,34 @@ views = {
     }
 }
 
-def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cut="left",  rendering_mode="filled", imposed_ax_limits_legend=[], imposed_ax_limits_cut=[], screen_size=[60, 40], projection_mode="none"):
+
+def _safe_unit(vec):
+    """Return a normalized 3D vector or None for invalid input."""
+    try:
+        arr = np.asarray(vec, dtype=float).reshape(-1)
+    except Exception:
+        return None
+    if arr.shape[0] != 3:
+        return None
+    if not np.all(np.isfinite(arr)):
+        return None
+    norm = np.linalg.norm(arr)
+    if norm < 1e-12:
+        return None
+    return arr / norm
+
+
+def _extract_cut_normal(orientation_basis_cut):
+    """Extract forward/depth unit vector from an optional basis payload."""
+    if not isinstance(orientation_basis_cut, dict):
+        return None
+    depth_hint = orientation_basis_cut.get("depth", orientation_basis_cut.get("forward"))
+    return _safe_unit(depth_hint)
+
+def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cut="left",  rendering_mode="filled", imposed_ax_limits_legend=[], imposed_ax_limits_cut=[], screen_size=[60, 40], projection_mode="none", orientation_basis_cut=None, debug_info=None):
+
+    if isinstance(debug_info, dict):
+        debug_info["side_by_side_orientation_fallback"] = False
 
     #shape_brep_copy = deepcopy(shape_brep)
     # Calculate dimensions based on screen_size
@@ -84,10 +111,21 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
 
     # Cut view
     #cut_depth = 0.5
-    normal_dir = views[view_key_cut]["dir"]
+    orientation_basis_for_cut = orientation_basis_cut
+    normal_dir = _extract_cut_normal(orientation_basis_cut)
+    if normal_dir is None:
+        normal_dir = views[view_key_cut]["dir"]
     #shape_brep_cut, plane_origin = depth_peeling_single_depth_with_bbox(shape_brep, gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
     #                                                              depth=cut_depth, bbox=bbox)
-    shape_cut, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
+    try:
+        shape_cut, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
+    except Exception:
+        # Fallback to canonical cut axis when arbitrary-plane peeling is unsupported.
+        normal_dir = views[view_key_cut]["dir"]
+        orientation_basis_for_cut = None
+        if isinstance(debug_info, dict):
+            debug_info["side_by_side_orientation_fallback"] = True
+        shape_cut, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
     if rendering_mode == "slice":
         shape_cut = faces_on_plane_fast(shape_cut, plane_origin, normal_dir)
 
@@ -106,6 +144,7 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
         imposed_ax_limits=imposed_ax_limits_cut,
         screen_size=[cut_width, total_height],
         projection_mode=requested_projection_mode,
+        orientation_basis=orientation_basis_for_cut,
     )
 
     # Legend - view
@@ -130,7 +169,9 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
     ax.axis('off')
     # Add line at plane_origin in legend_img
-    line_vec = np.cross(views[view_key_cut]["dir"], views[view_key_legend]["dir"])
+    line_vec = np.cross(normal_dir, views[view_key_legend]["dir"])
+    if np.linalg.norm(line_vec) < 1e-12:
+        line_vec = np.cross(views[view_key_cut]["dir"], views[view_key_legend]["dir"])
 
     plane_origin_np = np.array(plane_origin)
     #print("plane_origin_np", plane_origin_np)

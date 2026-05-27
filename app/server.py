@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import contextlib
 import hashlib
 import io
@@ -23,6 +24,7 @@ import sys
 import threading
 import time
 import webbrowser
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -191,6 +193,9 @@ commands_log_lock = threading.Lock()
 braille_send_sequence = 0
 last_render_fingerprint: str | None = None
 last_render_response: dict[str, Any] | None = None
+RENDER_QUANTIZED_CACHE_MAX = int(os.getenv("RENDER_QUANTIZED_CACHE_MAX", "128"))
+quantized_render_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+quantized_render_cache_lock = threading.Lock()
 
 # SSE client registry — each connected browser tab gets its own queue.
 import queue as _queue_module
@@ -489,19 +494,86 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
     # Normalise view to lowercase string.
     merged["view"] = str(merged.get("view", "")).lower()
 
+    orientation = merged.get("orientation")
+    if isinstance(orientation, dict):
+        def _vec3(value: Any) -> list[float] | None:
+            if not isinstance(value, (list, tuple)) or len(value) != 3:
+                return None
+            out: list[float] = []
+            for component in value:
+                try:
+                    out.append(float(component))
+                except (TypeError, ValueError):
+                    return None
+            return out
+
+        forward = _vec3(orientation.get("forward"))
+        up = _vec3(orientation.get("up"))
+        right = _vec3(orientation.get("right"))
+        if forward is not None and up is not None and right is not None:
+            merged["orientation"] = {
+                "scheme": str(orientation.get("scheme", "basis-v1")),
+                "forward": forward,
+                "up": up,
+                "right": right,
+            }
+        else:
+            merged["orientation"] = None
+    else:
+        merged["orientation"] = None
+
     model_index = _normalize_model_index(data.get("current_model"))
 
     is_pan_request = str(merged.get("move_camera_center", "none")).lower() != "none"
 
     # Fingerprint for caching (excludes transient fields).
     fp_keys = ("view", "zoom", "depth", "renderMode", "projectionMode", "mode", "current_model",
+               "orientation",
                "compose_scrollbar", "compose_slicegraph", "show_view_info_box",
-               "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth")
+               "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth", "slicegraph_mode")
     fp_dict = {k: merged.get(k) for k in fp_keys}
     fp_dict["model_index"] = model_index
     fingerprint = hashlib.sha256(json.dumps(fp_dict, sort_keys=True).encode()).hexdigest()
 
     return merged, model_index, is_pan_request, fingerprint
+
+
+def _build_quantized_render_key(params: dict[str, Any], model_index: int) -> str:
+    """Build a stable coarse key for near-identical interactive requests."""
+    quantized = {
+        "model_index": model_index,
+        "view": str(params.get("view", "")).lower(),
+        "orientation": params.get("orientation"),
+        "depth": round(float(params.get("depth", 0)), 0),
+        "zoom": round(float(params.get("zoom", 0.0)), 2),
+        "renderMode": str(params.get("renderMode", "")).lower(),
+        "projectionMode": str(params.get("projectionMode", "orthographic")).lower(),
+        "mode": str(params.get("mode", "single")).lower(),
+        "compose_scrollbar": bool(params.get("compose_scrollbar", False)),
+        "compose_slicegraph": bool(params.get("compose_slicegraph", False)),
+        "slicegraph_locked": bool(params.get("slicegraph_locked", False)),
+        "slicegraph_view": str(params.get("slicegraph_view", "")).lower(),
+        "slicegraph_depth": round(float(params.get("slicegraph_depth", 0)), 0),
+        "slicegraph_mode": str(params.get("slicegraph_mode", "difference")).lower(),
+    }
+    return hashlib.sha256(json.dumps(quantized, sort_keys=True).encode()).hexdigest()
+
+
+def _get_quantized_cached_response(cache_key: str) -> dict[str, Any] | None:
+    with quantized_render_cache_lock:
+        cached = quantized_render_cache.get(cache_key)
+        if cached is None:
+            return None
+        quantized_render_cache.move_to_end(cache_key)
+        return copy.deepcopy(cached)
+
+
+def _set_quantized_cached_response(cache_key: str, response: dict[str, Any]) -> None:
+    with quantized_render_cache_lock:
+        quantized_render_cache[cache_key] = copy.deepcopy(response)
+        quantized_render_cache.move_to_end(cache_key)
+        while len(quantized_render_cache) > max(1, RENDER_QUANTIZED_CACHE_MAX):
+            quantized_render_cache.popitem(last=False)
 
 
 def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
@@ -519,6 +591,9 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
         "image_shape": list(braille_payload.shape),
         "model_list": MODEL_NAME_LIST,
     }
+    debug_info = getattr(engine, "last_render_debug", None)
+    if isinstance(debug_info, dict) and debug_info:
+        response["debug"] = debug_info
     if bbox is not None:
         response["bbox"] = bbox
     if str(params.get("output_device", "")).strip().lower() == "monarch_hid":
@@ -742,8 +817,10 @@ def render_view():
     global last_render_fingerprint, last_render_response
 
     try:
+        t0 = time.perf_counter()
         _refresh_model_list_if_stale()
         merged_params, model_index, is_pan_request, fingerprint = _prepare_render_params(request.get_json(silent=True))
+        quantized_cache_key = _build_quantized_render_key(merged_params, model_index)
 
         with state_lock:
             if (
@@ -753,7 +830,32 @@ def render_view():
                 and last_render_response is not None
             ):
                 last_render_response["model_list"] = MODEL_NAME_LIST
-                return jsonify(last_render_response), 200
+                response = copy.deepcopy(last_render_response)
+                debug = dict(response.get("debug", {}))
+                debug.update(
+                    {
+                        "phase1_exact_cache_hit": True,
+                        "phase1_quantized_cache_hit": False,
+                        "phase1_total_ms": round((time.perf_counter() - t0) * 1000.0, 3),
+                    }
+                )
+                response["debug"] = debug
+                return jsonify(response), 200
+
+        if not is_pan_request and merged_params.get("print_view") is not True:
+            cached_response = _get_quantized_cached_response(quantized_cache_key)
+            if cached_response is not None:
+                cached_response["model_list"] = MODEL_NAME_LIST
+                debug = dict(cached_response.get("debug", {}))
+                debug.update(
+                    {
+                        "phase1_exact_cache_hit": False,
+                        "phase1_quantized_cache_hit": True,
+                        "phase1_total_ms": round((time.perf_counter() - t0) * 1000.0, 3),
+                    }
+                )
+                cached_response["debug"] = debug
+                return jsonify(cached_response), 200
 
         with state_lock:
             view = merged_params.get("view")
@@ -762,11 +864,21 @@ def render_view():
             state.current_model_index = model_index
 
         response = _render_response(merged_params, source="http_render")
+        debug = dict(response.get("debug", {}))
+        debug.update(
+            {
+                "phase1_exact_cache_hit": False,
+                "phase1_quantized_cache_hit": False,
+                "phase1_total_ms": round((time.perf_counter() - t0) * 1000.0, 3),
+            }
+        )
+        response["debug"] = debug
 
         with state_lock:
             if merged_params.get("print_view") is not True:
                 last_render_fingerprint = fingerprint
                 last_render_response = response
+                _set_quantized_cached_response(quantized_cache_key, response)
         return jsonify(response), 200
     except Exception as error:
         _log(f"Error rendering: {error}", force=True)
@@ -906,6 +1018,8 @@ def models_endpoint():
             # Changing model invalidates response cache.
             last_render_fingerprint = None
             last_render_response = None
+        with quantized_render_cache_lock:
+            quantized_render_cache.clear()
         return jsonify(
             {
                 "status": "success",
@@ -962,6 +1076,8 @@ def upload_model():
     with state_lock:
         last_render_fingerprint = None
         last_render_response = None
+    with quantized_render_cache_lock:
+        quantized_render_cache.clear()
 
     _log(f"Model uploaded: {filename} → index {new_index}", force=True)
     return jsonify({
