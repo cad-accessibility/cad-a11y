@@ -1746,17 +1746,19 @@ document.addEventListener('keydown', function(e) {
     const key = rawKey.toLowerCase();
     const code = String(e.code || '');
     const normalizedKey = (
-        code === 'Digit1' || code === 'Numpad1' ? '1' :
         code === 'Digit2' || code === 'Numpad2' ? '2' :
+        code === 'Digit3' || code === 'Numpad3' ? '3' :
         code === 'Digit4' || code === 'Numpad4' ? '4' :
         code === 'Digit5' || code === 'Numpad5' ? '5' :
+        code === 'Digit6' || code === 'Numpad6' ? '6' :
+        code === 'Digit7' || code === 'Numpad7' ? '7' :
         key
     );
     const supportedShortcuts = new Set([
         'arrowup', 'arrowright', 'arrowdown', 'arrowleft', 'pageup', 'pagedown',
-        '1', '2', 'q', 'e',
+        '2', '3', 'q', 'e',
         'u', 'i', 'o', 'j', 'k', 'l',
-        '4', '5', '7', '8', '9', '0', '-', '=',
+        '4', '5', '6', '7', '8', '9', '0', '-', '=',
         'r', 't', 'g', 'v', 'z',
         'w', 'a', 's', 'd', '[', ']', 'h', 'p', '.', 'escape'
     ]);
@@ -1771,8 +1773,8 @@ document.addEventListener('keydown', function(e) {
     const repeatableShortcuts = new Set([
         'arrowup', 'arrowright', 'arrowdown', 'arrowleft',
         'pageup', 'pagedown',
-        'q', 'e', '1', '2',
-        '4', '5',
+        'q', 'e', '2', '3',
+        '4', '5', 
     ]);
     if (e.repeat && !repeatableShortcuts.has(normalizedKey)) {
         e.preventDefault();
@@ -1824,6 +1826,31 @@ document.addEventListener('keydown', function(e) {
                 const newShallowerDepth = Math.max(0, currentSliceDepth - 10);
                 updateSliceDepth(newShallowerDepth, false);
                 announceDepthShortcut('PageDown/1', previousShallowerDepth, newShallowerDepth);
+            }
+            break;
+
+        case '2':
+            e.preventDefault();
+            {
+                const previousZoom = currentZoom;
+                const zoomChanged = updateZoom(currentZoom - 0.1, false, true);
+                if (zoomChanged) {
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom));
+                } else {
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(previousZoom));
+                }
+            }
+            break;
+        case '3':
+            e.preventDefault();
+            {
+                const previousZoom = currentZoom;
+                const zoomChanged = updateZoom(currentZoom + 0.1, false, true);
+                if (zoomChanged) {
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom));
+                } else {
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(previousZoom));
+                }
             }
             break;
             
