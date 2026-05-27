@@ -1742,9 +1742,6 @@ document.addEventListener('keydown', function(e) {
         return;
     }
 
-    if (e.repeat) {
-        return;
-    }
     const rawKey = String(e.key || '');
     const key = rawKey.toLowerCase();
     const code = String(e.code || '');
@@ -1765,6 +1762,20 @@ document.addEventListener('keydown', function(e) {
     ]);
 
     if (!supportedShortcuts.has(normalizedKey)) {
+        return;
+    }
+
+    // Allow key-hold repeat only for continuous controls (depth/zoom).
+    // For other shortcuts, swallow repeats so native radio-group arrow
+    // behavior cannot switch mode selections while a key is held.
+    const repeatableShortcuts = new Set([
+        'arrowup', 'arrowright', 'arrowdown', 'arrowleft',
+        'pageup', 'pagedown',
+        'q', 'e', '1', '2',
+        '4', '5',
+    ]);
+    if (e.repeat && !repeatableShortcuts.has(normalizedKey)) {
+        e.preventDefault();
         return;
     }
 
