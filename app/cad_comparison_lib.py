@@ -441,6 +441,43 @@ class CADComparisonRenderer:
 
         return np.array(projected_limits)
 
+    def _calculate_shape_projected_view_limits(self, shape_index, projection_mode, orientation_basis=None):
+        """Calculate per-view axis limits for a specific shape index."""
+        view_keys = ["top", "front", "left", "bottom", "back", "right"]
+        projected_limits = []
+
+        idx = int(shape_index)
+        if idx < 0 or idx >= len(self.shapes):
+            idx = 0
+        shape = self.shapes[idx]
+
+        for view_key in view_keys:
+            coords = project_vertices(
+                shape.vertices,
+                view_key,
+                projection_mode=projection_mode,
+                orientation_basis=orientation_basis,
+            )
+            if coords.shape[0] == 0:
+                projected_limits.append([[0.0, 1.0], [0.0, 1.0]])
+                continue
+
+            xs = coords[:, 0]
+            ys = coords[:, 1]
+            x_min, x_max = float(np.min(xs)), float(np.max(xs))
+            y_min, y_max = float(np.min(ys)), float(np.max(ys))
+
+            if np.isclose(x_min, x_max):
+                x_min -= 0.5
+                x_max += 0.5
+            if np.isclose(y_min, y_max):
+                y_min -= 0.5
+                y_max += 0.5
+
+            projected_limits.append([[x_min, x_max], [y_min, y_max]])
+
+        return np.array(projected_limits, dtype=float)
+
     def _compute_slice_graphs(self):
         print("_compute_slice_graphs")
 
@@ -904,6 +941,8 @@ class CADComparisonRenderer:
         shape_choice = params.get("shape", "after").lower()
         comparison_mode = params.get("mode", "single").lower()
         superposition_mode = params.get("superpositionMode", "outline").lower()
+        # Select shape (0 = before, 1 = after)
+        shape_index = 0 if shape_choice == "before" else 1
 
         if "compose_scrollbar" in params.keys():
             compose_scrollbar = params["compose_scrollbar"]
@@ -914,11 +953,20 @@ class CADComparisonRenderer:
         if comparison_mode == "slice-graph":
             compose_scrollbar = False
 
-        active_view_limits = self.view_limits
+        active_view_limits = self._calculate_shape_projected_view_limits(
+            shape_index,
+            "orthographic",
+            orientation_basis=None,
+        )
         if effective_projection_mode in ["oblique", "isometric"]:
-            active_view_limits = self._calculate_projected_view_limits(effective_projection_mode)
+            active_view_limits = self._calculate_shape_projected_view_limits(
+                shape_index,
+                effective_projection_mode,
+                orientation_basis=None,
+            )
         elif isinstance(orientation_basis, dict):
-            active_view_limits = self._calculate_projected_view_limits(
+            active_view_limits = self._calculate_shape_projected_view_limits(
+                shape_index,
                 "orthographic",
                 orientation_basis=orientation_basis,
             )
@@ -960,9 +1008,6 @@ class CADComparisonRenderer:
         
         # Convert depth from 0-100 to 0.0-1.0 ratio
         cut_depth = depth_percent / 100.0
-        
-        # Select shape (0 = before, 1 = after)
-        shape_index = 0 if shape_choice == "before" else 1
         
         # Get view index for limits
         view_index = self._get_view_index(view_name)
@@ -1127,10 +1172,29 @@ class CADComparisonRenderer:
                 screen_size=render_screen_size
             )
         if comparison_mode == "side-by-side":
-            # Calculate aspect-ratio-adjusted limits for the legend view
-            # Get the legend view index and base limits
-            legend_view_index = self._get_view_index(view_name_legend)
-            legend_limits = active_view_limits[legend_view_index].copy()
+            # Calculate aspect-ratio-adjusted limits for the legend view.
+            # Use the selected shape's projected bounds (not combined model bounds)
+            # so the left panel stays centered on the currently displayed model.
+            legend_coords = project_vertices(
+                self.shapes[shape_index].vertices,
+                view_name_legend,
+                projection_mode="orthographic",
+            )
+            if legend_coords.shape[0] > 0:
+                lx_min = float(np.min(legend_coords[:, 0]))
+                lx_max = float(np.max(legend_coords[:, 0]))
+                ly_min = float(np.min(legend_coords[:, 1]))
+                ly_max = float(np.max(legend_coords[:, 1]))
+                if np.isclose(lx_min, lx_max):
+                    lx_min -= 0.5
+                    lx_max += 0.5
+                if np.isclose(ly_min, ly_max):
+                    ly_min -= 0.5
+                    ly_max += 0.5
+                legend_limits = np.array([[lx_min, lx_max], [ly_min, ly_max]], dtype=float)
+            else:
+                legend_view_index = self._get_view_index(view_name_legend)
+                legend_limits = active_view_limits[legend_view_index].copy()
             
             # Calculate dimensions for legend view
             legend_horizontal_dist = np.abs(legend_limits[0][1] - legend_limits[0][0])
@@ -1144,7 +1208,7 @@ class CADComparisonRenderer:
             legend_width = max(1, int(total_width / 3))
             side_by_side_aspect_ratio = legend_width / render_screen_size[1]
             
-            # Adjust legend limits to match the aspect ratio of half-screen
+            # Adjust legend limits to match the legend panel aspect ratio.
             if legend_horizontal_dist / legend_vertical_dist < side_by_side_aspect_ratio:
                 # Need to expand horizontal
                 horizontal_scale_factor = side_by_side_aspect_ratio * legend_vertical_dist / legend_horizontal_dist
@@ -1252,7 +1316,7 @@ class CADComparisonRenderer:
             graph_zoom_ax_limits = imposed_zoom_ax_limits
             if graph_view_name != view_name:
                 graph_view_index = self._get_view_index(graph_view_name)
-                graph_zoom_ax_limits = self.view_limits[graph_view_index]
+                graph_zoom_ax_limits = active_view_limits[graph_view_index]
             if is_slice_area_mode:
                 view_diff_mat = self._get_rendered_slice_area_profile(
                     shape_index,
