@@ -196,6 +196,9 @@ last_render_response: dict[str, Any] | None = None
 RENDER_QUANTIZED_CACHE_MAX = int(os.getenv("RENDER_QUANTIZED_CACHE_MAX", "128"))
 quantized_render_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
 quantized_render_cache_lock = threading.Lock()
+PREVIEW_PAYLOAD_CACHE_MAX = int(os.getenv("PREVIEW_PAYLOAD_CACHE_MAX", "128"))
+preview_payload_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+preview_payload_cache_lock = threading.Lock()
 
 # SSE client registry — each connected browser tab gets its own queue.
 import queue as _queue_module
@@ -353,28 +356,27 @@ def _next_braille_send_sequence() -> int:
 
 
 def _make_hifi_preview(
-    params: dict[str, Any], model_index: int, preview_width: int = 800
+    params: dict[str, Any], model_index: int, preview_width: int = 800, *, use_cache: bool = True
 ) -> tuple[str, list[int]]:
     """Render at high resolution and return (base64_png, [height, width]).
 
-    Channel 0 of the renderer output has background=255 and lines=0/dark,
-    so displaying it directly gives natural black-on-white appearance.
+    Return strict binary black-on-white preview (no grayscale).
     """
     engine = get_or_create_renderer(model_index)
-    out_guard, err_guard = _renderer_stdio_guard()
-    with render_lock:
-        orig = list(engine.screen_size) if engine.screen_size else [96, 40]
-        w0, h0 = max(1, orig[0]), max(1, orig[1] if len(orig) > 1 else orig[0])
-        hifi_h = max(1, int(round(preview_width * h0 / w0)))
-        engine.screen_size = [preview_width, hifi_h]
-        try:
-            with out_guard, err_guard:
-                hifi = engine.render(params)
-        finally:
-            engine.screen_size = orig
+    orig = list(engine.screen_size) if engine.screen_size else [96, 40]
+    w0, h0 = max(1, orig[0]), max(1, orig[1] if len(orig) > 1 else orig[0])
+    hifi_h = max(1, int(round(preview_width * h0 / w0)))
 
-    channel = np.bitwise_not(hifi[:, :, 0])
-    return _img_to_base64_png(channel), list(channel.shape)
+    payload = _get_braille_payload_at_size(
+        params,
+        model_index=model_index,
+        pixel_width=preview_width,
+        pixel_height=hifi_h,
+        use_cache=use_cache,
+    )
+    # Preview is visual black-on-white while payload semantics are raised=255.
+    preview_bw = np.where(payload > 0, 0, 255).astype(np.uint8)
+    return _img_to_base64_png(preview_bw), list(preview_bw.shape)
 
 
 def _render_and_send(
@@ -522,13 +524,26 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
     else:
         merged["orientation"] = None
 
+    camera_center = merged.get("camera_center")
+    if isinstance(camera_center, (list, tuple)) and len(camera_center) == 2:
+        try:
+            merged["camera_center"] = [float(camera_center[0]), float(camera_center[1])]
+        except (TypeError, ValueError):
+            merged["camera_center"] = None
+    else:
+        merged["camera_center"] = None
+
     model_index = _normalize_model_index(data.get("current_model"))
 
-    is_pan_request = str(merged.get("move_camera_center", "none")).lower() != "none"
+    is_pan_request = (
+        str(merged.get("move_camera_center", "none")).lower() != "none"
+        and merged.get("camera_center") is None
+    )
 
     # Fingerprint for caching (excludes transient fields).
     fp_keys = ("view", "zoom", "depth", "renderMode", "projectionMode", "mode", "current_model",
                "orientation",
+               "camera_center",
                "compose_scrollbar", "compose_slicegraph", "show_view_info_box",
                "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth", "slicegraph_mode")
     fp_dict = {k: merged.get(k) for k in fp_keys}
@@ -544,6 +559,7 @@ def _build_quantized_render_key(params: dict[str, Any], model_index: int) -> str
         "model_index": model_index,
         "view": str(params.get("view", "")).lower(),
         "orientation": params.get("orientation"),
+        "camera_center": params.get("camera_center"),
         "depth": round(float(params.get("depth", 0)), 0),
         "zoom": round(float(params.get("zoom", 0.0)), 2),
         "renderMode": str(params.get("renderMode", "")).lower(),
@@ -574,6 +590,97 @@ def _set_quantized_cached_response(cache_key: str, response: dict[str, Any]) -> 
         quantized_render_cache.move_to_end(cache_key)
         while len(quantized_render_cache) > max(1, RENDER_QUANTIZED_CACHE_MAX):
             quantized_render_cache.popitem(last=False)
+
+
+def _build_preview_payload_cache_key(
+    params: dict[str, Any], model_index: int, pixel_width: int, pixel_height: int
+) -> str:
+    fp_keys = (
+        "view",
+        "zoom",
+        "depth",
+        "renderMode",
+        "projectionMode",
+        "mode",
+        "orientation",
+        "camera_center",
+        "compose_scrollbar",
+        "compose_slicegraph",
+        "show_view_info_box",
+        "slicegraph_locked",
+        "slicegraph_view",
+        "slicegraph_depth",
+        "slicegraph_mode",
+    )
+    fp_dict = {k: params.get(k) for k in fp_keys}
+    fp_dict["model_index"] = model_index
+    fp_dict["pixel_width"] = int(pixel_width)
+    fp_dict["pixel_height"] = int(pixel_height)
+    return hashlib.sha256(json.dumps(fp_dict, sort_keys=True).encode()).hexdigest()
+
+
+def _get_preview_payload_cached(cache_key: str) -> np.ndarray | None:
+    with preview_payload_cache_lock:
+        cached = preview_payload_cache.get(cache_key)
+        if cached is None:
+            return None
+        preview_payload_cache.move_to_end(cache_key)
+        return cached.copy()
+
+
+def _set_preview_payload_cached(cache_key: str, payload: np.ndarray) -> None:
+    with preview_payload_cache_lock:
+        preview_payload_cache[cache_key] = payload.copy()
+        preview_payload_cache.move_to_end(cache_key)
+        while len(preview_payload_cache) > max(1, PREVIEW_PAYLOAD_CACHE_MAX):
+            preview_payload_cache.popitem(last=False)
+
+
+def _render_braille_payload_at_size(
+    params: dict[str, Any], *, model_index: int, pixel_width: int, pixel_height: int
+) -> np.ndarray:
+    engine = get_or_create_renderer(model_index)
+    out_guard, err_guard = _renderer_stdio_guard()
+    with render_lock:
+        original_screen_size = list(engine.screen_size) if engine.screen_size else [96, 40]
+        engine.screen_size = [max(1, int(pixel_width)), max(1, int(pixel_height))]
+        try:
+            with out_guard, err_guard:
+                rendered = engine.render(params)
+        finally:
+            engine.screen_size = original_screen_size
+    return _to_braille_payload(rendered)
+
+
+def _get_braille_payload_at_size(
+    params: dict[str, Any], *, model_index: int, pixel_width: int, pixel_height: int, use_cache: bool = True
+) -> np.ndarray:
+    if not use_cache:
+        return _render_braille_payload_at_size(
+            params,
+            model_index=model_index,
+            pixel_width=pixel_width,
+            pixel_height=pixel_height,
+        )
+
+    cache_key = _build_preview_payload_cache_key(
+        params,
+        model_index=model_index,
+        pixel_width=pixel_width,
+        pixel_height=pixel_height,
+    )
+    cached = _get_preview_payload_cached(cache_key)
+    if cached is not None:
+        return cached
+
+    payload = _render_braille_payload_at_size(
+        params,
+        model_index=model_index,
+        pixel_width=pixel_width,
+        pixel_height=pixel_height,
+    )
+    _set_preview_payload_cached(cache_key, payload)
+    return payload
 
 
 def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
@@ -913,6 +1020,7 @@ def get_render_base64():
 
 @app.route("/command", methods=["POST"])
 def receive_command():
+    global last_render_fingerprint, last_render_response
     try:
         data = request.get_json(silent=True) or {}
         command_id = _record_command(data)
@@ -925,10 +1033,31 @@ def receive_command():
 
         render_keys = {"view", "renderMode", "depth", "zoom", "mode", "move_camera_center", "print_view", "current_model"}
         if any(key in data for key in render_keys):
-            merged_params, model_index, _is_pan_request, _fingerprint = _prepare_render_params(data)
+            merged_params, model_index, is_pan_request, fingerprint = _prepare_render_params(data)
             with state_lock:
                 state.current_model_index = model_index
-            response_data["render"] = _render_response(merged_params, source="command_auto_render")
+
+            render_result: dict[str, Any] | None = None
+            if not is_pan_request and merged_params.get("print_view") is not True:
+                with state_lock:
+                    if last_render_fingerprint == fingerprint and last_render_response is not None:
+                        render_result = copy.deepcopy(last_render_response)
+                        render_result["model_list"] = MODEL_NAME_LIST
+                if render_result is None:
+                    quantized_cache_key = _build_quantized_render_key(merged_params, model_index)
+                    render_result = _get_quantized_cached_response(quantized_cache_key)
+                    if render_result is not None:
+                        render_result["model_list"] = MODEL_NAME_LIST
+
+            if render_result is None:
+                render_result = _render_response(merged_params, source="command_auto_render")
+                if not is_pan_request and merged_params.get("print_view") is not True:
+                    quantized_cache_key = _build_quantized_render_key(merged_params, model_index)
+                    with state_lock:
+                        last_render_fingerprint = fingerprint
+                        last_render_response = render_result
+                    _set_quantized_cached_response(quantized_cache_key, render_result)
+            response_data["render"] = render_result
 
         return jsonify(response_data), 200
     except Exception as error:
@@ -1017,6 +1146,8 @@ def models_endpoint():
             last_render_response = None
         with quantized_render_cache_lock:
             quantized_render_cache.clear()
+        with preview_payload_cache_lock:
+            preview_payload_cache.clear()
         return jsonify(
             {
                 "status": "success",
@@ -1106,6 +1237,8 @@ def _cleanup_uploaded_models_for_session(session_id: str | None) -> dict[str, An
 
     with quantized_render_cache_lock:
         quantized_render_cache.clear()
+    with preview_payload_cache_lock:
+        preview_payload_cache.clear()
 
     return {"deleted": deleted, "errors": errors}
 
@@ -1163,6 +1296,8 @@ def upload_model():
         last_render_response = None
     with quantized_render_cache_lock:
         quantized_render_cache.clear()
+    with preview_payload_cache_lock:
+        preview_payload_cache.clear()
 
     _log(f"Model uploaded: {filename} → index {new_index}", force=True)
     return jsonify({
@@ -1304,9 +1439,15 @@ def render_preview():
     """
     try:
         _refresh_model_list_if_stale()
-        merged_params, model_index, _is_pan_request, _fingerprint = _prepare_render_params(request.get_json(silent=True))
+        merged_params, model_index, is_pan_request, _fingerprint = _prepare_render_params(request.get_json(silent=True))
         preview_width = _coerce_positive_int(merged_params.get("preview_width", 800), 800)
-        preview_b64, preview_shape = _make_hifi_preview(merged_params, model_index, preview_width=preview_width)
+        use_cache = not is_pan_request and merged_params.get("print_view") is not True
+        preview_b64, preview_shape = _make_hifi_preview(
+            merged_params,
+            model_index,
+            preview_width=preview_width,
+            use_cache=use_cache,
+        )
         return jsonify(
             {
                 "status": "success",
@@ -1328,12 +1469,7 @@ def render_dotpad_hex():
     """
     try:
         params = request.get_json(silent=True) or {}
-        merged_params = dict(DEFAULT_RENDER_PARAMS)
-        merged_params.update({k: v for k, v in params.items() if v is not None})
-        merged_params["view"] = str(merged_params.get("view", "")).lower()
-
-        model_index = _normalize_model_index(params.get("current_model"))
-        engine = get_or_create_renderer(model_index)
+        merged_params, model_index, is_pan_request, _fingerprint = _prepare_render_params(params)
 
         # Use device-reported cell grid if provided; fall back to DotPad 300A defaults.
         dotpad_cols = max(1, min(int(params.get("dotpad_cols", _DOTPAD_COLS)), 128))
@@ -1343,17 +1479,14 @@ def render_dotpad_hex():
         pixel_width  = dotpad_cols * 2
         pixel_height = dotpad_rows * 4
 
-        with render_lock:
-            original_screen_size = list(engine.screen_size)
-            engine.screen_size = [pixel_width, pixel_height]
-            try:
-                out_guard, err_guard = _renderer_stdio_guard()
-                with out_guard, err_guard:
-                    rendered = engine.render(merged_params)
-            finally:
-                engine.screen_size = original_screen_size
-
-        braille_payload = _to_braille_payload(rendered)
+        use_cache = not is_pan_request and merged_params.get("print_view") is not True
+        braille_payload = _get_braille_payload_at_size(
+            merged_params,
+            model_index=model_index,
+            pixel_width=pixel_width,
+            pixel_height=pixel_height,
+            use_cache=use_cache,
+        )
         cells = _pixels_to_braille_cells_dotpad(
             braille_payload, lines=dotpad_rows, cols=dotpad_cols,
         )

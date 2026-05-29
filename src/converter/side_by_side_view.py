@@ -9,7 +9,7 @@ import os, json
 import matplotlib.pyplot as plt
 import trimesh
 from .render_low_res import get_outlines
-from .plane_intersection_utils import depth_peeling_single_depth_with_bbox, faces_on_plane, compute_area, faces_on_plane_fast
+from .plane_intersection_utils import faces_on_plane, compute_area
 from .single_view_stl import get_single_view
 
 from OCC.Core.STEPControl import STEPControl_Reader
@@ -109,36 +109,31 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     if requested_projection_mode == "none":
         requested_projection_mode = "orthographic"
 
-    # Cut view
-    #cut_depth = 0.5
+    # Cut view — delegate fully to get_single_view so that depth-peeling and
+    # slice-face extraction happen exactly once, in the same code path used by
+    # single mode.  Pre-processing the shape here and then calling get_single_view
+    # with cut_depth=0.0 caused a double-slice at the wrong plane position.
     orientation_basis_for_cut = orientation_basis_cut
+
+    # Compute normal_dir and plane_origin for the legend cut-line indicator only.
+    # Do NOT use these to pre-process shape; get_single_view owns that pipeline.
     normal_dir = _extract_cut_normal(orientation_basis_cut)
     if normal_dir is None:
         normal_dir = views[view_key_cut]["dir"]
-    #shape_brep_cut, plane_origin = depth_peeling_single_depth_with_bbox(shape_brep, gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
-    #                                                              depth=cut_depth, bbox=bbox)
-    try:
-        shape_cut, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
-    except Exception:
-        # Fallback to canonical cut axis when arbitrary-plane peeling is unsupported.
-        normal_dir = views[view_key_cut]["dir"]
-        orientation_basis_for_cut = None
-        if isinstance(debug_info, dict):
-            debug_info["side_by_side_orientation_fallback"] = True
-        shape_cut, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
-    if rendering_mode == "slice":
-        shape_cut = faces_on_plane_fast(shape_cut, plane_origin, normal_dir)
+    xmin, ymin, zmin, xmax, ymax, zmax = bbox
+    _corners = [np.array([x, y, z]) for x in (xmin, xmax) for y in (ymin, ymax) for z in (zmin, zmax)]
+    _projs = [np.dot(c, normal_dir) for c in _corners]
+    plane_origin = (min(_projs) + cut_depth * (max(_projs) - min(_projs))) * normal_dir
 
-    # Target pixel resolution (cut view gets 2/3 of width)
     cut_render_mode = rendering_mode
     if requested_projection_mode == "cut":
         cut_render_mode = "slice"
         requested_projection_mode = "orthographic"
 
     cut_img, _ = get_single_view(
-        shape_cut,
+        shape,
         bbox,
-        cut_depth=0.0,
+        cut_depth=cut_depth,
         view_key=view_key_cut,
         rendering_mode=cut_render_mode,
         imposed_ax_limits=imposed_ax_limits_cut,

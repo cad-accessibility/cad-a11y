@@ -118,6 +118,51 @@ function requestHighFidelityPreview(state) {
     });
 }
 
+const cameraCenterByViewOrientation = new Map();
+
+function getCameraCenterStateKey(viewToken, orientationPayload) {
+    const normalizedView = String(viewToken || '').toLowerCase();
+    const forward = Array.isArray(orientationPayload?.forward)
+        ? orientationPayload.forward.map((value) => Number(value)).join(',')
+        : '';
+    const up = Array.isArray(orientationPayload?.up)
+        ? orientationPayload.up.map((value) => Number(value)).join(',')
+        : '';
+    return `${normalizedView}|f:${forward}|u:${up}`;
+}
+
+function getCurrentCameraCenter(viewToken, orientationPayload) {
+    const key = getCameraCenterStateKey(viewToken, orientationPayload);
+    const value = cameraCenterByViewOrientation.get(key);
+    return Array.isArray(value) && value.length === 2 ? [...value] : null;
+}
+
+function clearCameraCenterState() {
+    cameraCenterByViewOrientation.clear();
+}
+
+function syncCameraCenterFromResponse(responseData, requestState) {
+    const debug = responseData && typeof responseData === 'object' ? responseData.debug : null;
+    if (!debug || !Array.isArray(debug.camera_center) || debug.camera_center.length !== 2) {
+        return;
+    }
+
+    const centerX = Number(debug.camera_center[0]);
+    const centerY = Number(debug.camera_center[1]);
+    if (!Number.isFinite(centerX) || !Number.isFinite(centerY)) {
+        return;
+    }
+
+    const debugView = typeof debug.view === 'string' && debug.view.trim().length > 0
+        ? debug.view
+        : requestState.view;
+    const debugOrientation = debug.orientation && typeof debug.orientation === 'object'
+        ? debug.orientation
+        : requestState.orientation;
+    const key = getCameraCenterStateKey(debugView, debugOrientation);
+    cameraCenterByViewOrientation.set(key, [centerX, centerY]);
+}
+
 // Function to send current state to the server
 async function sendStateToServer() {
     try {
@@ -136,9 +181,12 @@ async function sendStateToServer() {
         const requestedGraphView = sliceGraphLocked ? sliceGraphAnchorView : currentView;
         const requestedGraphDepth = sliceGraphLocked ? sliceGraphAnchorDepth : currentSliceDepth;
         const renderPipelineParams = getRenderPipelineParams(currentRenderMode);
+        const orientationPayload = getOrientationPayload();
+        const cameraCenter = getCurrentCameraCenter(currentView, orientationPayload);
         const state = {
             view: currentView,
-            orientation: getOrientationPayload(),
+            orientation: orientationPayload,
+            camera_center: cameraCenter,
             zoom: currentZoom,
             depth: currentSliceDepth,
             renderMode: renderPipelineParams.renderMode,
@@ -195,6 +243,7 @@ async function sendStateToServer() {
             if (data.model_list) {
                 updateModelList(data.model_list);
             }
+            syncCameraCenterFromResponse(data, state);
             // Update tactile display preview
             if (data.image_base64) {
                 updateTactilePreview(data.image_base64, data.image_shape);
@@ -1236,6 +1285,7 @@ document.getElementById("model-list-dropdown").addEventListener("input", functio
 document.getElementById("model-list-dropdown").addEventListener("change", function() {
     const selectedItem = this.value;
     currentModel = selectedItem;
+    clearCameraCenterState();
     const selectedLabel = this.selectedIndex >= 0 ? this.options[this.selectedIndex].text : `model ${selectedItem}`;
     if (sbModel && this.selectedIndex >= 0) {
         sbModel.textContent = this.options[this.selectedIndex].text;
@@ -1279,6 +1329,7 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             const dropdown = document.getElementById('model-list-dropdown');
             dropdown.value = String(data.new_model_index);
             currentModel = String(data.new_model_index);
+            clearCameraCenterState();
             const selectedLabel = dropdown.selectedIndex >= 0 ? dropdown.options[dropdown.selectedIndex].text : data.filename;
             if (sbModel && dropdown.selectedIndex >= 0) {
                 sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;

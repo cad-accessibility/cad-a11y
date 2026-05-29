@@ -1021,6 +1021,7 @@ class CADComparisonRenderer:
         # Higher zoom levels shrink the viewing window (zoom in).
         zoom_scale = 1.0 / (zoom_level + 1.0)
         camera_move = params.get("move_camera_center", "none")
+        camera_center_param = params.get("camera_center")
 
         horizontal_range = np.abs((active_view_limits[view_index][0][1] - active_view_limits[view_index][0][0]))
         vertical_range = np.abs((active_view_limits[view_index][1][1] - active_view_limits[view_index][1][0]))
@@ -1047,11 +1048,27 @@ class CADComparisonRenderer:
             current_center = np.array(orientation_centers[view_index], dtype=float)
         else:
             current_center = np.array(self.view_current_camera_center[view_index], dtype=float)
+        if comparison_mode != "side-by-side" and isinstance(camera_center_param, (list, tuple)) and len(camera_center_param) == 2:
+            try:
+                current_center = np.array([
+                    float(camera_center_param[0]),
+                    float(camera_center_param[1]),
+                ], dtype=float)
+            except (TypeError, ValueError):
+                pass
         if effective_projection_mode in ["oblique", "isometric"] and zoom_level == 0:
             current_center = np.array([
                 (active_view_limits[view_index][0][0] + active_view_limits[view_index][0][1]) / 2.0,
                 (active_view_limits[view_index][1][0] + active_view_limits[view_index][1][1]) / 2.0,
             ])
+        if comparison_mode == "side-by-side":
+            # Side-by-side is a comparative framing mode; keep both panels
+            # centered on the model instead of reusing per-view pan offsets.
+            current_center = np.array([
+                (active_view_limits[view_index][0][0] + active_view_limits[view_index][0][1]) / 2.0,
+                (active_view_limits[view_index][1][0] + active_view_limits[view_index][1][1]) / 2.0,
+            ])
+            camera_move = "none"
         # arrow-key stepping
         # Keys are interpreted as object motion, so apply the inverse camera
         # translation to make the object appear to move in the pressed direction.
@@ -1071,7 +1088,7 @@ class CADComparisonRenderer:
                 (active_view_limits[view_index][1][0] + active_view_limits[view_index][1][1]) / 2.0,
             ])
 
-        if effective_projection_mode == "orthographic":
+        if effective_projection_mode == "orthographic" and comparison_mode != "side-by-side":
             if orientation_key is not None:
                 self.orientation_view_current_camera_centers[orientation_key][view_index] = current_center
             else:
@@ -1191,6 +1208,14 @@ class CADComparisonRenderer:
                 if np.isclose(ly_min, ly_max):
                     ly_min -= 0.5
                     ly_max += 0.5
+                # Keep a little breathing room so the legend does not hug the
+                # panel border for asymmetric models.
+                lx_pad = 0.05 * (lx_max - lx_min)
+                ly_pad = 0.05 * (ly_max - ly_min)
+                lx_min -= lx_pad
+                lx_max += lx_pad
+                ly_min -= ly_pad
+                ly_max += ly_pad
                 legend_limits = np.array([[lx_min, lx_max], [ly_min, ly_max]], dtype=float)
             else:
                 legend_view_index = self._get_view_index(view_name_legend)
@@ -1385,7 +1410,11 @@ class CADComparisonRenderer:
             axis_text = params.get("view", "top").lower()
             self._overlay_view_info_box(img_array, axis_text)
 
-            
+        self.last_render_debug = {
+            "camera_center": [float(current_center[0]), float(current_center[1])],
+            "view": str(params.get("view", "")).lower(),
+            "orientation": orientation_basis if isinstance(orientation_basis, dict) else None,
+        }
 
         return img_array
 
