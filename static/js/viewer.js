@@ -1,5 +1,30 @@
 // Configuration
 const SERVER_URL = window.location.origin;
+const UPLOAD_SESSION_STORAGE_KEY = 'cadA11yUploadSessionId';
+
+function getUploadSessionId() {
+    try {
+        let sessionId = window.sessionStorage.getItem(UPLOAD_SESSION_STORAGE_KEY);
+        if (!sessionId) {
+            sessionId = `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+            window.sessionStorage.setItem(UPLOAD_SESSION_STORAGE_KEY, sessionId);
+        }
+        return sessionId;
+    } catch (_) {
+        // If sessionStorage is unavailable, still provide a best-effort volatile id.
+        return `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+}
+
+function notifyUploadCleanupOnClose() {
+    const uploadSessionId = getUploadSessionId();
+    if (!uploadSessionId || !navigator.sendBeacon) {
+        return;
+    }
+    const payload = JSON.stringify({ upload_session_id: uploadSessionId });
+    const blob = new Blob([payload], { type: 'application/json' });
+    navigator.sendBeacon(`${SERVER_URL}/uploads/cleanup`, blob);
+}
 
 // Drag-to-resize columns
 (function() {
@@ -1238,6 +1263,7 @@ document.getElementById('upload-model-input').addEventListener('change', async f
 
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('upload_session_id', getUploadSessionId());
 
     try {
         const resp = await fetch(`${SERVER_URL}/upload`, {
@@ -1276,6 +1302,9 @@ document.getElementById('upload-model-input').addEventListener('change', async f
         this.value = '';
     }
 });
+
+// Best-effort cleanup for files uploaded by this browser tab.
+window.addEventListener('pagehide', notifyUploadCleanupOnClose);
 
         // Apply a server state snapshot to local UI — shared by SSE and fallback poll.
 let lastSliderRaw = null; // null = never received a server-side slider value yet

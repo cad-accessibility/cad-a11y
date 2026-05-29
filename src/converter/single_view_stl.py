@@ -5,7 +5,7 @@ from copy import copy
 matplotlib.use('Agg')  # Use non-GUI backend for thread safety
 import numpy as np
 import io, PIL
-from PIL import Image
+from PIL import Image, ImageDraw
 import os, json
 import matplotlib.pyplot as plt
 import trimesh
@@ -453,6 +453,87 @@ def _segments_to_binary_rgba(segments, imposed_ax_limits, screen_size):
     return rgba
 
 
+def _slice_fill_to_binary_rgba(shape, view_key, imposed_ax_limits, screen_size, projection_mode="orthographic", orientation_basis=None):
+    """Rasterize projected slice triangles as a filled binary RGBA image.
+
+    Any 2D region where the slice mesh has area is filled black.
+    """
+    width_px, height_px = int(screen_size[0]), int(screen_size[1])
+    if width_px <= 0 or height_px <= 0:
+        return np.full((max(1, height_px), max(1, width_px), 4), 255, dtype=np.uint8)
+
+    if shape is None or len(shape.faces) == 0:
+        return np.full((height_px, width_px, 4), 255, dtype=np.uint8)
+
+    coords_2d = project_vertices(
+        shape.vertices,
+        view_key,
+        projection_mode=projection_mode,
+        orientation_basis=orientation_basis,
+    )
+    if coords_2d.shape[0] == 0:
+        return np.full((height_px, width_px, 4), 255, dtype=np.uint8)
+
+    triangles = []
+    for face in shape.faces:
+        tri = coords_2d[np.asarray(face, dtype=int)]
+        if tri.shape != (3, 2):
+            continue
+        poly = Polygon(tri)
+        if poly.is_empty or poly.area <= 1e-12:
+            continue
+        triangles.append(poly)
+
+    if len(triangles) == 0:
+        return np.full((height_px, width_px, 4), 255, dtype=np.uint8)
+
+    merged = unary_union(triangles)
+    if merged.is_empty:
+        return np.full((height_px, width_px, 4), 255, dtype=np.uint8)
+
+    x_min, x_max = float(imposed_ax_limits[0][0]), float(imposed_ax_limits[0][1])
+    y_min, y_max = float(imposed_ax_limits[1][0]), float(imposed_ax_limits[1][1])
+    x_span = max(1e-12, x_max - x_min)
+    y_span = max(1e-12, y_max - y_min)
+
+    def _to_px(point_xy):
+        x, y = float(point_xy[0]), float(point_xy[1])
+        col = (x - x_min) / x_span * (width_px - 1)
+        row = (1.0 - (y - y_min) / y_span) * (height_px - 1)
+        return (float(col), float(row))
+
+    mask_img = Image.new("L", (width_px, height_px), 0)
+    drawer = ImageDraw.Draw(mask_img)
+
+    def _draw_polygon(poly):
+        ext = list(poly.exterior.coords)
+        if len(ext) >= 3:
+            drawer.polygon([_to_px(pt) for pt in ext], fill=255)
+        for ring in poly.interiors:
+            pts = list(ring.coords)
+            if len(pts) >= 3:
+                drawer.polygon([_to_px(pt) for pt in pts], fill=0)
+
+    if isinstance(merged, Polygon):
+        _draw_polygon(merged)
+    elif isinstance(merged, MultiPolygon):
+        for poly in merged.geoms:
+            _draw_polygon(poly)
+    elif isinstance(merged, GeometryCollection):
+        for geom in merged.geoms:
+            if isinstance(geom, Polygon):
+                _draw_polygon(geom)
+            elif isinstance(geom, MultiPolygon):
+                for poly in geom.geoms:
+                    _draw_polygon(poly)
+
+    mask = np.array(mask_img, dtype=np.uint8)
+    rgba = np.full((height_px, width_px, 4), 255, dtype=np.uint8)
+    ink = mask > 0
+    rgba[ink] = [0, 0, 0, 255]
+    return rgba
+
+
 def get_cut_faces(shape, view_key, cut_depth, bbox, orientation_basis=None):
     _, _, normal_dir = _get_view_basis(view_key, orientation_basis=orientation_basis)
     shape_cut, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
@@ -489,12 +570,18 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
                 segments = _collect_silhouette_edges(shape, view_key, projection_mode=projection_mode, orientation_basis=orientation_basis)
             else:
                 segments = _collect_feature_edges(shape, view_key, projection_mode=projection_mode, orientation_basis=orientation_basis)
+            binary_rgba = _segments_to_binary_rgba(segments, imposed_ax_limits, screen_size)
+            return binary_rgba, np.array([imposed_ax_limits[0], imposed_ax_limits[1]], dtype=float)
         else:
-            segments = _collect_slice_outline_segments(shape, view_key, projection_mode=projection_mode, orientation_basis=orientation_basis)
-            if len(segments) == 0:
-                segments = _collect_boundary_edges(shape, view_key, projection_mode=projection_mode, orientation_basis=orientation_basis)
-        binary_rgba = _segments_to_binary_rgba(segments, imposed_ax_limits, screen_size)
-        return binary_rgba, np.array([imposed_ax_limits[0], imposed_ax_limits[1]], dtype=float)
+            binary_rgba = _slice_fill_to_binary_rgba(
+                shape,
+                view_key,
+                imposed_ax_limits,
+                screen_size,
+                projection_mode=projection_mode,
+                orientation_basis=orientation_basis,
+            )
+            return binary_rgba, np.array([imposed_ax_limits[0], imposed_ax_limits[1]], dtype=float)
 
     # Target pixel resolution
     width_px, height_px = screen_size[0], screen_size[1]
@@ -569,8 +656,12 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
     if rendering_mode == "filled":
         return img_np, ax_limits
     if rendering_mode == "slice":
-        slice_outline = get_outlines(img_np)
-        return slice_outline, ax_limits
+        # Keep slice output filled (not outline-only): any non-white rendered
+        # pixel indicates contact area on the slice plane.
+        slice_mask = np.mean(img_np[:, :, :3], axis=2) < 250.0
+        slice_rgba = np.full_like(img_np, 255)
+        slice_rgba[slice_mask] = [0, 0, 0, 255]
+        return slice_rgba, ax_limits
     if rendering_mode == "outline":
         mode = (projection_mode or "orthographic").lower()
         if mode == "none":

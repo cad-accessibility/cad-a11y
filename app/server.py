@@ -857,10 +857,10 @@ def render_view():
                 cached_response["debug"] = debug
                 return jsonify(cached_response), 200
 
+        # Do not copy browser-selected viewpoint into global hardware state.
+        # Global cube_value is reserved for hardware-originated updates (GoDice/IMU)
+        # so one browser's manual navigation does not move other connected clients.
         with state_lock:
-            view = merged_params.get("view")
-            if isinstance(view, str) and view:
-                state.cube_value = view
             state.current_model_index = model_index
 
         response = _render_response(merged_params, source="http_render")
@@ -927,9 +927,6 @@ def receive_command():
         if any(key in data for key in render_keys):
             merged_params, model_index, _is_pan_request, _fingerprint = _prepare_render_params(data)
             with state_lock:
-                view = merged_params.get("view")
-                if isinstance(view, str) and view:
-                    state.cube_value = view
                 state.current_model_index = model_index
             response_data["render"] = _render_response(merged_params, source="command_auto_render")
 
@@ -1034,6 +1031,83 @@ def models_endpoint():
 
 
 _ALLOWED_EXTENSIONS = {".stl", ".step"}
+_MAX_UPLOAD_SESSION_ID_LEN = 128
+
+# Tracks uploaded model paths by browser-tab session id so they can be cleaned up
+# when the page closes. Values are absolute path strings under UPLOAD_DIR.
+uploaded_models_by_session: dict[str, set[str]] = {}
+uploaded_models_lock = threading.Lock()
+
+
+def _sanitize_upload_session_id(raw_value: Any) -> str | None:
+    if raw_value is None:
+        return None
+    value = str(raw_value).strip()
+    if not value:
+        return None
+    if len(value) > _MAX_UPLOAD_SESSION_ID_LEN:
+        value = value[:_MAX_UPLOAD_SESSION_ID_LEN]
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+    if any(ch not in allowed for ch in value):
+        return None
+    return value
+
+
+def _register_uploaded_model(session_id: str | None, model_path: Path) -> None:
+    if not session_id:
+        return
+    resolved_upload_root = UPLOAD_DIR.resolve()
+    resolved_model_path = model_path.resolve()
+    try:
+        resolved_model_path.relative_to(resolved_upload_root)
+    except ValueError:
+        return
+    with uploaded_models_lock:
+        session_models = uploaded_models_by_session.setdefault(session_id, set())
+        session_models.add(str(resolved_model_path))
+
+
+def _cleanup_uploaded_models_for_session(session_id: str | None) -> dict[str, Any]:
+    if not session_id:
+        return {"deleted": [], "errors": []}
+
+    with uploaded_models_lock:
+        tracked_models = uploaded_models_by_session.pop(session_id, set())
+
+    if not tracked_models:
+        return {"deleted": [], "errors": []}
+
+    deleted: list[str] = []
+    errors: list[str] = []
+    upload_root = UPLOAD_DIR.resolve()
+    for model_str in tracked_models:
+        model_path = Path(model_str)
+        try:
+            resolved_model_path = model_path.resolve()
+            resolved_model_path.relative_to(upload_root)
+            if resolved_model_path.exists() and resolved_model_path.is_file():
+                resolved_model_path.unlink()
+                deleted.append(str(resolved_model_path))
+        except Exception as exc:
+            errors.append(f"{model_path}: {exc}")
+
+    # Refresh in-memory model list and invalidate caches after cleanup.
+    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response, renderers_by_model
+    with models_lock:
+        AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
+        MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
+        renderers_by_model.clear()
+
+    with state_lock:
+        if state.current_model_index >= len(AVAILABLE_MODELS):
+            state.current_model_index = 0
+        last_render_fingerprint = None
+        last_render_response = None
+
+    with quantized_render_cache_lock:
+        quantized_render_cache.clear()
+
+    return {"deleted": deleted, "errors": errors}
 
 
 @app.route("/upload", methods=["POST"])
@@ -1048,12 +1122,21 @@ def upload_model():
     if not file.filename:
         return jsonify({"status": "error", "message": "No file selected"}), 400
 
+    upload_session_id = _sanitize_upload_session_id(
+        request.form.get("upload_session_id") or request.headers.get("X-Upload-Session")
+    )
+
     filename = secure_filename(file.filename)
     suffix = Path(filename).suffix.lower()
     if suffix not in _ALLOWED_EXTENSIONS:
         return jsonify({"status": "error", "message": f"Unsupported file type '{suffix}'. Use .stl or .step"}), 400
 
     dest = UPLOAD_DIR / filename
+    if dest.exists():
+        stem = Path(filename).stem
+        unique_name = f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
+        dest = UPLOAD_DIR / unique_name
+        filename = unique_name
     try:
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         file.save(dest)
@@ -1073,6 +1156,8 @@ def upload_model():
         renderers_by_model.clear()
         new_index = next((i for i, p in enumerate(AVAILABLE_MODELS) if p == dest), 0)
 
+    _register_uploaded_model(upload_session_id, dest)
+
     with state_lock:
         last_render_fingerprint = None
         last_render_response = None
@@ -1086,6 +1171,28 @@ def upload_model():
         "model_list": MODEL_NAME_LIST,
         "new_model_index": new_index,
     }), 200
+
+
+@app.route("/uploads/cleanup", methods=["POST"])
+def cleanup_uploaded_models():
+    payload = request.get_json(silent=True) or {}
+    upload_session_id = _sanitize_upload_session_id(
+        payload.get("upload_session_id")
+        or request.form.get("upload_session_id")
+        or request.args.get("upload_session_id")
+        or request.headers.get("X-Upload-Session")
+    )
+    if not upload_session_id:
+        return jsonify({"status": "error", "message": "Missing upload_session_id"}), 400
+
+    result = _cleanup_uploaded_models_for_session(upload_session_id)
+    return jsonify(
+        {
+            "status": "success",
+            "deleted_count": len(result["deleted"]),
+            "error_count": len(result["errors"]),
+        }
+    ), 200
 
 
 @app.route("/events", methods=["GET"])
