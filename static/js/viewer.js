@@ -84,6 +84,18 @@ function notifyUploadCleanupOnClose() {
 let renderAbortController = null;
 let previewAbortController = null;
 let previewRequestSequence = 0;
+let previewRequestTimer = null;
+
+function scheduleHighFidelityPreview(state) {
+    if (previewRequestTimer) {
+        clearTimeout(previewRequestTimer);
+    }
+    const stateSnapshot = { ...state };
+    previewRequestTimer = setTimeout(() => {
+        previewRequestTimer = null;
+        requestHighFidelityPreview(stateSnapshot);
+    }, 250);
+}
 
 function requestHighFidelityPreview(state) {
     if (previewAbortController) {
@@ -119,6 +131,7 @@ function requestHighFidelityPreview(state) {
 }
 
 const cameraCenterByViewOrientation = new Map();
+let currentWorldCameraCenter = null;
 
 function getCameraCenterStateKey(viewToken, orientationPayload) {
     const normalizedView = String(viewToken || '').toLowerCase();
@@ -139,6 +152,7 @@ function getCurrentCameraCenter(viewToken, orientationPayload) {
 
 function clearCameraCenterState() {
     cameraCenterByViewOrientation.clear();
+    currentWorldCameraCenter = null;
 }
 
 function syncCameraCenterFromResponse(responseData, requestState) {
@@ -161,11 +175,26 @@ function syncCameraCenterFromResponse(responseData, requestState) {
         : requestState.orientation;
     const key = getCameraCenterStateKey(debugView, debugOrientation);
     cameraCenterByViewOrientation.set(key, [centerX, centerY]);
+    if (sbPanCenter) {
+        sbPanCenter.textContent = formatCenter2([centerX, centerY]);
+    }
+
+    if (Array.isArray(debug.world_camera_center) && debug.world_camera_center.length === 3) {
+        const worldCenter = debug.world_camera_center.map((value) => Number(value));
+        if (worldCenter.every((value) => Number.isFinite(value))) {
+            currentWorldCameraCenter = [...worldCenter];
+        }
+    }
 }
 
 // Function to send current state to the server
 async function sendStateToServer() {
     try {
+        if (previewRequestTimer) {
+            clearTimeout(previewRequestTimer);
+            previewRequestTimer = null;
+        }
+
         // When the polling loop has already confirmed the server is down,
         // skip active render requests until we detect a reconnection.
         if (serverConnected === false) {
@@ -182,17 +211,20 @@ async function sendStateToServer() {
         const requestedGraphDepth = sliceGraphLocked ? sliceGraphAnchorDepth : currentSliceDepth;
         const renderPipelineParams = getRenderPipelineParams(currentRenderMode);
         const orientationPayload = getOrientationPayload();
+        const moveCamera = currentMoveCamera;
         const cameraCenter = getCurrentCameraCenter(currentView, orientationPayload);
+        const worldCameraCenter = currentWorldCameraCenter;
         const state = {
             view: currentView,
             orientation: orientationPayload,
             camera_center: cameraCenter,
+            world_camera_center: worldCameraCenter,
             zoom: currentZoom,
             depth: currentSliceDepth,
             renderMode: renderPipelineParams.renderMode,
             projectionMode: renderPipelineParams.projectionMode,
             mode: getServerRepresentationMode(),
-            move_camera_center: currentMoveCamera,
+            move_camera_center: moveCamera,
             print_view: currentPrintView,
             current_model: currentModel,
             compose_scrollbar: composeScrollbar,
@@ -205,6 +237,12 @@ async function sendStateToServer() {
             slicegraph_mode: sliceGraphMode,
             input_source: pendingInputSource,
         };
+        if (sbPanCmd) {
+            sbPanCmd.textContent = String(moveCamera || 'none');
+        }
+        if (sbPanCenter && Array.isArray(cameraCenter) && cameraCenter.length === 2) {
+            sbPanCenter.textContent = formatCenter2(cameraCenter);
+        }
         const activeModelLoadTask = modelLoadAnnouncement
             ? { ...modelLoadAnnouncement }
             : null;
@@ -254,7 +292,12 @@ async function sendStateToServer() {
                 }
             }
             renderPipelineDebug(data.debug_pipeline, data.debug);
-            requestHighFidelityPreview(state);
+            const shouldRequestPreview =
+                state.move_camera_center === 'none' &&
+                !(state.mode === 'slice-graph' && state.slicegraph_mode === 'column-count');
+            if (shouldRequestPreview) {
+                scheduleHighFidelityPreview(state);
+            }
 
             // Trigger DotPad web send if connected
             if (typeof window._dotpadOnRender === 'function') {
@@ -537,6 +580,20 @@ const sbZoom = document.getElementById('sb-zoom');
 const sbViewMode = document.getElementById('sb-view-mode');
 const sbModel = document.getElementById('sb-model');
 const sbDotPad = document.getElementById('sb-dotpad');
+const sbPanCmd = document.getElementById('sb-pan-cmd');
+const sbPanCenter = document.getElementById('sb-pan-center');
+
+function formatCenter2(value) {
+    if (!Array.isArray(value) || value.length !== 2) {
+        return '--';
+    }
+    const x = Number(value[0]);
+    const y = Number(value[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return '--';
+    }
+    return `${x.toFixed(3)},${y.toFixed(3)}`;
+}
 
 // Toast / live-region elements
 const announcementToast = document.getElementById('announcement-toast');

@@ -533,17 +533,31 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
     else:
         merged["camera_center"] = None
 
+    world_camera_center = merged.get("world_camera_center")
+    if isinstance(world_camera_center, (list, tuple)) and len(world_camera_center) == 3:
+        try:
+            merged["world_camera_center"] = [
+                float(world_camera_center[0]),
+                float(world_camera_center[1]),
+                float(world_camera_center[2]),
+            ]
+        except (TypeError, ValueError):
+            merged["world_camera_center"] = None
+    else:
+        merged["world_camera_center"] = None
+
     model_index = _normalize_model_index(data.get("current_model"))
 
-    is_pan_request = (
-        str(merged.get("move_camera_center", "none")).lower() != "none"
-        and merged.get("camera_center") is None
-    )
+    # Camera moves are computed relative to the supplied camera_center, so they
+    # must bypass cache lookup; otherwise a move request can hit a cached image
+    # for the pre-move center and appear to do nothing.
+    is_pan_request = str(merged.get("move_camera_center", "none")).lower() != "none"
 
     # Fingerprint for caching (excludes transient fields).
     fp_keys = ("view", "zoom", "depth", "renderMode", "projectionMode", "mode", "current_model",
                "orientation",
                "camera_center",
+               "world_camera_center",
                "compose_scrollbar", "compose_slicegraph", "show_view_info_box",
                "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth", "slicegraph_mode")
     fp_dict = {k: merged.get(k) for k in fp_keys}
@@ -560,6 +574,7 @@ def _build_quantized_render_key(params: dict[str, Any], model_index: int) -> str
         "view": str(params.get("view", "")).lower(),
         "orientation": params.get("orientation"),
         "camera_center": params.get("camera_center"),
+        "world_camera_center": params.get("world_camera_center"),
         "depth": round(float(params.get("depth", 0)), 0),
         "zoom": round(float(params.get("zoom", 0.0)), 2),
         "renderMode": str(params.get("renderMode", "")).lower(),
@@ -604,6 +619,7 @@ def _build_preview_payload_cache_key(
         "mode",
         "orientation",
         "camera_center",
+        "world_camera_center",
         "compose_scrollbar",
         "compose_slicegraph",
         "show_view_info_box",
@@ -1506,13 +1522,21 @@ def render_dotpad_hex():
 @app.route("/static/js/<path:filename>", methods=["GET"])
 def serve_static_js(filename):
     """Serve JavaScript files from the static/js directory."""
-    return send_file(REPO_ROOT / "static" / "js" / filename, mimetype="application/javascript")
+    response = send_file(REPO_ROOT / "static" / "js" / filename, mimetype="application/javascript")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @app.route("/static/css/<path:filename>", methods=["GET"])
 def serve_static_css(filename):
     """Serve CSS files from the static/css directory."""
-    return send_file(REPO_ROOT / "static" / "css" / filename, mimetype="text/css")
+    response = send_file(REPO_ROOT / "static" / "css" / filename, mimetype="text/css")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 def main() -> int:

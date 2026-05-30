@@ -15,7 +15,7 @@ from trimesh import Trimesh
 from trimesh.repair import stitch, fill_holes, fix_inversion, fix_winding
 from copy import copy, deepcopy
 import src.converter.plane_intersection_utils as plane_inter_utils
-from src.converter.single_view_stl import get_single_view, get_cut_faces, project_vertices
+from src.converter.single_view_stl import get_single_view, get_cut_faces, project_vertices, _get_view_basis
 from src.converter.juxtaposition_view_stl import get_juxtaposition_view
 from src.converter.superposition_view_stl import get_superposition_view
 from src.converter.side_by_side_view import get_side_view
@@ -48,6 +48,7 @@ class CADComparisonRenderer:
         self.view_current_axis = -1
         self.view_current_view_limits = -1
         self.orientation_view_current_camera_centers = {}
+        self.world_camera_center = None
         self.current_render_mode = None
         self.screen_size = [96,40]
         self.view_diff_mats = {}
@@ -709,6 +710,16 @@ class CADComparisonRenderer:
             "slice": "cut",
         }
         return mapping.get(mode, "orthographic")
+
+    def _get_default_world_camera_center(self):
+        if self.bbox is None:
+            return np.zeros(3, dtype=float)
+        xmin, ymin, zmin, xmax, ymax, zmax = self.bbox
+        return np.array([
+            (xmin + xmax) / 2.0,
+            (ymin + ymax) / 2.0,
+            (zmin + zmax) / 2.0,
+        ], dtype=float)
     
     def _get_view_index(self, view_key):
         """Get the index for view limits array."""
@@ -1033,6 +1044,23 @@ class CADComparisonRenderer:
         if effective_projection_mode in ["oblique", "isometric"] and zoom_level == 0:
             horizontal_half_span *= 1.05
             vertical_half_span *= 1.05
+        center_view_name = view_name_cut if comparison_mode == "side-by-side" else view_name
+        right_axis, up_axis, depth_axis = _get_view_basis(center_view_name, orientation_basis=orientation_basis)
+        default_world_center = self._get_default_world_camera_center()
+        world_camera_center_param = params.get("world_camera_center")
+        if self.world_camera_center is None:
+            self.world_camera_center = default_world_center.copy()
+        current_world_center = np.array(self.world_camera_center, dtype=float)
+        if isinstance(world_camera_center_param, (list, tuple)) and len(world_camera_center_param) == 3:
+            try:
+                current_world_center = np.array([
+                    float(world_camera_center_param[0]),
+                    float(world_camera_center_param[1]),
+                    float(world_camera_center_param[2]),
+                ], dtype=float)
+            except (TypeError, ValueError):
+                current_world_center = np.array(self.world_camera_center, dtype=float)
+
         orientation_key = json.dumps(orientation_basis, sort_keys=True) if isinstance(orientation_basis, dict) else None
         if orientation_key is not None:
             orientation_centers = self.orientation_view_current_camera_centers.get(orientation_key)
@@ -1045,50 +1073,43 @@ class CADComparisonRenderer:
                     for limits in active_view_limits
                 ], dtype=float)
                 self.orientation_view_current_camera_centers[orientation_key] = orientation_centers
-            current_center = np.array(orientation_centers[view_index], dtype=float)
         else:
-            current_center = np.array(self.view_current_camera_center[view_index], dtype=float)
-        if comparison_mode != "side-by-side" and isinstance(camera_center_param, (list, tuple)) and len(camera_center_param) == 2:
+            orientation_centers = None
+        if isinstance(camera_center_param, (list, tuple)) and len(camera_center_param) == 2:
             try:
-                current_center = np.array([
-                    float(camera_center_param[0]),
-                    float(camera_center_param[1]),
-                ], dtype=float)
+                depth_coord = float(np.dot(current_world_center, depth_axis))
+                current_world_center = (
+                    float(camera_center_param[0]) * right_axis
+                    + float(camera_center_param[1]) * up_axis
+                    + depth_coord * depth_axis
+                )
             except (TypeError, ValueError):
                 pass
         if effective_projection_mode in ["oblique", "isometric"] and zoom_level == 0:
-            current_center = np.array([
-                (active_view_limits[view_index][0][0] + active_view_limits[view_index][0][1]) / 2.0,
-                (active_view_limits[view_index][1][0] + active_view_limits[view_index][1][1]) / 2.0,
-            ])
-        if comparison_mode == "side-by-side":
-            # Side-by-side is a comparative framing mode; keep both panels
-            # centered on the model instead of reusing per-view pan offsets.
-            current_center = np.array([
-                (active_view_limits[view_index][0][0] + active_view_limits[view_index][0][1]) / 2.0,
-                (active_view_limits[view_index][1][0] + active_view_limits[view_index][1][1]) / 2.0,
-            ])
-            camera_move = "none"
+            current_world_center = default_world_center.copy()
         # arrow-key stepping
         # Keys are interpreted as object motion, so apply the inverse camera
         # translation to make the object appear to move in the pressed direction.
         pan_step_scale = 0.5 * zoom_scale
         #self.view_current_camera_center[view_index][1] -= pan_step_scale*vertical_half_span
         if camera_move == "left":
-            current_center[0] += pan_step_scale*horizontal_half_span
+            current_world_center = current_world_center + (pan_step_scale * horizontal_half_span * right_axis)
         elif camera_move == "right":
-            current_center[0] -= pan_step_scale*horizontal_half_span
+            current_world_center = current_world_center - (pan_step_scale * horizontal_half_span * right_axis)
         elif camera_move == "up":
-            current_center[1] -= pan_step_scale*vertical_half_span
+            current_world_center = current_world_center - (pan_step_scale * vertical_half_span * up_axis)
         elif camera_move == "down":
-            current_center[1] += pan_step_scale*vertical_half_span
+            current_world_center = current_world_center + (pan_step_scale * vertical_half_span * up_axis)
         elif camera_move == "reset":
-            current_center = np.array([
-                (active_view_limits[view_index][0][0] + active_view_limits[view_index][0][1]) / 2.0,
-                (active_view_limits[view_index][1][0] + active_view_limits[view_index][1][1]) / 2.0,
-            ])
+            current_world_center = default_world_center.copy()
 
-        if effective_projection_mode == "orthographic" and comparison_mode != "side-by-side":
+        current_center = np.array([
+            float(np.dot(current_world_center, right_axis)),
+            float(np.dot(current_world_center, up_axis)),
+        ], dtype=float)
+        self.world_camera_center = np.array(current_world_center, dtype=float)
+
+        if effective_projection_mode == "orthographic":
             if orientation_key is not None:
                 self.orientation_view_current_camera_centers[orientation_key][view_index] = current_center
             else:
@@ -1343,14 +1364,9 @@ class CADComparisonRenderer:
                 graph_view_index = self._get_view_index(graph_view_name)
                 graph_zoom_ax_limits = active_view_limits[graph_view_index]
             if is_slice_area_mode:
-                view_diff_mat = self._get_rendered_slice_area_profile(
-                    shape_index,
+                view_diff_mat = self._get_zoom_filtered_slice_occupancy_profile(
                     graph_view_name,
-                    render_mode,
-                    effective_projection_mode,
                     graph_zoom_ax_limits,
-                    render_screen_size,
-                    orientation_basis=orientation_basis,
                 )
                 # Legacy graph rendering flips the bitmap horizontally after plotting.
                 # The new rendered slice-area profile is generated in live depth
@@ -1412,6 +1428,11 @@ class CADComparisonRenderer:
 
         self.last_render_debug = {
             "camera_center": [float(current_center[0]), float(current_center[1])],
+            "world_camera_center": [
+                float(self.world_camera_center[0]),
+                float(self.world_camera_center[1]),
+                float(self.world_camera_center[2]),
+            ],
             "view": str(params.get("view", "")).lower(),
             "orientation": orientation_basis if isinstance(orientation_basis, dict) else None,
         }
