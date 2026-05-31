@@ -35,6 +35,8 @@
     ];
     const FACE_NAMES = ['x+', 'x-', 'y+', 'y-', 'z+', 'z-'];
     const WORLD_UP   = [0, 0, 1];
+    const d = new Date();
+    var first_angle = [];
 
     // ---- Math helpers -------------------------------------------------------
 
@@ -110,6 +112,15 @@
             const roll  = dataView.getInt16(i + 2, true) / 32768.0 * 180.0;
             const pitch = dataView.getInt16(i + 4, true) / 32768.0 * 180.0;
             const yaw   = dataView.getInt16(i + 6, true) / 32768.0 * 180.0;
+            if (first_angle.length() > 0){
+                roll -= first_angle[0]
+                pitch -= first_angle[1]
+                yaw -= first_angle[2]
+            }
+            if (first_angle.length() == 0 && d.getTime() - start > 5000){
+                first_angle = [roll, pitch, yaw];
+                console.log("first_angle", first_angle);
+            }
             return { roll, pitch, yaw };
         }
         return null;
@@ -121,6 +132,7 @@
     let gattServer    = null;
     let notifyChar    = null;
     let lastView      = null;
+    let start_time = d.getTime();
 
     const connectBtn    = document.getElementById('witmotion-connect-btn');
     const disconnectBtn = document.getElementById('witmotion-disconnect-btn');
@@ -218,6 +230,7 @@
 
     function onCharacteristicChanged(event) {
         const result = parseAngleFrame(event.target.value);
+        console.log(result);
         if (!result) return;
 
         const { roll, pitch, yaw } = result;
