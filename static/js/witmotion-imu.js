@@ -28,10 +28,10 @@
 
     // Face normals and names (matches Python _FACE_NORMALS / _FACE_NAMES).
     const FACE_NORMALS = [
-        [ 1,  0,  0],   // x+
-        [-1,  0,  0],   // x-
-        [ 0,  1,  0],   // y+
-        [ 0, -1,  0],   // y-
+        [ 0, -1,  0],   // x+
+        [ 0,  1,  0],   // x-
+        [ 1,  0,  0],   // y+
+        [-1,  0,  0],   // y-
         [ 0,  0,  1],   // z+
         [ 0,  0, -1],   // z-
     ];
@@ -140,7 +140,7 @@
             if (first_angle.length == 0){ 
                 let new_time = new Date().getTime();
                 console.log(new_time - start_time);
-                if(new_time - start_time > 5000){
+                if(new_time - start_time > 50000){
                     first_angle = [roll, pitch, yaw];
                     console.log("first_angle", first_angle);
                 }
