@@ -113,21 +113,24 @@
             if (dataView.getUint8(i) !== 0x55) continue;
             const frameType = dataView.getUint8(i + 1);
 
+            let roll = 0;
+            let pitch = 0;
+            let yaw = 0;
             if (frameType === 0x53 && i + 10 < len) {
                 // Verify checksum: sum of bytes 0-9, low byte.
                 let sum = 0;
                 for (let k = 0; k < 10; k++) sum += dataView.getUint8(i + k);
                 if ((sum & 0xFF) !== dataView.getUint8(i + 10)) continue;
 
-                    let roll =  dataView.getInt16(i + 2, true) / 32768.0 * 180.0;
-                    let pitch = dataView.getInt16(i + 4, true) / 32768.0 * 180.0;
-                    let yaw =   dataView.getInt16(i + 6, true) / 32768.0 * 180.0;
+                    roll =  dataView.getInt16(i + 2, true) / 32768.0 * 180.0;
+                    pitch = dataView.getInt16(i + 4, true) / 32768.0 * 180.0;
+                    yaw =   dataView.getInt16(i + 6, true) / 32768.0 * 180.0;
             }
 
             if (frameType === 0x61 && i + 19 < len) {
-                    let roll =  dataView.getInt16(i + 14, true) / 32768.0 * 180.0;
-                    let pitch = dataView.getInt16(i + 16, true) / 32768.0 * 180.0;
-                    let yaw =   dataView.getInt16(i + 18, true) / 32768.0 * 180.0;
+                    roll =  dataView.getInt16(i + 14, true) / 32768.0 * 180.0;
+                    pitch = dataView.getInt16(i + 16, true) / 32768.0 * 180.0;
+                    yaw =   dataView.getInt16(i + 18, true) / 32768.0 * 180.0;
             }
             if (first_angle.length > 0){
                 roll -= first_angle[0]
