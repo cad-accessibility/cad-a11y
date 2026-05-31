@@ -6,7 +6,7 @@
 
     const TRINKEY_VID = 0x239A;   // Adafruit vendor ID
     const TRINKEY_PID = 0x8102;   // Slide Trinkey product ID (CircuitPython mode)
-    const SAMPLE_COUNT = 10;
+    const SAMPLE_COUNT = 4;
     const ADC_MAX = 65535;
     // Minimum change (in percent) required before propagating a new depth to the
     // viewer. ADC noise at a fixed physical position typically causes ±1% jitter;
@@ -54,7 +54,8 @@
             }
 
             // USB-CDC ignores the baud rate, but the API requires one.
-            await port.open({ baudRate: 115200 });
+            //await port.open({ baudRate: 115200 });
+            await port.open({ baudRate: 9600 });
 
             setStatus('Connected — reading slider…');
             disconnectBtn.disabled = false;
@@ -128,7 +129,8 @@
                     const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
                     samples = [];
 
-                    const depth = Math.round(Math.max(0, Math.min(100, (avg / ADC_MAX) * 100)));
+                    //const depth = Math.round(Math.max(0, Math.min(100, (avg / ADC_MAX) * 100)));
+                    const depth = Math.round(Math.max(0, Math.min(100, avg)));
                     if (depthValueEl) depthValueEl.textContent = depth + '%';
 
                     // Only propagate when the position has moved by ≥ MIN_DEPTH_CHANGE.
