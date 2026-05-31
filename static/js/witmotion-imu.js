@@ -137,10 +137,13 @@
                 pitch -= first_angle[1]
                 yaw -= first_angle[2]
             }
-            console.log(d.getTime() - start_time);
-            if (first_angle.length == 0 && d.getTime() - start_time > 5000){
-                first_angle = [roll, pitch, yaw];
-                console.log("first_angle", first_angle);
+            if (first_angle.length == 0){ 
+                let new_time = new Date().getTime();
+                console.log(new_time - start_time);
+                if(new_time - start_time > 5000){
+                    first_angle = [roll, pitch, yaw];
+                    console.log("first_angle", first_angle);
+                }
             }
             return {roll, pitch, yaw};
         }
