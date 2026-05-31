@@ -137,6 +137,7 @@
                 pitch -= first_angle[1]
                 yaw -= first_angle[2]
             }
+            console.log(d.getTime() - start_time);
             if (first_angle.length == 0 && d.getTime() - start_time > 5000){
                 first_angle = [roll, pitch, yaw];
                 console.log("first_angle", first_angle);
@@ -251,7 +252,6 @@
 
     function onCharacteristicChanged(event) {
         const result = parseAngleFrame(event.target.value);
-        console.log(result);
         if (!result) return;
 
         const { roll, pitch, yaw } = result;
