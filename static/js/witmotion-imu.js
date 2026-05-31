@@ -134,7 +134,7 @@
                 pitch -= first_angle[1]
                 yaw -= first_angle[2]
             }
-            if (first_angle.length == 0 && d.getTime() - start > 5000){
+            if (first_angle.length == 0 && d.getTime() - start_time > 5000){
                 first_angle = [roll, pitch, yaw];
                 console.log("first_angle", first_angle);
             }
@@ -236,6 +236,7 @@
             return;
         }
 
+        start_time = d.getTime();
         notifyChar = await service.getCharacteristic(charUuid);
         await notifyChar.startNotifications();
         notifyChar.addEventListener('characteristicvaluechanged', onCharacteristicChanged);
