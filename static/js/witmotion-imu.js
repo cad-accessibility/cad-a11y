@@ -129,12 +129,12 @@
                     let pitch = dataView.getInt16(i + 16, true) / 32768.0 * 180.0;
                     let yaw =   dataView.getInt16(i + 18, true) / 32768.0 * 180.0;
             }
-            if (first_angle.length() > 0){
+            if (first_angle.length > 0){
                 roll -= first_angle[0]
                 pitch -= first_angle[1]
                 yaw -= first_angle[2]
             }
-            if (first_angle.length() == 0 && d.getTime() - start > 5000){
+            if (first_angle.length == 0 && d.getTime() - start > 5000){
                 first_angle = [roll, pitch, yaw];
                 console.log("first_angle", first_angle);
             }
