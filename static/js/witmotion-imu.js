@@ -140,7 +140,7 @@
             if (first_angle.length == 0){ 
                 let new_time = new Date().getTime();
                 console.log(new_time - start_time);
-                if(new_time - start_time > 50000){
+                if(new_time - start_time > 20000){
                     first_angle = [roll, pitch, yaw];
                     console.log("first_angle", first_angle);
                 }
