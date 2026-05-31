@@ -1,5 +1,30 @@
 // Configuration
 const SERVER_URL = window.location.origin;
+const UPLOAD_SESSION_STORAGE_KEY = 'cadA11yUploadSessionId';
+
+function getUploadSessionId() {
+    try {
+        let sessionId = window.sessionStorage.getItem(UPLOAD_SESSION_STORAGE_KEY);
+        if (!sessionId) {
+            sessionId = `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+            window.sessionStorage.setItem(UPLOAD_SESSION_STORAGE_KEY, sessionId);
+        }
+        return sessionId;
+    } catch (_) {
+        // If sessionStorage is unavailable, still provide a best-effort volatile id.
+        return `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+}
+
+function notifyUploadCleanupOnClose() {
+    const uploadSessionId = getUploadSessionId();
+    if (!uploadSessionId || !navigator.sendBeacon) {
+        return;
+    }
+    const payload = JSON.stringify({ upload_session_id: uploadSessionId });
+    const blob = new Blob([payload], { type: 'application/json' });
+    navigator.sendBeacon(`${SERVER_URL}/uploads/cleanup`, blob);
+}
 
 // Drag-to-resize columns
 (function() {
@@ -57,10 +82,119 @@ const SERVER_URL = window.location.origin;
 
 // AbortController for in-flight render requests — cancels stale renders on rapid state changes
 let renderAbortController = null;
+let previewAbortController = null;
+let previewRequestSequence = 0;
+let previewRequestTimer = null;
+
+function scheduleHighFidelityPreview(state) {
+    if (previewRequestTimer) {
+        clearTimeout(previewRequestTimer);
+    }
+    const stateSnapshot = { ...state };
+    previewRequestTimer = setTimeout(() => {
+        previewRequestTimer = null;
+        requestHighFidelityPreview(stateSnapshot);
+    }, 250);
+}
+
+function requestHighFidelityPreview(state) {
+    if (previewAbortController) {
+        previewAbortController.abort();
+    }
+    previewAbortController = new AbortController();
+    previewRequestSequence += 1;
+    const requestId = previewRequestSequence;
+
+    fetch(`${SERVER_URL}/render/preview`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(state),
+        mode: 'cors',
+        signal: previewAbortController.signal,
+    })
+    .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+    })
+    .then(data => {
+        if (requestId !== previewRequestSequence) {
+            return;
+        }
+        updateHighFidelityPreview(data);
+    })
+    .catch(error => {
+        if (error.name === 'AbortError') return;
+        console.warn('Preview request failed:', error.message);
+    });
+}
+
+const cameraCenterByViewOrientation = new Map();
+let currentWorldCameraCenter = null;
+
+function getCameraCenterStateKey(viewToken, orientationPayload) {
+    const normalizedView = String(viewToken || '').toLowerCase();
+    const forward = Array.isArray(orientationPayload?.forward)
+        ? orientationPayload.forward.map((value) => Number(value)).join(',')
+        : '';
+    const up = Array.isArray(orientationPayload?.up)
+        ? orientationPayload.up.map((value) => Number(value)).join(',')
+        : '';
+    return `${normalizedView}|f:${forward}|u:${up}`;
+}
+
+function getCurrentCameraCenter(viewToken, orientationPayload) {
+    const key = getCameraCenterStateKey(viewToken, orientationPayload);
+    const value = cameraCenterByViewOrientation.get(key);
+    return Array.isArray(value) && value.length === 2 ? [...value] : null;
+}
+
+function clearCameraCenterState() {
+    cameraCenterByViewOrientation.clear();
+    currentWorldCameraCenter = null;
+}
+
+function syncCameraCenterFromResponse(responseData, requestState) {
+    const debug = responseData && typeof responseData === 'object' ? responseData.debug : null;
+    if (!debug || !Array.isArray(debug.camera_center) || debug.camera_center.length !== 2) {
+        return;
+    }
+
+    const centerX = Number(debug.camera_center[0]);
+    const centerY = Number(debug.camera_center[1]);
+    if (!Number.isFinite(centerX) || !Number.isFinite(centerY)) {
+        return;
+    }
+
+    const debugView = typeof debug.view === 'string' && debug.view.trim().length > 0
+        ? debug.view
+        : requestState.view;
+    const debugOrientation = debug.orientation && typeof debug.orientation === 'object'
+        ? debug.orientation
+        : requestState.orientation;
+    const key = getCameraCenterStateKey(debugView, debugOrientation);
+    cameraCenterByViewOrientation.set(key, [centerX, centerY]);
+    if (sbPanCenter) {
+        sbPanCenter.textContent = formatCenter2([centerX, centerY]);
+    }
+
+    if (Array.isArray(debug.world_camera_center) && debug.world_camera_center.length === 3) {
+        const worldCenter = debug.world_camera_center.map((value) => Number(value));
+        if (worldCenter.every((value) => Number.isFinite(value))) {
+            currentWorldCameraCenter = [...worldCenter];
+        }
+    }
+}
 
 // Function to send current state to the server
 async function sendStateToServer() {
     try {
+        if (previewRequestTimer) {
+            clearTimeout(previewRequestTimer);
+            previewRequestTimer = null;
+        }
+
         // When the polling loop has already confirmed the server is down,
         // skip active render requests until we detect a reconnection.
         if (serverConnected === false) {
@@ -75,14 +209,22 @@ async function sendStateToServer() {
 
         const requestedGraphView = sliceGraphLocked ? sliceGraphAnchorView : currentView;
         const requestedGraphDepth = sliceGraphLocked ? sliceGraphAnchorDepth : currentSliceDepth;
+        const renderPipelineParams = getRenderPipelineParams(currentRenderMode);
+        const orientationPayload = getOrientationPayload();
+        const moveCamera = currentMoveCamera;
+        const cameraCenter = getCurrentCameraCenter(currentView, orientationPayload);
+        const worldCameraCenter = currentWorldCameraCenter;
         const state = {
             view: currentView,
+            orientation: orientationPayload,
+            camera_center: cameraCenter,
+            world_camera_center: worldCameraCenter,
             zoom: currentZoom,
             depth: currentSliceDepth,
-            renderMode: currentRenderMode,
-            projectionMode: currentProjectionMode,
-            mode: currentRepresentationMode,
-            move_camera_center: currentMoveCamera,
+            renderMode: renderPipelineParams.renderMode,
+            projectionMode: renderPipelineParams.projectionMode,
+            mode: getServerRepresentationMode(),
+            move_camera_center: moveCamera,
             print_view: currentPrintView,
             current_model: currentModel,
             compose_scrollbar: composeScrollbar,
@@ -92,8 +234,21 @@ async function sendStateToServer() {
             slicegraph_locked: sliceGraphLocked,
             slicegraph_view: requestedGraphView,
             slicegraph_depth: requestedGraphDepth,
+            slicegraph_mode: sliceGraphMode,
             input_source: pendingInputSource,
         };
+        if (sbPanCmd) {
+            sbPanCmd.textContent = String(moveCamera || 'none');
+        }
+        if (sbPanCenter && Array.isArray(cameraCenter) && cameraCenter.length === 2) {
+            sbPanCenter.textContent = formatCenter2(cameraCenter);
+        }
+        const activeModelLoadTask = modelLoadAnnouncement
+            ? { ...modelLoadAnnouncement }
+            : null;
+        if (activeModelLoadTask) {
+            announceStatus(`${activeModelLoadTask.label}: generating render.`);
+        }
         pendingInputSource = 'keyboard'; // reset to default after consuming
 
         // Send to server and process response
@@ -126,12 +281,23 @@ async function sendStateToServer() {
             if (data.model_list) {
                 updateModelList(data.model_list);
             }
+            syncCameraCenterFromResponse(data, state);
             // Update tactile display preview
             if (data.image_base64) {
                 updateTactilePreview(data.image_base64, data.image_shape);
+                if (isActiveModelLoadTask(activeModelLoadTask)) {
+                    announceStatus(`${activeModelLoadTask.label}: tactile preview ready.`);
+                    announce(`${activeModelLoadTask.label} loaded.`);
+                    clearModelLoadTask(activeModelLoadTask);
+                }
             }
-            renderPipelineDebug(data.debug_pipeline);
-            updateHighFidelityPreview(data);
+            renderPipelineDebug(data.debug_pipeline, data.debug);
+            const shouldRequestPreview =
+                state.move_camera_center === 'none' &&
+                !(state.mode === 'slice-graph' && state.slicegraph_mode === 'column-count');
+            if (shouldRequestPreview) {
+                scheduleHighFidelityPreview(state);
+            }
 
             // Trigger DotPad web send if connected
             if (typeof window._dotpadOnRender === 'function') {
@@ -150,6 +316,10 @@ async function sendStateToServer() {
             // use. Connection state is managed exclusively by the health poll below so that
             // only sustained, confirmed outages interrupt the user.
             console.warn('Render request failed:', error.message);
+            if (isActiveModelLoadTask(activeModelLoadTask)) {
+                announce(`Processing failed for ${activeModelLoadTask.label}.`);
+                clearModelLoadTask(activeModelLoadTask);
+            }
         });
         
     } catch (error) {
@@ -162,13 +332,12 @@ let currentSliceDepth = 50;
 let currentView = 'x+';
 let currentZoom = 0.0;
 let currentRenderMode = 'Shaded';
-let currentProjectionMode = 'orthographic';
 let currentRepresentationMode = 'single';
 let currentMoveCamera = "none";
 let currentPrintView = false;
 let currentOutputDevice = 'monarch_hid';
-const renderModes = ['Shaded', 'Outline', 'Cut'];
-const representationModes = ['single', 'side-by-side', 'slice-graph'];
+const renderModes = ['Shaded', 'Outline', 'Cut', 'Orthographic'];
+const representationModes = ['single', 'side-by-side', 'slice-graph-difference', 'slice-graph-column-count'];
 let currentModel = "none";
 let composeScrollbar = true;
 let composeSliceGraph = false;
@@ -176,6 +345,7 @@ let showViewInfoBox = false;
 let sliceGraphLocked = true;
 let sliceGraphAnchorView = 'y-';
 let sliceGraphAnchorDepth = 50;
+let sliceGraphMode = 'difference';
 
 // Tracking variables
 let serverConnected = null;       // null = unknown, true = up, false = confirmed down
@@ -183,15 +353,164 @@ let lastPolledView = null;        // last cube_value received from server
 let lastModelListSignature = '';  // prevents redundant dropdown rebuilds
 let currentBBoxDimensionsText = '';
 let lastAnnouncementMessage = '';
+let lastAnnouncedParameterKey = null;
 let pendingInputSource = 'keyboard'; // consumed once per sendStateToServer call
+let modelLoadAnnouncement = null;
+let modelLoadAnnouncementSeq = 0;
+
+function isSliceGraphRepresentationMode(modeValue = currentRepresentationMode) {
+    return modeValue === 'slice-graph-difference' || modeValue === 'slice-graph-column-count';
+}
+
+function getServerRepresentationMode(modeValue = currentRepresentationMode) {
+    return isSliceGraphRepresentationMode(modeValue) ? 'slice-graph' : modeValue;
+}
+
+function beginModelLoadAnnouncement(modelLabel, source = 'selection') {
+    const label = String(modelLabel || 'model').trim();
+    modelLoadAnnouncementSeq += 1;
+    modelLoadAnnouncement = {
+        id: modelLoadAnnouncementSeq,
+        label,
+        source,
+    };
+    announce(`Starting processing for ${label}.`);
+}
+
+function isActiveModelLoadTask(task) {
+    return Boolean(task && modelLoadAnnouncement && modelLoadAnnouncement.id === task.id);
+}
+
+function clearModelLoadTask(task) {
+    if (isActiveModelLoadTask(task)) {
+        modelLoadAnnouncement = null;
+    }
+}
+
+function formatZoomPercent(zoomValue) {
+    const percent = Math.round(Number(zoomValue) * 100);
+    return `${percent}%`;
+}
 
 // Remove "Back" from available views
 //const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
 const views = ['y-', 'x-', 'z+', 'z-', 'x+', 'y+'];
 const MIN_ZOOM = 0.0;
-const MAX_ZOOM = 3.0;
+const MAX_ZOOM = Number.POSITIVE_INFINITY;
 const ZOOM_STEP = 0.1;
 //const views = ['front', 'side', 'top'];
+
+const VIEW_FORWARD_VECTORS = {
+    'x+': [1, 0, 0],
+    'x-': [-1, 0, 0],
+    'y+': [0, 1, 0],
+    'y-': [0, -1, 0],
+    'z+': [0, 0, 1],
+    'z-': [0, 0, -1],
+};
+
+const CANONICAL_UP_FOR_VIEW = {
+    'x+': [0, 0, 1],
+    'x-': [0, 0, 1],
+    'y+': [0, 0, 1],
+    'y-': [0, 0, 1],
+    'z+': [0, 1, 0],
+    'z-': [0, 1, 0],
+};
+
+let orientationForward = [...VIEW_FORWARD_VECTORS['x+']];
+let orientationUp = [...CANONICAL_UP_FOR_VIEW['x+']];
+
+function dotVec3(a, b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+function crossVec3(a, b) {
+    return [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ];
+}
+
+function normalizeAxisVector(v) {
+    const rounded = [Math.round(v[0]), Math.round(v[1]), Math.round(v[2])];
+    const mag = Math.abs(rounded[0]) + Math.abs(rounded[1]) + Math.abs(rounded[2]);
+    if (mag === 0) return [1, 0, 0];
+    if (mag === 1) return rounded;
+    // Safety net for numerical drift; choose the dominant axis.
+    const absVals = rounded.map(Math.abs);
+    const maxIndex = absVals.indexOf(Math.max(...absVals));
+    return [
+        maxIndex === 0 ? Math.sign(rounded[0]) || 1 : 0,
+        maxIndex === 1 ? Math.sign(rounded[1]) || 1 : 0,
+        maxIndex === 2 ? Math.sign(rounded[2]) || 1 : 0,
+    ];
+}
+
+function rotateVectorByAxis90(vector, axis, quarterTurns) {
+    const turns = ((quarterTurns % 4) + 4) % 4;
+    if (turns === 0) return [...vector];
+    let out = [...vector];
+    const k = normalizeAxisVector(axis);
+    for (let i = 0; i < turns; i += 1) {
+        const projection = dotVec3(k, out);
+        const cross = crossVec3(k, out);
+        out = [
+            k[0] * projection + cross[0],
+            k[1] * projection + cross[1],
+            k[2] * projection + cross[2],
+        ];
+    }
+    return normalizeAxisVector(out);
+}
+
+function orientationViewFromForward(forwardVector) {
+    for (const [viewToken, vec] of Object.entries(VIEW_FORWARD_VECTORS)) {
+        if (dotVec3(vec, forwardVector) === 1) {
+            return viewToken;
+        }
+    }
+    return 'x+';
+}
+
+function setOrientationFromView(viewToken) {
+    orientationForward = [...(VIEW_FORWARD_VECTORS[viewToken] || VIEW_FORWARD_VECTORS['x+'])];
+    orientationUp = [...(CANONICAL_UP_FOR_VIEW[viewToken] || CANONICAL_UP_FOR_VIEW['x+'])];
+}
+
+function applyRelativeRotation(kind, direction, announcementText) {
+    // direction: +1 or -1 indicates ±90 degree about the local axis.
+    let rotationAxis;
+    if (kind === 'yaw') {
+        rotationAxis = orientationUp;
+    } else if (kind === 'pitch') {
+        rotationAxis = normalizeAxisVector(crossVec3(orientationUp, orientationForward));
+    } else if (kind === 'roll') {
+        rotationAxis = orientationForward;
+    } else {
+        return;
+    }
+
+    orientationForward = rotateVectorByAxis90(orientationForward, rotationAxis, direction);
+    orientationUp = rotateVectorByAxis90(orientationUp, rotationAxis, direction);
+
+    const newView = orientationViewFromForward(orientationForward);
+    updateView(newView, false, { syncOrientation: false });
+    announce(announcementText);
+}
+
+function getOrientationPayload() {
+    const forward = normalizeAxisVector(orientationForward);
+    const up = normalizeAxisVector(orientationUp);
+    const right = normalizeAxisVector(crossVec3(up, forward));
+    return {
+        scheme: 'basis-v1',
+        forward,
+        up,
+        right,
+    };
+}
 
 const axisInfo = {
     'Front': 'X-axis: left-right, Y-axis: up-down, Z-axis: forward-back (viewing from front)',
@@ -213,10 +532,13 @@ const announcementHistory = document.getElementById('announcement-history');
 const clearAnnouncementsBtn = document.getElementById('clear-announcements-btn');
 const deeperBtn = document.getElementById('deeper-btn');
 const shallowerBtn = document.getElementById('shallower-btn');
-const zoomSlider = document.getElementById('zoom-slider');
+const zoomInput = document.getElementById('zoom-input');
 const zoomLevelValue = document.getElementById('zoom-level-value');
+const zoomOutBtn = document.getElementById('zoom-out-btn');
+const zoomInBtn = document.getElementById('zoom-in-btn');
 const sliceGraphLockBtn = document.getElementById('slice-graph-lock-btn');
 const sliceGraphRefreshBtn = document.getElementById('slice-graph-refresh-btn');
+const sliceGraphModeBtn = document.getElementById('slice-graph-mode-btn');
 const resetPositionBtn = document.getElementById('reset-position-btn');
 const sliceGraphLockStatus = document.getElementById('slice-graph-lock-status');
 const showViewInfoBoxCheckbox = document.getElementById('show-view-info-box');
@@ -232,9 +554,23 @@ const DEBUG_PIPELINE_VISIBILITY_KEY = 'debugPipelineVisible';
 // New radio group references
 const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
 const viewModeRadios = () => document.querySelectorAll('input[name="view-mode"]');
-const projectionModeRadios = () => document.querySelectorAll('input[name="projection-mode"]');
 const viewRadios = () => document.querySelectorAll('input[name="view-select"]');
 const outputDeviceRadios = () => document.querySelectorAll('input[name="output-device"]');
+
+function getRenderPipelineParams(uiRenderMode) {
+    // Single-mode UI mapping: projection is no longer a separate user control.
+    switch ((uiRenderMode || 'Shaded').toLowerCase()) {
+        case 'orthographic':
+            return { renderMode: 'Outline', projectionMode: 'orthographic' };
+        case 'cut':
+            return { renderMode: 'Cut', projectionMode: 'orthographic' };
+        case 'outline':
+            return { renderMode: 'Outline', projectionMode: 'silhouette' };
+        case 'shaded':
+        default:
+            return { renderMode: 'Shaded', projectionMode: 'orthographic' };
+    }
+}
 
 // Status bar elements
 const sbView = document.getElementById('sb-view');
@@ -244,10 +580,31 @@ const sbZoom = document.getElementById('sb-zoom');
 const sbViewMode = document.getElementById('sb-view-mode');
 const sbModel = document.getElementById('sb-model');
 const sbDotPad = document.getElementById('sb-dotpad');
+const sbPanCmd = document.getElementById('sb-pan-cmd');
+const sbPanCenter = document.getElementById('sb-pan-center');
+
+function formatCenter2(value) {
+    if (!Array.isArray(value) || value.length !== 2) {
+        return '--';
+    }
+    const x = Number(value[0]);
+    const y = Number(value[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return '--';
+    }
+    return `${x.toFixed(3)},${y.toFixed(3)}`;
+}
 
 // Toast / live-region elements
 const announcementToast = document.getElementById('announcement-toast');
-const srLiveAnnounce = document.getElementById('sr-live-announce');
+// Two-slot live-region swap: toggling which element receives text each time
+// guarantees AT sees a fresh DOM mutation for every announcement, including
+// consecutive identical messages, without any clear+setTimeout race.
+const srLiveSlots = [
+    document.getElementById('sr-live-a'),
+    document.getElementById('sr-live-b')
+];
+let srLiveActiveSlot = 0;
 const toastDurationSlider = document.getElementById('toast-duration-slider');
 const toastDurationValue = document.getElementById('toast-duration-value');
 let toastDurationSec = 3;  // default 3 seconds; 0 = off
@@ -274,13 +631,15 @@ function refreshStatusBar() {
 
 /** Show a brief on-screen toast and push text to the SR live region. */
 function showToast(message) {
-    // Screen reader: always push to live region.
-    if (srLiveAnnounce) {
-        // Clear then set after a short delay — rAF (~16 ms) is too fast for some
-        // AT implementations to detect the mutation as a new announcement.
-        srLiveAnnounce.textContent = '';
-        setTimeout(() => { srLiveAnnounce.textContent = message; }, 50);
-    }
+    // Two-slot swap: write to the next slot and clear the previous one.
+    // AT always sees a genuine new-content mutation regardless of whether the
+    // message is identical to the last one, and there is no setTimeout race to
+    // lose when keys are pressed in rapid succession.
+    srLiveActiveSlot = 1 - srLiveActiveSlot;
+    const activeEl = srLiveSlots[srLiveActiveSlot];
+    const idleEl   = srLiveSlots[1 - srLiveActiveSlot];
+    if (activeEl) activeEl.textContent = message;
+    if (idleEl)   idleEl.textContent   = '';
 
     // Visual toast: respect user-chosen duration.
     if (!announcementToast || toastDurationSec <= 0) return;
@@ -294,9 +653,23 @@ function showToast(message) {
 
 // Consistent depth announcement formatter
 function depthAnnouncement(pct) {
-    if (pct === 0) return 'surface';
-    if (pct === 100) return 'full depth';
-    return `depth ${pct}%`;
+    return `${pct}%`;
+}
+
+function announceParameterValue(parameterKey, parameterLabel, valueText, isUrgent = true) {
+    const normalizedKey = String(parameterKey || '').trim().toLowerCase();
+    const normalizedLabel = String(parameterLabel || '').trim();
+    const normalizedValue = String(valueText || '').trim();
+    const shouldIncludeLabel = normalizedKey !== '' && normalizedKey !== lastAnnouncedParameterKey;
+    const message = shouldIncludeLabel && normalizedLabel
+        ? `${normalizedLabel}: ${normalizedValue}`
+        : normalizedValue;
+
+    if (normalizedKey) {
+        lastAnnouncedParameterKey = normalizedKey;
+    }
+
+    announce(message, isUrgent);
 }
 
 function refreshViewInfoSummary() {
@@ -315,6 +688,25 @@ function refreshViewInfoSummary() {
     refreshStatusBar();
 }
 
+function getStatusBarAnnouncement() {
+    const readText = (element, fallback = '--') => {
+        const text = element && typeof element.textContent === 'string'
+            ? element.textContent.trim()
+            : '';
+        return text || fallback;
+    };
+
+    return [
+        `View: ${readText(sbView, currentView)}`,
+        `Depth: ${readText(sbDepth, `${currentSliceDepth}%`)}`,
+        `Render: ${readText(sbRenderMode, currentRenderMode)}`,
+        `Zoom: ${readText(sbZoom, Number(currentZoom).toFixed(1))}`,
+        `Layout: ${readText(sbViewMode, currentRepresentationMode)}`,
+        `Model: ${readText(sbModel)}`,
+        `DotPad: ${readText(sbDotPad)}`,
+    ].join('. ');
+}
+
 // Update button labels with current state information
 function updateButtonLabels() {
     const depthText = `${currentSliceDepth}%`;
@@ -325,7 +717,7 @@ function updateButtonLabels() {
 }
 
 function updateSliceGraphLockUI() {
-    const isSliceGraphMode = currentRepresentationMode === 'slice-graph';
+    const isSliceGraphMode = isSliceGraphRepresentationMode();
     sliceGraphRefreshBtn.disabled = !isSliceGraphMode;
     if (sliceGraphLocked) {
         sliceGraphLockBtn.textContent = 'Slice Graph Lock: On';
@@ -346,6 +738,24 @@ function updateSliceGraphLockUI() {
     }
 }
 
+function updateSliceGraphModeUI() {
+    if (!sliceGraphModeBtn) {
+        return;
+    }
+    const isColumnCountMode = sliceGraphMode === 'column-count';
+    sliceGraphModeBtn.textContent = isColumnCountMode
+        ? 'Graph Mode: Slice Area'
+        : 'Graph Mode: Difference';
+    sliceGraphModeBtn.setAttribute('aria-pressed', isColumnCountMode ? 'true' : 'false');
+}
+
+function toggleSliceGraphMode() {
+    sliceGraphMode = sliceGraphMode === 'difference' ? 'column-count' : 'difference';
+    updateSliceGraphModeUI();
+    pendingInputSource = 'ui';
+    sendStateToServer();
+}
+
 function captureSliceGraphAnchor(shouldAnnounce = true) {
     sliceGraphAnchorView = currentView;
     sliceGraphAnchorDepth = currentSliceDepth;
@@ -354,7 +764,7 @@ function captureSliceGraphAnchor(shouldAnnounce = true) {
 
 function autoRefreshSliceGraph(options = {}) {
     const { updateAnchor = false } = options;
-    if (currentRepresentationMode !== 'slice-graph') {
+    if (!isSliceGraphRepresentationMode()) {
         return;
     }
 
@@ -436,15 +846,38 @@ function initializeDebugPipelineVisibility() {
     setDebugPipelineVisible(isVisible);
 }
 
-function renderPipelineDebug(debugPipeline) {
+function renderPipelineDebug(debugPipeline, debugInfo = null) {
     if (!debugPipelineSummary || !debugStageList) {
         return;
     }
 
     const stages = Array.isArray(debugPipeline && debugPipeline.stages) ? debugPipeline.stages : [];
     if (stages.length === 0) {
-        debugPipelineSummary.textContent = 'No stage data returned by server.';
         debugStageList.innerHTML = '';
+
+        const totalMs = debugInfo && typeof debugInfo.phase1_total_ms === 'number'
+            ? `${debugInfo.phase1_total_ms.toFixed(1)}ms`
+            : '--';
+        const exactHit = Boolean(debugInfo && debugInfo.phase1_exact_cache_hit);
+        const quantizedHit = Boolean(debugInfo && debugInfo.phase1_quantized_cache_hit);
+        debugPipelineSummary.textContent = `Live debug: total ${totalMs} | exact cache: ${exactHit ? 'yes' : 'no'} | quantized cache: ${quantizedHit ? 'yes' : 'no'}`;
+
+        const telemetryCard = document.createElement('article');
+        telemetryCard.className = 'debug-stage ok';
+        telemetryCard.innerHTML = [
+            '<div class="debug-stage-title">1. Realtime Render Telemetry</div>',
+            '<div class="debug-stage-status">ok</div>',
+            '<div class="debug-stage-explanation"><div><strong>What:</strong> Live backend timing and cache status from /render.</div><div><strong>Inputs:</strong> Current viewpoint, depth, mode.</div><div><strong>Outputs:</strong> End-to-end latency and cache hit type.</div></div>',
+        ].join('');
+        const telemetryPre = document.createElement('pre');
+        telemetryPre.textContent = JSON.stringify({
+            phase1_total_ms: debugInfo ? debugInfo.phase1_total_ms : null,
+            phase1_exact_cache_hit: debugInfo ? debugInfo.phase1_exact_cache_hit : null,
+            phase1_quantized_cache_hit: debugInfo ? debugInfo.phase1_quantized_cache_hit : null,
+            side_by_side_orientation_fallback: debugInfo ? debugInfo.side_by_side_orientation_fallback : null,
+        }, null, 2);
+        telemetryCard.appendChild(telemetryPre);
+        debugStageList.appendChild(telemetryCard);
         return;
     }
 
@@ -587,12 +1020,15 @@ function renderPipelineDebug(debugPipeline) {
 function fetchExportSourceState() {
     const requestedGraphView = sliceGraphLocked ? sliceGraphAnchorView : currentView;
     const requestedGraphDepth = sliceGraphLocked ? sliceGraphAnchorDepth : currentSliceDepth;
+    const renderPipelineParams = getRenderPipelineParams(currentRenderMode);
     return {
         view: currentView,
+        orientation: getOrientationPayload(),
         zoom: currentZoom,
         depth: currentSliceDepth,
-        renderMode: currentRenderMode,
-        mode: currentRepresentationMode,
+        renderMode: renderPipelineParams.renderMode,
+        projectionMode: renderPipelineParams.projectionMode,
+        mode: getServerRepresentationMode(),
         move_camera_center: 'none',
         print_view: false,
         current_model: currentModel,
@@ -603,6 +1039,7 @@ function fetchExportSourceState() {
         slicegraph_locked: sliceGraphLocked,
         slicegraph_view: requestedGraphView,
         slicegraph_depth: requestedGraphDepth,
+        slicegraph_mode: sliceGraphMode,
         export_width: 1000,
     };
 }
@@ -688,15 +1125,19 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
     refreshViewInfoSummary();
 
     // Only mutate ARIA attributes, button labels, and trigger a render when the
-    // value actually changed. setAttribute fires a DOM mutation even when the
-    // string value is identical, and NVDA announces every aria-valuetext mutation
-    // on range inputs regardless of focus — unconditional calls here were the
-    // source of the Braille display flood when the hardware slider was held at a
-    // noisy ADC position (same rounded depth → repeated identical mutations →
-    // screen reader flood).
+    // value actually changed.
     if (oldDepth !== currentSliceDepth) {
         sliceSlider.setAttribute('aria-valuenow', currentSliceDepth);
-        sliceSlider.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
+        // aria-valuetext is announced by NVDA on every mutation of a range input
+        // regardless of focus. When shouldAnnounce=false the caller (a keyboard
+        // shortcut handler) will push the announcement through the assertive live
+        // region instead, so we must NOT mutate aria-valuetext here — doing so
+        // would cause a second, racing announcement on NVDA/JAWS.
+        // When shouldAnnounce=true (slider focused, hardware input) the mutation
+        // IS the correct announcement channel, so we set it as before.
+        if (shouldAnnounce) {
+            sliceSlider.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
+        }
         updateButtonLabels();
         sendStateToServer();
     }
@@ -708,7 +1149,6 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
 function syncRadios() {
     renderModeRadios().forEach(r => { r.checked = (r.value === currentRenderMode); });
     viewModeRadios().forEach(r => { r.checked = (r.value === currentRepresentationMode); });
-    projectionModeRadios().forEach(r => { r.checked = (r.value === currentProjectionMode); });
     viewRadios().forEach(r => { r.checked = (r.value === currentView); });
     outputDeviceRadios().forEach(r => { r.checked = (r.value === currentOutputDevice); });
 }
@@ -737,7 +1177,8 @@ function updateDisplayOptions() {
             composeScrollbar = false;
             composeSliceGraph = false;
             break;
-        case 'slice-graph':
+        case 'slice-graph-difference':
+        case 'slice-graph-column-count':
             composeScrollbar = false;
             composeSliceGraph = true;
             break;
@@ -777,9 +1218,13 @@ function updateSideBySideAxisLabels() {
 }
 
 // Update view information
-function updateView(newView, shouldAnnounce = true) {
+function updateView(newView, shouldAnnounce = true, options = {}) {
+    const syncOrientation = options.syncOrientation !== false;
     const oldView = currentView;
     currentView = newView;
+    if (syncOrientation && oldView !== currentView) {
+        setOrientationFromView(currentView);
+    }
     if (currentViewSpan) currentViewSpan.textContent = currentView;
     refreshViewInfoSummary();
     updateButtonLabels();
@@ -791,7 +1236,7 @@ function updateView(newView, shouldAnnounce = true) {
     
     // Send state to server if changed
     if (oldView !== currentView) {
-        if (currentRepresentationMode === 'slice-graph') {
+        if (isSliceGraphRepresentationMode()) {
             autoRefreshSliceGraph({ updateAnchor: true });
         } else {
             sendStateToServer();
@@ -847,6 +1292,13 @@ function updateModelList(model_list) {
 
     const signature = model_list.join('||');
     if (signature === lastModelListSignature && dropdown.options.length > 0) {
+        const currentModelIndex = Number(currentModel);
+        if (Number.isInteger(currentModelIndex) && currentModelIndex >= 0 && currentModelIndex < dropdown.options.length) {
+            dropdown.value = String(currentModelIndex);
+        }
+        if (sbModel && dropdown.selectedIndex >= 0) {
+            sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
+        }
         return;
     }
 
@@ -882,13 +1334,22 @@ function updateModelList(model_list) {
 document.getElementById("model-list-dropdown").addEventListener("input", function() {
     // Keep local state in sync while keyboard arrows navigate options.
     currentModel = this.value;
+    if (sbModel && this.selectedIndex >= 0) {
+        sbModel.textContent = this.options[this.selectedIndex].text;
+    }
 });
 
 document.getElementById("model-list-dropdown").addEventListener("change", function() {
     const selectedItem = this.value;
     currentModel = selectedItem;
+    clearCameraCenterState();
+    const selectedLabel = this.selectedIndex >= 0 ? this.options[this.selectedIndex].text : `model ${selectedItem}`;
+    if (sbModel && this.selectedIndex >= 0) {
+        sbModel.textContent = this.options[this.selectedIndex].text;
+    }
+    beginModelLoadAnnouncement(selectedLabel, 'selection');
     pendingInputSource = 'ui';
-    if (currentRepresentationMode === 'slice-graph') {
+    if (isSliceGraphRepresentationMode()) {
         autoRefreshSliceGraph({ updateAnchor: false });
     } else {
         sendStateToServer();
@@ -909,6 +1370,7 @@ document.getElementById('upload-model-input').addEventListener('change', async f
 
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('upload_session_id', getUploadSessionId());
 
     try {
         const resp = await fetch(`${SERVER_URL}/upload`, {
@@ -924,8 +1386,14 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             const dropdown = document.getElementById('model-list-dropdown');
             dropdown.value = String(data.new_model_index);
             currentModel = String(data.new_model_index);
+            clearCameraCenterState();
+            const selectedLabel = dropdown.selectedIndex >= 0 ? dropdown.options[dropdown.selectedIndex].text : data.filename;
+            if (sbModel && dropdown.selectedIndex >= 0) {
+                sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
+            }
             statusEl.textContent = `✓ ${data.filename} uploaded`;
-            announce(`Model ${data.filename} uploaded and selected.`);
+            announce(`Model ${data.filename} uploaded.`);
+            beginModelLoadAnnouncement(selectedLabel, 'upload');
             pendingInputSource = 'upload';
             sendStateToServer();
         } else {
@@ -943,12 +1411,29 @@ document.getElementById('upload-model-input').addEventListener('change', async f
     }
 });
 
+// Best-effort cleanup for files uploaded by this browser tab.
+window.addEventListener('pagehide', notifyUploadCleanupOnClose);
+
         // Apply a server state snapshot to local UI — shared by SSE and fallback poll.
+let lastSliderRaw = null; // null = never received a server-side slider value yet
 function applyServerState(data) {
     if (data.cube_value !== undefined && data.cube_value !== lastPolledView) {
         lastPolledView = data.cube_value;
         pendingInputSource = 'cube';
         updateView(data.cube_value);
+    }
+    if (data.slider_value !== undefined) {
+        const rawValue = data.slider_value;
+        if (lastSliderRaw === null) {
+            // First reading — record but skip to avoid jumping depth to the
+            // server default (0) before the slider hardware has been moved.
+            lastSliderRaw = rawValue;
+        } else if (rawValue !== lastSliderRaw) {
+            lastSliderRaw = rawValue;
+            const newDepth = Math.round(Math.max(0, Math.min(100, (rawValue / 65535) * 100)));
+            pendingInputSource = 'slider';
+            updateSliceDepth(newDepth, false);
+        }
     }
     const modelDropdown = document.getElementById("model-list-dropdown");
     const dropdownFocused = document.activeElement === modelDropdown;
@@ -1023,23 +1508,27 @@ setInterval(() => {
 // Update zoom information
 function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
     const oldZoom = currentZoom;
-    currentZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Number(newZoom)));
+    const parsedZoom = Number(newZoom);
+    if (!Number.isFinite(parsedZoom)) {
+        return false;
+    }
+    currentZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, parsedZoom));
+
     const zoomText = currentZoom.toFixed(1);
-    zoomSlider.value = zoomText;
+    zoomInput.value = zoomText;
     zoomLevelValue.textContent = zoomText;
     refreshViewInfoSummary();
-    zoomSlider.setAttribute('aria-valuenow', zoomText);
-    zoomSlider.setAttribute('aria-valuetext', `zoom level ${zoomText}`);
+    zoomInput.setAttribute('aria-valuetext', `zoom ${formatZoomPercent(currentZoom)}`);
 
     updateButtonLabels();
 
     if (shouldAnnounce) {
-        announceStatus(`zoom ${zoomText}`);
+        announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom), false);
     }
 
     console.log(oldZoom, currentZoom);
     if (sendToServer && oldZoom !== currentZoom) {
-        if (currentRepresentationMode === 'slice-graph') {
+        if (isSliceGraphRepresentationMode()) {
             autoRefreshSliceGraph({ updateAnchor: false });
         } else {
             console.log("sendStateToServer");
@@ -1074,32 +1563,29 @@ function cycleRenderMode(shouldAnnounce = true) {
     switchToRenderMode(renderModes[nextIndex], shouldAnnounce);
 }
 
-function switchToProjectionMode(targetMode) {
-    if (currentProjectionMode === targetMode) {
-        announceStatus(`already ${targetMode}`);
-        return;
-    }
-    const previousMode = currentProjectionMode;
-    currentProjectionMode = targetMode;
-    syncRadios();
-    announce(`${previousMode} to ${currentProjectionMode} projection`);
-    sendStateToServer();
-}
-
 function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
     if (currentRepresentationMode === targetMode) {
         if (shouldAnnounce) announceStatus(`already ${targetMode.toLowerCase()}`);
         return;
     }
     const previousMode = currentRepresentationMode;
+    const enteringSliceGraph = !isSliceGraphRepresentationMode(previousMode) && isSliceGraphRepresentationMode(targetMode);
+
+    if (targetMode === 'slice-graph-difference') {
+        sliceGraphMode = 'difference';
+    } else if (targetMode === 'slice-graph-column-count') {
+        sliceGraphMode = 'column-count';
+    }
+
     currentRepresentationMode = targetMode;
     updateDisplayOptions();
-    if (targetMode === 'slice-graph') {
+    if (enteringSliceGraph) {
         sliceGraphLocked = true;
         captureSliceGraphAnchor(false);
     }
     updateButtonLabels();
     updateSliceGraphLockUI();
+    updateSliceGraphModeUI();
     updateSideBySideAxisLabels();
     syncRadios();
     if (shouldAnnounce) announce(`${previousMode.toLowerCase()} to ${currentRepresentationMode.toLowerCase()}`);
@@ -1155,11 +1641,7 @@ function announceStatus(message) {
 }
 
 function announceDepthShortcut(shortcutLabel, previousDepth, depthValue) {
-    if (previousDepth === depthValue) {
-        announceStatus(`shortcut ${shortcutLabel}: depth unchanged at ${depthValue}%`);
-        return;
-    }
-    announceStatus(`shortcut ${shortcutLabel}: ${depthAnnouncement(depthValue)}`);
+    announceParameterValue('slice-depth', 'Slice depth', depthAnnouncement(depthValue));
 }
 
 if (clearAnnouncementsBtn && announcementHistory) {
@@ -1190,6 +1672,13 @@ sliceSlider.addEventListener('change', function() {
     clearTimeout(sliderUpdateTimeout);
     pendingInputSource = 'ui';
     sendStateToServer();
+});
+
+// Sync aria-valuetext when the slider receives focus so it reflects any depth
+// changes made via keyboard shortcuts while focus was elsewhere.
+sliceSlider.addEventListener('focus', function() {
+    this.setAttribute('aria-valuenow', currentSliceDepth);
+    this.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
 });
 
 // Keyboard support for slider
@@ -1235,24 +1724,12 @@ document.addEventListener('change', function(e) {
     }
 });
 
-// Projection mode radios
-document.addEventListener('change', function(e) {
-    if (e.target && e.target.matches('input[name="projection-mode"]')) {
-        if (e.target.checked) {
-            pendingInputSource = 'ui';
-            switchToProjectionMode(e.target.value);
-        }
-    }
-});
-
 // View mode radios (Single, Side-by-side, Slice graph)
 document.addEventListener('change', function(e) {
     if (e.target && e.target.matches('input[name="view-mode"]')) {
         if (e.target.checked) {
             pendingInputSource = 'ui';
             switchToRepresentationMode(e.target.value);
-            updateDisplayOptions();
-            sendStateToServer();
         }
     }
 });
@@ -1277,22 +1754,39 @@ document.addEventListener('change', function(e) {
     }
 });
 
-// Zoom slider — debounce server sends on drag; commit immediately on release
+// Zoom number input — debounce while typing; commit on change/stepper controls
 let zoomDebounceTimer = null;
 
-zoomSlider.addEventListener('input', function() {
-    //updateZoom(this.value, false, false); // Update UI immediately, skip server send
+zoomInput.addEventListener('input', function() {
     clearTimeout(zoomDebounceTimer);
+    if (!Number.isFinite(this.valueAsNumber)) {
+        return;
+    }
     zoomDebounceTimer = setTimeout(() => {
         pendingInputSource = 'ui';
-        updateZoom(zoomSlider.value, false, true); // Send to server after 150ms idle
+        updateZoom(this.valueAsNumber, false, true);
     }, 150);
 });
 
-zoomSlider.addEventListener('change', function() {
+zoomInput.addEventListener('change', function() {
     clearTimeout(zoomDebounceTimer);
+    if (!Number.isFinite(this.valueAsNumber)) {
+        this.value = currentZoom.toFixed(1);
+        announceStatus('zoom value unchanged');
+        return;
+    }
     pendingInputSource = 'ui';
-    updateZoom(this.value, true, true); // Dragging stopped — send immediately
+    updateZoom(this.valueAsNumber, true, true);
+});
+
+zoomOutBtn.addEventListener('click', function() {
+    pendingInputSource = 'ui';
+    updateZoom(currentZoom - ZOOM_STEP, true, true);
+});
+
+zoomInBtn.addEventListener('click', function() {
+    pendingInputSource = 'ui';
+    updateZoom(currentZoom + ZOOM_STEP, true, true);
 });
 
 showViewInfoBoxCheckbox.addEventListener('change', function() {
@@ -1318,7 +1812,7 @@ sliceGraphLockBtn.addEventListener('click', function() {
 });
 
 sliceGraphRefreshBtn.addEventListener('click', function() {
-    if (currentRepresentationMode !== 'slice-graph') {
+    if (!isSliceGraphRepresentationMode()) {
         announceStatus('refresh only available in slice-graph mode');
         return;
     }
@@ -1326,6 +1820,13 @@ sliceGraphRefreshBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
     sendStateToServer();
 });
+
+if (sliceGraphModeBtn) {
+    sliceGraphModeBtn.addEventListener('click', function() {
+        toggleSliceGraphMode();
+        announce(`Slice graph mode ${sliceGraphMode === 'column-count' ? 'column count' : 'difference'}`);
+    });
+}
 
 if (resetPositionBtn) {
     resetPositionBtn.addEventListener('click', function() {
@@ -1378,114 +1879,158 @@ document.addEventListener('keydown', function(e) {
         return;
     }
 
-    if (e.repeat) {
-        return;
-    }
     const rawKey = String(e.key || '');
     const key = rawKey.toLowerCase();
     const code = String(e.code || '');
     const normalizedKey = (
-        code === 'Digit1' || code === 'Numpad1' ? '1' :
         code === 'Digit2' || code === 'Numpad2' ? '2' :
+        code === 'Digit3' || code === 'Numpad3' ? '3' :
+        code === 'Digit4' || code === 'Numpad4' ? '4' :
+        code === 'Digit5' || code === 'Numpad5' ? '5' :
+        code === 'Digit6' || code === 'Numpad6' ? '6' :
+        code === 'Digit7' || code === 'Numpad7' ? '7' :
         key
     );
     const supportedShortcuts = new Set([
-        '1', '2', '4', '5', '7', '8', '9', '0', '-', '=',
-        'q', 'e', 'f', 'r', 't', 'l', 'g', 'o', 'c', 'z',
-        'w', 'a', 's', 'd', '[', ']', 'i', 'h', 'p', 'escape'
+        'arrowup', 'arrowdown', 'pageup', 'pagedown',
+         '2', '3', 'q', 'e',
+        'u', 'i', 'o', 'j', 'k', 'l',
+        '4', '5', '6', '7', '8', '9', '0', '-', '=',
+        'r', 't', 'g', 'v', 'z',
+        'w', 'a', 's', 'd', '[', ']', 'h', 'p', '.', 'escape'
     ]);
 
     if (!supportedShortcuts.has(normalizedKey)) {
         return;
     }
 
+    // Allow key-hold repeat only for continuous controls (depth/zoom).
+    // For other shortcuts, swallow repeats so native radio-group arrow
+    // behavior cannot switch mode selections while a key is held.
+    const repeatableShortcuts = new Set([
+        'pageup', 'pagedown',
+        'arrowup', 'arrowdown', '2', '3',
+        '4', '5', 
+    ]);
+    if (e.repeat && !repeatableShortcuts.has(normalizedKey)) {
+        e.preventDefault();
+        return;
+    }
+
     switch(normalizedKey) {
-        case 'e':
+        case 'arrowup':
             // Go deeper (increase depth by 1%)
             e.preventDefault();
             {
                 const previousDepth = currentSliceDepth;
                 const nextDepth = Math.min(100, currentSliceDepth + 1);
                 updateSliceDepth(nextDepth, false);
-                announceDepthShortcut('E', previousDepth, nextDepth);
+                announceDepthShortcut('ArrowUp', previousDepth, nextDepth);
             }
             break;
-        case 'q':
+        case 'arrowdown':
             // Go shallower (decrease depth by 1%)
             e.preventDefault();
             {
                 const previousDepth = currentSliceDepth;
                 const nextDepth = Math.max(0, currentSliceDepth - 1);
                 updateSliceDepth(nextDepth, false);
-                announceDepthShortcut('Q', previousDepth, nextDepth);
+                announceDepthShortcut('ArrowDown', previousDepth, nextDepth);
             }
             break;
-        case '2':
+        case 'pageup':
             // Go deeper (increase depth by 10%)
             e.preventDefault();
             {
                 const previousDeeperDepth = currentSliceDepth;
                 const newDeeperDepth = Math.min(100, currentSliceDepth + 10);
                 updateSliceDepth(newDeeperDepth, false);
-                announceDepthShortcut('2', previousDeeperDepth, newDeeperDepth);
+                announceDepthShortcut('PageUp', previousDeeperDepth, newDeeperDepth);
             }
             break;
-            
-        case '1':
+        case 'pagedown':
             // Go shallower (decrease depth by 10%)
             e.preventDefault();
             {
                 const previousShallowerDepth = currentSliceDepth;
                 const newShallowerDepth = Math.max(0, currentSliceDepth - 10);
                 updateSliceDepth(newShallowerDepth, false);
-                announceDepthShortcut('1', previousShallowerDepth, newShallowerDepth);
+                announceDepthShortcut('PageDown/1', previousShallowerDepth, newShallowerDepth);
+            }
+            break;
+
+        case '2':
+            e.preventDefault();
+            {
+                const previousZoom = currentZoom;
+                const zoomChanged = updateZoom(currentZoom - 0.1, false, true);
+                if (zoomChanged) {
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom));
+                } else {
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(previousZoom));
+                }
+            }
+            break;
+        case '3':
+            e.preventDefault();
+            {
+                const previousZoom = currentZoom;
+                const zoomChanged = updateZoom(currentZoom + 0.1, false, true);
+                if (zoomChanged) {
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom));
+                } else {
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(previousZoom));
+                }
             }
             break;
             
-        // View shortcuts (first letter where available)
+        // View shortcuts
         case '7':
             e.preventDefault();
             if (updateView('x-', false)) {
-                announceStatus('shortcut 7: view x-');
+                announce('View changed: x-');
+            } else {
+                announce('View unchanged: x-');
             }
             break;
         case '8':
             e.preventDefault();
             if (updateView('x+', false)) {
-                announceStatus('shortcut 8: view x+');
+                announce('View changed: x+');
+            } else {
+                announce('View unchanged: x+');
             }
             break;
         case '9':
             e.preventDefault();
             if (updateView('z+', false)) {
-                announceStatus('shortcut 9: view z+');
+                announce('View changed: z+');
+            } else {
+                announce('View unchanged: z+');
             }
             break;
         case '0':
             e.preventDefault();
             if (updateView('z-', false)) {
-                announceStatus('shortcut 0: view z-');
+                announce('View changed: z-');
+            } else {
+                announce('View unchanged: z-');
             }
             break;
         case '-':
             e.preventDefault();
             if (updateView('y-', false)) {
-                announceStatus('shortcut -: view y-');
+                announce('View changed: y-');
+            } else {
+                announce('View unchanged: y-');
             }
             break;
         case '=':
             e.preventDefault();
             if (updateView('y+', false)) {
-                announceStatus('shortcut =: view y+');
-            }
-            break;
-            
-        case 'f':
-            e.preventDefault();
-            if (switchToRenderMode('Shaded', false)) {
-                announceStatus('shortcut F: mode shaded');
+                announce('View changed: y+');
             } else {
-                announceStatus('shortcut F: mode unchanged (shaded)');
+                announce('View unchanged: y+');
             }
             break;
 
@@ -1494,7 +2039,7 @@ document.addEventListener('keydown', function(e) {
             {
                 const previousMode = currentRenderMode;
                 cycleRenderMode(false);
-                announceStatus(`shortcut R: mode ${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
+                announce(`Render mode changed: ${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
             }
             break;
 
@@ -1503,81 +2048,108 @@ document.addEventListener('keydown', function(e) {
             {
                 const previousViewMode = currentRepresentationMode;
                 cycleRepresentationMode(false);
-                announceStatus(`shortcut T: view mode ${previousViewMode} to ${currentRepresentationMode}`);
+                announce(`Display mode changed: ${previousViewMode} to ${currentRepresentationMode}`);
             }
+            break;
+
+        case 'u':
+            e.preventDefault();
+            // Roll counterclockwise around current view direction.
+            applyRelativeRotation('roll', 1, 'Roll counterclockwise');
+            break;
+
+        case 'o':
+            e.preventDefault();
+            // Roll clockwise around current view direction.
+            applyRelativeRotation('roll', -1, 'Roll clockwise');
+            break;
+
+        case 'i':
+            e.preventDefault();
+            applyRelativeRotation('pitch', -1, 'Rotate up');
+            break;
+
+        case 'k':
+            e.preventDefault();
+            applyRelativeRotation('pitch', 1, 'Rotate down');
+            break;
+
+        case 'j':
+            e.preventDefault();
+            applyRelativeRotation('yaw', -1, 'Rotate left');
             break;
 
         case 'l':
             e.preventDefault();
-            toggleSliceGraphLock();
-            announceStatus(`shortcut L: slice graph lock ${sliceGraphLocked ? 'on' : 'off'}`);
+            applyRelativeRotation('yaw', 1, 'Rotate right');
+            break;
+
+        case '.':
+            // Read the full top-of-page status bar.
+            e.preventDefault();
+            announceStatus(getStatusBarAnnouncement());
             break;
 
         case 'g':
             e.preventDefault();
-            if (currentRepresentationMode !== 'slice-graph') {
-                announceStatus('shortcut G: no change, not in slice-graph mode');
+            if (!isSliceGraphRepresentationMode()) {
+                announce('Slice graph refresh: not in slice-graph mode');
                 break;
             }
             captureSliceGraphAnchor(true);
             sendStateToServer();
-            announceStatus(`shortcut G: slice graph refreshed at ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
-            break;
-            
-        case 'o':
-            e.preventDefault();
-            if (switchToRenderMode('Outline', false)) {
-                announceStatus('shortcut O: mode outline');
-            } else {
-                announceStatus('shortcut O: mode unchanged (outline)');
-            }
+            announce(`Slice graph refreshed: view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
             break;
 
-        case 'n':
-            // Switch to line view
+        case 'v':
             e.preventDefault();
-            switchToRenderMode('Line');
+            if (!isSliceGraphRepresentationMode()) {
+                announce('Slice graph lock: not in slice-graph mode');
+                break;
+            }
+            toggleSliceGraphLock();
+            announce(`Slice graph lock ${sliceGraphLocked ? 'on' : 'off'}`);
             break;
-            
+
         //case '0':
         //    // Jump to 0% depth (surface)
         //    e.preventDefault();
         //    updateSliceDepth(0, true);
         //    break;
-        //    
+        //
         case 'w':
             currentMoveCamera = "up";
             sendStateToServer();
             currentMoveCamera = "none";
-            announceStatus('shortcut W: moved scene up');
+            announce('Object panned up');
             break;
         case 'd':
             currentMoveCamera = "right";
             sendStateToServer();
             currentMoveCamera = "none";
-            announceStatus('shortcut D   moved scene right');
+            announce('Object panned right');
             break;
         case 's':
             currentMoveCamera = "down";
             sendStateToServer();
             currentMoveCamera = "none";
-            announceStatus('shortcut S: moved scene down');
+            announce('Object panned down');
             break;
         case '[':
             composeScrollbar = !composeScrollbar;
             sendStateToServer();
-            announceStatus(`shortcut [: compose scrollbar ${composeScrollbar ? 'on' : 'off'}`);
+            announce(`Compose scrollbar ${composeScrollbar ? 'on' : 'off'}`);
             break;
         case ']':
             composeSliceGraph = !composeSliceGraph;
             sendStateToServer();
-            announceStatus(`shortcut ]: compose slice graph ${composeSliceGraph ? 'on' : 'off'}`);
+            announce(`Compose slice graph ${composeSliceGraph ? 'on' : 'off'}`);
             break;
         case 'a':
             currentMoveCamera = "left";
             sendStateToServer();
             currentMoveCamera = "none";
-            announceStatus('shortcut A: moved scene left');
+            announce('Object panned left');
             break;
 
         case '4':
@@ -1586,9 +2158,9 @@ document.addEventListener('keydown', function(e) {
                 const previousZoom = currentZoom;
                 const zoomChanged = updateZoom(currentZoom - ZOOM_STEP, false);
                 if (zoomChanged) {
-                    announceStatus(`shortcut 4: zoom ${currentZoom.toFixed(1)}`);
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom));
                 } else {
-                    announceStatus(`shortcut 4: zoom unchanged at ${previousZoom.toFixed(1)}`);
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(previousZoom));
                 }
             }
             break;
@@ -1598,27 +2170,17 @@ document.addEventListener('keydown', function(e) {
                 const previousZoom = currentZoom;
                 const zoomChanged = updateZoom(currentZoom + ZOOM_STEP, false);
                 if (zoomChanged) {
-                    announceStatus(`shortcut 5: zoom ${currentZoom.toFixed(1)}`);
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom));
                 } else {
-                    announceStatus(`shortcut 5: zoom unchanged at ${previousZoom.toFixed(1)}`);
+                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(previousZoom));
                 }
             }
             break;
-            
-        case 'escape':
-            // Allow Escape key to remove focus from any element
-            document.activeElement.blur();
-            announceStatus('Focus cleared');
-            break;
 
-        case 'i':
-            // Concise current status
+        case 'escape':
             e.preventDefault();
-            {
-                const depthState = depthAnnouncement(currentSliceDepth).replace('depth ', '');
-                const statusMsg = `state: ${currentView}, ${depthState}, ${currentRenderMode.toLowerCase()}`;
-                announceStatus(`shortcut I: ${statusMsg}`);
-            }
+            document.activeElement.blur();
+            announce('Focus cleared');
             break;
 
         case 'h':
@@ -1632,17 +2194,8 @@ document.addEventListener('keydown', function(e) {
             break;
 
         case 'p':
-            announceStatus('shortcut P: printing current render');
+            announce('Printing current render');
             print_view();
-            break;
-
-        case 'c':
-            e.preventDefault();
-            if (switchToRenderMode('Cut', false)) {
-                announceStatus('shortcut C: render cut');
-            } else {
-                announceStatus('shortcut C: render unchanged (cut)');
-            }
             break;
 
         case 'z':
@@ -1650,7 +2203,7 @@ document.addEventListener('keydown', function(e) {
             currentMoveCamera = "reset";
             sendStateToServer();
             currentMoveCamera = "none";
-            announceStatus('shortcut Z: position reset');
+            announce('Position reset');
             break;
 
         default:
@@ -1683,6 +2236,7 @@ document.addEventListener('DOMContentLoaded', function() {
     syncRadios();
     updateButtonLabels();
     updateSliceGraphLockUI();
+    updateSliceGraphModeUI();
     refreshViewInfoSummary();
     showViewInfoBoxCheckbox.checked = showViewInfoBox;
     refreshStatusBar();

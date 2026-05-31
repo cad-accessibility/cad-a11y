@@ -35,7 +35,7 @@ COPY app/ ./app/
 COPY src/ ./src/
 COPY static/ ./static/
 COPY accessible-3d-viewer.html ./
-COPY data/models/ ./data/models/
+COPY src/models/brep/ ./data/models/
 
 # Runtime write directories are created here so the non-root user owns them.
 RUN mkdir -p data/renders data/logs

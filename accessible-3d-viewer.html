@@ -56,13 +56,25 @@
                 <span class="status-label">DotPad<span aria-hidden="true">:</span></span>
                 <span class="status-value" id="sb-dotpad">--</span>
             </span>
+            <span class="status-separator" aria-hidden="true">|</span>
+            <span class="status-item">
+                <span class="status-label">Pan Cmd<span aria-hidden="true">:</span></span>
+                <span class="status-value" id="sb-pan-cmd">none</span>
+            </span>
+            <span class="status-separator" aria-hidden="true">|</span>
+            <span class="status-item">
+                <span class="status-label">Pan Center<span aria-hidden="true">:</span></span>
+                <span class="status-value" id="sb-pan-center">--</span>
+            </span>
         </div>
 
-        <!-- SR live region: assertive so state-change notifications reach the Braille
-             display and screen reader immediately. polite defers announcements until
-             the user is idle — but exploration users are constantly pressing keys, so
-             polite updates are overwritten before AT ever presents them. -->
-        <div id="sr-live-announce" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
+        <!-- SR live regions: two-slot swap pattern. Alternating which element receives
+             text guarantees AT sees a fresh DOM mutation for every announcement,
+             including identical consecutive messages, without any clear+setTimeout
+             race. aria-live="assertive" so Braille displays and screen readers surface
+             state changes immediately even while the user is actively pressing keys. -->
+        <div id="sr-live-a" role="alert" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
+        <div id="sr-live-b" role="alert" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
 
         <!-- Visual toast for sighted users (hidden from SR – the live region above handles it) -->
         <div id="announcement-toast" aria-hidden="true"></div>
@@ -128,7 +140,7 @@
                     aria-valuetext="50 percent depth"
                     aria-describedby="slice-help"
                 >
-                <div id="slice-help" class="help-text sr-only">0% surface, 100% full depth. Keys: 1/2 coarse, Q/E fine.</div>
+                <div id="slice-help" class="help-text sr-only">0% surface, 100% full depth. Keys: Up shallower 1%, Down deeper 1%, Page Up/Down for coarse steps (10%).</div>
                 <div class="button-group">
                     <button type="button" id="deeper-btn" aria-describedby="deeper-help">Deeper: 50%</button>
                     <button type="button" id="shallower-btn" aria-describedby="shallower-help">Shallower: 50%</button>
@@ -141,10 +153,10 @@
             <section class="section" aria-labelledby="render-heading">
                 <h2 id="render-heading">Rendering Mode</h2>
                 <div id="render-help" class="help-text">
-                    Choose between Shaded (filled surfaces), Outline (silhouette), and Cut (cross-section slice)
+                    Choose one top-level mode: Shaded, Outline, Cut, or Orthographic
                 </div>
                 <div aria-describedby="render-help">
-                    <fieldset role="radiogroup" aria-labelledby="render-heading">
+                    <fieldset role="radiogroup" aria-labelledby="render-heading" class="top-mode-row">
                         <legend class="sr-only">Rendering Mode Options</legend>
                         <label>
                             <input type="radio" name="render-mode" id="render-mode-shaded" value="Shaded" checked>
@@ -158,22 +170,9 @@
                             <input type="radio" name="render-mode" id="render-mode-cut" value="Cut">
                             Cut
                         </label>
-                    </fieldset>
-                </div>
-
-                <div id="projection-mode-help" class="help-text" style="margin-top: 10px;">
-                    Choose projection: Orthographic or Slice
-                </div>
-                <div aria-describedby="projection-mode-help">
-                    <fieldset role="radiogroup" aria-labelledby="render-heading">
-                        <legend class="sr-only">Projection Mode Options</legend>
                         <label>
-                            <input type="radio" name="projection-mode" id="projection-mode-orthographic" value="orthographic" checked>
+                            <input type="radio" name="render-mode" id="render-mode-orthographic" value="Orthographic">
                             Orthographic
-                        </label>
-                        <label>
-                            <input type="radio" name="projection-mode" id="projection-mode-slice" value="slice">
-                            Slice
                         </label>
                     </fieldset>
                 </div>
@@ -193,8 +192,12 @@
                             Side-by-Side
                         </label>
                         <label>
-                            <input type="radio" name="view-mode" id="view-mode-slice-graph" value="slice-graph">
-                            Slice Graph
+                            <input type="radio" name="view-mode" id="view-mode-slice-graph-difference" value="slice-graph-difference">
+                            Slice Graph (Difference)
+                        </label>
+                        <label>
+                            <input type="radio" name="view-mode" id="view-mode-slice-graph-column-count" value="slice-graph-column-count">
+                            Slice Graph (Slice Area)
                         </label>
                     </fieldset>
                 </div>
@@ -203,24 +206,25 @@
             <!-- 1d. Zoom -->
             <section class="section" aria-labelledby="zoom-select-heading">
                 <h2 id="zoom-select-heading">Zoom</h2>
-                <label for="zoom-slider">
+                <label for="zoom-input">Zoom level
                     <span id="zoom-level-value">0.0</span>
                 </label>
                 <input
-                    type="range"
-                    id="zoom-slider"
+                    type="number"
+                    id="zoom-input"
                     min="0"
-                    max="3"
                     value="0"
                     step="0.1"
-                    aria-valuemin="0"
-                    aria-valuemax="3"
-                    aria-valuenow="0"
-                    aria-valuetext="zoom 0.0"
+                    inputmode="decimal"
                     aria-describedby="zoom-help"
+                    aria-valuetext="zoom 0%"
                 >
-                <div id="zoom-help" class="help-text sr-only">0 none, 3 max. Keys: 4 out, 5 in.</div>
-                <div class="button-group" style="margin-top: 8px;">
+                <div id="zoom-help" class="help-text sr-only">0 is fully zoomed out. Enter a number or use the zoom buttons. Keys: 4 and 5 for 1%, 2 and 3 for 10%. Zoom cannot go below 0.</div>
+                <div class="zoom-stepper-row" role="group" aria-label="Zoom adjustment controls">
+                    <button type="button" id="zoom-out-btn">Zoom Out</button>
+                    <button type="button" id="zoom-in-btn">Zoom In</button>
+                </div>
+                <div class="button-group zoom-reset-row" style="margin-top: 8px;">
                     <button type="button" id="reset-position-btn">Reset Position</button>
                 </div>
                 <div class="help-text sr-only">Snaps the view back to the default centered position. Key: Z.</div>
@@ -244,8 +248,11 @@
                     <button type="button" id="slice-graph-refresh-btn">
                         Refresh Graph
                     </button>
+                    <button type="button" id="slice-graph-mode-btn" aria-pressed="false">
+                        Graph Mode: Difference
+                    </button>
                 </div>
-                <div class="help-text" id="slice-graph-lock-status" aria-live="polite">Graph lock ON.</div>
+                <div class="help-text" id="slice-graph-lock-status" aria-live="assertive">Graph lock ON.</div>
 
                 <fieldset style="margin-top: 8px;">
                     <legend class="sr-only">Output device</legend>
@@ -276,7 +283,7 @@
                     <input type="file" id="upload-model-input" accept=".stl,.step,.STEP"
                         aria-label="Upload an STL or STEP model file">
                     <label for="upload-model-input" id="upload-model-label">Upload model…</label>
-                    <div id="upload-model-status" class="help-text" aria-live="polite" aria-atomic="true"></div>
+                    <div id="upload-model-status" class="help-text" aria-live="assertive" aria-atomic="true"></div>
                 </div>
             </section>
 
@@ -289,7 +296,7 @@
                     <button type="button" id="monarch-hid-connect-btn">Connect USB</button>
                     <button type="button" id="monarch-hid-disconnect-btn" disabled>Disconnect</button>
                 </div>
-                <div id="monarch-hid-status" role="status" aria-live="polite" aria-atomic="true" class="help-text">
+                <div id="monarch-hid-status" role="status" aria-live="assertive" aria-atomic="true" class="help-text">
                     Not connected.
                 </div>
             </section>
@@ -303,7 +310,7 @@
                     <button type="button" id="trinkey-connect-btn">Connect USB</button>
                     <button type="button" id="trinkey-disconnect-btn" disabled>Disconnect</button>
                 </div>
-                <div id="trinkey-status" role="status" aria-live="polite" aria-atomic="true" class="help-text">
+                <div id="trinkey-status" role="status" aria-live="assertive" aria-atomic="true" class="help-text">
                     Not connected.
                 </div>
                 <div class="help-text">Depth: <span id="trinkey-depth-value">--</span></div>
@@ -318,7 +325,7 @@
                     <button type="button" id="witmotion-connect-btn">Connect BLE</button>
                     <button type="button" id="witmotion-disconnect-btn" disabled>Disconnect</button>
                 </div>
-                <div id="witmotion-status" role="status" aria-live="polite" aria-atomic="true" class="help-text">
+                <div id="witmotion-status" role="status" aria-live="assertive" aria-atomic="true" class="help-text">
                     Not connected.
                 </div>
                 <div class="help-text">View: <span id="witmotion-view-value">--</span></div>
@@ -335,7 +342,7 @@
                     <button type="button" id="dotpad-scan-usb-btn">Connect USB</button>
                     <button type="button" id="dotpad-disconnect-btn" disabled>Disconnect</button>
                 </div>
-                <div id="dotpad-status" role="status" aria-live="polite" aria-atomic="true" class="help-text">
+                <div id="dotpad-status" role="status" aria-live="assertive" aria-atomic="true" class="help-text">
                     Not connected.
                 </div>
                 <label class="checkbox-label" for="dotpad-auto-send">
@@ -351,34 +358,38 @@
                 <h2 id="shortcuts-heading" tabindex="-1">Keyboard Shortcuts</h2>
                 <p class="help-text">Press <kbd>H</kbd> at any time to return focus here. Use your screen reader's reading keys to move through the list.</p>
                 <ul class="shortcuts-list">
-                    <li><kbd>1</kbd> Shallower 10%</li>
-                    <li><kbd>2</kbd> Deeper 10%</li>
-                    <li><kbd>Q</kbd> Shallower 1%</li>
-                    <li><kbd>E</kbd> Deeper 1%</li>
-                    <li><kbd>4</kbd> Zoom out</li>
-                    <li><kbd>5</kbd> Zoom in</li>
-                    <li><kbd>7</kbd> View x−</li>
+                    <li><kbd>Arrow Up</kbd> Shallower 1%</li>
+                    <li><kbd>Arrow Down</kbd> Deeper 1%</li>
+                    <li><kbd>Page Down</kbd> Shallower 10%</li>
+                    <li><kbd>Page Up</kbd> Deeper 10%</li>
+                    <li><kbd>4</kbd> Zoom out 1%</li>
+                    <li><kbd>5</kbd> Zoom in 1%</li>
+                    <li><kbd>2</kbd> Zoom out 10%</li>
+                    <li><kbd>3</kbd> Zoom in 10%</li>
+                    <li><kbd>U</kbd> Roll counterclockwise (90°)</li>
+                    <li><kbd>O</kbd> Roll clockwise (90°)</li>
+                    <li><kbd>I</kbd> Rotate up (pitch, 90°)</li>
+                    <li><kbd>K</kbd> Rotate down (pitch, 90°)</li>
+                    <li><kbd>J</kbd> Rotate left (yaw, 90°)</li>
+                    <li><kbd>L</kbd> Rotate right (yaw, 90°)</li>
+                    <li><kbd>7</kbd> View x-</li>
                     <li><kbd>8</kbd> View x+</li>
                     <li><kbd>9</kbd> View z+</li>
-                    <li><kbd>0</kbd> View z−</li>
-                    <li><kbd>−</kbd> View y−</li>
+                    <li><kbd>0</kbd> View z-</li>
+                    <li><kbd>-</kbd> View y-</li>
                     <li><kbd>=</kbd> View y+</li>
-                    <li><kbd>F</kbd> Render: shaded</li>
-                    <li><kbd>O</kbd> Render: outline</li>
-                    <li><kbd>N</kbd> Render: line</li>
-                    <li><kbd>C</kbd> Render: cut</li>
                     <li><kbd>R</kbd> Cycle render mode</li>
                     <li><kbd>T</kbd> Cycle view mode</li>
-                    <li><kbd>L</kbd> Slice graph lock on/off</li>
                     <li><kbd>G</kbd> Refresh slice graph</li>
+                    <li><kbd>V</kbd> Toggle slice-graph lock</li>
                     <li><kbd>Z</kbd> Reset position</li>
-                    <li><kbd>W</kbd> Move scene up</li>
-                    <li><kbd>A</kbd> Move scene left</li>
-                    <li><kbd>S</kbd> Move scene down</li>
-                    <li><kbd>D</kbd> Move scene right</li>
+                    <li><kbd>W</kbd> Pan object up</li>
+                    <li><kbd>A</kbd> Pan object left</li>
+                    <li><kbd>S</kbd> Pan object down</li>
+                    <li><kbd>D</kbd> Pan object right</li>
                     <li><kbd>[</kbd> Toggle scrollbar overlay</li>
                     <li><kbd>]</kbd> Toggle slice-graph overlay</li>
-                    <li><kbd>I</kbd> Read current status</li>
+                    <li><kbd>.</kbd> Read current status</li>
                     <li><kbd>P</kbd> Print current render</li>
                     <li><kbd>H</kbd> Focus this shortcuts list</li>
                     <li><kbd>Esc</kbd> Clear focus</li>
@@ -490,13 +501,13 @@
                     <div class="help-text" id="debug-pipeline-summary">
                         Waiting for render debug data...
                     </div>
-                    <div id="debug-stage-list" class="debug-stage-list"></div>
+                    <div id="debug-stage-list" class="debug-stage-list" aria-live="assertive"></div>
                 </div>
             </section>
         </main>
     </div>
 
-    <script src="/static/js/viewer.js"></script>
+    <script src="/static/js/viewer.js?v=20260529-5"></script>
 
     <!-- Monarch USB Browser HID integration (mirrors braille_display.py _send_to_monarch) -->
     <script src="/static/js/monarch-hid.js"></script>

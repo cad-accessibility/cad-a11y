@@ -9,7 +9,7 @@ import os, json
 import matplotlib.pyplot as plt
 import trimesh
 from .render_low_res import get_outlines
-from .plane_intersection_utils import depth_peeling_single_depth_with_bbox, faces_on_plane, compute_area, faces_on_plane_fast
+from .plane_intersection_utils import faces_on_plane, compute_area
 from .single_view_stl import get_single_view
 
 from OCC.Core.STEPControl import STEPControl_Reader
@@ -69,7 +69,34 @@ views = {
     }
 }
 
-def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cut="left",  rendering_mode="filled", imposed_ax_limits_legend=[], imposed_ax_limits_cut=[], screen_size=[60, 40], projection_mode="none"):
+
+def _safe_unit(vec):
+    """Return a normalized 3D vector or None for invalid input."""
+    try:
+        arr = np.asarray(vec, dtype=float).reshape(-1)
+    except Exception:
+        return None
+    if arr.shape[0] != 3:
+        return None
+    if not np.all(np.isfinite(arr)):
+        return None
+    norm = np.linalg.norm(arr)
+    if norm < 1e-12:
+        return None
+    return arr / norm
+
+
+def _extract_cut_normal(orientation_basis_cut):
+    """Extract forward/depth unit vector from an optional basis payload."""
+    if not isinstance(orientation_basis_cut, dict):
+        return None
+    depth_hint = orientation_basis_cut.get("depth", orientation_basis_cut.get("forward"))
+    return _safe_unit(depth_hint)
+
+def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cut="left",  rendering_mode="filled", imposed_ax_limits_legend=[], imposed_ax_limits_cut=[], screen_size=[60, 40], projection_mode="none", orientation_basis_cut=None, debug_info=None):
+
+    if isinstance(debug_info, dict):
+        debug_info["side_by_side_orientation_fallback"] = False
 
     #shape_brep_copy = deepcopy(shape_brep)
     # Calculate dimensions based on screen_size
@@ -78,152 +105,57 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     cut_width = total_width - legend_width  # Ensures exact fit
     total_height = screen_size[1]
     
-    # Cut view
-    #cut_depth = 0.5
-    normal_dir = views[view_key_cut]["dir"]
-    #shape_brep_cut, plane_origin = depth_peeling_single_depth_with_bbox(shape_brep, gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
-    #                                                              depth=cut_depth, bbox=bbox)
-    shape_cut, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
-    if rendering_mode == "slice":
-        shape_cut = faces_on_plane_fast(shape_cut, plane_origin, normal_dir)
+    requested_projection_mode = (projection_mode or "orthographic").lower()
+    if requested_projection_mode == "none":
+        requested_projection_mode = "orthographic"
 
-    # Target pixel resolution (cut view gets 2/3 of width)
-    width_px, height_px = cut_width, total_height
-    dpi = 100 
-    fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
-    ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
-    ax.axis('off')
+    # Cut view — delegate fully to get_single_view so that depth-peeling and
+    # slice-face extraction happen exactly once, in the same code path used by
+    # single mode.  Pre-processing the shape here and then calling get_single_view
+    # with cut_depth=0.0 caused a double-slice at the wrong plane position.
+    orientation_basis_for_cut = orientation_basis_cut
 
-    #area = compute_area(shape_brep_cut)
-    #if not np.isclose(area, 0.0):
-    if type(shape_cut) != list and len(shape_cut.faces) > 0 and not np.isclose(shape_cut.area, 0.0):
-        #write_stl_file(shape_brep_cut, "model.stl", linear_deflection=0.1)
-        #shape = trimesh.load_mesh("model.stl")
+    # Compute normal_dir and plane_origin for the legend cut-line indicator only.
+    # Do NOT use these to pre-process shape; get_single_view owns that pipeline.
+    normal_dir = _extract_cut_normal(orientation_basis_cut)
+    if normal_dir is None:
+        normal_dir = views[view_key_cut]["dir"]
+    xmin, ymin, zmin, xmax, ymax, zmax = bbox
+    _corners = [np.array([x, y, z]) for x in (xmin, xmax) for y in (ymin, ymax) for z in (zmin, zmax)]
+    _projs = [np.dot(c, normal_dir) for c in _corners]
+    plane_origin = (min(_projs) + cut_depth * (max(_projs) - min(_projs))) * normal_dir
 
-        colors = [0.0 for i in range(len(shape_cut.faces))]
-        if view_key_cut == "top":
-            coords = shape_cut.vertices[:,[0,1]]
-        if view_key_cut == "front":
-            coords = shape_cut.vertices[:,[0,2]]
-        if view_key_cut == "left":
-            coords = shape_cut.vertices[:,[1,2]]
-        if view_key_cut == "bottom":
-            coords = shape_cut.vertices[:,[0,1]]
-            coords[:,0] *= -1
-            coords[:,1] *= -1
-        if view_key_cut == "back":
-            coords = shape_cut.vertices[:,[0,2]]
-            coords[:,0] *= -1
-        if view_key_cut == "right":
-            coords = shape_cut.vertices[:,[1,2]]
-            coords[:,0] *= -1
-        ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape_cut.faces, aa=True)
+    cut_render_mode = rendering_mode
+    if requested_projection_mode == "cut":
+        cut_render_mode = "slice"
+        requested_projection_mode = "orthographic"
 
-    ax.set_aspect('equal')
-    ax = plt.gca()
-    if len(imposed_ax_limits_cut) > 0:
-        ax.set_xlim(imposed_ax_limits_cut[0])
-        ax.set_ylim(imposed_ax_limits_cut[1])
-    ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=dpi, pad_inches=0)
-    fig.clear()
-    buf.seek(0)
-
-    img = Image.open(buf)
-    img_np = np.array(img)
-    #for i in range(img_np.shape[0]):
-    #    for j in range(img_np.shape[1]):
-    #        if img_np[i,j,0] == 255:
-    #            print(1, end='')
-    #        else:
-    #            print(0, end='')
-    #    print()
-
-    #plt.imshow(img_np)
-    #plt.show()
-    if plt.fignum_exists(fig.number):
-        plt.close(fig.number)
-
-    # Right panel (cut view) follows the selected render mode.
-    if rendering_mode == "outline":
-        cut_img = get_outlines(img_np)
-    else:
-        cut_img = img_np
+    cut_img, _ = get_single_view(
+        shape,
+        bbox,
+        cut_depth=cut_depth,
+        view_key=view_key_cut,
+        rendering_mode=cut_render_mode,
+        imposed_ax_limits=imposed_ax_limits_cut,
+        screen_size=[cut_width, total_height],
+        projection_mode=requested_projection_mode,
+        orientation_basis=orientation_basis_for_cut,
+    )
 
     # Legend - view
     #shape_brep = shape_brep_copy
 
-    normal_dir = views[view_key_legend]["dir"]
-
-    # Target pixel resolution (legend view gets 1/3 of width)
-    width_px, height_px = legend_width, total_height
-    dpi = 100 
-    fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
-    ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
-    ax.axis('off')
-
-    #area = compute_area(shape_brep)
-    if not np.isclose(shape.area, 0.0):
-        #write_stl_file(shape_brep, "model.stl", linear_deflection=0.1)
-        #shape = trimesh.load_mesh("model.stl")
-
-        colors = [0.0 for i in range(len(shape.faces))]
-        if view_key_legend == "top":
-            coords = shape.vertices[:,[0,1]]
-        if view_key_legend == "front":
-            coords = shape.vertices[:,[0,2]]
-        if view_key_legend == "left":
-            coords = shape.vertices[:,[1,2]]
-        if view_key_legend == "bottom":
-            coords = shape.vertices[:,[0,1]]
-            coords[:,0] *= -1
-            coords[:,1] *= -1
-        if view_key_legend == "back":
-            coords = shape.vertices[:,[0,2]]
-            coords[:,0] *= -1
-        if view_key_legend == "right":
-            coords = shape.vertices[:,[1,2]]
-            coords[:,0] *= -1
-        ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape.faces, aa=True)
-
-
-    ax.set_aspect('equal')
-    ax = plt.gca()
-    if len(imposed_ax_limits_legend) > 0:
-        ax.set_xlim(imposed_ax_limits_legend[0])
-        ax.set_ylim(imposed_ax_limits_legend[1])
-    ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
-    # Expand by 1 pixel on each side so the model never fills the full width,
-    # ensuring the slice line is always visible at the edge.
-    x_margin = (ax_limits[0][1] - ax_limits[0][0]) / legend_width
-    y_margin = (ax_limits[1][1] - ax_limits[1][0]) / total_height
-    ax.set_xlim(ax_limits[0][0] - x_margin, ax_limits[0][1] + x_margin)
-    ax.set_ylim(ax_limits[1][0] - y_margin, ax_limits[1][1] + y_margin)
-    legend_ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=dpi, pad_inches=0)
-    fig.clear()
-    buf.seek(0)
-
-    img = Image.open(buf)
-    img_np = np.array(img)
-    #for i in range(img_np.shape[0]):
-    #    for j in range(img_np.shape[1]):
-    #        if img_np[i,j,0] == 255:
-    #            print(1, end='')
-    #        else:
-    #            print(0, end='')
-    #    print()
-
-    #plt.imshow(img_np)
-    #plt.show()
-    if plt.fignum_exists(fig.number):
-        plt.close(fig.number)
-    # Left panel (legend view) stays visually stable across render mode changes.
-    legend_img = get_outlines(img_np)
+    legend_img, _ = get_single_view(
+        shape,
+        bbox,
+        cut_depth=0.0,
+        view_key=view_key_legend,
+        rendering_mode="outline",
+        imposed_ax_limits=imposed_ax_limits_legend,
+        screen_size=[legend_width, total_height],
+        projection_mode="orthographic",
+    )
+    legend_ax_limits = np.array(imposed_ax_limits_legend) if len(imposed_ax_limits_legend) > 0 else np.array([[0.0, float(legend_width)], [0.0, float(total_height)]])
 
     # Line img (must match legend width)
     width_px, height_px = legend_width, total_height
@@ -232,7 +164,9 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
     ax.axis('off')
     # Add line at plane_origin in legend_img
-    line_vec = np.cross(views[view_key_cut]["dir"], views[view_key_legend]["dir"])
+    line_vec = np.cross(normal_dir, views[view_key_legend]["dir"])
+    if np.linalg.norm(line_vec) < 1e-12:
+        line_vec = np.cross(views[view_key_cut]["dir"], views[view_key_legend]["dir"])
 
     plane_origin_np = np.array(plane_origin)
     #print("plane_origin_np", plane_origin_np)
@@ -263,7 +197,6 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     ax.set_xlim(legend_ax_limits[0])
     ax.set_ylim(legend_ax_limits[1])
     ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
-    print(ax_limits)
 
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=dpi, pad_inches=0)

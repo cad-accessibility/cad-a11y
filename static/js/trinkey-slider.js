@@ -18,6 +18,7 @@
     let port = null;
     let reader = null;
     let running = false;
+    let readLoopDone = Promise.resolve(); // resolves when startReading has released its reader lock
     let lastHardwareDepth = null;   // last depth value sent to updateSliceDepth
     let depthSettleTimer = null;    // fires a single announcement after slider stops
 
@@ -76,6 +77,9 @@
             try { await reader.cancel(); } catch (_) {}
             reader = null;
         }
+        // Wait for startReading's finally block to release the reader lock before
+        // closing the port — port.close() throws if port.readable is still locked.
+        await readLoopDone;
         if (port) {
             try { await port.close(); } catch (_) {}
             port = null;
@@ -90,19 +94,23 @@
     async function startReading() {
         running = true;
 
-        // Stream readable bytes through a text decoder.
-        const decoder = new TextDecoderStream();
-        const pipePromise = port.readable.pipeTo(decoder.writable);
-        reader = decoder.readable.getReader();
-
+        // Use port.readable directly (no TextDecoderStream/pipeTo) so that
+        // reader.releaseLock() in the finally block frees port.readable before
+        // disconnect() calls port.close(). The pipeTo pattern locks port.readable
+        // for the lifetime of the pipe, causing port.close() to throw when called
+        // from disconnect() before the pipe has fully unwound.
+        reader = port.readable.getReader();
+        const textDecoder = new TextDecoder();
         let buffer = '';
         let samples = [];
+        let resolveReadLoopDone;
+        readLoopDone = new Promise(r => { resolveReadLoopDone = r; });
 
         try {
             while (running) {
                 const { value, done } = await reader.read();
                 if (done) break;
-                if (value) buffer += value;
+                if (value) buffer += textDecoder.decode(value, { stream: true });
 
                 // Process all complete lines in the buffer.
                 let nl;
@@ -124,9 +132,6 @@
                     if (depthValueEl) depthValueEl.textContent = depth + '%';
 
                     // Only propagate when the position has moved by ≥ MIN_DEPTH_CHANGE.
-                    // This filters ADC jitter at a fixed physical position (typically ±1%)
-                    // so that holding the slider still produces no ARIA mutations and
-                    // therefore no screen reader announcements.
                     if (lastHardwareDepth === null || Math.abs(depth - lastHardwareDepth) >= MIN_DEPTH_CHANGE) {
                         lastHardwareDepth = depth;
                         if (typeof updateSliceDepth === 'function') {
@@ -136,26 +141,26 @@
                     }
 
                     // Announce the settled depth once after the slider has been idle.
-                    // While the slider is actively moving, this timer is cancelled and
-                    // rescheduled on every sample batch — so only the final resting
-                    // position produces an announcement.
                     clearTimeout(depthSettleTimer);
                     depthSettleTimer = setTimeout(() => {
                         if (lastHardwareDepth !== null && typeof announce === 'function') {
-                            const msg = typeof depthAnnouncement === 'function'
-                                ? depthAnnouncement(lastHardwareDepth)
-                                : `depth ${lastHardwareDepth}%`;
-                            announce(msg);
+                            if (typeof announceParameterValue === 'function') {
+                                announceParameterValue('slice-depth', 'Slice depth', `${lastHardwareDepth}%`);
+                            } else {
+                                const msg = typeof depthAnnouncement === 'function'
+                                    ? depthAnnouncement(lastHardwareDepth)
+                                    : `${lastHardwareDepth}%`;
+                                announce(msg);
+                            }
                         }
                     }, DEPTH_SETTLE_MS);
                 }
             }
         } catch (err) {
-            if (running) {
-                await disconnect('Lost connection: ' + err.message);
-            }
+            if (running) disconnect('Lost connection: ' + err.message);
+        } finally {
+            try { reader.releaseLock(); } catch (_) {}
+            resolveReadLoopDone();
         }
-
-        try { await pipePromise; } catch (_) {}
     }
 })();

@@ -227,6 +227,51 @@ input[type="checkbox"] {
     vertical-align: middle;
 }
 
+/* Zoom stepper: compact native number input + explicit zoom buttons */
+#zoom-input {
+    width: 8ch;
+    max-width: 100%;
+    min-height: 44px;
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid #c7d2dc;
+    border-radius: 6px;
+    font-size: 1rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.zoom-stepper-row {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+#zoom-out-btn,
+#zoom-in-btn {
+    min-width: 110px;
+    min-height: 44px;
+    margin: 0;
+    padding: 10px 12px;
+}
+
+.zoom-reset-row {
+    margin-top: 10px;
+}
+
+@media (max-width: 640px) {
+    .zoom-stepper-row {
+        display: flex;
+        width: 100%;
+    }
+
+    #zoom-out-btn,
+    #zoom-in-btn {
+        flex: 1 1 140px;
+    }
+}
+
 
 .checkbox-label {
     display: flex;
@@ -286,6 +331,13 @@ fieldset label {
     min-height: 44px;
     padding: 4px 8px;
     cursor: pointer;
+}
+
+.top-mode-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    align-items: center;
 }
 
 /* Info display styling */

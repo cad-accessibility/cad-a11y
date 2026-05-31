@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import contextlib
 import hashlib
 import io
@@ -23,9 +24,11 @@ import sys
 import threading
 import time
 import webbrowser
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import uuid
 
 import numpy as np
 from flask import Flask, Response, has_request_context, jsonify, request, send_file, stream_with_context
@@ -87,6 +90,49 @@ RENDERS_DIR = REPO_ROOT / "data" / "renders"
 STUDY_LOG_DIR = REPO_ROOT / "data" / "logs"
 BRAILLE_LOG_PATH = Path(os.getenv("BRAILLE_LOG_PATH", str(STUDY_LOG_DIR / "braille_send_events.jsonl")))
 
+
+def _is_writable_directory(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return False
+
+    # Write/unlink probe catches bind mounts that exist but are not writable.
+    probe = path / f".cad_a11y_write_test_{uuid.uuid4().hex}"
+    try:
+        with probe.open("wb") as handle:
+            handle.write(b"ok")
+        probe.unlink(missing_ok=True)
+        return True
+    except Exception:
+        with contextlib.suppress(Exception):
+            probe.unlink(missing_ok=True)
+        return False
+
+
+def _resolve_upload_dir() -> Path:
+    env_dir = os.getenv("UPLOAD_MODEL_DIR", "").strip()
+    candidates: list[Path] = []
+    if env_dir:
+        candidates.append(Path(env_dir))
+    candidates.extend(
+        [
+            MODEL_DIR,
+            REPO_ROOT / "data" / "uploads",
+            Path("/tmp/cad-a11y/models"),
+        ]
+    )
+
+    # Preserve order while removing duplicates.
+    deduped_candidates = list(dict.fromkeys(candidates))
+    for candidate in deduped_candidates:
+        if _is_writable_directory(candidate):
+            return candidate
+    return MODEL_DIR
+
+
+UPLOAD_DIR = _resolve_upload_dir()
+
 DEFAULT_RENDER_PARAMS: dict[str, Any] = {
     "view": "y-",
     "zoom": "0",
@@ -147,6 +193,12 @@ commands_log_lock = threading.Lock()
 braille_send_sequence = 0
 last_render_fingerprint: str | None = None
 last_render_response: dict[str, Any] | None = None
+RENDER_QUANTIZED_CACHE_MAX = int(os.getenv("RENDER_QUANTIZED_CACHE_MAX", "128"))
+quantized_render_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+quantized_render_cache_lock = threading.Lock()
+PREVIEW_PAYLOAD_CACHE_MAX = int(os.getenv("PREVIEW_PAYLOAD_CACHE_MAX", "128"))
+preview_payload_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+preview_payload_cache_lock = threading.Lock()
 
 # SSE client registry — each connected browser tab gets its own queue.
 import queue as _queue_module
@@ -186,8 +238,10 @@ def _renderer_stdio_guard():
 def _discover_models() -> list[Path]:
     patterns = ("*.stl", "*.step", "*.STEP")
     models: list[Path] = []
-    for pattern in patterns:
-        models.extend(sorted(MODEL_DIR.glob(pattern)))
+    search_dirs = list(dict.fromkeys([MODEL_DIR, UPLOAD_DIR]))
+    for model_dir in search_dirs:
+        for pattern in patterns:
+            models.extend(sorted(model_dir.glob(pattern)))
     # Deduplicate while preserving order.
     return list(dict.fromkeys(models))
 
@@ -202,6 +256,22 @@ def _find_default_model() -> Path:
 DEFAULT_MODEL = _find_default_model()
 AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
 MODEL_NAME_LIST = [model_path.stem for model_path in AVAILABLE_MODELS]
+_model_list_last_refresh: float = 0.0
+_MODEL_LIST_REFRESH_INTERVAL = 2.0  # seconds
+
+
+def _refresh_model_list_if_stale() -> None:
+    """Refresh AVAILABLE_MODELS/MODEL_NAME_LIST from disk at most every 2 s."""
+    global AVAILABLE_MODELS, MODEL_NAME_LIST, _model_list_last_refresh
+    now = time.monotonic()
+    if now - _model_list_last_refresh < _MODEL_LIST_REFRESH_INTERVAL:
+        return
+    with models_lock:
+        if now - _model_list_last_refresh < _MODEL_LIST_REFRESH_INTERVAL:
+            return  # another thread already refreshed
+        AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
+        MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
+        _model_list_last_refresh = time.monotonic()
 
 
 def _normalize_model_index(raw_index: Any) -> int:
@@ -225,14 +295,21 @@ def get_or_create_renderer(model_index: int | None = None) -> CADComparisonRende
             _log(f"Initializing CAD renderer with: {model_path}")
             out_guard, err_guard = _renderer_stdio_guard()
             with out_guard, err_guard:
-                renderers_by_model[index] = CADComparisonRenderer(str(model_path), str(model_path))
+                renderer = CADComparisonRenderer(
+                    str(model_path),
+                    str(model_path),
+                    defer_slice_graph_precompute=True,
+                )
+                renderer.start_background_slice_precompute()
+                renderers_by_model[index] = renderer
         return renderers_by_model[index]
 
 
 def _to_braille_payload(rendered_rgba: np.ndarray) -> np.ndarray:
-    # Existing flow from previous server: invert first channel and convert to 0/255.
-    payload = np.bitwise_not(rendered_rgba[:, :, 0])
-    return np.where(payload > 0, 255, 0).astype(np.uint8)
+    # Convert renderer output to braille payload using a single deterministic
+    # rule for all modes: any non-white pixel is raised.
+    channel = rendered_rgba[:, :, 0].astype(np.uint8, copy=False)
+    return np.where(channel < 255, 255, 0).astype(np.uint8)
 
 
 def _payload_stats(payload: np.ndarray) -> dict[str, Any]:
@@ -279,28 +356,27 @@ def _next_braille_send_sequence() -> int:
 
 
 def _make_hifi_preview(
-    params: dict[str, Any], model_index: int, preview_width: int = 800
+    params: dict[str, Any], model_index: int, preview_width: int = 800, *, use_cache: bool = True
 ) -> tuple[str, list[int]]:
     """Render at high resolution and return (base64_png, [height, width]).
 
-    Channel 0 of the renderer output has background=255 and lines=0/dark,
-    so displaying it directly gives natural black-on-white appearance.
+    Return strict binary black-on-white preview (no grayscale).
     """
     engine = get_or_create_renderer(model_index)
-    out_guard, err_guard = _renderer_stdio_guard()
-    with render_lock:
-        orig = list(engine.screen_size) if engine.screen_size else [96, 40]
-        w0, h0 = max(1, orig[0]), max(1, orig[1] if len(orig) > 1 else orig[0])
-        hifi_h = max(1, int(round(preview_width * h0 / w0)))
-        engine.screen_size = [preview_width, hifi_h]
-        try:
-            with out_guard, err_guard:
-                hifi = engine.render(params)
-        finally:
-            engine.screen_size = orig
+    orig = list(engine.screen_size) if engine.screen_size else [96, 40]
+    w0, h0 = max(1, orig[0]), max(1, orig[1] if len(orig) > 1 else orig[0])
+    hifi_h = max(1, int(round(preview_width * h0 / w0)))
 
-    channel = np.bitwise_not(hifi[:, :, 0])
-    return _img_to_base64_png(channel), list(channel.shape)
+    payload = _get_braille_payload_at_size(
+        params,
+        model_index=model_index,
+        pixel_width=preview_width,
+        pixel_height=hifi_h,
+        use_cache=use_cache,
+    )
+    # Preview is visual black-on-white while payload semantics are raised=255.
+    preview_bw = np.where(payload > 0, 0, 255).astype(np.uint8)
+    return _img_to_base64_png(preview_bw), list(preview_bw.shape)
 
 
 def _render_and_send(
@@ -420,14 +496,70 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
     # Normalise view to lowercase string.
     merged["view"] = str(merged.get("view", "")).lower()
 
+    orientation = merged.get("orientation")
+    if isinstance(orientation, dict):
+        def _vec3(value: Any) -> list[float] | None:
+            if not isinstance(value, (list, tuple)) or len(value) != 3:
+                return None
+            out: list[float] = []
+            for component in value:
+                try:
+                    out.append(float(component))
+                except (TypeError, ValueError):
+                    return None
+            return out
+
+        forward = _vec3(orientation.get("forward"))
+        up = _vec3(orientation.get("up"))
+        right = _vec3(orientation.get("right"))
+        if forward is not None and up is not None and right is not None:
+            merged["orientation"] = {
+                "scheme": str(orientation.get("scheme", "basis-v1")),
+                "forward": forward,
+                "up": up,
+                "right": right,
+            }
+        else:
+            merged["orientation"] = None
+    else:
+        merged["orientation"] = None
+
+    camera_center = merged.get("camera_center")
+    if isinstance(camera_center, (list, tuple)) and len(camera_center) == 2:
+        try:
+            merged["camera_center"] = [float(camera_center[0]), float(camera_center[1])]
+        except (TypeError, ValueError):
+            merged["camera_center"] = None
+    else:
+        merged["camera_center"] = None
+
+    world_camera_center = merged.get("world_camera_center")
+    if isinstance(world_camera_center, (list, tuple)) and len(world_camera_center) == 3:
+        try:
+            merged["world_camera_center"] = [
+                float(world_camera_center[0]),
+                float(world_camera_center[1]),
+                float(world_camera_center[2]),
+            ]
+        except (TypeError, ValueError):
+            merged["world_camera_center"] = None
+    else:
+        merged["world_camera_center"] = None
+
     model_index = _normalize_model_index(data.get("current_model"))
 
+    # Camera moves are computed relative to the supplied camera_center, so they
+    # must bypass cache lookup; otherwise a move request can hit a cached image
+    # for the pre-move center and appear to do nothing.
     is_pan_request = str(merged.get("move_camera_center", "none")).lower() != "none"
 
     # Fingerprint for caching (excludes transient fields).
-    fp_keys = ("view", "zoom", "depth", "renderMode", "mode", "current_model",
+    fp_keys = ("view", "zoom", "depth", "renderMode", "projectionMode", "mode", "current_model",
+               "orientation",
+               "camera_center",
+               "world_camera_center",
                "compose_scrollbar", "compose_slicegraph", "show_view_info_box",
-               "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth")
+               "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth", "slicegraph_mode")
     fp_dict = {k: merged.get(k) for k in fp_keys}
     fp_dict["model_index"] = model_index
     fingerprint = hashlib.sha256(json.dumps(fp_dict, sort_keys=True).encode()).hexdigest()
@@ -435,23 +567,156 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
     return merged, model_index, is_pan_request, fingerprint
 
 
+def _build_quantized_render_key(params: dict[str, Any], model_index: int) -> str:
+    """Build a stable coarse key for near-identical interactive requests."""
+    quantized = {
+        "model_index": model_index,
+        "view": str(params.get("view", "")).lower(),
+        "orientation": params.get("orientation"),
+        "camera_center": params.get("camera_center"),
+        "world_camera_center": params.get("world_camera_center"),
+        "depth": round(float(params.get("depth", 0)), 0),
+        "zoom": round(float(params.get("zoom", 0.0)), 2),
+        "renderMode": str(params.get("renderMode", "")).lower(),
+        "projectionMode": str(params.get("projectionMode", "orthographic")).lower(),
+        "mode": str(params.get("mode", "single")).lower(),
+        "compose_scrollbar": bool(params.get("compose_scrollbar", False)),
+        "compose_slicegraph": bool(params.get("compose_slicegraph", False)),
+        "slicegraph_locked": bool(params.get("slicegraph_locked", False)),
+        "slicegraph_view": str(params.get("slicegraph_view", "")).lower(),
+        "slicegraph_depth": round(float(params.get("slicegraph_depth", 0)), 0),
+        "slicegraph_mode": str(params.get("slicegraph_mode", "difference")).lower(),
+    }
+    return hashlib.sha256(json.dumps(quantized, sort_keys=True).encode()).hexdigest()
+
+
+def _get_quantized_cached_response(cache_key: str) -> dict[str, Any] | None:
+    with quantized_render_cache_lock:
+        cached = quantized_render_cache.get(cache_key)
+        if cached is None:
+            return None
+        quantized_render_cache.move_to_end(cache_key)
+        return copy.deepcopy(cached)
+
+
+def _set_quantized_cached_response(cache_key: str, response: dict[str, Any]) -> None:
+    with quantized_render_cache_lock:
+        quantized_render_cache[cache_key] = copy.deepcopy(response)
+        quantized_render_cache.move_to_end(cache_key)
+        while len(quantized_render_cache) > max(1, RENDER_QUANTIZED_CACHE_MAX):
+            quantized_render_cache.popitem(last=False)
+
+
+def _build_preview_payload_cache_key(
+    params: dict[str, Any], model_index: int, pixel_width: int, pixel_height: int
+) -> str:
+    fp_keys = (
+        "view",
+        "zoom",
+        "depth",
+        "renderMode",
+        "projectionMode",
+        "mode",
+        "orientation",
+        "camera_center",
+        "world_camera_center",
+        "compose_scrollbar",
+        "compose_slicegraph",
+        "show_view_info_box",
+        "slicegraph_locked",
+        "slicegraph_view",
+        "slicegraph_depth",
+        "slicegraph_mode",
+    )
+    fp_dict = {k: params.get(k) for k in fp_keys}
+    fp_dict["model_index"] = model_index
+    fp_dict["pixel_width"] = int(pixel_width)
+    fp_dict["pixel_height"] = int(pixel_height)
+    return hashlib.sha256(json.dumps(fp_dict, sort_keys=True).encode()).hexdigest()
+
+
+def _get_preview_payload_cached(cache_key: str) -> np.ndarray | None:
+    with preview_payload_cache_lock:
+        cached = preview_payload_cache.get(cache_key)
+        if cached is None:
+            return None
+        preview_payload_cache.move_to_end(cache_key)
+        return cached.copy()
+
+
+def _set_preview_payload_cached(cache_key: str, payload: np.ndarray) -> None:
+    with preview_payload_cache_lock:
+        preview_payload_cache[cache_key] = payload.copy()
+        preview_payload_cache.move_to_end(cache_key)
+        while len(preview_payload_cache) > max(1, PREVIEW_PAYLOAD_CACHE_MAX):
+            preview_payload_cache.popitem(last=False)
+
+
+def _render_braille_payload_at_size(
+    params: dict[str, Any], *, model_index: int, pixel_width: int, pixel_height: int
+) -> np.ndarray:
+    engine = get_or_create_renderer(model_index)
+    out_guard, err_guard = _renderer_stdio_guard()
+    with render_lock:
+        original_screen_size = list(engine.screen_size) if engine.screen_size else [96, 40]
+        engine.screen_size = [max(1, int(pixel_width)), max(1, int(pixel_height))]
+        try:
+            with out_guard, err_guard:
+                rendered = engine.render(params)
+        finally:
+            engine.screen_size = original_screen_size
+    return _to_braille_payload(rendered)
+
+
+def _get_braille_payload_at_size(
+    params: dict[str, Any], *, model_index: int, pixel_width: int, pixel_height: int, use_cache: bool = True
+) -> np.ndarray:
+    if not use_cache:
+        return _render_braille_payload_at_size(
+            params,
+            model_index=model_index,
+            pixel_width=pixel_width,
+            pixel_height=pixel_height,
+        )
+
+    cache_key = _build_preview_payload_cache_key(
+        params,
+        model_index=model_index,
+        pixel_width=pixel_width,
+        pixel_height=pixel_height,
+    )
+    cached = _get_preview_payload_cached(cache_key)
+    if cached is not None:
+        return cached
+
+    payload = _render_braille_payload_at_size(
+        params,
+        model_index=model_index,
+        pixel_width=pixel_width,
+        pixel_height=pixel_height,
+    )
+    _set_preview_payload_cached(cache_key, payload)
+    return payload
+
+
 def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     """Render, send to braille display, and build JSON response dict."""
+    _refresh_model_list_if_stale()
     model_index = _normalize_model_index(params.get("current_model"))
     rendered, bbox, braille_payload = _render_and_send(params, source=source, model_index=model_index)
 
     engine = get_or_create_renderer(model_index)
     _save_print_if_requested(params, engine, rendered)
 
-    preview_b64, preview_shape = _make_hifi_preview(params, model_index)
     response: dict[str, Any] = {
         "status": "success",
         "image_base64": _img_to_base64_png(braille_payload),
         "image_shape": list(braille_payload.shape),
-        "render_preview_base64": preview_b64,
-        "render_preview_shape": preview_shape,
         "model_list": MODEL_NAME_LIST,
     }
+    debug_info = getattr(engine, "last_render_debug", None)
+    if isinstance(debug_info, dict) and debug_info:
+        response["debug"] = debug_info
     if bbox is not None:
         response["bbox"] = bbox
     if str(params.get("output_device", "")).strip().lower() == "monarch_hid":
@@ -474,6 +739,7 @@ def initialize_default_braille_render() -> None:
 def _record_command(data: dict[str, Any]) -> int:
     entry = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "request": _collect_request_context(),
         "data": data,
     }
     with commands_log_lock:
@@ -674,7 +940,10 @@ def render_view():
     global last_render_fingerprint, last_render_response
 
     try:
+        t0 = time.perf_counter()
+        _refresh_model_list_if_stale()
         merged_params, model_index, is_pan_request, fingerprint = _prepare_render_params(request.get_json(silent=True))
+        quantized_cache_key = _build_quantized_render_key(merged_params, model_index)
 
         with state_lock:
             if (
@@ -683,20 +952,56 @@ def render_view():
                 and last_render_fingerprint == fingerprint
                 and last_render_response is not None
             ):
-                return jsonify(last_render_response), 200
+                last_render_response["model_list"] = MODEL_NAME_LIST
+                response = copy.deepcopy(last_render_response)
+                debug = dict(response.get("debug", {}))
+                debug.update(
+                    {
+                        "phase1_exact_cache_hit": True,
+                        "phase1_quantized_cache_hit": False,
+                        "phase1_total_ms": round((time.perf_counter() - t0) * 1000.0, 3),
+                    }
+                )
+                response["debug"] = debug
+                return jsonify(response), 200
 
+        if not is_pan_request and merged_params.get("print_view") is not True:
+            cached_response = _get_quantized_cached_response(quantized_cache_key)
+            if cached_response is not None:
+                cached_response["model_list"] = MODEL_NAME_LIST
+                debug = dict(cached_response.get("debug", {}))
+                debug.update(
+                    {
+                        "phase1_exact_cache_hit": False,
+                        "phase1_quantized_cache_hit": True,
+                        "phase1_total_ms": round((time.perf_counter() - t0) * 1000.0, 3),
+                    }
+                )
+                cached_response["debug"] = debug
+                return jsonify(cached_response), 200
+
+        # Do not copy browser-selected viewpoint into global hardware state.
+        # Global cube_value is reserved for hardware-originated updates (GoDice/IMU)
+        # so one browser's manual navigation does not move other connected clients.
         with state_lock:
-            view = merged_params.get("view")
-            if isinstance(view, str) and view:
-                state.cube_value = view
             state.current_model_index = model_index
 
         response = _render_response(merged_params, source="http_render")
+        debug = dict(response.get("debug", {}))
+        debug.update(
+            {
+                "phase1_exact_cache_hit": False,
+                "phase1_quantized_cache_hit": False,
+                "phase1_total_ms": round((time.perf_counter() - t0) * 1000.0, 3),
+            }
+        )
+        response["debug"] = debug
 
         with state_lock:
             if merged_params.get("print_view") is not True:
                 last_render_fingerprint = fingerprint
                 last_render_response = response
+                _set_quantized_cached_response(quantized_cache_key, response)
         return jsonify(response), 200
     except Exception as error:
         _log(f"Error rendering: {error}", force=True)
@@ -731,6 +1036,7 @@ def get_render_base64():
 
 @app.route("/command", methods=["POST"])
 def receive_command():
+    global last_render_fingerprint, last_render_response
     try:
         data = request.get_json(silent=True) or {}
         command_id = _record_command(data)
@@ -743,13 +1049,31 @@ def receive_command():
 
         render_keys = {"view", "renderMode", "depth", "zoom", "mode", "move_camera_center", "print_view", "current_model"}
         if any(key in data for key in render_keys):
-            merged_params, model_index, _is_pan_request, _fingerprint = _prepare_render_params(data)
+            merged_params, model_index, is_pan_request, fingerprint = _prepare_render_params(data)
             with state_lock:
-                view = merged_params.get("view")
-                if isinstance(view, str) and view:
-                    state.cube_value = view
                 state.current_model_index = model_index
-            response_data["render"] = _render_response(merged_params, source="command_auto_render")
+
+            render_result: dict[str, Any] | None = None
+            if not is_pan_request and merged_params.get("print_view") is not True:
+                with state_lock:
+                    if last_render_fingerprint == fingerprint and last_render_response is not None:
+                        render_result = copy.deepcopy(last_render_response)
+                        render_result["model_list"] = MODEL_NAME_LIST
+                if render_result is None:
+                    quantized_cache_key = _build_quantized_render_key(merged_params, model_index)
+                    render_result = _get_quantized_cached_response(quantized_cache_key)
+                    if render_result is not None:
+                        render_result["model_list"] = MODEL_NAME_LIST
+
+            if render_result is None:
+                render_result = _render_response(merged_params, source="command_auto_render")
+                if not is_pan_request and merged_params.get("print_view") is not True:
+                    quantized_cache_key = _build_quantized_render_key(merged_params, model_index)
+                    with state_lock:
+                        last_render_fingerprint = fingerprint
+                        last_render_response = render_result
+                    _set_quantized_cached_response(quantized_cache_key, render_result)
+            response_data["render"] = render_result
 
         return jsonify(response_data), 200
     except Exception as error:
@@ -811,9 +1135,12 @@ def get_stats():
 
 @app.route("/models", methods=["GET", "POST"])
 def models_endpoint():
-    global last_render_fingerprint, last_render_response
+    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response
 
     if request.method == "GET":
+        with models_lock:
+            AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
+            MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
         with state_lock:
             current_index = state.current_model_index
         return jsonify(
@@ -833,6 +1160,10 @@ def models_endpoint():
             # Changing model invalidates response cache.
             last_render_fingerprint = None
             last_render_response = None
+        with quantized_render_cache_lock:
+            quantized_render_cache.clear()
+        with preview_payload_cache_lock:
+            preview_payload_cache.clear()
         return jsonify(
             {
                 "status": "success",
@@ -847,12 +1178,91 @@ def models_endpoint():
 
 
 _ALLOWED_EXTENSIONS = {".stl", ".step"}
+_MAX_UPLOAD_SESSION_ID_LEN = 128
+
+# Tracks uploaded model paths by browser-tab session id so they can be cleaned up
+# when the page closes. Values are absolute path strings under UPLOAD_DIR.
+uploaded_models_by_session: dict[str, set[str]] = {}
+uploaded_models_lock = threading.Lock()
+
+
+def _sanitize_upload_session_id(raw_value: Any) -> str | None:
+    if raw_value is None:
+        return None
+    value = str(raw_value).strip()
+    if not value:
+        return None
+    if len(value) > _MAX_UPLOAD_SESSION_ID_LEN:
+        value = value[:_MAX_UPLOAD_SESSION_ID_LEN]
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+    if any(ch not in allowed for ch in value):
+        return None
+    return value
+
+
+def _register_uploaded_model(session_id: str | None, model_path: Path) -> None:
+    if not session_id:
+        return
+    resolved_upload_root = UPLOAD_DIR.resolve()
+    resolved_model_path = model_path.resolve()
+    try:
+        resolved_model_path.relative_to(resolved_upload_root)
+    except ValueError:
+        return
+    with uploaded_models_lock:
+        session_models = uploaded_models_by_session.setdefault(session_id, set())
+        session_models.add(str(resolved_model_path))
+
+
+def _cleanup_uploaded_models_for_session(session_id: str | None) -> dict[str, Any]:
+    if not session_id:
+        return {"deleted": [], "errors": []}
+
+    with uploaded_models_lock:
+        tracked_models = uploaded_models_by_session.pop(session_id, set())
+
+    if not tracked_models:
+        return {"deleted": [], "errors": []}
+
+    deleted: list[str] = []
+    errors: list[str] = []
+    upload_root = UPLOAD_DIR.resolve()
+    for model_str in tracked_models:
+        model_path = Path(model_str)
+        try:
+            resolved_model_path = model_path.resolve()
+            resolved_model_path.relative_to(upload_root)
+            if resolved_model_path.exists() and resolved_model_path.is_file():
+                resolved_model_path.unlink()
+                deleted.append(str(resolved_model_path))
+        except Exception as exc:
+            errors.append(f"{model_path}: {exc}")
+
+    # Refresh in-memory model list and invalidate caches after cleanup.
+    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response, renderers_by_model
+    with models_lock:
+        AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
+        MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
+        renderers_by_model.clear()
+
+    with state_lock:
+        if state.current_model_index >= len(AVAILABLE_MODELS):
+            state.current_model_index = 0
+        last_render_fingerprint = None
+        last_render_response = None
+
+    with quantized_render_cache_lock:
+        quantized_render_cache.clear()
+    with preview_payload_cache_lock:
+        preview_payload_cache.clear()
+
+    return {"deleted": deleted, "errors": errors}
 
 
 @app.route("/upload", methods=["POST"])
 def upload_model():
     """Accept an STL or STEP file upload and add it to the model list."""
-    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response
+    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response, renderers_by_model
 
     if "file" not in request.files:
         return jsonify({"status": "error", "message": "No file field in request"}), 400
@@ -861,25 +1271,49 @@ def upload_model():
     if not file.filename:
         return jsonify({"status": "error", "message": "No file selected"}), 400
 
+    upload_session_id = _sanitize_upload_session_id(
+        request.form.get("upload_session_id") or request.headers.get("X-Upload-Session")
+    )
+
     filename = secure_filename(file.filename)
     suffix = Path(filename).suffix.lower()
     if suffix not in _ALLOWED_EXTENSIONS:
         return jsonify({"status": "error", "message": f"Unsupported file type '{suffix}'. Use .stl or .step"}), 400
 
-    dest = MODEL_DIR / filename
+    dest = UPLOAD_DIR / filename
+    if dest.exists():
+        stem = Path(filename).stem
+        unique_name = f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
+        dest = UPLOAD_DIR / unique_name
+        filename = unique_name
     try:
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         file.save(dest)
     except Exception as error:
-        return jsonify({"status": "error", "message": f"Could not save file: {error}"}), 500
+        return jsonify(
+            {
+                "status": "error",
+                "message": f"Could not save file in '{UPLOAD_DIR}': {error}",
+            }
+        ), 500
 
     with models_lock:
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
+        # Uploads can overwrite an existing filename or reorder the discovered
+        # model list, so any renderer cached by index may now point at stale data.
+        renderers_by_model.clear()
         new_index = next((i for i, p in enumerate(AVAILABLE_MODELS) if p == dest), 0)
+
+    _register_uploaded_model(upload_session_id, dest)
 
     with state_lock:
         last_render_fingerprint = None
         last_render_response = None
+    with quantized_render_cache_lock:
+        quantized_render_cache.clear()
+    with preview_payload_cache_lock:
+        preview_payload_cache.clear()
 
     _log(f"Model uploaded: {filename} → index {new_index}", force=True)
     return jsonify({
@@ -888,6 +1322,28 @@ def upload_model():
         "model_list": MODEL_NAME_LIST,
         "new_model_index": new_index,
     }), 200
+
+
+@app.route("/uploads/cleanup", methods=["POST"])
+def cleanup_uploaded_models():
+    payload = request.get_json(silent=True) or {}
+    upload_session_id = _sanitize_upload_session_id(
+        payload.get("upload_session_id")
+        or request.form.get("upload_session_id")
+        or request.args.get("upload_session_id")
+        or request.headers.get("X-Upload-Session")
+    )
+    if not upload_session_id:
+        return jsonify({"status": "error", "message": "Missing upload_session_id"}), 400
+
+    result = _cleanup_uploaded_models_for_session(upload_session_id)
+    return jsonify(
+        {
+            "status": "success",
+            "deleted_count": len(result["deleted"]),
+            "error_count": len(result["errors"]),
+        }
+    ), 200
 
 
 @app.route("/events", methods=["GET"])
@@ -990,6 +1446,36 @@ def render_export_source():
         return jsonify({"status": "error", "message": str(error)}), 400
 
 
+@app.route("/render/preview", methods=["POST"])
+def render_preview():
+    """Render only the high-fidelity browser preview.
+
+    This endpoint avoids braille-device work so the main tactile render can
+    return immediately and the preview can be fetched afterward.
+    """
+    try:
+        _refresh_model_list_if_stale()
+        merged_params, model_index, is_pan_request, _fingerprint = _prepare_render_params(request.get_json(silent=True))
+        preview_width = _coerce_positive_int(merged_params.get("preview_width", 800), 800)
+        use_cache = not is_pan_request and merged_params.get("print_view") is not True
+        preview_b64, preview_shape = _make_hifi_preview(
+            merged_params,
+            model_index,
+            preview_width=preview_width,
+            use_cache=use_cache,
+        )
+        return jsonify(
+            {
+                "status": "success",
+                "render_preview_base64": preview_b64,
+                "render_preview_shape": preview_shape,
+            }
+        ), 200
+    except Exception as error:
+        _log(f"Error rendering preview: {error}", force=True)
+        return jsonify({"status": "error", "message": str(error)}), 400
+
+
 @app.route("/render/dotpad-hex", methods=["POST"])
 def render_dotpad_hex():
     """Return the current render as a DotPad-compatible hex string.
@@ -999,36 +1485,34 @@ def render_dotpad_hex():
     """
     try:
         params = request.get_json(silent=True) or {}
-        merged_params = dict(DEFAULT_RENDER_PARAMS)
-        merged_params.update({k: v for k, v in params.items() if v is not None})
-        merged_params["view"] = str(merged_params.get("view", "")).lower()
+        merged_params, model_index, is_pan_request, _fingerprint = _prepare_render_params(params)
 
-        model_index = _normalize_model_index(params.get("current_model"))
-        engine = get_or_create_renderer(model_index)
+        # Use device-reported cell grid if provided; fall back to DotPad 300A defaults.
+        dotpad_cols = max(1, min(int(params.get("dotpad_cols", _DOTPAD_COLS)), 128))
+        dotpad_rows = max(1, min(int(params.get("dotpad_rows", _DOTPAD_LINES)), 64))
+        total_cells = dotpad_cols * dotpad_rows
+        # Each braille cell is 2 px wide × 4 px tall.
+        pixel_width  = dotpad_cols * 2
+        pixel_height = dotpad_rows * 4
 
-        # Force DotPad screen size (60x40 pixels = 10 lines x 30 cols of braille cells).
-        with render_lock:
-            original_screen_size = list(engine.screen_size)
-            engine.screen_size = [60, 40]
-            try:
-                out_guard, err_guard = _renderer_stdio_guard()
-                with out_guard, err_guard:
-                    rendered = engine.render(merged_params)
-            finally:
-                engine.screen_size = original_screen_size
-
-        braille_payload = _to_braille_payload(rendered)
-        cells = _pixels_to_braille_cells_dotpad(
-            braille_payload, lines=_DOTPAD_LINES, cols=_DOTPAD_COLS,
+        use_cache = not is_pan_request and merged_params.get("print_view") is not True
+        braille_payload = _get_braille_payload_at_size(
+            merged_params,
+            model_index=model_index,
+            pixel_width=pixel_width,
+            pixel_height=pixel_height,
+            use_cache=use_cache,
         )
-        # Pad/truncate to exactly 300 cells.
-        cell_bytes = cells[:_DOTPAD_GRAPHIC_CELLS].ljust(_DOTPAD_GRAPHIC_CELLS, b"\x00")
+        cells = _pixels_to_braille_cells_dotpad(
+            braille_payload, lines=dotpad_rows, cols=dotpad_cols,
+        )
+        cell_bytes = cells[:total_cells].ljust(total_cells, b"\x00")
         hex_string = cell_bytes.hex().upper()
 
         return jsonify({
             "status": "success",
             "dotpad_graphic_hex": hex_string,
-            "cell_count": _DOTPAD_GRAPHIC_CELLS,
+            "cell_count": total_cells,
         }), 200
     except Exception as error:
         _log(f"Error rendering DotPad hex: {error}", force=True)
@@ -1038,18 +1522,28 @@ def render_dotpad_hex():
 @app.route("/static/js/<path:filename>", methods=["GET"])
 def serve_static_js(filename):
     """Serve JavaScript files from the static/js directory."""
-    return send_file(REPO_ROOT / "static" / "js" / filename, mimetype="application/javascript")
+    response = send_file(REPO_ROOT / "static" / "js" / filename, mimetype="application/javascript")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @app.route("/static/css/<path:filename>", methods=["GET"])
 def serve_static_css(filename):
     """Serve CSS files from the static/css directory."""
-    return send_file(REPO_ROOT / "static" / "css" / filename, mimetype="text/css")
+    response = send_file(REPO_ROOT / "static" / "css" / filename, mimetype="text/css")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 def main() -> int:
     _log("Server starting on http://localhost:6969", force=True)
     _log(f"Model directory: {MODEL_DIR}", force=True)
+    _log(f"Upload directory: {UPLOAD_DIR}", force=True)
+    _log(f"Upload directory writable: {_is_writable_directory(UPLOAD_DIR)}", force=True)
     _log(f"Models found: {len(AVAILABLE_MODELS)}", force=True)
     _log("Endpoints: POST /render, POST /command, GET /get_data", force=True)
     _log(f"Braille send logs: {BRAILLE_LOG_PATH}", force=True)

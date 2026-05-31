@@ -2,14 +2,16 @@
     // WitMotion IMU (BLE) — Web Bluetooth API
     // Compatible with WT901BLE, BWT901BLE, BWT901BLECL5.0 and similar.
     //
-    // BLE protocol (binary frames, 11 bytes each):
-    //   Byte 0    : 0x55 (frame header)
-    //   Byte 1    : data type — 0x53 = angle (Roll/Pitch/Yaw)
-    //   Bytes 2-3 : Roll  as int16 LE  →  / 32768.0 * 180.0  (degrees)
-    //   Bytes 4-5 : Pitch as int16 LE
-    //   Bytes 6-7 : Yaw   as int16 LE
-    //   Bytes 8-9 : Temperature as int16 LE (÷100 °C)
-    //   Byte 10   : checksum = (sum bytes 0-9) & 0xFF
+    // BLE protocol — two frame types:
+    //
+    // 0x53 (11 bytes, older firmware — angle-only):
+    //   [0x55][0x53][Roll LE2][Pitch LE2][Yaw LE2][Temp LE2][checksum]
+    //   Roll/Pitch/Yaw: int16 LE → / 32768.0 * 180.0 (degrees)
+    //   Checksum: (sum bytes 0-9) & 0xFF
+    //
+    // 0x61 (20 bytes, BWT901BLECL5.0 and similar BLE5 devices — combo):
+    //   [0x55][0x61][Ax LE2][Ay LE2][Az LE2][Wx LE2][Wy LE2][Wz LE2][Roll LE2][Pitch LE2][Yaw LE2]
+    //   Roll/Pitch/Yaw at byte offsets 14/16/18; no trailing checksum byte.
     //
     // Orientation math ported from server.py:
     //   R = Rz(yaw) @ Ry(pitch) @ Rx(roll)
@@ -95,23 +97,38 @@
 
     // ---- BLE packet parsing -------------------------------------------------
 
-    // Scan a DataView for 11-byte frames starting with 0x55 0x53.
-    // Returns { roll, pitch, yaw } for the first valid angle frame found,
-    // or null if none present.
+    // Scan a DataView for a WitMotion angle frame and return { roll, pitch, yaw }.
+    //
+    // Two frame types are supported:
+    //   0x53 — 11-byte angle-only frame (older firmware):
+    //     [0x55][0x53][roll LE2][pitch LE2][yaw LE2][temp LE2][checksum]
+    //   0x61 — 20-byte combo frame (BWT901BLECL5.0 and similar newer BLE5 devices):
+    //     [0x55][0x61][ax LE2][ay LE2][az LE2][wx LE2][wy LE2][wz LE2][roll LE2][pitch LE2][yaw LE2]
+    //     (no checksum byte)
+    //
+    // Returns null if no valid frame is found.
     function parseAngleFrame(dataView) {
         const len = dataView.byteLength;
-        for (let i = 0; i + 10 < len; i++) {
+        for (let i = 0; i + 1 < len; i++) {
             if (dataView.getUint8(i) !== 0x55) continue;
-            if (dataView.getUint8(i + 1) !== 0x53) { i += 1; continue; }
+            const frameType = dataView.getUint8(i + 1);
 
-            // Verify checksum: sum of bytes 0-9, low byte.
-            let sum = 0;
-            for (let k = 0; k < 10; k++) sum += dataView.getUint8(i + k);
-            if ((sum & 0xFF) !== dataView.getUint8(i + 10)) { i += 1; continue; }
+            if (frameType === 0x53 && i + 10 < len) {
+                // Verify checksum: sum of bytes 0-9, low byte.
+                let sum = 0;
+                for (let k = 0; k < 10; k++) sum += dataView.getUint8(i + k);
+                if ((sum & 0xFF) !== dataView.getUint8(i + 10)) continue;
 
-            const roll  = dataView.getInt16(i + 2, true) / 32768.0 * 180.0;
-            const pitch = dataView.getInt16(i + 4, true) / 32768.0 * 180.0;
-            const yaw   = dataView.getInt16(i + 6, true) / 32768.0 * 180.0;
+                    let roll =  dataView.getInt16(i + 2, true) / 32768.0 * 180.0;
+                    let pitch = dataView.getInt16(i + 4, true) / 32768.0 * 180.0;
+                    let yaw =   dataView.getInt16(i + 6, true) / 32768.0 * 180.0;
+            }
+
+            if (frameType === 0x61 && i + 19 < len) {
+                    let roll =  dataView.getInt16(i + 14, true) / 32768.0 * 180.0;
+                    let pitch = dataView.getInt16(i + 16, true) / 32768.0 * 180.0;
+                    let yaw =   dataView.getInt16(i + 18, true) / 32768.0 * 180.0;
+            }
             if (first_angle.length() > 0){
                 roll -= first_angle[0]
                 pitch -= first_angle[1]
@@ -121,7 +138,7 @@
                 first_angle = [roll, pitch, yaw];
                 console.log("first_angle", first_angle);
             }
-            return { roll, pitch, yaw };
+            return {roll, pitch, yaw};
         }
         return null;
     }
@@ -236,13 +253,11 @@
         const { roll, pitch, yaw } = result;
         const view = orientationToView(roll, pitch, yaw);
 
-        // Update debug readout.
         if (anglesEl) {
             anglesEl.textContent =
                 `R ${roll.toFixed(1)}° P ${pitch.toFixed(1)}° Y ${yaw.toFixed(1)}°`;
         }
 
-        // Only call updateView when the mapped face changes.
         if (view !== lastView) {
             lastView = view;
             if (viewValueEl) viewValueEl.textContent = view;
