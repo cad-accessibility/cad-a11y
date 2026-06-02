@@ -354,6 +354,7 @@ let lastModelListSignature = '';  // prevents redundant dropdown rebuilds
 let currentBBoxDimensionsText = '';
 let lastAnnouncementMessage = '';
 let lastAnnouncedParameterKey = null;
+const lastAnnouncedParameterValues = new Map();
 let pendingInputSource = 'keyboard'; // consumed once per sendStateToServer call
 let modelLoadAnnouncement = null;
 let modelLoadAnnouncementSeq = 0;
@@ -653,7 +654,87 @@ function showToast(message) {
 
 // Consistent depth announcement formatter
 function depthAnnouncement(pct) {
-    return `${pct}%`;
+    if (pct === 0) return 'surface';
+    if (pct === 100) return 'full depth';
+    return `depth ${pct}%`;
+}
+
+function announceParameterWithRepeatRule(parameterKey, parameterLabel, currentValueToken, verboseValueText, repeatValueText, isUrgent = true) {
+    const normalizedKey = String(parameterKey || '').trim().toLowerCase();
+    const normalizedToken = String(currentValueToken ?? '').trim();
+    const previousToken = normalizedKey ? lastAnnouncedParameterValues.get(normalizedKey) : undefined;
+    const useRepeatText = normalizedKey !== '' && normalizedToken !== '' && previousToken === normalizedToken;
+    const valueText = useRepeatText ? repeatValueText : verboseValueText;
+
+    announceParameterValue(parameterKey, parameterLabel, valueText, isUrgent);
+
+    if (normalizedKey !== '' && normalizedToken !== '') {
+        lastAnnouncedParameterValues.set(normalizedKey, normalizedToken);
+    }
+}
+
+function announceDepthValue(depthValue, previousDepth = null) {
+    const normalizedDepth = Math.max(0, Math.min(100, Number(depthValue)));
+    if (!Number.isFinite(normalizedDepth)) {
+        return;
+    }
+
+    const roundedDepth = Math.round(normalizedDepth);
+    const roundedPrevious = previousDepth === null || previousDepth === undefined
+        ? null
+        : Math.round(Math.max(0, Math.min(100, Number(previousDepth))));
+
+    let valueText = depthAnnouncement(roundedDepth);
+    if (roundedPrevious !== null && roundedPrevious !== roundedDepth) {
+        const direction = roundedDepth > roundedPrevious ? 'deeper' : 'shallower';
+        if (roundedDepth === 0) {
+            valueText = `${direction} to surface`;
+        } else if (roundedDepth === 100) {
+            valueText = `${direction} to full depth`;
+        } else {
+            valueText = `${direction} to ${roundedDepth}%`;
+        }
+    }
+
+    announceParameterWithRepeatRule(
+        'slice-depth',
+        'Slice depth',
+        String(roundedDepth),
+        valueText,
+        `${roundedDepth}%`
+    );
+}
+
+function announceZoomValue(zoomValue, previousZoom = null, isUrgent = true) {
+    const normalizedZoom = Number(zoomValue);
+    if (!Number.isFinite(normalizedZoom)) {
+        return;
+    }
+
+    const percentText = formatZoomPercent(normalizedZoom);
+    const normalizedPrevious = previousZoom === null || previousZoom === undefined
+        ? null
+        : Number(previousZoom);
+
+    let verboseText = `zoom ${percentText}`;
+    if (normalizedPrevious !== null && Number.isFinite(normalizedPrevious)) {
+        if (normalizedZoom > normalizedPrevious) {
+            verboseText = `zoom in to ${percentText}`;
+        } else if (normalizedZoom < normalizedPrevious) {
+            verboseText = `zoom out to ${percentText}`;
+        } else {
+            verboseText = `zoom unchanged: ${percentText}`;
+        }
+    }
+
+    announceParameterWithRepeatRule(
+        'zoom-level',
+        'Zoom level',
+        percentText,
+        verboseText,
+        percentText,
+        isUrgent
+    );
 }
 
 function announceParameterValue(parameterKey, parameterLabel, valueText, isUrgent = true) {
@@ -1523,7 +1604,7 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
     updateButtonLabels();
 
     if (shouldAnnounce) {
-        announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom), false);
+        announceZoomValue(currentZoom, oldZoom, false);
     }
 
     console.log(oldZoom, currentZoom);
@@ -1641,7 +1722,7 @@ function announceStatus(message) {
 }
 
 function announceDepthShortcut(shortcutLabel, previousDepth, depthValue) {
-    announceParameterValue('slice-depth', 'Slice depth', depthAnnouncement(depthValue));
+    announceDepthValue(depthValue, previousDepth);
 }
 
 if (clearAnnouncementsBtn && announcementHistory) {
@@ -1965,9 +2046,9 @@ document.addEventListener('keydown', function(e) {
                 const previousZoom = currentZoom;
                 const zoomChanged = updateZoom(currentZoom - 0.1, false, true);
                 if (zoomChanged) {
-                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom));
+                    announceZoomValue(currentZoom, previousZoom);
                 } else {
-                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(previousZoom));
+                    announceZoomValue(previousZoom, previousZoom);
                 }
             }
             break;
@@ -1977,9 +2058,9 @@ document.addEventListener('keydown', function(e) {
                 const previousZoom = currentZoom;
                 const zoomChanged = updateZoom(currentZoom + 0.1, false, true);
                 if (zoomChanged) {
-                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom));
+                    announceZoomValue(currentZoom, previousZoom);
                 } else {
-                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(previousZoom));
+                    announceZoomValue(previousZoom, previousZoom);
                 }
             }
             break;
@@ -2158,9 +2239,9 @@ document.addEventListener('keydown', function(e) {
                 const previousZoom = currentZoom;
                 const zoomChanged = updateZoom(currentZoom - ZOOM_STEP, false);
                 if (zoomChanged) {
-                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom));
+                    announceZoomValue(currentZoom, previousZoom);
                 } else {
-                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(previousZoom));
+                    announceZoomValue(previousZoom, previousZoom);
                 }
             }
             break;
@@ -2170,9 +2251,9 @@ document.addEventListener('keydown', function(e) {
                 const previousZoom = currentZoom;
                 const zoomChanged = updateZoom(currentZoom + ZOOM_STEP, false);
                 if (zoomChanged) {
-                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(currentZoom));
+                    announceZoomValue(currentZoom, previousZoom);
                 } else {
-                    announceParameterValue('zoom-level', 'Zoom level', formatZoomPercent(previousZoom));
+                    announceZoomValue(previousZoom, previousZoom);
                 }
             }
             break;

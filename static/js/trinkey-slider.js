@@ -146,7 +146,9 @@
                     clearTimeout(depthSettleTimer);
                     depthSettleTimer = setTimeout(() => {
                         if (lastHardwareDepth !== null && typeof announce === 'function') {
-                            if (typeof announceParameterValue === 'function') {
+                            if (typeof announceDepthValue === 'function') {
+                                announceDepthValue(lastHardwareDepth);
+                            } else if (typeof announceParameterValue === 'function') {
                                 announceParameterValue('slice-depth', 'Slice depth', `${lastHardwareDepth}%`);
                             } else {
                                 const msg = typeof depthAnnouncement === 'function'
