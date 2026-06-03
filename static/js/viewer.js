@@ -1599,7 +1599,9 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
     zoomInput.value = zoomText;
     zoomLevelValue.textContent = zoomText;
     refreshViewInfoSummary();
-    zoomInput.setAttribute('aria-valuetext', `zoom ${formatZoomPercent(currentZoom)}`);
+    if (shouldAnnounce) {
+        zoomInput.setAttribute('aria-valuetext', `zoom ${formatZoomPercent(currentZoom)}`);
+    }
 
     updateButtonLabels();
 
@@ -1764,6 +1766,7 @@ sliceSlider.addEventListener('focus', function() {
 
 // Keyboard support for slider
 sliceSlider.addEventListener('keydown', function(e) {
+    const previousDepth = currentSliceDepth;
     let newValue = currentSliceDepth;
     
     switch(e.key) {
@@ -1792,7 +1795,12 @@ sliceSlider.addEventListener('keydown', function(e) {
     }
     
     e.preventDefault();
-    updateSliceDepth(newValue, true);
+    const depthChanged = updateSliceDepth(newValue, false);
+    if (depthChanged) {
+        announceDepthValue(currentSliceDepth, previousDepth);
+    } else {
+        announceDepthValue(previousDepth, previousDepth);
+    }
 });
 
 // Render mode radios
@@ -1856,18 +1864,40 @@ zoomInput.addEventListener('change', function() {
         announceStatus('zoom value unchanged');
         return;
     }
+    const previousZoom = currentZoom;
     pendingInputSource = 'ui';
-    updateZoom(this.valueAsNumber, true, true);
+    const zoomChanged = updateZoom(this.valueAsNumber, false, true);
+    if (zoomChanged) {
+        announceZoomValue(currentZoom, previousZoom, false);
+    } else {
+        announceZoomValue(previousZoom, previousZoom, false);
+    }
+});
+
+zoomInput.addEventListener('focus', function() {
+    this.setAttribute('aria-valuetext', `zoom ${formatZoomPercent(currentZoom)}`);
 });
 
 zoomOutBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
-    updateZoom(currentZoom - ZOOM_STEP, true, true);
+    const previousZoom = currentZoom;
+    const zoomChanged = updateZoom(currentZoom - ZOOM_STEP, false, true);
+    if (zoomChanged) {
+        announceZoomValue(currentZoom, previousZoom, false);
+    } else {
+        announceZoomValue(previousZoom, previousZoom, false);
+    }
 });
 
 zoomInBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
-    updateZoom(currentZoom + ZOOM_STEP, true, true);
+    const previousZoom = currentZoom;
+    const zoomChanged = updateZoom(currentZoom + ZOOM_STEP, false, true);
+    if (zoomChanged) {
+        announceZoomValue(currentZoom, previousZoom, false);
+    } else {
+        announceZoomValue(previousZoom, previousZoom, false);
+    }
 });
 
 showViewInfoBoxCheckbox.addEventListener('change', function() {
@@ -1879,13 +1909,19 @@ showViewInfoBoxCheckbox.addEventListener('change', function() {
 // Deeper depth button
 deeperBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
-    updateSliceDepth(currentSliceDepth + 10, true);
+    const previousDepth = currentSliceDepth;
+    const nextDepth = Math.min(100, currentSliceDepth + 10);
+    updateSliceDepth(nextDepth, false);
+    announceDepthValue(nextDepth, previousDepth);
 });
 
 // Shallower depth button
 shallowerBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
-    updateSliceDepth(currentSliceDepth - 10, true);
+    const previousDepth = currentSliceDepth;
+    const nextDepth = Math.max(0, currentSliceDepth - 10);
+    updateSliceDepth(nextDepth, false);
+    announceDepthValue(nextDepth, previousDepth);
 });
 
 sliceGraphLockBtn.addEventListener('click', function() {
@@ -1915,7 +1951,7 @@ if (resetPositionBtn) {
         currentMoveCamera = "reset";
         sendStateToServer();
         currentMoveCamera = "none";
-        announce('Position reset');
+        announce('Recentered');
     });
 }
 
@@ -2284,7 +2320,7 @@ document.addEventListener('keydown', function(e) {
             currentMoveCamera = "reset";
             sendStateToServer();
             currentMoveCamera = "none";
-            announce('Position reset');
+            announce('Recentered');
             break;
 
         default:
