@@ -298,7 +298,7 @@ def get_or_create_renderer(model_index: int | None = None) -> CADComparisonRende
                 renderer = CADComparisonRenderer(
                     str(model_path),
                     str(model_path),
-                    defer_slice_graph_precompute=True,
+                    #defer_slice_graph_precompute=True,
                 )
                 renderer.start_background_slice_precompute()
                 renderers_by_model[index] = renderer

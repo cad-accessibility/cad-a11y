@@ -336,7 +336,7 @@ let currentRepresentationMode = 'single';
 let currentMoveCamera = "none";
 let currentPrintView = false;
 let currentOutputDevice = 'monarch_hid';
-const renderModes = ['Shaded', 'Outline', 'Cut', 'Orthographic'];
+const renderModes = ['Shaded', 'Outline', 'Cut', 'Crease'];
 const representationModes = ['single', 'side-by-side', 'slice-graph-difference', 'slice-graph-column-count'];
 let currentModel = "none";
 let composeScrollbar = true;
@@ -561,8 +561,8 @@ const outputDeviceRadios = () => document.querySelectorAll('input[name="output-d
 function getRenderPipelineParams(uiRenderMode) {
     // Single-mode UI mapping: projection is no longer a separate user control.
     switch ((uiRenderMode || 'Shaded').toLowerCase()) {
-        case 'orthographic':
-            return { renderMode: 'Outline', projectionMode: 'orthographic' };
+        case 'crease':
+            return { renderMode: 'Crease', projectionMode: 'crease' };
         case 'cut':
             return { renderMode: 'Cut', projectionMode: 'orthographic' };
         case 'outline':

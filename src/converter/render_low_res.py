@@ -296,8 +296,10 @@ def get_outlines_loop(img_np):
 def get_outlines(img_np):
     h, w = img_np.shape[:2]
 
-    white = np.all(img_np == [255, 255, 255, 255], axis=-1)
-    non_white = img_np[..., 0] < 255
+    #white = np.all(img_np == [255, 255, 255, 255], axis=-1)
+    #non_white = img_np[..., 0] < 255
+    white = img_np[..., 0] >= 254
+    non_white = img_np[..., 0] <= 253
     white_padded = np.pad(white, 1, mode='constant', constant_values=False)
 
     # white mask neighbors
@@ -318,7 +320,7 @@ def get_outlines(img_np):
     outline_pixels_rgba[outline_mask] = [0, 0, 0, 255]
     outline_pixels_rgba[~outline_mask] = [255, 255, 255, 255]
 
-    return outline_pixels_rgba
+    return outline_pixels_rgba, outline_mask
 
 def get_outlines_and_filled(img_np):
     # fill from four corners
