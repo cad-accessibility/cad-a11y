@@ -21,7 +21,7 @@
             Sighted users see the full styled bar.
             SR live region (polite) so it doesn't interrupt reading.
         -->
-        <div id="status-bar" role="region" aria-label="Viewer status">
+        <div id="status-bar" role="region" aria-label="Viewer status" aria-live="polite">
             <span class="status-item">
                 <span class="status-label">View<span aria-hidden="true">:</span></span>
                 <span class="status-value highlight" id="sb-view">x+</span>
@@ -501,7 +501,7 @@
                     <div class="help-text" id="debug-pipeline-summary">
                         Waiting for render debug data...
                     </div>
-                    <div id="debug-stage-list" class="debug-stage-list" aria-live="assertive"></div>
+                    <div id="debug-stage-list" class="debug-stage-list" aria-live="polite"></div>
                 </div>
             </section>
         </main>
