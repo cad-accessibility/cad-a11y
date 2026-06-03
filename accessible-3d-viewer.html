@@ -21,7 +21,7 @@
             Sighted users see the full styled bar.
             SR live region (polite) so it doesn't interrupt reading.
         -->
-        <div id="status-bar" role="region" aria-label="Viewer status" aria-live="polite">
+        <div id="status-bar" role="region" aria-label="Viewer status" aria-live="off">
             <span class="status-item">
                 <span class="status-label">View<span aria-hidden="true">:</span></span>
                 <span class="status-value highlight" id="sb-view">x+</span>
@@ -153,14 +153,14 @@
             <section class="section" aria-labelledby="render-heading">
                 <h2 id="render-heading">Rendering Mode</h2>
                 <div id="render-help" class="help-text">
-                    Choose one top-level mode: Shaded, Outline, Cut, or Orthographic
+                    Choose one top-level mode: Shaded, Outline, Cut, or Crease
                 </div>
                 <div aria-describedby="render-help">
                     <fieldset role="radiogroup" aria-labelledby="render-heading" class="top-mode-row">
                         <legend class="sr-only">Rendering Mode Options</legend>
                         <label>
-                            <input type="radio" name="render-mode" id="render-mode-shaded" value="Shaded" checked>
-                            Shaded
+                            <input type="radio" name="render-mode" id="render-mode-shaded" value="Filled" checked>
+                            Filled
                         </label>
                         <label>
                             <input type="radio" name="render-mode" id="render-mode-outline" value="Outline">
@@ -171,8 +171,8 @@
                             Cut
                         </label>
                         <label>
-                            <input type="radio" name="render-mode" id="render-mode-orthographic" value="Orthographic">
-                            Orthographic
+                            <input type="radio" name="render-mode" id="render-mode-crease" value="Crease">
+                            Crease
                         </label>
                     </fieldset>
                 </div>
@@ -501,7 +501,7 @@
                     <div class="help-text" id="debug-pipeline-summary">
                         Waiting for render debug data...
                     </div>
-                    <div id="debug-stage-list" class="debug-stage-list" aria-live="polite"></div>
+                    <div id="debug-stage-list" class="debug-stage-list" aria-live="off"></div>
                 </div>
             </section>
         </main>
