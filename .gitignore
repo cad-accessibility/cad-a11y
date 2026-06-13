@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Logs and local runtime files
+*.log
+*.pid
+
+# Jupyter and local env files
+.ipynb_checkpoints/
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Test and coverage output
+.coverage
+.coverage.*
+htmlcov/

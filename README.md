@@ -72,3 +72,19 @@ Then open a browser and navigate to http://localhost:5000
 - Expanding to support additional CAD file formats
 - Improving SVG rendering and accessibility features
 - Adding user authentication and file management
+
+## Contributing
+
+Contributions are welcome. Please read CONTRIBUTING.md before opening a pull request.
+
+## Code of Conduct
+
+This project follows the guidelines in CODE_OF_CONDUCT.md.
+
+## Security
+
+To report vulnerabilities, follow SECURITY.md and do not file public issues for security reports.
+
+## License
+
+This repository is licensed under the BSD 3-Clause License. See LICENSE for details.
