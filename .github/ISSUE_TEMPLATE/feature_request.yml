@@ -29,7 +29,19 @@ body:
     validations:
       required: true
 
-  - type: textarea
+  - type: dropdown
+    id: display_type
+    attributes:
+      label: Display type
+      options:
+        - Monarch
+        - DotPad
+        - Screen reader only
+        - Other
+    validations:
+      required: true
+
+- type: textarea
     id: alternatives
     attributes:
       label: Alternatives considered

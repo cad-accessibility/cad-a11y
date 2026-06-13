@@ -1,0 +1,120 @@
+name: Accessibility issue
+description: Report an accessibility problem in the current behavior.
+title: "[A11y]: "
+labels:
+  - accessibility
+  - bug
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to report accessibility problems affecting non-visual or assistive workflows.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Accessibility problem summary
+      description: What accessibility issue are you experiencing?
+      placeholder: Describe the barrier and who it affects.
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: User impact
+      description: What task is blocked or made significantly harder?
+      placeholder: Explain the impact on completing the task.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Execute ...
+        3. Observe accessibility issue ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected accessible behavior
+      placeholder: Describe what should happen for an accessible experience.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: Describe what happens instead.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - iOS
+        - Android
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Browser
+      options:
+        - Chrome
+        - Firefox
+        - Safari
+        - Edge
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: assistive_tech
+    attributes:
+      label: Assistive technology
+      placeholder: e.g. VoiceOver, NVDA, JAWS, TalkBack, Braille display
+    validations:
+      required: true
+
+  - type: dropdown
+    id: display_type
+    attributes:
+      label: Display type
+      options:
+        - Monarch
+        - DotPad
+        - Screen reader only
+        - Other
+    validations:
+      required: true
+
+- type: checkboxes
+    id: affected_modes
+    attributes:
+      label: Affected usage modes
+      options:
+        - label: Screen reader workflow
+        - label: Braille display workflow
+        - label: Keyboard-only workflow
+        - label: Voice or switch workflow
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Additional context or evidence
+      description: Include logs, output snippets, screenshots, or short recordings if available.
