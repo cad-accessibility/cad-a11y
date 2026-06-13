@@ -1,0 +1,42 @@
+name: Feature request
+description: Suggest an enhancement for CAD accessibility workflows.
+title: "[Feature]: "
+labels:
+  - enhancement
+  - needs-triage
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem are you trying to solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the change you would like.
+    validations:
+      required: true
+
+  - type: textarea
+    id: a11y_impact
+    attributes:
+      label: Accessibility considerations
+      description: Describe expected accessibility impact and who benefits.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: List alternatives you considered.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Include references, links, or examples.

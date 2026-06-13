@@ -1,0 +1,88 @@
+name: Bug report
+description: Report a reproducible problem.
+title: "[Bug]: "
+labels:
+  - bug
+  - needs-triage
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of the bug.
+      placeholder: Describe what went wrong.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Provide exact steps so we can reproduce this.
+      placeholder: |
+        1. Go to ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: What should have happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: What happened instead?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python version
+      placeholder: e.g. 3.9.19
+    validations:
+      required: true
+
+  - type: dropdown
+    id: display_type
+    attributes:
+      label: Display type
+      options:
+        - Monarch
+        - DotPad
+        - Screen reader only
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: input_data
+    attributes:
+      label: Input file details
+      description: Describe file type and sample data used.
+      placeholder: BREP/STEP/STL file details and sample path.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and screenshots
+      description: Paste relevant logs or attach screenshots.

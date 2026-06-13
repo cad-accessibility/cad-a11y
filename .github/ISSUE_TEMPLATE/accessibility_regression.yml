@@ -1,0 +1,84 @@
+name: Accessibility regression
+description: Report an accessibility behavior that got worse or broke.
+title: "[A11y Regression]: "
+labels:
+  - accessibility
+  - bug
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for regressions in accessibility behavior, including non-visual workflows.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Regression summary
+      description: What accessibility behavior regressed?
+      placeholder: Describe what used to work and what is failing now.
+    validations:
+      required: true
+
+  - type: textarea
+    id: baseline
+    attributes:
+      label: Last known good behavior
+      description: Describe the previous expected behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: Current behavior
+      description: Describe current behavior and impact.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Critical (blocks primary task)
+        - High (major degradation)
+        - Medium (workaround exists)
+        - Low (minor issue)
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: affected_modes
+    attributes:
+      label: Affected usage modes
+      options:
+        - label: Screen reader workflow
+        - label: Braille display workflow
+        - label: Keyboard-only workflow
+        - label: Voice or switch workflow
+
+  - type: input
+    id: display
+    attributes:
+      label: Device or assistive technology
+      placeholder: Monarch, DotPad, NVDA, VoiceOver, TalkBack, other
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Execute ...
+        3. Observe regression ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Logs, output snippets, short video, or screenshots.
