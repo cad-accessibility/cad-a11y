@@ -38,12 +38,31 @@ cad-a11y/
 ### Prerequisites
 
 - Python 3.9+
-- Conda (for environment management)
+- Pixi (recommended, for reproducible environment management)
+- Conda (optional fallback)
 
 ### Installation
 
 1. Clone this repository
-2. Create and activate the Conda environment:
+2. Install dependencies with Pixi:
+    ```
+    pixi install
+    ```
+
+### Running with Pixi
+
+Use Pixi tasks for consistent local commands:
+
+```
+pixi run start
+pixi run test
+pixi run lint
+```
+
+### Conda Fallback
+
+If you are not using Pixi, you can still use Conda:
+
    ```
    conda env create -f environment.yml
    conda activate cad-a11y
@@ -76,6 +95,7 @@ Then open a browser and navigate to http://localhost:5000
 ## Contributing
 
 Contributions are welcome. Please read CONTRIBUTING.md before opening a pull request.
+
 
 ## Code of Conduct
 

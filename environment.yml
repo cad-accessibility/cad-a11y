@@ -4,8 +4,19 @@ channels:
 dependencies:
   - python=3.9
   - pythonocc-core
+  - numpy
+  - scipy
+  - matplotlib
+  - networkx
+  - shapely
+  - trimesh
+  - pillow
+  - opencv
+  - pytest
+  - ruff
   - pip
   - pip:
+    - polyscope
     - svgwrite
     - flask
     - flask-cors

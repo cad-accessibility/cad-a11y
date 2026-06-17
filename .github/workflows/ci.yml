@@ -15,28 +15,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up micromamba
-        uses: mamba-org/setup-micromamba@v2
+      - name: Set up Pixi
+        uses: prefix-dev/setup-pixi@v0.8.1
         with:
-          environment-file: environment.yml
-          environment-name: cad-a11y
-          cache-environment: true
-          cache-downloads: true
-
-      - name: Install test and lint tooling
-        shell: bash -l {0}
-        run: |
-          micromamba run -n cad-a11y python -m pip install pytest ruff
+          cache: true
 
       - name: Lint (ruff high-signal)
-        shell: bash -l {0}
+        shell: bash
         run: |
-          micromamba run -n cad-a11y ruff check . --select E9,F63,F7,F82
+          pixi run lint
 
       - name: Run tests
-        shell: bash -l {0}
+        shell: bash
         run: |
-          micromamba run -n cad-a11y pytest -q
+          pixi run test
 
   axe-accessibility:
     runs-on: ubuntu-latest
@@ -45,18 +37,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up micromamba
-        uses: mamba-org/setup-micromamba@v2
+      - name: Set up Pixi
+        uses: prefix-dev/setup-pixi@v0.8.1
         with:
-          environment-file: environment.yml
-          environment-name: cad-a11y
-          cache-environment: true
-          cache-downloads: true
+          cache: true
 
       - name: Start Flask app
-        shell: bash -l {0}
+        shell: bash
         run: |
-          micromamba run -n cad-a11y python app.py > app.log 2>&1 &
+          pixi run start > app.log 2>&1 &
 
       - name: Wait for app
         shell: bash

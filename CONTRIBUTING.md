@@ -10,11 +10,21 @@ Thanks for your interest in improving CAD A11y.
 
 ## Development Setup
 
-1. Install Conda and create the environment:
-   - `conda env create -f environment.yml`
-   - `conda activate cad-a11y`
+1. Install Pixi and set up the project environment:
+   - `pixi install`
 2. Run the app locally:
-   - `python app.py`
+   - `pixi run start`
+3. Run checks before opening a PR:
+   - `pixi run test`
+   - `pixi run lint`
+
+### Conda Fallback
+
+If Pixi is unavailable in your environment:
+
+- `conda env create -f environment.yml`
+- `conda activate cad-a11y`
+- `python app.py`
 
 ## Pull Request Guidelines
 
