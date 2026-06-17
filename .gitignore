@@ -31,6 +31,11 @@ build/
 .vscode/
 .idea/
 
+# Node and browser-test artifacts
+node_modules/
+playwright-report/
+test-results/
+
 # Test and coverage output
 .coverage
 .coverage.*

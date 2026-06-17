@@ -15,16 +15,11 @@ Thanks for your interest in improving CAD A11y.
 2. Run the app locally:
    - `pixi run start`
 3. Run checks before opening a PR:
-   - `pixi run test`
+   - `pixi run test:py`
    - `pixi run lint`
-
-### Conda Fallback
-
-If Pixi is unavailable in your environment:
-
-- `conda env create -f environment.yml`
-- `conda activate cad-a11y`
-- `python app.py`
+   - `pixi run test:a11y:install`
+   - `pixi run a11y:local`
+   - `pixi run test:all`
 
 ## Pull Request Guidelines
 

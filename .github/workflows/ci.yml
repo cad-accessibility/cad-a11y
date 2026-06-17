@@ -42,64 +42,12 @@ jobs:
         with:
           cache: true
 
-      - name: Start Flask app
-        shell: bash
-        run: |
-          pixi run start > app.log 2>&1 &
-
-      - name: Wait for app
-        shell: bash
-        run: |
-          for i in {1..30}; do
-            if curl -fsS http://127.0.0.1:5050/ >/dev/null; then
-              echo "App is up"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "App failed to start"
-          cat app.log || true
-          exit 1
-
       - name: Install axe dependencies
         shell: bash
         run: |
-          npm install --no-save playwright @axe-core/playwright
-          npx playwright install chromium
+          pixi run test:a11y:install
 
       - name: Run axe check against home page
         shell: bash
         run: |
-          node <<'EOF'
-          const { chromium } = require('playwright');
-          const AxeBuilder = require('@axe-core/playwright').default;
-
-          (async () => {
-            const browser = await chromium.launch();
-            const page = await browser.newPage();
-            await page.goto('http://127.0.0.1:5050/', { waitUntil: 'networkidle' });
-
-            const results = await new AxeBuilder({ page }).analyze();
-            const blocking = results.violations.filter((v) =>
-              ['serious', 'critical'].includes(v.impact)
-            );
-
-            if (blocking.length > 0) {
-              console.error('Axe found serious/critical violations:');
-              for (const violation of blocking) {
-                console.error(`- ${violation.id} (${violation.impact}): ${violation.help}`);
-                for (const node of violation.nodes) {
-                  console.error(`  target: ${node.target.join(', ')}`);
-                }
-              }
-              await browser.close();
-              process.exit(1);
-            }
-
-            console.log('Axe check passed with no serious/critical violations.');
-            await browser.close();
-          })().catch((err) => {
-            console.error(err);
-            process.exit(1);
-          });
-          EOF
+          pixi run a11y:local

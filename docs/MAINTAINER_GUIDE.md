@@ -5,6 +5,33 @@ and decide when pull requests are ready to merge in the cad-a11y
 repository. At a high level, maintainers should prioritize
 accessibility impact, reproducibility, and contributor experience.
 
+## Preferred Local and CI Execution (Pixi)
+
+Use Pixi as the default way to install dependencies and run project
+commands. This keeps local and CI behavior aligned and reproducible.
+
+### Standard Commands
+
+1. Install/update environment: `pixi install`
+2. Run app locally: `pixi run start`
+3. Run lint checks: `pixi run lint`
+4. Run Python tests: `pixi run test:py`
+5. Run the full local quality gate (Python + accessibility): `pixi run test:all`
+
+### Accessibility Checks
+
+Run automated axe checks through committed Playwright tests:
+
+1. Install browser test dependencies and Chromium: `pixi run test:a11y:install`
+2. Run local accessibility flow (start app, wait, test, cleanup): `pixi run a11y:local`
+
+### Policy for Maintainers and Automation
+
+1. Prefer Pixi task invocations over direct tool commands.
+2. Keep `pixi.lock` committed to source control.
+3. Avoid introducing parallel environment setup paths unless required.
+4. If a fallback path is needed, document why Pixi cannot be used.
+
 ## Triage Process
 
 ### Initial Triage Checklist

@@ -1,15 +1,9 @@
 #!/bin/bash
 # Script to run the CAD Accessibility web application
 
-# Activate conda environment if it exists
-if command -v conda &> /dev/null; then
-    conda activate cad-a11y || echo "Conda environment 'cad-a11y' not found. Please create it with 'conda env create -f environment.yml'"
+if ! command -v pixi >/dev/null 2>&1; then
+    echo "pixi is required. Install pixi and run 'pixi install' first."
+    exit 1
 fi
 
-# Set Flask development mode
-export FLASK_APP=app.py
-export FLASK_ENV=development
-export FLASK_DEBUG=1
-
-# Run the application
-python app.py
+pixi run start

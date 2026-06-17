@@ -12,7 +12,7 @@ This project aims to make CAD models more accessible by converting BREP (Boundar
 cad-a11y/
 │
 ├── app.py                  # Main web application entry point
-├── environment.yml         # Conda environment configuration
+├── pixi.toml               # Pixi environment and task configuration
 │
 ├── src/
 │   ├── converter/          # Core conversion logic
@@ -38,8 +38,7 @@ cad-a11y/
 ### Prerequisites
 
 - Python 3.9+
-- Pixi (recommended, for reproducible environment management)
-- Conda (optional fallback)
+- Pixi (for reproducible environment management)
 
 ### Installation
 
@@ -57,16 +56,11 @@ Use Pixi tasks for consistent local commands:
 pixi run start
 pixi run test
 pixi run lint
+pixi run test:a11y:install
+pixi run test:a11y
+pixi run a11y:local
+pixi run test:all
 ```
-
-### Conda Fallback
-
-If you are not using Pixi, you can still use Conda:
-
-   ```
-   conda env create -f environment.yml
-   conda activate cad-a11y
-   ```
 
 ### Running the Command-line Tool
 
