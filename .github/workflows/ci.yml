@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up micromamba
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml
+          environment-name: cad-a11y
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Install test and lint tooling
+        shell: bash -l {0}
+        run: |
+          micromamba run -n cad-a11y python -m pip install pytest ruff
+
+      - name: Lint (errors only)
+        shell: bash -l {0}
+        run: |
+          micromamba run -n cad-a11y ruff check . --select E9,F63,F7,F82
+
+      - name: Run tests
+        shell: bash -l {0}
+        run: |
+          micromamba run -n cad-a11y pytest -q
+
+  axe-accessibility:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start app with Docker Compose
+        run: docker compose up -d --build
+
+      - name: Wait for app to be ready
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://localhost:8635/ >/dev/null; then
+              echo "App is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "App failed to start"
+          docker compose logs
+          exit 1
+
+      - name: Install axe dependencies
+        run: |
+          npm install --no-save playwright @axe-core/playwright
+          npx playwright install chromium
+
+      - name: Run axe check against home page
+        run: |
+          node <<'EOF'
+          const { chromium } = require('playwright');
+          const AxeBuilder = require('@axe-core/playwright').default;
+
+          (async () => {
+            const browser = await chromium.launch();
+            const page = await browser.newPage();
+            await page.goto('http://localhost:8635/', { waitUntil: 'networkidle' });
+
+            const results = await new AxeBuilder({ page }).analyze();
+            const blocking = results.violations.filter((v) =>
+              ['serious', 'critical'].includes(v.impact)
+            );
+
+            if (blocking.length > 0) {
+              console.error('Axe found serious/critical violations:');
+              for (const violation of blocking) {
+                console.error(`- ${violation.id} (${violation.impact}): ${violation.help}`);
+                for (const node of violation.nodes) {
+                  console.error(`  target: ${node.target.join(', ')}`);
+                }
+              }
+              await browser.close();
+              process.exit(1);
+            }
+
+            console.log('Axe check passed: no serious or critical violations found.');
+            await browser.close();
+          })().catch((err) => {
+            console.error(err);
+            process.exit(1);
+          });
+          EOF
+
+      - name: Print Docker logs on failure
+        if: failure()
+        run: docker compose logs

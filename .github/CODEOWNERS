@@ -1,0 +1,6 @@
+# Code ownership for cad-a11y
+# Owners are automatically requested for review when a pull request changes files they own.
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Maintainers review all changes by default
+*  @cad-accessibility/maintainers
