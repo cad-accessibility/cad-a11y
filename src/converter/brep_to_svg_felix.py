@@ -3,7 +3,7 @@ import create_hatch_lines_single_depth
 import os
 from copy import deepcopy
 import svgwrite
-from render_low_res import low_res_render
+from .render_low_res import low_res_render
 
 from OCC.Core.BRepBndLib import brepbndlib
 from OCC.Core.Bnd import Bnd_Box

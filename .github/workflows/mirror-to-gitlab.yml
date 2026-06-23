@@ -17,9 +17,12 @@ jobs:
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.GITLAB_SSH_KEY }}" > ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.GITLAB_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan gitlab.cs.washington.edu >> ~/.ssh/known_hosts
+          ssh-keyscan -H gitlab.cs.washington.edu >> ~/.ssh/known_hosts
+
+      - name: Verify SSH access
+        run: ssh -T git@gitlab.cs.washington.edu || true
 
       - name: Push to GitLab
         run: |
