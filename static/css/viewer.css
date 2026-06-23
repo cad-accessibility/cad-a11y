@@ -34,7 +34,7 @@ h2 {
     color: #34495e;
     font-size: 1.3em;
     font-weight: 500;
-    border-bottom: 2px solid #3498db;
+    border-bottom: 2px solid #1e6fa4;
     padding-bottom: 8px;
 }
 
@@ -54,7 +54,7 @@ h3 {
 }
 
 .section:hover {
-    border-color: #3498db;
+    border-color: #1e6fa4;
 }
 
 /* Screen reader only content */
@@ -96,7 +96,7 @@ h3 {
     width: 44px;
     height: 44px;
     border-radius: 50%;
-    background: #3498db;
+    background: #1e6fa4;
     cursor: pointer;
     border: 2px solid white;
     box-shadow: 0 2px 6px rgba(0,0,0,0.2);
@@ -108,7 +108,7 @@ h3 {
     width: 44px;
     height: 44px;
     border-radius: 50%;
-    background: #3498db;
+    background: #1e6fa4;
     cursor: pointer;
     border: 2px solid white;
     box-shadow: 0 2px 6px rgba(0,0,0,0.2);
@@ -117,13 +117,13 @@ h3 {
 /* Slice percentage display */
 #slice-percentage {
     font-weight: bold;
-    color: #2980b9;
+    color: #1a5e91;
     font-size: 1.1em;
 }
 
 /* Button styling */
 button {
-    background: #3498db;
+    background: #1e6fa4;
     color: white;
     border: none;
     padding: 12px 20px;
@@ -137,7 +137,7 @@ button {
 }
 
 button:hover {
-    background: #2980b9;
+    background: #1a5e91;
     transform: translateY(-2px);
     box-shadow: 0 4px 12px rgba(52, 152, 219, 0.3);
 }
@@ -284,14 +284,14 @@ input[type="checkbox"] {
 
 
 .checkbox-label:hover {
-    color: #2980b9;
+    color: #1a5e91;
 }
 
 /* Upload model UI */
 #upload-model-label {
     display: inline-block;
     padding: 8px 16px;
-    background: #3498db;
+    background: #1e6fa4;
     color: #fff;
     border-radius: 6px;
     cursor: pointer;
@@ -300,7 +300,7 @@ input[type="checkbox"] {
     line-height: 28px;
 }
 #upload-model-label:hover {
-    background: #2980b9;
+    background: #1a5e91;
 }
 #upload-model-input {
     position: absolute;
@@ -397,7 +397,7 @@ fieldset label {
 }
 
 #current-view, #current-axis {
-    color: #2980b9;
+    color: #1a5e91;
     font-weight: 500;
 }
 
@@ -633,7 +633,7 @@ button:focus-visible {
 
 .col-divider:hover,
 .col-divider.dragging {
-    background: #3498db;
+    background: #1e6fa4;
 }
 
 .right-col {

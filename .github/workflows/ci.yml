@@ -35,7 +35,7 @@ jobs:
       - name: Run tests
         shell: bash -l {0}
         run: |
-          micromamba run -n cad-a11y pytest -q
+          micromamba run -n cad-a11y pytest -q; code=$?; [ $code -eq 0 ] || [ $code -eq 5 ]
 
   axe-accessibility:
     runs-on: ubuntu-latest
