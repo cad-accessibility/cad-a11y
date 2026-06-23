@@ -1,0 +1,60 @@
+name: Accessibility report
+description: A barrier that prevents or hinders use with assistive technology
+labels: ["accessibility", "bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Accessibility is the core purpose of this project. Please describe what blocked you as specifically as you can — there is no such thing as a minor accessibility issue here.
+
+  - type: textarea
+    id: assistive_tech
+    attributes:
+      label: Assistive technology
+      description: What assistive technology were you using? Include name, version, and any relevant settings.
+      placeholder: |
+        Screen reader: NVDA 2024.1 / JAWS 2024 / VoiceOver (macOS 14) / Orca 46
+        Braille display: Monarch / DotPad 300 / other
+        Input method: keyboard only / switch access / other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What were you trying to do?
+      description: Describe the task you wanted to accomplish.
+    validations:
+      required: true
+
+  - type: textarea
+    id: barrier
+    attributes:
+      label: What happened instead?
+      description: Describe the barrier — inaccessible element, missing announcement, confusing output, etc.
+    validations:
+      required: true
+
+  - type: input
+    id: url
+    attributes:
+      label: Where in the app?
+      description: URL path or part of the viewer where the issue occurs (e.g., `/viewer`, the upload button, the slice depth slider).
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, browser, and how you are running the app.
+      placeholder: |
+        OS: Windows 11 / macOS 14 / Ubuntu 24.04
+        Browser: Firefox 125 / Chrome 124 / Safari 17
+        Running: Docker / local
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Anything else?
+      description: Workarounds you found, related issues, or any other context.
