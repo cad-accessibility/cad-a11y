@@ -26,7 +26,7 @@ from GitHub to GitLab after every merge, which triggers the GitLab CI deploy job
 PR merged to master on GitHub
         |
         v
-mirror-to-gitlab.yml (GitHub Actions) pushes master -> GitLab
+mirror-to-gitlab.yml (GitHub Actions) pushes master -> GitLab via HTTPS
         |
         v
 GitLab CI: deploy_research_test fires -> staging server updated
@@ -36,7 +36,7 @@ GitLab CI: deploy_research_test fires -> staging server updated
 GitHub Release created (tag v0.x.y)
         |
         v
-mirror-to-gitlab.yml pushes the tag -> GitLab
+mirror-to-gitlab.yml pushes the tag -> GitLab via HTTPS
         |
         v
 GitLab CI: deploy_research_prod fires -> production server updated
@@ -44,30 +44,27 @@ GitLab CI: deploy_research_prod fires -> production server updated
 
 ## Credentials used by the automated mirror
 
-The `mirror-to-gitlab.yml` GitHub Actions workflow authenticates to GitLab using a **dedicated SSH deploy key**
-called `github-actions-mirror`. Here is the full credential chain:
+The `mirror-to-gitlab.yml` GitHub Actions workflow authenticates to GitLab using a **project access token**
+called `github-actions-mirror`. SSH is not used because the UW CS GitLab server blocks authentication
+from GitHub Actions runner IPs (Azure data-center ranges) on port 22.
 
-1. **SSH key pair generated** — an Ed25519 key pair was generated specifically for this workflow.
-   The private key is never stored in the repository.
+The credential chain:
 
-2. **Public key registered on GitLab** — the public key is registered at
-   `GitLab repo > Settings > Repository > Deploy keys` under the name `github-actions-mirror`
-   with **write access enabled** (GitLab deploy key ID `69500`).
-   Any machine holding the matching private key can push to this GitLab repository.
+1. **Project access token created on GitLab** — a project-scoped token with `write_repository` access
+   was created at `GitLab repo > Settings > Access Tokens` under the name `github-actions-mirror`
+   (current token ID: `10330`, expires: 2027-06-23).
+   It can push to this repository and nothing else.
 
-3. **Private key stored as a GitHub Actions secret** — the private key is stored in the GitHub repository
-   at `Settings > Secrets and variables > Actions` under the name `GITLAB_SSH_KEY`.
+2. **Token stored as a GitHub Actions secret** — the token value is stored in the GitHub repository
+   at `Settings > Secrets and variables > Actions` under the name `GITLAB_HTTPS_TOKEN`.
    GitHub encrypts it at rest. It is only injected into GitHub Actions runner environments and is never
    printed in logs.
 
-4. **GitLab URL stored as a GitHub Actions variable** — `git@gitlab.cs.washington.edu:make4all/cad-a11y.git`
-   is stored as the variable `GITLAB_REPO_URL`.
-
-5. **Workflow uses credentials at runtime** — when `mirror-to-gitlab.yml` runs, it:
-   - Writes the private key from `GITLAB_SSH_KEY` into a temporary `~/.ssh/id_ed25519` on the runner
-   - Adds `gitlab.cs.washington.edu` to `~/.ssh/known_hosts` via `ssh-keyscan`
-   - Runs `git push gitlab master --follow-tags`
-   - The runner is ephemeral; all credentials are gone when the job finishes
+3. **Workflow uses the token at runtime** — when `mirror-to-gitlab.yml` runs, it pushes via HTTPS:
+   ```
+   https://oauth2:<GITLAB_HTTPS_TOKEN>@gitlab.cs.washington.edu/make4all/cad-a11y.git
+   ```
+   The runner is ephemeral; all credentials are gone when the job finishes.
 
 This is a **service-account credential** not tied to any individual person's GitLab account.
 Individual maintainers use their own personal SSH keys for manual deployments (see below).
@@ -122,20 +119,20 @@ git push gitlab v0.3.0   # last known-good tag
 
 Check GitHub Actions > "Mirror to GitLab" for the failure reason. Common causes:
 
-- The deploy key was revoked on GitLab — rotate it using the script below
-- The `GITLAB_REPO_URL` variable is wrong — verify under GitHub repo Settings > Variables
-- A `known_hosts` mismatch — update the `ssh-keyscan` line in `.github/workflows/mirror-to-gitlab.yml`
+- The project access token expired or was revoked — rotate it using the script below
+- The token stored in `GITLAB_HTTPS_TOKEN` does not match the active token on GitLab — re-run the rotation script
+- GitLab HTTPS is unreachable from GitHub Actions — check `gitlab.cs.washington.edu` status
 
 While the mirror is broken, maintainers can deploy manually using their own GitLab SSH access.
 
-## Rotating the service deploy key
+## Rotating the mirror credentials
 
-Use the script `scripts/replace-deploy-key.sh` to rotate the deploy key automatically.
+Use the script `scripts/replace-deploy-key.sh` to rotate the project access token automatically.
 
 **Dependencies** (install before running):
 - `jq` — `brew install jq`
 - `gh` — `brew install gh`, then `gh auth login`
-- `ssh`, `ssh-keygen`, `curl` — already available on macOS and Linux
+- `curl`, `ssh` — already available on macOS and Linux
 
 **Requirements before running:**
 - Your personal SSH key must be registered on your GitLab account:
@@ -147,12 +144,11 @@ bash scripts/replace-deploy-key.sh
 ```
 
 The script will:
-1. Generate a new Ed25519 key pair
-2. Add the new public key to GitLab as `github-actions-mirror` (with write access)
-3. Remove the old `github-actions-mirror` key from GitLab
-4. Store the new private key as the `GITLAB_SSH_KEY` GitHub Actions secret
-5. Update the `GITLAB_REPO_URL` variable
-6. Clean up all temporary key files
+1. Use your personal GitLab SSH key to obtain a short-lived API token
+2. Create a new project access token called `github-actions-mirror` (expires in 1 year)
+3. Store the new token as the `GITLAB_HTTPS_TOKEN` GitHub Actions secret
+4. Revoke the old `github-actions-mirror` token on GitLab
+5. Revoke the short-lived API token
 
 It prompts for confirmation before making any changes.
 
@@ -168,4 +164,4 @@ Do not edit `.gitlab-ci.yml` without understanding these implications.
 ## Contacts
 
 If a CSE lab runner is offline or a server is unreachable, contact the lab system administrator.
-The service deploy key is stored in GitHub repository secrets; do not share it via chat or email.
+The mirror token is stored in GitHub repository secrets; do not share it via chat or email.
