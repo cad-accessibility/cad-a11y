@@ -15,17 +15,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Configure SSH
-        run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.GITLAB_SSH_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H gitlab.cs.washington.edu >> ~/.ssh/known_hosts
-
-      - name: Verify SSH access
-        run: ssh -Tv git@gitlab.cs.washington.edu 2>&1 || true
-
       - name: Push to GitLab
         run: |
-          git remote add gitlab ${{ vars.GITLAB_REPO_URL }}
+          git remote add gitlab "https://oauth2:${{ secrets.GITLAB_HTTPS_TOKEN }}@gitlab.cs.washington.edu/make4all/cad-a11y.git"
           git push gitlab HEAD:master --follow-tags
