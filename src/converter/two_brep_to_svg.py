@@ -1110,9 +1110,9 @@ def create_orthographic_views(step_file_0, step_file_1, cut_depth=0.9):
         #ax.set_aspect('equal')
         #plt.show()
 
-        write_svg_lines(os.path.join("svg_views",  # noqa: F821
-                        os.path.basename(step_file).split(".")[0]+"_"+str(cut_depth)+"_"+str(hatch_step)+"_"+view_key+".svg"),
-                        all_shape_edges, width=800, height=800, regions=region_dicts)
+        write_svg_lines(os.path.join("svg_views",
+                        os.path.basename(step_file).split(".")[0]+"_"+str(cut_depth)+"_"+str(hatch_step)+"_"+view_key+".svg"),  # noqa: F821
+                        all_shape_edges, width=800, height=800, regions=region_dicts)  # noqa: F821
 
 if __name__ == '__main__':
     # check for pyqt5
