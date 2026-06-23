@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question
+    url: https://github.com/cad-accessibility/cad-a11y/discussions
+    about: Use GitHub Discussions for questions, ideas, and general conversation.
+  - name: Support and documentation
+    url: https://github.com/cad-accessibility/cad-a11y/blob/master/ACCESSIBILITY.md
+    about: See ACCESSIBILITY.md for the project's accessibility scope and known limitations.

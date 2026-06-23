@@ -1,0 +1,54 @@
+name: Bug report
+description: Something is broken or not working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Fill in as much as you can — the more detail you provide, the faster we can fix it.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the problem clearly. What did you expect to happen, and what actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: How do we reproduce the issue?
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, browser (if relevant), Python version, and how you are running the app (Docker, local).
+      placeholder: |
+        OS: macOS 14 / Windows 11 / Ubuntu 24.04
+        Browser: Firefox 125 / Chrome 124
+        Python: 3.11
+        Running: Docker / local python -m app.server
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or error output
+      description: Paste any terminal output, error messages, or stack traces here.
+      render: shell
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else that might help — sample files, screenshots with alt text, etc.
