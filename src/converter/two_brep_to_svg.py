@@ -1,5 +1,6 @@
 import numpy as np
 from .render_low_res import low_res_render
+from . import plane_intersection_utils
 from .plane_intersection_utils import depth_peeling_single_depth_with_bbox, boolean_diff
 import shapely
 import polyscope as ps
@@ -1009,7 +1010,7 @@ def create_orthographic_views(step_file_0, step_file_1, cut_depth=0.9):
         print(region_intersections)
         exit()
 
-        exp = TopExp_Explorer(myshape, TopAbs_FACE)
+        exp = TopExp_Explorer(myshape, TopAbs_FACE)  # noqa: F821
         all_edges = []
         face_regions = {}
         face_counter = 0
@@ -1019,7 +1020,7 @@ def create_orthographic_views(step_file_0, step_file_1, cut_depth=0.9):
         visible_faces = []
         while exp.More():
             face = apply_location_to_shape(topods.Face(exp.Current()))
-            if is_face_visible(face, myshape):
+            if is_face_visible(face, myshape):  # noqa: F821
                 visible_faces.append(face)
             else:
                 exp.Next()
@@ -1034,10 +1035,10 @@ def create_orthographic_views(step_file_0, step_file_1, cut_depth=0.9):
             exp.Next()
         #render_faces(visible_faces, myshape)
 
-        print(len(shape_regions))
+        print(len(shape_regions))  # noqa: F821
         best_faces = []
         region_dicts = []
-        for shape_region in shape_regions:
+        for shape_region in shape_regions:  # noqa: F821
             if shape_region.area < 0.01:
                 continue
             #plot_regions([shape_region])
@@ -1063,8 +1064,8 @@ def create_orthographic_views(step_file_0, step_file_1, cut_depth=0.9):
             #center_2d = face_regions[best_poly[0]][1][best_poly[1]].representative_point()
             #plot_regions([shape_region, face_regions[best_poly[0]][1][best_poly[1]]])
             visible_face = True
-            internal_face = is_face_centroid_inside_solid(face_regions[best_poly[0]][0], orig_shape, VERBOSE=False)
-            hidden_face = not is_face_visible(face_regions[best_poly[0]][0], orig_shape)
+            internal_face = is_face_centroid_inside_solid(face_regions[best_poly[0]][0], orig_shape, VERBOSE=False)  # noqa: F821
+            hidden_face = not is_face_visible(face_regions[best_poly[0]][0], orig_shape)  # noqa: F821
             #if not hidden_face:
             #    is_face_visible(face_regions[best_poly[0]][0], orig_shape, VERBOSE=True)
             best_faces.append(face_regions[best_poly[0]][0])
@@ -1109,7 +1110,7 @@ def create_orthographic_views(step_file_0, step_file_1, cut_depth=0.9):
         #ax.set_aspect('equal')
         #plt.show()
 
-        write_svg_lines(os.path.join("svg_views", 
+        write_svg_lines(os.path.join("svg_views",  # noqa: F821
                         os.path.basename(step_file).split(".")[0]+"_"+str(cut_depth)+"_"+str(hatch_step)+"_"+view_key+".svg"),
                         all_shape_edges, width=800, height=800, regions=region_dicts)
 

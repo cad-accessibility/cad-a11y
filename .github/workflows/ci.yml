@@ -50,7 +50,7 @@ jobs:
       - name: Wait for app to be ready
         run: |
           for i in {1..30}; do
-            if curl -fsS http://localhost:8635/ >/dev/null; then
+            if curl -fsS http://localhost:8635/viewer >/dev/null; then
               echo "App is up"
               exit 0
             fi
@@ -75,7 +75,7 @@ jobs:
             const browser = await chromium.launch();
             const context = await browser.newContext();
             const page = await context.newPage();
-            await page.goto('http://localhost:8635/', { waitUntil: 'networkidle' });
+            await page.goto('http://localhost:8635/viewer', { waitUntil: 'networkidle' });
 
             const results = await new AxeBuilder({ page }).analyze();
             const blocking = results.violations.filter((v) =>

@@ -3,6 +3,7 @@ matplotlib.use('Agg')  # Use non-GUI backend for thread safety
 import numpy as np
 import polyscope as ps
 from .plane_intersection_utils import depth_peeling_single_depth_with_bbox
+from .render_low_res import low_res_render
 import trimesh
 import cv2
 from shapely.geometry import LineString

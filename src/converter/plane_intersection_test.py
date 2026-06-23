@@ -247,7 +247,7 @@ exit()
 
 # Display original shape and intersection curves
 display.DisplayShape(shape, transparency=0.8)
-for edge in section_edges:
+for edge in section_edges:  # noqa: F821
     display.DisplayShape(edge, color="RED", update=False)
 
 display.FitAll()
@@ -258,7 +258,7 @@ exit()
 
 # Create a cutting plane
 origin = gp_Pnt(0, 0, 50)
-plane = gp_Pln(origin, normal)
+plane = gp_Pln(origin, normal)  # noqa: F821
 face_plane = BRepBuilderAPI_MakeFace(plane).Face()
 
 # Perform intersection
