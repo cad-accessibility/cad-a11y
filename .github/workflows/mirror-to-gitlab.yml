@@ -23,7 +23,7 @@ jobs:
           ssh-keyscan -H gitlab.cs.washington.edu >> ~/.ssh/known_hosts
 
       - name: Verify SSH access
-        run: ssh -T git@gitlab.cs.washington.edu || true
+        run: ssh -Tv git@gitlab.cs.washington.edu 2>&1 || true
 
       - name: Push to GitLab
         run: |
