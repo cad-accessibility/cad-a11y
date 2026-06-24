@@ -24,7 +24,7 @@ bleak>=0.22.0
 godice
 
 # Utility / testing helpers
-requests>=2.28.0
+requests>=2.34.2
 
 # NOTE:
 # pythonocc-core is required by the renderer but is typically installed via conda
