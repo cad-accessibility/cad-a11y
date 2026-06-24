@@ -18,7 +18,7 @@ polyscope
 svgwrite
 
 # Braille / hardware integrations
-hidapi>=0.14.0
+hidapi>=0.15.0
 pyserial>=3.5
 bleak>=3.0.2
 godice
