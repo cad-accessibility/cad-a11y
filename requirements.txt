@@ -4,7 +4,7 @@ flask-cors>=5.0.1
 
 # Numeric + image stack
 numpy>=2.5.0
-Pillow>=9.0.0
+Pillow>=12.2.0
 matplotlib>=3.5.0
 scikit-image
 
