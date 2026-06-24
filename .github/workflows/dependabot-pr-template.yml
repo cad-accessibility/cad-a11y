@@ -1,0 +1,51 @@
+name: Apply PR template to Dependabot PRs
+
+on:
+  pull_request:
+    types: [opened]
+
+jobs:
+  apply-template:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Prepend PR template sections
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const existing = context.payload.pull_request.body || '';
+            const template = [
+              '## Closes',
+              '',
+              '_Dependency update — no linked issue._',
+              '',
+              '## Summary',
+              '',
+              existing.trim(),
+              '',
+              '## Accessibility impact',
+              '',
+              'No accessibility impact — dependency version update only.',
+              '',
+              '## Testing',
+              '',
+              '- [ ] Local run completed',
+              '- [ ] Relevant tests added or updated',
+              '- [ ] Manual verification done',
+              '- [ ] Accessibility testing done (if the change affects the UI or announcements)',
+              '',
+              '## Checklist',
+              '',
+              '- [ ] Documentation updated (if user-facing behavior changed)',
+              '- [ ] No secrets or private data added',
+              '- [ ] This is ready for review (not a draft)',
+            ].join('\n');
+
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              body: template,
+            });
