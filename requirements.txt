@@ -1,9 +1,9 @@
 # Core web server
 Flask>=2.3.0
-flask-cors>=4.0.0
+flask-cors>=5.0.1
 
 # Numeric + image stack
-numpy>=1.21.0
+numpy>=2.5.0
 Pillow>=9.0.0
 matplotlib>=3.5.0
 scikit-image
@@ -20,11 +20,11 @@ svgwrite
 # Braille / hardware integrations
 hidapi>=0.14.0
 pyserial>=3.5
-bleak>=0.22.0
+bleak>=3.0.2
 godice
 
 # Utility / testing helpers
-requests>=2.28.0
+requests>=2.34.2
 
 # NOTE:
 # pythonocc-core is required by the renderer but is typically installed via conda
