@@ -1,149 +1,85 @@
-# CAD Accessibility Tool
+# CAD A11y
 
-A tool for converting CAD models in BREP format to accessible SVG representations from multiple viewpoints.
+A tool for making 3D CAD models accessible to blind and low-vision (BLV) users. It converts STEP/BREP files into accessible SVG representations and streams them to braille displays and tactile hardware in real time.
 
-## Project Overview
+## Documentation
 
-This project aims to make CAD models more accessible by converting BREP (Boundary Representation) files into SVG visualizations that can be easily viewed and shared. The tool provides multiple views of CAD models (top, front, right) to enhance accessibility for users who may benefit from 2D representations.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute, branch naming, PR guidelines, accessible CLI workflow
+- [ACCESSIBILITY.md](ACCESSIBILITY.md) — project accessibility goals, scope, and how to report accessibility issues
+- [CHANGELOG.md](CHANGELOG.md) — version history
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — deployment architecture and Docker details
+- [docs/MAINTAINER_GUIDE.md](docs/MAINTAINER_GUIDE.md) — release process, branch strategy, triage
 
-## Directory Structure
+## Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/)
+
+## Running the app
+
+```bash
+docker compose up --build
+```
+
+Then open `http://localhost:8635/viewer` in a browser.
+
+Model files placed in `data/models/` are available immediately without rebuilding the image.
+
+## Directory structure
 
 ```
 cad-a11y/
-│
-├── app.py                  # Main web application entry point
-├── environment.yml         # Conda environment configuration
-│
+├── accessible-3d-viewer.html     # Main viewer UI
+├── app/
+│   ├── server.py                 # Flask server (entry point inside the container)
+│   ├── braille_display.py        # Braille display I/O (Monarch, DotPad)
+│   └── cad_comparison_lib.py     # CAD rendering and comparison library
 ├── src/
-│   ├── converter/          # Core conversion logic
-│   │   └── brep_to_svg.py  # BREP to SVG conversion script
-│   │
-│   ├── models/             # Model files
-│   │   ├── brep/           # Input BREP files
-│   │   └── svg/            # Output SVG files
-│   │
-│   └── webapp/             # Web application code
-│       ├── app/            # Flask application
-│       ├── config/         # Configuration settings
-│       ├── routes/         # Route definitions
-│       ├── static/         # Static assets (CSS, JS, images)
-│       └── templates/      # HTML templates
-│
-└── scripts/                # Utility scripts
-    └── generate_cylinder_brep.py  # Script to generate sample BREP files
+│   ├── converter/                # CAD format conversion scripts (STEP → SVG, hatch, slice)
+│   └── models/                   # Sample model files
+│       ├── brep/
+│       ├── stl/
+│       └── svg/
+├── static/
+│   ├── css/viewer.css            # Viewer styles
+│   └── js/
+│       ├── viewer.js             # Main viewer logic
+│       ├── monarch-hid.js        # Monarch braille display (WebHID)
+│       ├── trinkey-slider.js     # Adafruit Trinkey slider (WebHID)
+│       ├── witmotion-imu.js      # WitMotion IMU for orientation input (WebHID)
+│       └── dotpad-integration.js # DotPad haptic display
+├── data/models/                  # Model files (bind-mounted into the container)
+├── scripts/                      # Utility scripts (SCAD conversion, BREP generation)
+├── tests/                        # Test suite
+├── docs/                         # Extended documentation
+├── environment.yml               # Conda environment used inside the Docker image
+├── requirements.txt              # pip dependencies installed inside the Docker image
+└── docker-compose.yml            # Docker Compose configuration
 ```
 
-## Getting Started
+## Hardware setup
 
-### Prerequisites
+The viewer works without any hardware. Connect devices for full tactile and braille output.
 
-- Python 3.9+
-- Conda (for environment management)
+### Monarch braille display
 
-### Installation
+1. Charge until the device powers on (hold the power button for 3 seconds).
+2. Turn it off, then connect it to your laptop with a USB-C cable.
+3. Turn it on.
+4. Navigate to **Braille Terminal**: press the up arrow twice, then press the rightmost braille key twice.
 
-1. Clone this repository
-2. Create and activate the Conda environment:
-   ```
-   conda env create -f environment.yml
-   conda init zsh
-   [unsure if this is needed] conda create --name cad-a11y
-   conda activate cad-a11y
-   conda install python=3.10
-   conda install pip
-   conda install pythonocc-core
-   [use your package manager] to install freecad
-   pip install -r requirements.txt   ```
+### WitMotion IMU
 
-### Running the Command-line Tool
+1. Plug the WitMotion into a USB port.
+2. The browser will request WebHID permission on first use.
 
+### Adafruit Slider Trinkey
 
-#### Converting OpenSCAD to STL
-Example to convert OpenSCAD files to STL format (new feature):
+1. Plug the Trinkey into a USB port (use the USB-A adapter for USB-C ports).
 
-```
-python scripts/scad_to_stl.py openscad_scripts/vase.scad model/vase.stl
-```
+## Uploads on managed servers
 
-For more options and detailed usage, see `scripts/README_scad_to_step.md`.
-
-### Connecting devices
-## Connecting the Monarch
-1. Make sure that the Monarch is charged enough to be able to turn it on. If it does not turn on (after clicking for longer than 3 seconds), you can use a laptop charger to charge it.
-2. Turn it off.
-3. Connect it with the accompanying USB-C-to-USB-C cable to your laptop
-4. Turn the Monarch on.
-5. On the Monarch, use the right arrow keys to navigate to "Braille Terminal". For that, press the "up" arrow twice. Then, press the right-most braille keyboard button twice (it sometimes says "USB button" after the first keystroke. This is a good sign.).
-
-## Connecting the Tactile ViewCube
-1. Charge the GoDice with the accompanying charger for around 10 seconds. The "5" face has the charging connectors.
-2. Put the GoDice in the Tactile ViewCube, and make sure that the face "3" points towards the round nubbin and the face "6" points upwards.
-3. Close the Tactile ViewCube.
-
-## Connecting the Adafruit Slider Trinkey
-1. Optional: Put the slider on its plastic bed to be able to more easily manipulate it.
-2. Plug the slider into an USB port or use the adaptor to plug it into an USB-C port. 
-
-### Running the Web Application
-
-After connecting all the devices, as described above, you can now run the web application:
-
-```
-python server_cube_slider.py
-```
-
-Then, open accessible-3d-viewer.html in a browser.
-
-You should now be able to interact with the website and your terminal and your monarch should serve as displays.
-
-### Uploads on managed/locked-down servers
-
-If the app cannot write to `/project/data/models`, uploads now automatically fall back to a writable directory (`/tmp/cad-a11y/models`).
-
-To force a specific upload path, set:
+If the container cannot write to `/project/data/models`, uploads fall back to `/tmp/cad-a11y/models`. Override the path with:
 
 ```bash
-UPLOAD_MODEL_DIR=/some/writable/path
+UPLOAD_MODEL_DIR=/some/writable/path docker compose up
 ```
-
-## Windows One-Click Installer (EXE)
-
-This repository includes a Constructor-based Windows installer configuration that builds a downloadable EXE.
-
-### Build the EXE in GitHub Actions (recommended)
-
-1. Push your branch to GitHub.
-2. Run the workflow in `.github/workflows/build-windows-installer.yml`:
-    - Actions -> Build Windows Installer -> Run workflow
-3. Download the EXE from the workflow artifact named `cad-a11y-windows-installer`.
-
-When you publish a GitHub Release, the same workflow also uploads the EXE as a release asset.
-
-### Build the EXE locally on Windows
-
-1. Install Miniforge or Miniconda.
-2. Install Constructor in base:
-    ```
-    conda install -n base -c conda-forge constructor
-    ```
-3. From repo root, run:
-    ```
-    constructor installer --output-dir dist installer
-    ```
-4. Your installer EXE will be written to `dist/`.
-
-### Installer behavior
-
-- Uses `installer/construct.yaml` to define packaged runtime and files.
-- Installs launcher script `installer/launch_cad_a11y.bat`.
-- Runs `installer/post_install.bat` to:
-    - create Desktop and Start Menu shortcuts,
-    - install pip-only dependency `godice`,
-    - attempt user-scope `winget` installs of OpenSCAD and FreeCAD (if `winget` is available).
-- Writes a post-install log at `%PREFIX%\\cad_a11y_post_install.log` with step-by-step status for dependency and shortcut setup.
-
-## Future Development
-
-- Expanding to support additional CAD file formats
-- Improving SVG rendering and accessibility features
-- Adding user authentication and file management

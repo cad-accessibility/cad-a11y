@@ -10,15 +10,14 @@ Thanks for your interest in improving CAD A11y.
 
 ## Development setup
 
-1. Install Conda and create the environment:
+1. Install [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/).
+2. Build and start the app:
    ```bash
-   conda env create -f environment.yml
-   conda activate cad-a11y
+   docker compose up --build
    ```
-2. Run the app locally:
-   ```bash
-   python app.py
-   ```
+3. Open `http://localhost:8635/viewer` in a browser.
+
+Code changes in `app/`, `src/`, and `static/` require a rebuild (`docker compose up --build`).
 
 ## Branching
 
