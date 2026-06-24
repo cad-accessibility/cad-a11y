@@ -134,7 +134,7 @@ Please include:
 - Expected behavior
 - Actual behavior
 - Reproduction steps
-- OS and Python version
+- OS and Docker version (the app runs on Python 3.12 inside the container)
 - Display used (DotPad, Monarch, etc.)
 - Sample input file if relevant
 
