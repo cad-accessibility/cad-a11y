@@ -20,7 +20,7 @@ svgwrite
 # Braille / hardware integrations
 hidapi>=0.14.0
 pyserial>=3.5
-bleak>=0.22.0
+bleak>=3.0.2
 godice
 
 # Utility / testing helpers
