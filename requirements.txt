@@ -1,6 +1,6 @@
 # Core web server
 Flask>=2.3.0
-flask-cors>=4.0.0
+flask-cors>=6.0.5
 
 # Numeric + image stack
 numpy>=1.21.0
