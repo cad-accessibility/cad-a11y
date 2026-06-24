@@ -1,11 +1,11 @@
 # Core web server
 Flask>=2.3.0
-flask-cors>=4.0.0,<6.0.0
+flask-cors>=4.0.0
 
 # Numeric + image stack
 numpy>=1.21.0
 Pillow>=9.0.0
-matplotlib>=3.11.0
+matplotlib>=3.5.0
 scikit-image
 
 # CAD / geometry stack
@@ -18,7 +18,7 @@ polyscope
 svgwrite
 
 # Braille / hardware integrations
-hidapi>=0.15.0
+hidapi>=0.14.0
 pyserial>=3.5
 bleak>=0.22.0
 godice

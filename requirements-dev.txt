@@ -1,6 +1,6 @@
 # Development-only dependencies — not installed in Docker.
 # Install with: pip install -r requirements-dev.txt
 
-pytest>=9.1.1
+pytest>=8.0.0
 black>=24.0.0
-ruff>=0.15.18
+ruff>=0.4.0
