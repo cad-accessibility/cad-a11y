@@ -9,16 +9,3 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    ignore:
-      # These bumps have known compatibility issues with our conda-based Docker
-      # image and are intentionally held at their current lower bounds.
-      - dependency-name: flask-cors
-        versions: [">=6.0.0"]
-      - dependency-name: matplotlib
-        versions: [">=3.11.0"]
-      - dependency-name: hidapi
-        versions: [">=0.15.0"]
-      - dependency-name: pytest
-        versions: [">=9.0.0"]
-      - dependency-name: ruff
-        versions: [">=0.15.0"]

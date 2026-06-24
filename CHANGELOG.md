@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Upgraded runtime from Python 3.9 (EOL) to Python 3.12 in `environment.yml`
+- Applied pending Dependabot dependency bumps now unblocked by the Python upgrade:
+  `flask-cors >=5.0.1`, `numpy >=2.5.0`, `requests >=2.34.2`, `bleak >=3.0.2`,
+  `ruff >=0.14.14`, `mamba-org/setup-micromamba v3`, `actions/github-script v9`
+
+### Fixed
+- Dockerfile pip install no longer silently masks failures: `|| true` now only
+  covers optional packages (godice, polyscope), so a broken primary install
+  causes the build to fail visibly instead of starting a container without Flask
+
 ### Added
 - OSS contribution infrastructure: branch protection, PR templates, issue templates, CI pipeline
 - GitHub to GitLab deployment mirror via GitHub Actions

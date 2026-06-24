@@ -26,8 +26,8 @@ SHELL ["conda", "run", "-n", "cad-a11y", "/bin/bash", "-c"]
 # godice and polyscope are optional — failures are non-fatal.
 COPY requirements.txt .
 RUN grep -vE '^\s*(#|godice|polyscope)' requirements.txt \
-      | pip install --no-cache-dir -r /dev/stdin && \
-    pip install --no-cache-dir godice polyscope || true
+      | pip install --no-cache-dir -r /dev/stdin
+RUN pip install --no-cache-dir godice polyscope || true
 
 # --- Application source (invalidates only when code changes) ---
 
