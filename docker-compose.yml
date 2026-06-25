@@ -14,6 +14,7 @@ services:
       - ./data/models:/project/data/models
       - renders:/project/data/renders
       - logs:/project/data/logs
+      - db:/project/data/db
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:6969/"]
       interval: 30s
@@ -24,3 +25,4 @@ services:
 volumes:
   renders:
   logs:
+  db:
