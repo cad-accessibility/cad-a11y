@@ -19,6 +19,8 @@ import io
 import json
 import logging
 import os
+import queue as _queue_module
+import re
 import sys
 import threading
 import time
@@ -30,11 +32,12 @@ from typing import Any
 import uuid
 
 import numpy as np
-from flask import Flask, Response, has_request_context, jsonify, request, send_file, stream_with_context
+from flask import Flask, Response, has_request_context, jsonify, make_response, request, send_file, stream_with_context
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
 
+from . import db
 from .braille_display import (
     _pixels_to_braille_cells,
     _pixels_to_braille_cells_dotpad,
@@ -42,7 +45,6 @@ from .braille_display import (
     _MONARCH_COLS,
     _DOTPAD_LINES,
     _DOTPAD_COLS,
-    _DOTPAD_GRAPHIC_CELLS,
 )
 from .cad_comparison_lib import CADComparisonRenderer
 from src.converter.render_low_res import save_binary_array_as_vector_pdf
@@ -122,6 +124,49 @@ def _resolve_upload_dir() -> Path:
 
 UPLOAD_DIR = _resolve_upload_dir()
 
+_SESSION_COOKIE = "cad_session"
+_SESSION_MAX_AGE = 365 * 24 * 3600  # 1 year
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
+)
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# Allowlist for event_type values accepted by POST /events/track.
+_ALLOWED_EVENT_TYPES = frozenset(
+    {
+        "section_dwell",
+        "keyboard_shortcut",
+        "device_connect",
+        "export",
+        "model_select",
+    }
+)
+
+
+def _validate_session_cookie(value: str | None) -> str | None:
+    """Return the cookie value if it is a well-formed UUID, else None."""
+    if value and _UUID_RE.match(value):
+        return value
+    return None
+
+
+def _get_or_create_session_id() -> str:
+    """Read cad_session cookie from the current request; generate a new UUID if absent/invalid."""
+    existing = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE))
+    return existing if existing else str(uuid.uuid4())
+
+
+def _attach_session_cookie(response: Response, session_id: str) -> Response:
+    response.set_cookie(
+        _SESSION_COOKIE,
+        session_id,
+        max_age=_SESSION_MAX_AGE,
+        httponly=True,
+        samesite="Lax",
+        secure=False,
+    )
+    return response
+
+
 DEFAULT_RENDER_PARAMS: dict[str, Any] = {
     "view": "y-",
     "zoom": "0",
@@ -181,7 +226,6 @@ preview_payload_cache: OrderedDict[str, np.ndarray] = OrderedDict()
 preview_payload_cache_lock = threading.Lock()
 
 # SSE client registry — each connected browser tab gets its own queue.
-import queue as _queue_module
 _sse_clients: list[_queue_module.Queue] = []
 _sse_clients_lock = threading.Lock()
 
@@ -685,6 +729,17 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     model_index = _normalize_model_index(params.get("current_model"))
     rendered, bbox, braille_payload = _render_and_send(params, source=source, model_index=model_index)
 
+    session_id = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE)) if has_request_context() else None
+    db.record_render(
+        session_id=session_id,
+        view=str(params.get("view", "")),
+        render_mode=str(params.get("renderMode", "")),
+        depth=float(params.get("depth", 0)),
+        zoom=float(params.get("zoom", 0)),
+        layout_mode=str(params.get("mode", "single")),
+        input_source=source,
+    )
+
     engine = get_or_create_renderer(model_index)
     _save_print_if_requested(params, engine, rendered)
 
@@ -831,8 +886,12 @@ def start_optional_hardware_watchers() -> None:
 
 @app.route("/viewer", methods=["GET"])
 def serve_viewer():
-    """Serve the main HTML viewer (needed for ES module imports)."""
-    return send_file(REPO_ROOT / "accessible-3d-viewer.html")
+    """Serve the main HTML viewer and establish a persistent cad_session cookie."""
+    session_id = _get_or_create_session_id()
+    db.upsert_session(session_id)
+    response = make_response(send_file(REPO_ROOT / "accessible-3d-viewer.html"))
+    _attach_session_cookie(response, session_id)
+    return response
 
 
 @app.route("/", methods=["GET"])
@@ -851,10 +910,14 @@ def home():
                 "/commands/stats": "GET - Command statistics",
                 "/models": "GET/POST - List or update active model index",
                 "/upload": "POST - Upload an STL or STEP model file",
-                "/upload": "POST - Upload an STL or STEP model file",
                 "/get_data": "GET - Optional cube/slider state",
                 "/render/dotpad-hex": "POST - Get render as DotPad hex string for Web SDK",
                 "/viewer": "GET - Serve the HTML viewer (required for DotPad Web SDK)",
+                "/session/me": "GET - Return current session metadata",
+                "/session/identify": "POST - Store email/consent for current session",
+                "/session/models": "GET - List uploaded models for current session",
+                "/models/<filename>": "DELETE - Delete an uploaded model",
+                "/events/track": "POST - Record a client-side interaction event",
             },
         }
     )
@@ -1249,6 +1312,117 @@ def upload_model():
     }), 200
 
 
+@app.route("/session/me", methods=["GET"])
+def session_me():
+    session_id = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE))
+    if not session_id:
+        return jsonify({"session_id": None, "consent_given": None}), 200
+    row = db.get_session(session_id)
+    if not row:
+        return jsonify({"session_id": None, "consent_given": None}), 200
+    model_count = len(db.get_session_models(session_id))
+    return jsonify(
+        {
+            "session_id": row["id"],
+            "identifier": row["identifier"],
+            "consent_given": row["consent_given"],
+            "created_at": row["created_at"],
+            "last_seen_at": row["last_seen_at"],
+            "model_count": model_count,
+        }
+    ), 200
+
+
+@app.route("/session/identify", methods=["POST"])
+def session_identify():
+    session_id = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE))
+    if not session_id:
+        return jsonify({"status": "error", "message": "No active session"}), 400
+    if not db.get_session(session_id):
+        return jsonify({"status": "error", "message": "Session not found"}), 400
+
+    data = request.get_json(silent=True) or {}
+    email = data.get("email")
+    consent = data.get("consent", False)
+
+    if email is not None:
+        email = str(email).strip()
+        if email and not _EMAIL_RE.match(email):
+            return jsonify({"status": "error", "message": "Invalid email address"}), 400
+        email = email or None
+
+    db.save_session_identifier(session_id, email, bool(consent))
+    return jsonify({"status": "success"}), 200
+
+
+@app.route("/session/models", methods=["GET"])
+def session_models():
+    session_id = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE))
+    if not session_id:
+        return jsonify({"models": []}), 200
+    raw_models = db.get_session_models(session_id)
+    # Cross-check each filename against disk; surface availability to the client.
+    models = []
+    for m in raw_models:
+        on_disk = (UPLOAD_DIR / m["filename"]).exists()
+        models.append({**m, "available": on_disk})
+    return jsonify({"models": models}), 200
+
+
+@app.route("/models/<filename>", methods=["DELETE"])
+def delete_model(filename: str):
+    session_id = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE))
+    if not session_id:
+        return jsonify({"status": "error", "message": "No active session"}), 400
+
+    safe_name = secure_filename(filename)
+    if not safe_name or safe_name != filename:
+        return jsonify({"status": "error", "message": "Invalid filename"}), 400
+
+    updated = db.mark_model_deleted(session_id, safe_name)
+    if not updated:
+        return jsonify({"status": "error", "message": "Model not found or already deleted"}), 404
+
+    dest = UPLOAD_DIR / safe_name
+    try:
+        if dest.exists():
+            dest.unlink()
+    except Exception as err:
+        return jsonify({"status": "error", "message": f"Could not remove file: {err}"}), 500
+
+    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response, renderers_by_model
+    with models_lock:
+        AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
+        MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
+        renderers_by_model.clear()
+    with state_lock:
+        if state.current_model_index >= len(AVAILABLE_MODELS):
+            state.current_model_index = 0
+        last_render_fingerprint = None
+        last_render_response = None
+    with quantized_render_cache_lock:
+        quantized_render_cache.clear()
+    with preview_payload_cache_lock:
+        preview_payload_cache.clear()
+
+    return jsonify({"status": "success", "filename": safe_name}), 200
+
+
+@app.route("/events/track", methods=["POST"])
+def track_event():
+    """Record a client-side interaction event (section dwell, shortcut, device connect, etc.)."""
+    session_id = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE))
+    data = request.get_json(silent=True) or {}
+    event_type = str(data.get("event_type", "")).strip()
+    if event_type not in _ALLOWED_EVENT_TYPES:
+        return jsonify({"status": "error", "message": f"Unknown event_type '{event_type}'"}), 400
+    event_data = data.get("event_data")
+    if event_data is not None and not isinstance(event_data, dict):
+        return jsonify({"status": "error", "message": "event_data must be an object"}), 400
+    db.record_page_event(session_id, event_type, event_data)
+    return jsonify({"status": "success"}), 200
+
+
 @app.route("/uploads/cleanup", methods=["POST"])
 def cleanup_uploaded_models():
     payload = request.get_json(silent=True) or {}
@@ -1475,6 +1649,7 @@ def main() -> int:
     if QUIET_MODE:
         _log("Output mode: quiet (set SERVER_VERBOSE=1 for debug logs)", force=True)
 
+    db.init_db()
     initialize_default_braille_render()
     start_optional_hardware_watchers()
     open_viewer_in_browser()
