@@ -23,11 +23,11 @@ RUN conda env create -f environment.yml && conda clean -afy
 SHELL ["conda", "run", "-n", "cad-a11y", "/bin/bash", "-c"]
 
 # Install pip dependencies.
-# godice and polyscope are optional — failures are non-fatal.
+# polyscope is optional — failures are non-fatal.
 COPY requirements.txt .
-RUN grep -vE '^\s*(#|godice|polyscope)' requirements.txt \
+RUN grep -vE '^\s*(#|polyscope)' requirements.txt \
       | pip install --no-cache-dir -r /dev/stdin
-RUN pip install --no-cache-dir godice polyscope || true
+RUN pip install --no-cache-dir polyscope || true
 
 # --- Application source (invalidates only when code changes) ---
 

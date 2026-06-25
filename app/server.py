@@ -4,14 +4,13 @@
 Features:
 - Receives render state from the viewer and renders with CADComparisonRenderer.
 - Sends rendered output to a connected braille display using braille_display.py.
-- Optionally reads GoDice orientation and Slider Trinkey position if hardware is present.
+- Optionally reads WitMotion IMU orientation and Slider Trinkey position if hardware is present.
 - Supports command logging endpoints used by the legacy cube/slider server.
 - Opens accessible-3d-viewer.html in the default browser at startup.
 """
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import copy
 import contextlib
@@ -47,16 +46,6 @@ from .braille_display import (
 )
 from .cad_comparison_lib import CADComparisonRenderer
 from src.converter.render_low_res import save_binary_array_as_vector_pdf
-
-try:
-    import bleak  # type: ignore
-except Exception:
-    bleak = None
-
-try:
-    import godice  # type: ignore
-except Exception:
-    godice = None
 
 try:
     import serial  # type: ignore
@@ -141,15 +130,6 @@ DEFAULT_RENDER_PARAMS: dict[str, Any] = {
     "mode": "single",
     "move_camera_center": "none",
     "print_view": False,
-}
-
-VIEW_CUBE_MAPPING = {
-    1: "z-",
-    2: "y-",
-    3: "x-",
-    4: "x+",
-    5: "y+",
-    6: "z+",
 }
 
 # WitMotion IMU orientation → view mapping
@@ -755,60 +735,6 @@ def open_viewer_in_browser() -> None:
         _log(f"Could not open viewer in browser: {error}", force=True)
 
 
-def _filter_godice_devices(dev_advdata_tuples):
-    return [
-        (device, adv_data)
-        for device, adv_data in dev_advdata_tuples
-        if device.name and device.name.startswith("GoDice")
-    ]
-
-
-def _select_closest_device(dev_advdata_tuples):
-    return max(dev_advdata_tuples, key=lambda item: item[1].rssi)
-
-
-async def _godice_notification_callback(number, stability_descr):
-    if godice is None:
-        return
-    if stability_descr not in [godice.StabilityDescriptor.MOVE_STABLE, godice.StabilityDescriptor.STABLE]:
-        return
-    if number not in VIEW_CUBE_MAPPING:
-        return
-    with state_lock:
-        state.cube_value = VIEW_CUBE_MAPPING[number]
-    _log(f"GoDice stable face {number} -> view {state.cube_value}")
-    _push_sse({"cube_value": state.cube_value})
-
-
-async def _godice_worker() -> None:
-    if bleak is None or godice is None:
-        _log("GoDice dependencies unavailable; cube input disabled.", force=True)
-        return
-
-    _log("Searching for GoDice devices...")
-    discovery = await bleak.BleakScanner.discover(timeout=8, return_adv=True)
-    candidates = _filter_godice_devices(discovery.values())
-    if not candidates:
-        _log("No GoDice found; cube input disabled.", force=True)
-        return
-
-    device, _ = _select_closest_device(candidates)
-    _log(f"Connecting GoDice: {device.name} ({device.address})", force=True)
-
-    async with godice.create(device.address, godice.Shell.D6) as dice:
-        _log("GoDice connected.", force=True)
-        await dice.subscribe_number_notification(_godice_notification_callback)
-        while True:
-            await asyncio.sleep(30)
-
-
-def _run_godice_thread() -> None:
-    try:
-        asyncio.run(_godice_worker())
-    except Exception as error:
-        _log(f"GoDice integration disabled after error: {error}", force=True)
-
-
 def _slider_worker() -> None:
     if serial is None or list_ports is None:
         _log("Serial dependencies unavailable; slider input disabled.", force=True)
@@ -899,7 +825,6 @@ def _witmotion_worker() -> None:
 
 
 def start_optional_hardware_watchers() -> None:
-    threading.Thread(target=_run_godice_thread, daemon=True).start()
     threading.Thread(target=_slider_worker, daemon=True).start()
     threading.Thread(target=_witmotion_worker, daemon=True).start()
 
@@ -981,7 +906,7 @@ def render_view():
                 return jsonify(cached_response), 200
 
         # Do not copy browser-selected viewpoint into global hardware state.
-        # Global cube_value is reserved for hardware-originated updates (GoDice/IMU)
+        # Global cube_value is reserved for hardware-originated updates (WitMotion IMU)
         # so one browser's manual navigation does not move other connected clients.
         with state_lock:
             state.current_model_index = model_index
@@ -1348,7 +1273,7 @@ def cleanup_uploaded_models():
 
 @app.route("/events", methods=["GET"])
 def sse_events():
-    """Server-Sent Events stream for hardware state changes (GoDice, Slider).
+    """Server-Sent Events stream for hardware state changes (WitMotion IMU, Slider).
 
     Replaces 1-second polling for hardware input — events are pushed immediately
     when device state changes, reducing perceived latency from ~1000 ms to ~10 ms.

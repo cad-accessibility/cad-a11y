@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Dockerfile pip install no longer silently masks failures: `|| true` now only
-  covers optional packages (godice, polyscope), so a broken primary install
+  covers optional packages (polyscope), so a broken primary install
   causes the build to fail visibly instead of starting a container without Flask
 
 ### Added
