@@ -19,3 +19,6 @@ jobs:
         run: |
           git remote add gitlab "https://oauth2:${{ secrets.GITLAB_HTTPS_TOKEN }}@gitlab.cs.washington.edu/make4all/cad-a11y.git"
           git push gitlab HEAD:master --follow-tags
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            git push gitlab "$GITHUB_REF"
+          fi
