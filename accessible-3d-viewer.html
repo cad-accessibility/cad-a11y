@@ -507,6 +507,45 @@
         </main>
     </div>
 
+    <!-- Session consent dialog — shown once on first visit; keyboard-navigable and SR-announced -->
+    <dialog
+        id="session-consent-dialog"
+        aria-labelledby="consent-dialog-title"
+        aria-describedby="consent-dialog-desc"
+        aria-modal="true"
+    >
+        <h2 id="consent-dialog-title">Welcome to CAD A11y</h2>
+        <p id="consent-dialog-desc">
+            We use a session cookie to remember your visit and any models you upload.
+            You may optionally provide your email to receive project updates.
+            Providing an email is optional — the viewer is fully usable without it.
+        </p>
+        <form method="dialog" id="consent-form" novalidate>
+            <div class="consent-field">
+                <label for="consent-email">Email address (optional)</label>
+                <input
+                    type="email"
+                    id="consent-email"
+                    name="email"
+                    autocomplete="email"
+                    placeholder="you@example.com"
+                    aria-describedby="consent-email-hint"
+                >
+                <span id="consent-email-hint" class="consent-hint">
+                    Leave blank to continue anonymously.
+                </span>
+            </div>
+            <div class="consent-actions">
+                <button type="submit" value="accept" id="consent-accept">
+                    Accept &amp; Continue
+                </button>
+                <button type="submit" value="decline" id="consent-decline">
+                    Continue without email
+                </button>
+            </div>
+        </form>
+    </dialog>
+
     <script src="/static/js/viewer.js?v=20260529-5"></script>
 
     <!-- Monarch USB Browser HID integration (mirrors braille_display.py _send_to_monarch) -->
@@ -520,6 +559,114 @@
 
     <!-- WitMotion IMU (Web Bluetooth) -->
     <script src="/static/js/witmotion-imu.js"></script>
+
+    <script>
+    (function () {
+        'use strict';
+
+        // ---------------------------------------------------------------------------
+        // Session initialisation — runs once per page load.
+        // GET /session/me tells us whether the user has already seen the consent prompt.
+        // ---------------------------------------------------------------------------
+        async function initSession() {
+            let sessionData = null;
+            try {
+                const res = await fetch('/session/me');
+                if (res.ok) sessionData = await res.json();
+            } catch (_) {
+                return; // server unavailable — skip dialog silently
+            }
+
+            // Show dialog only on a genuinely new session (consent_given is null).
+            if (sessionData && sessionData.consent_given === null) {
+                const dialog = document.getElementById('session-consent-dialog');
+                const main = document.getElementById('main-content');
+                if (!dialog || !dialog.showModal) return;
+
+                // Hide background from screen readers while dialog is open (ARIA best practice).
+                if (main) main.setAttribute('aria-hidden', 'true');
+
+                dialog.showModal();
+
+                dialog.addEventListener('close', function onClose() {
+                    dialog.removeEventListener('close', onClose);
+                    if (main) main.removeAttribute('aria-hidden');
+
+                    const value = dialog.returnValue; // 'accept' or 'decline'
+                    const email = (document.getElementById('consent-email')?.value || '').trim();
+                    fetch('/session/identify', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            email: email || null,
+                            consent: value === 'accept',
+                        }),
+                    }).catch(function () {});
+                });
+            }
+        }
+
+        // ---------------------------------------------------------------------------
+        // Client-side interaction tracking — section dwell time and shortcuts.
+        // Sends events to POST /events/track; all calls are fire-and-forget.
+        // ---------------------------------------------------------------------------
+        function trackEvent(eventType, eventData) {
+            fetch('/events/track', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ event_type: eventType, event_data: eventData }),
+            }).catch(function () {});
+        }
+
+        // Track how long the user dwells in each labelled section.
+        (function trackSectionDwell() {
+            const sections = document.querySelectorAll('section[aria-labelledby]');
+            sections.forEach(function (section) {
+                const headingId = section.getAttribute('aria-labelledby');
+                const heading = document.getElementById(headingId);
+                const sectionLabel = heading ? heading.textContent.trim() : headingId;
+                let enterTime = null;
+
+                section.addEventListener('focusin', function () {
+                    if (enterTime === null) enterTime = Date.now();
+                });
+                section.addEventListener('focusout', function (e) {
+                    if (enterTime !== null && !section.contains(e.relatedTarget)) {
+                        trackEvent('section_dwell', {
+                            section_id: section.id || headingId,
+                            section_label: sectionLabel,
+                            duration_ms: Date.now() - enterTime,
+                        });
+                        enterTime = null;
+                    }
+                });
+            });
+        })();
+
+        // Track keyboard shortcut usage (key + active element context).
+        document.addEventListener('keydown', function (e) {
+            // Only track non-printable shortcuts that change viewer state.
+            const shortcuts = new Set([
+                'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+                'PageUp', 'PageDown', 'Home', 'End',
+                '1', '2', '3', '4', '5', '6', '7', '8', '9', '0',
+            ]);
+            if (!shortcuts.has(e.key)) return;
+            // Ignore shortcuts inside text inputs.
+            const tag = document.activeElement?.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+            trackEvent('keyboard_shortcut', {
+                key: e.key,
+                ctrl: e.ctrlKey,
+                alt: e.altKey,
+                shift: e.shiftKey,
+                active_element_id: document.activeElement?.id || null,
+            });
+        });
+
+        initSession();
+    })();
+    </script>
 </body>
 </html>
  

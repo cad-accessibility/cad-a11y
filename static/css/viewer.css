@@ -781,3 +781,109 @@ button:focus-visible {
         margin: 10px;
     }
 }
+
+/* Session consent dialog */
+#session-consent-dialog {
+    border: none;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+    max-width: 480px;
+    width: calc(100% - 40px);
+    padding: 32px;
+    font-family: inherit;
+    color: #333;
+}
+
+#session-consent-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.55);
+}
+
+#session-consent-dialog h2 {
+    margin: 0 0 16px 0;
+    font-size: 1.4em;
+    color: #2c3e50;
+}
+
+#session-consent-dialog p {
+    margin: 0 0 24px 0;
+    line-height: 1.6;
+    font-size: 0.95em;
+    color: #555;
+}
+
+.consent-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 24px;
+}
+
+.consent-field label {
+    font-weight: 600;
+    font-size: 0.9em;
+    color: #2c3e50;
+}
+
+.consent-field input[type="email"] {
+    padding: 10px 12px;
+    border: 2px solid #ccc;
+    border-radius: 6px;
+    font-size: 1em;
+    font-family: inherit;
+    transition: border-color 0.2s;
+}
+
+.consent-field input[type="email"]:focus {
+    outline: none;
+    border-color: #2980b9;
+    box-shadow: 0 0 0 3px rgba(41, 128, 185, 0.25);
+}
+
+.consent-hint {
+    font-size: 0.82em;
+    color: #777;
+}
+
+.consent-actions {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+/* Both buttons intentionally equal size and weight — neither should appear mandatory */
+.consent-actions button {
+    flex: 1;
+    min-width: 140px;
+    padding: 12px 16px;
+    border: 2px solid #2980b9;
+    border-radius: 8px;
+    font-size: 0.95em;
+    font-family: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+#consent-accept {
+    background: #2980b9;
+    color: #fff;
+}
+
+#consent-accept:hover,
+#consent-accept:focus {
+    background: #1f6391;
+    outline: 3px solid #1f6391;
+    outline-offset: 2px;
+}
+
+#consent-decline {
+    background: #fff;
+    color: #2980b9;
+}
+
+#consent-decline:hover,
+#consent-decline:focus {
+    background: #eaf4fb;
+    outline: 3px solid #2980b9;
+    outline-offset: 2px;
+}
