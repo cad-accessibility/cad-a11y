@@ -21,7 +21,6 @@ svgwrite
 hidapi>=0.15.0
 pyserial>=3.5
 bleak>=3.0.2
-godice
 
 # Utility / testing helpers
 requests>=2.34.2

@@ -1526,7 +1526,7 @@ function applyServerState(data) {
     }
 }
 
-// SSE: server pushes hardware state changes (GoDice, Slider) immediately
+// SSE: server pushes hardware state changes (WitMotion IMU, Slider) immediately
 // instead of the client polling every second — reduces latency from ~1000 ms to ~10 ms.
 (function connectSSE() {
     const evtSource = new EventSource(`${SERVER_URL}/events`);
