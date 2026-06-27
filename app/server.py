@@ -1285,6 +1285,19 @@ def upload_model():
             }
         ), 500
 
+    cookie_sid = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE))
+    if cookie_sid:
+        try:
+            db.register_model(
+                cookie_sid,
+                filename,
+                file.filename,
+                dest.stat().st_size,
+                hashlib.sha256(dest.read_bytes()).hexdigest(),
+            )
+        except Exception:
+            pass
+
     with models_lock:
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
