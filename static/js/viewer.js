@@ -16,16 +16,6 @@ function getUploadSessionId() {
     }
 }
 
-function notifyUploadCleanupOnClose() {
-    const uploadSessionId = getUploadSessionId();
-    if (!uploadSessionId || !navigator.sendBeacon) {
-        return;
-    }
-    const payload = JSON.stringify({ upload_session_id: uploadSessionId });
-    const blob = new Blob([payload], { type: 'application/json' });
-    navigator.sendBeacon(`${SERVER_URL}/uploads/cleanup`, blob);
-}
-
 // Drag-to-resize columns
 (function() {
     const divider = document.getElementById('col-divider');
@@ -339,6 +329,7 @@ let currentOutputDevice = 'monarch_hid';
 const renderModes = ['Shaded', 'Outline', 'Cut', 'Crease'];
 const representationModes = ['single', 'side-by-side', 'slice-graph-difference', 'slice-graph-column-count'];
 let currentModel = "none";
+let sessionOwnedModels = new Set(); // filenames (with extension) owned by the current cookie session
 let composeScrollbar = true;
 let composeSliceGraph = false;
 let showViewInfoBox = false;
@@ -1397,19 +1388,21 @@ function updateModelList(model_list) {
     model_list.forEach((item, i) => {
         let option = document.createElement("option");
         option.value = i;
-        option.text = item;
+        const ownedFilename = [...sessionOwnedModels].find(fn => fn.replace(/\.[^.]+$/, '') === item);
+        option.text = ownedFilename ? item + ' (your upload)' : item;
         dropdown.appendChild(option);
     });
 
     const currentModelIndex = Number(currentModel);
     if (Number.isInteger(currentModelIndex) && currentModelIndex >= 0 && currentModelIndex < model_list.length) {
         dropdown.value = String(currentModelIndex);
-        if (sbModel) sbModel.textContent = model_list[currentModelIndex];
+        if (sbModel) sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
     } else {
         dropdown.selectedIndex = 0;
         currentModel = dropdown.value;
-        if (sbModel && model_list.length > 0) sbModel.textContent = model_list[0];
+        if (sbModel && model_list.length > 0) sbModel.textContent = dropdown.options[0].text;
     }
+    refreshDeleteButton();
 }
 
 document.getElementById("model-list-dropdown").addEventListener("input", function() {
@@ -1418,6 +1411,7 @@ document.getElementById("model-list-dropdown").addEventListener("input", functio
     if (sbModel && this.selectedIndex >= 0) {
         sbModel.textContent = this.options[this.selectedIndex].text;
     }
+    refreshDeleteButton();
 });
 
 document.getElementById("model-list-dropdown").addEventListener("change", function() {
@@ -1430,10 +1424,84 @@ document.getElementById("model-list-dropdown").addEventListener("change", functi
     }
     beginModelLoadAnnouncement(selectedLabel, 'selection');
     pendingInputSource = 'ui';
+    refreshDeleteButton();
     if (isSliceGraphRepresentationMode()) {
         autoRefreshSliceGraph({ updateAnchor: false });
     } else {
         sendStateToServer();
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Session-owned model restoration and explicit delete
+// ---------------------------------------------------------------------------
+
+function refreshDeleteButton() {
+    const dropdown = document.getElementById('model-list-dropdown');
+    const btn = document.getElementById('delete-model-btn');
+    if (!btn || !dropdown || dropdown.selectedIndex < 0) return;
+    const optText = dropdown.options[dropdown.selectedIndex]?.text || '';
+    const stem = optText.replace(/ \(your upload\)$/, '');
+    const isOwned = [...sessionOwnedModels].some(fn => fn.replace(/\.[^.]+$/, '') === stem);
+    btn.hidden = !isOwned;
+    if (isOwned) btn.textContent = `Remove "${stem}"`;
+}
+
+async function initSessionModels() {
+    try {
+        const resp = await fetch(`${SERVER_URL}/session/models`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const available = (data.models || []).filter(m => m.available);
+        sessionOwnedModels = new Set(available.map(m => m.filename));
+        if (sessionOwnedModels.size === 0) return;
+        // Re-annotate dropdown options if they are already populated.
+        const dropdown = document.getElementById('model-list-dropdown');
+        if (dropdown && dropdown.options.length > 0) {
+            for (const opt of dropdown.options) {
+                const stem = opt.text.replace(/ \(your upload\)$/, '');
+                const owned = [...sessionOwnedModels].some(fn => fn.replace(/\.[^.]+$/, '') === stem);
+                opt.text = owned ? stem + ' (your upload)' : stem;
+            }
+        }
+        refreshDeleteButton();
+    } catch (_) {}
+}
+
+document.getElementById('delete-model-btn').addEventListener('click', async function() {
+    const dropdown = document.getElementById('model-list-dropdown');
+    const statusEl = document.getElementById('upload-model-status');
+    if (!dropdown || dropdown.selectedIndex < 0) return;
+
+    const optText = dropdown.options[dropdown.selectedIndex].text;
+    const stem = optText.replace(/ \(your upload\)$/, '');
+    const filename = [...sessionOwnedModels].find(fn => fn.replace(/\.[^.]+$/, '') === stem);
+    if (!filename) return;
+
+    this.disabled = true;
+    try {
+        const resp = await fetch(`${SERVER_URL}/models/${encodeURIComponent(filename)}`, {
+            method: 'DELETE',
+        });
+        if (resp.ok) {
+            sessionOwnedModels.delete(filename);
+            dropdown.remove(dropdown.selectedIndex);
+            if (dropdown.options.length > 0) {
+                dropdown.selectedIndex = 0;
+                currentModel = dropdown.value;
+                sendStateToServer();
+            }
+            refreshDeleteButton();
+            statusEl.textContent = `✓ ${stem} removed`;
+            announce(`Model ${stem} removed.`);
+        } else {
+            const errData = await resp.json().catch(() => ({}));
+            statusEl.textContent = `Delete failed: ${errData.message || resp.status}`;
+        }
+    } catch (err) {
+        statusEl.textContent = `Delete error: ${err.message}`;
+    } finally {
+        this.disabled = false;
     }
 });
 
@@ -1462,6 +1530,7 @@ document.getElementById('upload-model-input').addEventListener('change', async f
         const data = await resp.json();
 
         if (data.status === 'success') {
+            if (data.filename) sessionOwnedModels.add(data.filename);
             updateModelList(data.model_list);
             // Select the newly uploaded model
             const dropdown = document.getElementById('model-list-dropdown');
@@ -1476,6 +1545,7 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             announce(`Model ${data.filename} uploaded.`);
             beginModelLoadAnnouncement(selectedLabel, 'upload');
             pendingInputSource = 'upload';
+            refreshDeleteButton();
             sendStateToServer();
         } else {
             statusEl.textContent = `Upload failed: ${data.message}`;
@@ -1491,9 +1561,6 @@ document.getElementById('upload-model-input').addEventListener('change', async f
         this.value = '';
     }
 });
-
-// Best-effort cleanup for files uploaded by this browser tab.
-window.addEventListener('pagehide', notifyUploadCleanupOnClose);
 
         // Apply a server state snapshot to local UI — shared by SSE and fallback poll.
 let lastSliderRaw = null; // null = never received a server-side slider value yet

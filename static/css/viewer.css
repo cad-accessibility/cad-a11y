@@ -316,6 +316,27 @@ input[type="checkbox"] {
     min-height: 1.4em;
 }
 
+/* Remove uploaded model — ghost/destructive style so it reads as secondary */
+#delete-model-btn {
+    background: transparent;
+    color: #b91c1c;
+    border: 1.5px solid #b91c1c;
+    min-width: 0;
+    font-size: 0.9em;
+    padding: 8px 14px;
+    margin-top: 8px;
+    display: block;
+}
+#delete-model-btn:hover {
+    background: #fee2e2;
+    transform: none;
+    box-shadow: none;
+}
+#delete-model-btn:focus-visible {
+    outline: 3px solid #b91c1c;
+    outline-offset: 2px;
+}
+
 /* Radio button touch targets – WCAG 2.5.8 */
 input[type="radio"] {
     width: 24px;
