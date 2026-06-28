@@ -280,6 +280,10 @@ def _find_default_model() -> Path:
 DEFAULT_MODEL = _find_default_model()
 AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
 MODEL_NAME_LIST = [model_path.stem for model_path in AVAILABLE_MODELS]
+# Stems of models that ship with the repository (MODEL_DIR only). Uploaded files
+# are in UPLOAD_DIR and are excluded. Used by the client to filter the dropdown
+# to built-ins + the current session's own uploads.
+BUILTIN_MODEL_STEMS: list[str] = [p.stem for p in AVAILABLE_MODELS if p.parent == MODEL_DIR]
 _model_list_last_refresh: float = 0.0
 _MODEL_LIST_REFRESH_INTERVAL = 2.0  # seconds
 
@@ -1508,6 +1512,7 @@ def get_data():
             "slider_value": state.slider_value,
             "current_model": state.current_model_index,
             "model_list": MODEL_NAME_LIST,
+            "builtin_model_stems": BUILTIN_MODEL_STEMS,
         }
     return jsonify(payload), 200
 
