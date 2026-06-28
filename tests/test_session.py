@@ -7,6 +7,7 @@ The Flask test client sets cookies automatically across requests when
 
 from __future__ import annotations
 
+import io
 import json
 import time
 
@@ -186,11 +187,11 @@ class TestSessionIdentify:
 
 
 # ---------------------------------------------------------------------------
-# GET /session/models (empty until §3 wires upload→DB)
+# GET /session/models
 # ---------------------------------------------------------------------------
 
 class TestSessionModels:
-    def test_empty_before_upload_wired(self, client):
+    def test_empty_without_uploads(self, client):
         client.get("/viewer")
         resp = client.get("/session/models")
         assert resp.status_code == 200
@@ -200,6 +201,92 @@ class TestSessionModels:
         resp = client.get("/session/models")
         assert resp.status_code == 200
         assert resp.get_json()["models"] == []
+
+
+# ---------------------------------------------------------------------------
+# POST /upload → uploaded_models DB registration (§3)
+# ---------------------------------------------------------------------------
+
+# Minimal valid ASCII STL (one degenerate triangle) for upload tests.
+_MINIMAL_STL = (
+    b"solid test\n"
+    b"  facet normal 0 0 1\n"
+    b"    outer loop\n"
+    b"      vertex 0 0 0\n"
+    b"      vertex 1 0 0\n"
+    b"      vertex 0 1 0\n"
+    b"    endloop\n"
+    b"  endfacet\n"
+    b"endsolid test\n"
+)
+
+
+class TestUploadRegistration:
+    def _upload(self, client, filename="test.stl", content=_MINIMAL_STL):
+        return client.post(
+            "/upload",
+            data={"file": (io.BytesIO(content), filename)},
+            content_type="multipart/form-data",
+        )
+
+    def test_upload_returns_success(self, client):
+        client.get("/viewer")
+        resp = self._upload(client)
+        assert resp.status_code == 200
+        assert resp.get_json()["status"] == "success"
+
+    def test_upload_registers_model_in_db(self, client):
+        client.get("/viewer")
+        upload_resp = self._upload(client)
+        filename = upload_resp.get_json()["filename"]
+
+        sid = client.get_cookie("cad_session").value
+        models = db_module.get_session_models(sid)
+        assert len(models) == 1
+        assert models[0]["filename"] == filename
+        assert models[0]["original_name"] == "test.stl"
+        assert models[0]["sha256"] is not None
+        assert len(models[0]["sha256"]) == 64
+
+    def test_session_models_endpoint_reflects_upload(self, client):
+        client.get("/viewer")
+        upload_resp = self._upload(client)
+        filename = upload_resp.get_json()["filename"]
+
+        resp = client.get("/session/models")
+        assert resp.status_code == 200
+        models = resp.get_json()["models"]
+        assert len(models) == 1
+        assert models[0]["filename"] == filename
+        assert models[0]["available"] is True
+
+    def test_upload_without_cookie_does_not_register(self, client):
+        resp = self._upload(client)
+        assert resp.status_code == 200
+        # No cookie session was established, so no DB row should exist.
+        import sqlite3
+        import app.db as db
+        conn = sqlite3.connect(str(db.DB_PATH))
+        rows = conn.execute("SELECT COUNT(*) FROM uploaded_models").fetchone()[0]
+        conn.close()
+        assert rows == 0
+
+    def test_delete_model_after_upload(self, client, tmp_path):
+        client.get("/viewer")
+        upload_resp = self._upload(client)
+        filename = upload_resp.get_json()["filename"]
+
+        del_resp = client.delete(f"/models/{filename}")
+        assert del_resp.status_code == 200
+        assert del_resp.get_json()["status"] == "success"
+
+        sid = client.get_cookie("cad_session").value
+        assert db_module.get_session_models(sid) == []
+
+    def test_delete_nonexistent_returns_404(self, client):
+        client.get("/viewer")
+        resp = client.delete("/models/ghost.stl")
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
