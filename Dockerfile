@@ -38,7 +38,7 @@ COPY accessible-3d-viewer.html ./
 COPY src/models/brep/ ./data/models/
 
 # Runtime write directories are created here so the non-root user owns them.
-RUN mkdir -p data/renders data/logs
+RUN mkdir -p data/renders data/logs data/db
 
 # --- Non-root user ---
 
