@@ -290,6 +290,76 @@ class TestUploadRegistration:
 
 
 # ---------------------------------------------------------------------------
+# Cross-session model aggregation by email identifier
+# ---------------------------------------------------------------------------
+
+class TestCrossSessionModels:
+    """A user who provides the same email on a second device sees all their uploads."""
+
+    def _upload(self, client, filename="test.stl"):
+        return client.post(
+            "/upload",
+            data={"file": (io.BytesIO(_MINIMAL_STL), filename)},
+            content_type="multipart/form-data",
+        )
+
+    def test_second_session_sees_first_session_models(self, tmp_db):
+        flask_app.config["TESTING"] = True
+
+        # Session A: upload a model then identify with email.
+        with flask_app.test_client() as client_a:
+            client_a.get("/viewer")
+            upload_resp = self._upload(client_a, "model_a.stl")
+            assert upload_resp.get_json()["status"] == "success"
+            client_a.post("/session/identify", json={"email": "user@example.com", "consent": True})
+
+        # Session B: fresh client (different cookie), same email.
+        with flask_app.test_client() as client_b:
+            client_b.get("/viewer")
+            client_b.post("/session/identify", json={"email": "user@example.com", "consent": True})
+            resp = client_b.get("/session/models")
+            models = resp.get_json()["models"]
+            filenames = [m["filename"] for m in models]
+            assert any("model_a" in f for f in filenames), (
+                f"Expected model_a in cross-session list, got {filenames}"
+            )
+
+    def test_second_session_can_delete_first_session_model(self, tmp_db):
+        flask_app.config["TESTING"] = True
+        filename_a = None
+
+        with flask_app.test_client() as client_a:
+            client_a.get("/viewer")
+            upload_resp = self._upload(client_a, "shared.stl")
+            filename_a = upload_resp.get_json()["filename"]
+            client_a.post("/session/identify", json={"email": "user@example.com", "consent": True})
+
+        with flask_app.test_client() as client_b:
+            client_b.get("/viewer")
+            client_b.post("/session/identify", json={"email": "user@example.com", "consent": True})
+            del_resp = client_b.delete(f"/models/{filename_a}")
+            assert del_resp.status_code == 200
+
+            # Model should no longer appear for either session.
+            models_b = client_b.get("/session/models").get_json()["models"]
+            assert all(m["filename"] != filename_a for m in models_b)
+
+    def test_anonymous_session_cannot_see_identified_session_models(self, tmp_db):
+        flask_app.config["TESTING"] = True
+
+        with flask_app.test_client() as client_a:
+            client_a.get("/viewer")
+            self._upload(client_a, "private.stl")
+            client_a.post("/session/identify", json={"email": "user@example.com", "consent": True})
+
+        # Session with no email: should see an empty list.
+        with flask_app.test_client() as client_anon:
+            client_anon.get("/viewer")
+            models = client_anon.get("/session/models").get_json()["models"]
+            assert models == []
+
+
+# ---------------------------------------------------------------------------
 # POST /events/track
 # ---------------------------------------------------------------------------
 

@@ -602,6 +602,10 @@
                             email: email || null,
                             consent: value === 'accept',
                         }),
+                    }).then(function() {
+                        // Email may link this session to prior uploads on other devices;
+                        // refresh the model list so those files appear immediately.
+                        initSessionModels();
                     }).catch(function () {});
                 });
             }

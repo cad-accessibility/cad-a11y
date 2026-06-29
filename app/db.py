@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS uploaded_models (
 CREATE INDEX IF NOT EXISTS idx_uploaded_models_session
     ON uploaded_models(session_id, deleted_at);
 
+-- Supports cross-session model lookup and deletion by email identifier.
+CREATE INDEX IF NOT EXISTS idx_sessions_identifier
+    ON sessions(identifier) WHERE identifier IS NOT NULL;
+
 -- One row per successful /render call. session_id is nullable: renders triggered
 -- without a browser session (direct API calls) are still recorded for aggregate stats.
 -- Structured columns enable plain GROUP BY queries without JSON extraction.
@@ -163,14 +167,31 @@ def save_session_identifier(session_id: str, email: str | None, consent_given: b
 # ---------------------------------------------------------------------------
 
 def get_session_models(session_id: str) -> list[dict[str, Any]]:
-    """Return non-deleted uploaded_models rows for this session."""
-    rows = _get_conn().execute(
-        """SELECT filename, original_name, file_size, sha256, uploaded_at
-           FROM uploaded_models
-           WHERE session_id = ? AND deleted_at IS NULL
-           ORDER BY uploaded_at""",
-        (session_id,),
-    ).fetchall()
+    """Return non-deleted uploaded_models rows for this session.
+
+    When the session has a known identifier (email), models from every session
+    sharing that identifier are included so a returning user on a new device
+    sees their full upload history.
+    """
+    session = get_session(session_id)
+    conn = _get_conn()
+    if session and session["identifier"]:
+        rows = conn.execute(
+            """SELECT um.filename, um.original_name, um.file_size, um.sha256, um.uploaded_at
+               FROM uploaded_models um
+               JOIN sessions s ON um.session_id = s.id
+               WHERE s.identifier = ? AND um.deleted_at IS NULL
+               ORDER BY um.uploaded_at""",
+            (session["identifier"],),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT filename, original_name, file_size, sha256, uploaded_at
+               FROM uploaded_models
+               WHERE session_id = ? AND deleted_at IS NULL
+               ORDER BY uploaded_at""",
+            (session_id,),
+        ).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -192,14 +213,29 @@ def register_model(
 
 
 def mark_model_deleted(session_id: str, filename: str) -> bool:
-    """Set deleted_at on the model row. Returns True if a row was updated."""
+    """Soft-delete a model row. Returns True if a row was updated.
+
+    When the session has a known identifier (email), deletion is allowed for
+    any model uploaded by any session sharing that identifier — not just the
+    current session UUID — so a user on a new device can remove their own files.
+    """
+    session = get_session(session_id)
     conn = _get_conn()
-    cursor = conn.execute(
-        """UPDATE uploaded_models
-           SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-           WHERE session_id = ? AND filename = ? AND deleted_at IS NULL""",
-        (session_id, filename),
-    )
+    if session and session["identifier"]:
+        cursor = conn.execute(
+            """UPDATE uploaded_models
+               SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+               WHERE filename = ? AND deleted_at IS NULL
+               AND session_id IN (SELECT id FROM sessions WHERE identifier = ?)""",
+            (filename, session["identifier"]),
+        )
+    else:
+        cursor = conn.execute(
+            """UPDATE uploaded_models
+               SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+               WHERE session_id = ? AND filename = ? AND deleted_at IS NULL""",
+            (session_id, filename),
+        )
     conn.commit()
     return cursor.rowcount > 0
 
