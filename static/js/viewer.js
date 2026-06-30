@@ -16,16 +16,6 @@ function getUploadSessionId() {
     }
 }
 
-function notifyUploadCleanupOnClose() {
-    const uploadSessionId = getUploadSessionId();
-    if (!uploadSessionId || !navigator.sendBeacon) {
-        return;
-    }
-    const payload = JSON.stringify({ upload_session_id: uploadSessionId });
-    const blob = new Blob([payload], { type: 'application/json' });
-    navigator.sendBeacon(`${SERVER_URL}/uploads/cleanup`, blob);
-}
-
 // Drag-to-resize columns
 (function() {
     const divider = document.getElementById('col-divider');
@@ -339,6 +329,9 @@ let currentOutputDevice = 'monarch_hid';
 const renderModes = ['Shaded', 'Outline', 'Cut', 'Crease'];
 const representationModes = ['single', 'side-by-side', 'slice-graph-difference', 'slice-graph-column-count'];
 let currentModel = "none";
+let sessionOwnedModels = new Set(); // filenames (with extension) owned by the current cookie session
+let builtinModelStems = null;       // stems from MODEL_DIR; null = not yet received, show all
+let lastFullModelList = [];         // unfiltered server model_list for re-filtering on state change
 let composeScrollbar = true;
 let composeSliceGraph = false;
 let showViewInfoBox = false;
@@ -1364,19 +1357,32 @@ function updateBoundingBox(bbox) {
     refreshViewInfoSummary();
 }
 
-function updateModelList(model_list) {
-    const dropdown = document.getElementById("model-list-dropdown");
-
-    if (!Array.isArray(model_list)) {
-        return;
+function _visibleModelEntries(model_list) {
+    // Before builtinModelStems arrives, show the full list unfiltered.
+    if (!builtinModelStems) {
+        return model_list.map((stem, i) => ({ stem, i }));
     }
+    const builtinSet = new Set(builtinModelStems);
+    const ownedStems = new Set([...sessionOwnedModels].map(fn => fn.replace(/\.[^.]+$/, '')));
+    return model_list
+        .map((stem, i) => ({ stem, i }))
+        .filter(({ stem }) => builtinSet.has(stem) || ownedStems.has(stem));
+}
 
-    const signature = model_list.join('||');
+function updateModelList(model_list) {
+    if (!Array.isArray(model_list)) return;
+    lastFullModelList = model_list;
+
+    const dropdown = document.getElementById("model-list-dropdown");
+    const entries = _visibleModelEntries(model_list);
+    // Signature is over the visible stems only so filter changes force a rebuild.
+    const signature = entries.map(e => e.stem).join('||');
+
     if (signature === lastModelListSignature && dropdown.options.length > 0) {
+        // Same visible set — restore selection using original server index stored in option.value.
         const currentModelIndex = Number(currentModel);
-        if (Number.isInteger(currentModelIndex) && currentModelIndex >= 0 && currentModelIndex < dropdown.options.length) {
-            dropdown.value = String(currentModelIndex);
-        }
+        const hasCurrentOption = [...dropdown.options].some(o => o.value === String(currentModelIndex));
+        if (hasCurrentOption) dropdown.value = String(currentModelIndex);
         if (sbModel && dropdown.selectedIndex >= 0) {
             sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
         }
@@ -1386,7 +1392,7 @@ function updateModelList(model_list) {
     lastModelListSignature = signature;
     dropdown.innerHTML = '';
 
-    if (model_list.length === 0) {
+    if (entries.length === 0) {
         dropdown.innerHTML = '<option value="" selected>No models found</option>';
         dropdown.disabled = true;
         return;
@@ -1394,22 +1400,26 @@ function updateModelList(model_list) {
 
     dropdown.disabled = false;
 
-    model_list.forEach((item, i) => {
-        let option = document.createElement("option");
+    entries.forEach(({ stem, i }) => {
+        const option = document.createElement("option");
+        // option.value carries the ORIGINAL server index so currentModel round-trips correctly.
         option.value = i;
-        option.text = item;
+        const owned = [...sessionOwnedModels].some(fn => fn.replace(/\.[^.]+$/, '') === stem);
+        option.text = owned ? stem + ' (your upload)' : stem;
         dropdown.appendChild(option);
     });
 
     const currentModelIndex = Number(currentModel);
-    if (Number.isInteger(currentModelIndex) && currentModelIndex >= 0 && currentModelIndex < model_list.length) {
+    const hasCurrentOption = [...dropdown.options].some(o => o.value === String(currentModelIndex));
+    if (hasCurrentOption) {
         dropdown.value = String(currentModelIndex);
-        if (sbModel) sbModel.textContent = model_list[currentModelIndex];
+        if (sbModel) sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
     } else {
         dropdown.selectedIndex = 0;
         currentModel = dropdown.value;
-        if (sbModel && model_list.length > 0) sbModel.textContent = model_list[0];
+        if (sbModel && dropdown.options.length > 0) sbModel.textContent = dropdown.options[0].text;
     }
+    refreshDeleteButton();
 }
 
 document.getElementById("model-list-dropdown").addEventListener("input", function() {
@@ -1418,6 +1428,7 @@ document.getElementById("model-list-dropdown").addEventListener("input", functio
     if (sbModel && this.selectedIndex >= 0) {
         sbModel.textContent = this.options[this.selectedIndex].text;
     }
+    refreshDeleteButton();
 });
 
 document.getElementById("model-list-dropdown").addEventListener("change", function() {
@@ -1430,10 +1441,76 @@ document.getElementById("model-list-dropdown").addEventListener("change", functi
     }
     beginModelLoadAnnouncement(selectedLabel, 'selection');
     pendingInputSource = 'ui';
+    refreshDeleteButton();
     if (isSliceGraphRepresentationMode()) {
         autoRefreshSliceGraph({ updateAnchor: false });
     } else {
         sendStateToServer();
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Session-owned model restoration and explicit delete
+// ---------------------------------------------------------------------------
+
+function refreshDeleteButton() {
+    const dropdown = document.getElementById('model-list-dropdown');
+    const btn = document.getElementById('delete-model-btn');
+    if (!btn || !dropdown || dropdown.selectedIndex < 0) return;
+    const optText = dropdown.options[dropdown.selectedIndex]?.text || '';
+    const stem = optText.replace(/ \(your upload\)$/, '');
+    const isOwned = [...sessionOwnedModels].some(fn => fn.replace(/\.[^.]+$/, '') === stem);
+    btn.hidden = !isOwned;
+    if (isOwned) btn.textContent = `Remove "${stem}"`;
+}
+
+async function initSessionModels() {
+    try {
+        const resp = await fetch(`${SERVER_URL}/session/models`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const available = (data.models || []).filter(m => m.available);
+        sessionOwnedModels = new Set(available.map(m => m.filename));
+        // Force a full rebuild so the filter and annotations are applied correctly.
+        lastModelListSignature = null;
+        if (lastFullModelList.length > 0) updateModelList(lastFullModelList);
+    } catch (_) {}
+}
+
+document.getElementById('delete-model-btn').addEventListener('click', async function() {
+    const dropdown = document.getElementById('model-list-dropdown');
+    const statusEl = document.getElementById('upload-model-status');
+    if (!dropdown || dropdown.selectedIndex < 0) return;
+
+    const optText = dropdown.options[dropdown.selectedIndex].text;
+    const stem = optText.replace(/ \(your upload\)$/, '');
+    const filename = [...sessionOwnedModels].find(fn => fn.replace(/\.[^.]+$/, '') === stem);
+    if (!filename) return;
+
+    this.disabled = true;
+    try {
+        const resp = await fetch(`${SERVER_URL}/models/${encodeURIComponent(filename)}`, {
+            method: 'DELETE',
+        });
+        if (resp.ok) {
+            sessionOwnedModels.delete(filename);
+            dropdown.remove(dropdown.selectedIndex);
+            if (dropdown.options.length > 0) {
+                dropdown.selectedIndex = 0;
+                currentModel = dropdown.value;
+                sendStateToServer();
+            }
+            refreshDeleteButton();
+            statusEl.textContent = `✓ ${stem} removed`;
+            announce(`Model ${stem} removed.`);
+        } else {
+            const errData = await resp.json().catch(() => ({}));
+            statusEl.textContent = `Delete failed: ${errData.message || resp.status}`;
+        }
+    } catch (err) {
+        statusEl.textContent = `Delete error: ${err.message}`;
+    } finally {
+        this.disabled = false;
     }
 });
 
@@ -1462,6 +1539,7 @@ document.getElementById('upload-model-input').addEventListener('change', async f
         const data = await resp.json();
 
         if (data.status === 'success') {
+            if (data.filename) sessionOwnedModels.add(data.filename);
             updateModelList(data.model_list);
             // Select the newly uploaded model
             const dropdown = document.getElementById('model-list-dropdown');
@@ -1476,6 +1554,7 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             announce(`Model ${data.filename} uploaded.`);
             beginModelLoadAnnouncement(selectedLabel, 'upload');
             pendingInputSource = 'upload';
+            refreshDeleteButton();
             sendStateToServer();
         } else {
             statusEl.textContent = `Upload failed: ${data.message}`;
@@ -1491,9 +1570,6 @@ document.getElementById('upload-model-input').addEventListener('change', async f
         this.value = '';
     }
 });
-
-// Best-effort cleanup for files uploaded by this browser tab.
-window.addEventListener('pagehide', notifyUploadCleanupOnClose);
 
         // Apply a server state snapshot to local UI — shared by SSE and fallback poll.
 let lastSliderRaw = null; // null = never received a server-side slider value yet
@@ -1515,6 +1591,12 @@ function applyServerState(data) {
             pendingInputSource = 'slider';
             updateSliceDepth(newDepth, false);
         }
+    }
+    if (data.builtin_model_stems && !builtinModelStems) {
+        builtinModelStems = data.builtin_model_stems;
+        // Force a rebuild now that the filter is known.
+        lastModelListSignature = null;
+        if (lastFullModelList.length > 0) updateModelList(lastFullModelList);
     }
     const modelDropdown = document.getElementById("model-list-dropdown");
     const dropdownFocused = document.activeElement === modelDropdown;
