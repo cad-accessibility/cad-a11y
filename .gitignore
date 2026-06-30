@@ -16,6 +16,8 @@ data/renders/*
 !data/renders/.gitkeep
 data/logs/*
 !data/logs/.gitkeep
+data/db/*
+!data/db/.gitkeep
 renders/
 study_logs/
 
