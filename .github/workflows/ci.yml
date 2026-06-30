@@ -22,10 +22,18 @@ jobs:
           cache-environment: true
           cache-downloads: true
 
-      - name: Install test and lint tooling
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+            libhidapi-hidraw0 libhidapi-dev libgl1 libglib2.0-0 libxrender1
+
+      - name: Install pip dependencies
         shell: bash -l {0}
         run: |
-          micromamba run -n cad-a11y python -m pip install pytest ruff
+          grep -vE '^\s*(#|polyscope)' requirements.txt \
+            | micromamba run -n cad-a11y pip install --no-cache-dir -r /dev/stdin
+          micromamba run -n cad-a11y pip install --no-cache-dir polyscope || true
+          micromamba run -n cad-a11y pip install --no-cache-dir pytest ruff
 
       - name: Lint (errors only)
         shell: bash -l {0}
