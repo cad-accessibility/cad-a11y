@@ -65,6 +65,7 @@ function notifyUploadCleanupOnClose() {
 
     // Keyboard resize support (arrow keys on the divider)
     divider.addEventListener('keydown', function(e) {
+        console.log("keydown seen:", e.key, e.code, e.target.tagName);
         const step = e.shiftKey ? 50 : 10;
         const layoutWidth = layout.getBoundingClientRect().width;
         const currentWidth = leftCol.getBoundingClientRect().width;
@@ -347,6 +348,11 @@ let sliceGraphAnchorView = 'y-';
 let sliceGraphAnchorDepth = 50;
 let sliceGraphMode = 'difference';
 
+// Cursor variables
+let cursorX = 0;
+let cursorY = 0;
+const cursorStep = 1;
+
 // Tracking variables
 let serverConnected = null;       // null = unknown, true = up, false = confirmed down
 let lastPolledView = null;        // last cube_value received from server
@@ -358,6 +364,14 @@ const lastAnnouncedParameterValues = new Map();
 let pendingInputSource = 'keyboard'; // consumed once per sendStateToServer call
 let modelLoadAnnouncement = null;
 let modelLoadAnnouncementSeq = 0;
+
+function moveCrosshair(dx, dy) {
+    cursorX += dx * cursorStep;
+    cursorY += dy * cursorStep;
+    console.log(`Crosshair: (${cursorX}, ${cursorY})`);
+    announce(`Crosshair (${cursorX}, ${cursorY})`);
+}
+window.moveCrosshair = moveCrosshair; // Expose for external use (e.g., Monarch HID integration)
 
 function isSliceGraphRepresentationMode(modeValue = currentRepresentationMode) {
     return modeValue === 'slice-graph-difference' || modeValue === 'slice-graph-column-count';
@@ -1978,7 +1992,7 @@ document.addEventListener('keydown', function(e) {
         'u', 'i', 'o', 'j', 'k', 'l',
         '4', '5', '6', '7', '8', '9', '0', '-', '=',
         'r', 't', 'g', 'v', 'z',
-        'w', 'a', 's', 'd', '[', ']', 'h', 'p', '.', 'escape'
+        'w', 'a', 's', 'd', '[', ']', 'h', 'p', '.', 'escape', 'n', 'm', 'y'
     ]);
 
     if (!supportedShortcuts.has(normalizedKey)) {
@@ -1991,7 +2005,7 @@ document.addEventListener('keydown', function(e) {
     const repeatableShortcuts = new Set([
         'pageup', 'pagedown',
         'arrowup', 'arrowdown', '2', '3',
-        '4', '5', 
+        '4', '5', 'n', 'm'
     ]);
     if (e.repeat && !repeatableShortcuts.has(normalizedKey)) {
         e.preventDefault();
@@ -2155,7 +2169,11 @@ document.addEventListener('keydown', function(e) {
             applyRelativeRotation('pitch', 1, 'Rotate down');
             break;
 
-        case 'j':
+        // case 'j':
+        //     e.preventDefault();
+        //     applyRelativeRotation('yaw', -1, 'Rotate left');
+        //     break;
+        case 'm':
             e.preventDefault();
             applyRelativeRotation('yaw', -1, 'Rotate left');
             break;
@@ -2171,7 +2189,17 @@ document.addEventListener('keydown', function(e) {
             announceStatus(getStatusBarAnnouncement());
             break;
 
-        case 'g':
+        // case 'g':
+        //     e.preventDefault();
+        //     if (!isSliceGraphRepresentationMode()) {
+        //         announce('Slice graph refresh: not in slice-graph mode');
+        //         break;
+        //     }
+        //     captureSliceGraphAnchor(true);
+        //     sendStateToServer();
+        //     announce(`Slice graph refreshed: view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
+        //     break;
+        case 'n':
             e.preventDefault();
             if (!isSliceGraphRepresentationMode()) {
                 announce('Slice graph refresh: not in slice-graph mode');
@@ -2226,6 +2254,25 @@ document.addEventListener('keydown', function(e) {
             sendStateToServer();
             announce(`Compose slice graph ${composeSliceGraph ? 'on' : 'off'}`);
             break;
+        
+        // Crosshair movement shortcuts temporary
+        case 'g':
+            e.preventDefault();
+            moveCrosshair(-1, 0);
+            break;
+        case 'j':
+            e.preventDefault();
+            moveCrosshair(1, 0);
+            break;
+        case 'y':
+            e.preventDefault();
+            moveCrosshair(0, -1);
+            break;
+        case 'h':
+            e.preventDefault();
+            moveCrosshair(0, 1);
+            break;
+
         case 'a':
             currentMoveCamera = "left";
             sendStateToServer();
@@ -2264,15 +2311,15 @@ document.addEventListener('keydown', function(e) {
             announce('Focus cleared');
             break;
 
-        case 'h':
-            e.preventDefault();
-            {
-                const shortcutsHeading = document.getElementById('shortcuts-heading');
-                if (shortcutsHeading) {
-                    shortcutsHeading.focus();
-                }
-            }
-            break;
+        // case 'h':
+        //     e.preventDefault();
+        //     {
+        //         const shortcutsHeading = document.getElementById('shortcuts-heading');
+        //         if (shortcutsHeading) {
+        //             shortcutsHeading.focus();
+        //         }
+        //     }
+        //     break;
 
         case 'p':
             announce('Printing current render');
