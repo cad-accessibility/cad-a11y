@@ -18,8 +18,8 @@ data/logs/*
 !data/logs/.gitkeep
 data/db/*
 !data/db/.gitkeep
-renders/
-study_logs/
+/renders/
+/study_logs/
 
 # Local environment and secrets
 .env

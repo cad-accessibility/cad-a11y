@@ -53,7 +53,9 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set data directory permissions for container user (UID 48)
-        run: sudo chown -R 48:48 data/db data/renders data/logs
+        run: |
+          mkdir -p data/db data/renders data/logs
+          sudo chown -R 48:48 data/db data/renders data/logs
 
       - name: Start app with Docker Compose
         run: docker compose up -d --build
