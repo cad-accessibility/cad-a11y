@@ -41,12 +41,12 @@ COPY src/models/brep/ ./data/models/
 RUN mkdir -p data/renders data/logs data/db
 
 # --- Non-root user ---
+# UID 48 matches the apache user the hosting NFS server grants write access to.
+# The chown must run before USER so it still executes as root.
+RUN useradd -d /home/apache -u 48 -m apache \
+    && chown -R apache /project
 
-RUN groupadd --gid 1000 appuser \
-    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash appuser \
-    && chown -R appuser:appuser /project
-
-USER appuser
+USER apache
 
 # --- Runtime ---
 
