@@ -856,13 +856,14 @@ button:focus-visible {
 
 .consent-field input[type="email"]:focus {
     outline: none;
-    border-color: #2980b9;
-    box-shadow: 0 0 0 3px rgba(41, 128, 185, 0.25);
+    border-color: #1e6fa4;
+    box-shadow: 0 0 0 3px rgba(30, 111, 164, 0.25);
 }
 
+/* #596871 on white = 5.0:1 (AA pass) */
 .consent-hint {
     font-size: 0.82em;
-    color: #777;
+    color: #596871;
 }
 
 .consent-actions {
@@ -872,11 +873,12 @@ button:focus-visible {
 }
 
 /* Both buttons intentionally equal size and weight — neither should appear mandatory */
+/* #1e6fa4 on white = 5.0:1; white on #1e6fa4 = 5.0:1 (AA pass) */
 .consent-actions button {
     flex: 1;
     min-width: 140px;
     padding: 12px 16px;
-    border: 2px solid #2980b9;
+    border: 2px solid #1e6fa4;
     border-radius: 8px;
     font-size: 0.95em;
     font-family: inherit;
@@ -886,25 +888,25 @@ button:focus-visible {
 }
 
 #consent-accept {
-    background: #2980b9;
+    background: #1e6fa4;
     color: #fff;
 }
 
 #consent-accept:hover,
 #consent-accept:focus {
-    background: #1f6391;
-    outline: 3px solid #1f6391;
+    background: #1a5e91;
+    outline: 3px solid #1a5e91;
     outline-offset: 2px;
 }
 
 #consent-decline {
     background: #fff;
-    color: #2980b9;
+    color: #1e6fa4;
 }
 
 #consent-decline:hover,
 #consent-decline:focus {
     background: #eaf4fb;
-    outline: 3px solid #2980b9;
+    outline: 3px solid #1e6fa4;
     outline-offset: 2px;
 }
