@@ -26,3 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stale issue and PR automation
 - Conventional Commits enforcement on PR titles
 - Integration test scaffolding using the Flask test client
+- ML-based slice importance scoring: `app/slice_scorer.py` extracts 10 geometric
+  features per cross-section (area change, topology, convexity, centroid drift, etc.)
+  and scores slices using a trained RandomForest model
+- CLI scoring tool: `app/score_single_model.py` scores and visualizes the top-k
+  most structurally significant slices for any STL/OBJ file, using KMeans clustering
+  to ensure diverse slice selection across distinct structural regions
+- Pretrained slice importance model: `app/slice_scorer_abc_only_v5.pkl` trained on
+  383 ABC mechanical CAD models (1.8MB)
