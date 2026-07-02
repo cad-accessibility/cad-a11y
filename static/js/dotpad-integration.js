@@ -14,6 +14,13 @@ const usbScanBtn = document.getElementById('dotpad-scan-usb-btn');
 const disconnectBtn = document.getElementById('dotpad-disconnect-btn');
 const autoSendCheckbox = document.getElementById('dotpad-auto-send');
 
+const DOTPAD_KEY_ACTIONS = {
+    KeyFunction1: [0, -1],
+    KeyFunction4: [0, 1],
+    PanningLeft: [-1, 0],
+    PanningRight: [1, 0],
+};
+
 function setStatus(msg) {
     if (statusEl) statusEl.textContent = msg;
     // Also update the top status bar DotPad field.
@@ -84,6 +91,7 @@ disconnectBtn.addEventListener('click', () => {
     disconnectBtn.disabled = true;
     setStatus('Disconnected.');
     if (typeof window.announce === 'function') window.announce('DotPad disconnected.');
+    // No global device dimensions exposed in minimal setup
 });
 
 // --- SDK callbacks ---
@@ -105,7 +113,20 @@ function onMessage(device, dataCode, msg) {
 
 function onKey(device, keyCode, keyMsg) {
     console.log('[DotPad key]', keyCode, keyMsg);
+
+    if (typeof window.moveCursor != 'function') return;
+
+    const action = DOTPAD_KEY_ACTIONS[keyCode];
+    if (action) {
+        window.moveCursor(action[0], action[1]);
+    } 
+    else {
+        console.log('Unmapped DotPad key:', keyCode, keyMsg);
+
+    }
 }
+
+
 
 // --- Send hex data to DotPad ---
 let sendInFlight = false;

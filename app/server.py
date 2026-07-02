@@ -558,7 +558,7 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
                "orientation",
                "camera_center",
                "world_camera_center",
-               "compose_scrollbar", "compose_slicegraph", "show_view_info_box",
+               "compose_scrollbar", "compose_cursor", "cursor_col", "cursor_row", "compose_slicegraph", "show_view_info_box",
                "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth", "slicegraph_mode")
     fp_dict = {k: merged.get(k) for k in fp_keys}
     fp_dict["model_index"] = model_index
@@ -581,6 +581,9 @@ def _build_quantized_render_key(params: dict[str, Any], model_index: int) -> str
         "projectionMode": str(params.get("projectionMode", "orthographic")).lower(),
         "mode": str(params.get("mode", "single")).lower(),
         "compose_scrollbar": bool(params.get("compose_scrollbar", False)),
+        "compose_cursor": bool(params.get("compose_cursor", False)), # compose cursor parameters added to quantized key SMB
+        "cursor_col": int(params.get("cursor_col", 0)),
+        "cursor_row": int(params.get("cursor_row", 0)),
         "compose_slicegraph": bool(params.get("compose_slicegraph", False)),
         "slicegraph_locked": bool(params.get("slicegraph_locked", False)),
         "slicegraph_view": str(params.get("slicegraph_view", "")).lower(),
@@ -621,6 +624,9 @@ def _build_preview_payload_cache_key(
         "camera_center",
         "world_camera_center",
         "compose_scrollbar",
+        "compose_cursor", # compose cursor parameters added to preview payload cache key SMB
+        "cursor_col",
+        "cursor_row",
         "compose_slicegraph",
         "show_view_info_box",
         "slicegraph_locked",

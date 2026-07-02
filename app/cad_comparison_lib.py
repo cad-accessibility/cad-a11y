@@ -512,6 +512,17 @@ class CADComparisonRenderer:
         if compose_scrollbar:
             render_screen_size = [max(1, self.screen_size[0] - 2), max(1, self.screen_size[1] - 2)]
 
+        # Cursor coordinates are display-space row/column values from the frontend.
+        # They are relative to the current drawable render area, not CAD x/y/z.
+        compose_cursor = bool(params.get("compose_cursor", False))
+        default_cursor_col = render_screen_size[0] // 2
+        default_cursor_row = render_screen_size[1] // 2
+        cursor_col = int(params.get("cursor_col", default_cursor_col))
+        cursor_row = int(params.get("cursor_row", default_cursor_row))
+        cursor_col = max(0, min(render_screen_size[0] - 1, cursor_col))
+        cursor_row = max(0, min(render_screen_size[1] - 1, cursor_row))
+
+
         view_legend = params.get("view", "top")
         view_cut = "x+"
         if comparison_mode == "side-by-side":
@@ -754,6 +765,45 @@ class CADComparisonRenderer:
             x1 = min(int(draw_w * y_scroll_max) + 1, draw_w)
             img_array[y0:y1, -1, :] = [0,0,0,255]
             img_array[-1, x0:x1, :] = [0,0,0,255]
+
+        if compose_cursor:
+            # Draw a visible cursor marker using display-space coordinates.
+            # If scrollbars are composed, render_screen_size already excludes the
+            # reserved scrollbar/spacer rows and columns, so the cursor is clamped
+            # to the drawable model area.
+            cursor_size = 7
+            cursor_half = cursor_size // 2
+            draw_w, draw_h = render_screen_size[0], render_screen_size[1]
+            col = max(0, min(draw_w - 1, cursor_col))
+            row = max(0, min(draw_h - 1, cursor_row))
+
+            clear_x0 = max(0, col - cursor_half)
+            clear_x1 = min(draw_w, col + cursor_half + 1)
+            clear_y0 = max(0, row - cursor_half)
+            clear_y1 = min(draw_h, row + cursor_half + 1)
+
+            # Clear the marker area to white for maximum contrast.
+            img_array[clear_y0:clear_y1, clear_x0:clear_x1, 0:3] = 255
+            if img_array.shape[2] > 3:
+                img_array[clear_y0:clear_y1, clear_x0:clear_x1, 3] = 255
+
+            # Draw a thicker crosshair and center dot.
+            for c in range(clear_x0, clear_x1):
+                img_array[row, c, 0:3] = [0, 0, 0]
+                if img_array.shape[2] > 3:
+                    img_array[row, c, 3] = 255
+            for r in range(clear_y0, clear_y1):
+                img_array[r, col, 0:3] = [0, 0, 0]
+                if img_array.shape[2] > 3:
+                    img_array[r, col, 3] = 255
+
+            center_x0 = max(clear_x0, col - 1)
+            center_x1 = min(clear_x1, col + 2)
+            center_y0 = max(clear_y0, row - 1)
+            center_y1 = min(clear_y1, row + 2)
+            img_array[center_y0:center_y1, center_x0:center_x1, 0:3] = [0, 0, 0]
+            if img_array.shape[2] > 3:
+                img_array[center_y0:center_y1, center_x0:center_x1, 3] = 255
 
         if "compose_scrollbar" in params.keys():
             compose_slice_graph = params["compose_slicegraph"]

@@ -215,6 +215,7 @@ async function sendStateToServer() {
         const moveCamera = currentMoveCamera;
         const cameraCenter = getCurrentCameraCenter(currentView, orientationPayload);
         const worldCameraCenter = currentWorldCameraCenter;
+        
         const state = {
             view: currentView,
             orientation: orientationPayload,
@@ -228,6 +229,9 @@ async function sendStateToServer() {
             move_camera_center: moveCamera,
             print_view: currentPrintView,
             current_model: currentModel,
+            compose_cursor: true, // for now always true, maybe later make it configurable SMB
+            cursor_col: currentCursorCol,
+            cursor_row: currentCursorRow,
             compose_scrollbar: composeScrollbar,
             compose_slicegraph: composeSliceGraph,
             show_view_info_box: showViewInfoBox,
@@ -349,8 +353,8 @@ let sliceGraphAnchorDepth = 50;
 let sliceGraphMode = 'difference';
 
 // Cursor variables
-let cursorX = 0;
-let cursorY = 0;
+let currentCursorCol = 2;
+let currentCursorRow = 2;
 const cursorStep = 1;
 
 // Tracking variables
@@ -365,13 +369,18 @@ let pendingInputSource = 'keyboard'; // consumed once per sendStateToServer call
 let modelLoadAnnouncement = null;
 let modelLoadAnnouncementSeq = 0;
 
-function moveCrosshair(dx, dy) {
-    cursorX += dx * cursorStep;
-    cursorY += dy * cursorStep;
-    console.log(`Crosshair: (${cursorX}, ${cursorY})`);
-    announce(`Crosshair (${cursorX}, ${cursorY})`);
+// Cursor position is in 2D display coordinates, not CAD/world coordinates. SMB
+// Mapping to CAD X/Y/Z depends on currentView and currentSliceDepth.
+function moveCursor(dCol, dRow) {
+    // Simple movement: advance by the configured cursorStep (pixels).
+    currentCursorCol += dCol * cursorStep;
+    currentCursorRow += dRow * cursorStep;
+    pendingInputSource = 'dotpad';
+    console.log(`Display cursor: col ${currentCursorCol}, row ${currentCursorRow}`);
+    announce(`Cursor column ${currentCursorCol}, row ${currentCursorRow}`);
+    sendStateToServer();
 }
-window.moveCrosshair = moveCrosshair; // Expose for external use (e.g., Monarch HID integration)
+window.moveCursor = moveCursor; // Expose for external use (e.g., Monarch HID integration)
 
 function isSliceGraphRepresentationMode(modeValue = currentRepresentationMode) {
     return modeValue === 'slice-graph-difference' || modeValue === 'slice-graph-column-count';
@@ -597,6 +606,9 @@ const sbModel = document.getElementById('sb-model');
 const sbDotPad = document.getElementById('sb-dotpad');
 const sbPanCmd = document.getElementById('sb-pan-cmd');
 const sbPanCenter = document.getElementById('sb-pan-center');
+
+// Ensure a high-fidelity preview overlay exists for drawing a scaled DotPad cursor SMB
+
 
 function formatCenter2(value) {
     if (!Array.isArray(value) || value.length !== 2) {
@@ -1166,6 +1178,8 @@ function updateHighFidelityPreview(data) {
     const width = shape && shape.length > 1 ? shape[1] : '--';
     const height = shape && shape.length > 0 ? shape[0] : '--';
     highFidelityPreviewMeta.textContent = `${currentView} · ${currentSliceDepth}% · ${currentRenderMode} · ${height}×${width}px`;
+
+    // No client-side HF cursor overlay in the minimal setup.
 }
 
 async function exportCurrentSliceAsPng() {
@@ -1992,7 +2006,7 @@ document.addEventListener('keydown', function(e) {
         'u', 'i', 'o', 'j', 'k', 'l',
         '4', '5', '6', '7', '8', '9', '0', '-', '=',
         'r', 't', 'g', 'v', 'z',
-        'w', 'a', 's', 'd', '[', ']', 'h', 'p', '.', 'escape', 'n', 'm', 'y'
+        'w', 'a', 's', 'd', '[', ']', 'h', 'p', '.', 'escape'
     ]);
 
     if (!supportedShortcuts.has(normalizedKey)) {
@@ -2169,11 +2183,7 @@ document.addEventListener('keydown', function(e) {
             applyRelativeRotation('pitch', 1, 'Rotate down');
             break;
 
-        // case 'j':
-        //     e.preventDefault();
-        //     applyRelativeRotation('yaw', -1, 'Rotate left');
-        //     break;
-        case 'm':
+        case 'j':
             e.preventDefault();
             applyRelativeRotation('yaw', -1, 'Rotate left');
             break;
@@ -2189,17 +2199,7 @@ document.addEventListener('keydown', function(e) {
             announceStatus(getStatusBarAnnouncement());
             break;
 
-        // case 'g':
-        //     e.preventDefault();
-        //     if (!isSliceGraphRepresentationMode()) {
-        //         announce('Slice graph refresh: not in slice-graph mode');
-        //         break;
-        //     }
-        //     captureSliceGraphAnchor(true);
-        //     sendStateToServer();
-        //     announce(`Slice graph refreshed: view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
-        //     break;
-        case 'n':
+        case 'g':
             e.preventDefault();
             if (!isSliceGraphRepresentationMode()) {
                 announce('Slice graph refresh: not in slice-graph mode');
@@ -2254,24 +2254,6 @@ document.addEventListener('keydown', function(e) {
             sendStateToServer();
             announce(`Compose slice graph ${composeSliceGraph ? 'on' : 'off'}`);
             break;
-        
-        // Crosshair movement shortcuts temporary
-        case 'g':
-            e.preventDefault();
-            moveCrosshair(-1, 0);
-            break;
-        case 'j':
-            e.preventDefault();
-            moveCrosshair(1, 0);
-            break;
-        case 'y':
-            e.preventDefault();
-            moveCrosshair(0, -1);
-            break;
-        case 'h':
-            e.preventDefault();
-            moveCrosshair(0, 1);
-            break;
 
         case 'a':
             currentMoveCamera = "left";
@@ -2311,15 +2293,15 @@ document.addEventListener('keydown', function(e) {
             announce('Focus cleared');
             break;
 
-        // case 'h':
-        //     e.preventDefault();
-        //     {
-        //         const shortcutsHeading = document.getElementById('shortcuts-heading');
-        //         if (shortcutsHeading) {
-        //             shortcutsHeading.focus();
-        //         }
-        //     }
-        //     break;
+        case 'h':
+            e.preventDefault();
+            {
+                const shortcutsHeading = document.getElementById('shortcuts-heading');
+                if (shortcutsHeading) {
+                    shortcutsHeading.focus();
+                }
+            }
+            break;
 
         case 'p':
             announce('Printing current render');
