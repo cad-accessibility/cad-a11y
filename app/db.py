@@ -212,6 +212,26 @@ def register_model(
     conn.commit()
 
 
+def session_owns_model(session_id: str, filename: str) -> bool:
+    """Return True if this session (or any session sharing its identifier) owns the file."""
+    session = get_session(session_id)
+    conn = _get_conn()
+    if session and session["identifier"]:
+        row = conn.execute(
+            """SELECT COUNT(*) FROM uploaded_models
+               WHERE filename = ? AND deleted_at IS NULL
+               AND session_id IN (SELECT id FROM sessions WHERE identifier = ?)""",
+            (filename, session["identifier"]),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """SELECT COUNT(*) FROM uploaded_models
+               WHERE session_id = ? AND filename = ? AND deleted_at IS NULL""",
+            (session_id, filename),
+        ).fetchone()
+    return row[0] > 0
+
+
 def mark_model_deleted(session_id: str, filename: str) -> bool:
     """Soft-delete a model row. Returns True if a row was updated.
 

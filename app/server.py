@@ -1396,8 +1396,7 @@ def delete_model(filename: str):
     if not safe_name or safe_name != filename:
         return jsonify({"status": "error", "message": "Invalid filename"}), 400
 
-    updated = db.mark_model_deleted(session_id, safe_name)
-    if not updated:
+    if not db.session_owns_model(session_id, safe_name):
         return jsonify({"status": "error", "message": "Model not found or already deleted"}), 404
 
     dest = UPLOAD_DIR / safe_name
@@ -1406,6 +1405,8 @@ def delete_model(filename: str):
             dest.unlink()
     except Exception as err:
         return jsonify({"status": "error", "message": f"Could not remove file: {err}"}), 500
+
+    db.mark_model_deleted(session_id, safe_name)
 
     global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response, renderers_by_model
     with models_lock:
