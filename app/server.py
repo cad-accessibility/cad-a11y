@@ -280,10 +280,16 @@ def _find_default_model() -> Path:
 DEFAULT_MODEL = _find_default_model()
 AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
 MODEL_NAME_LIST = [model_path.stem for model_path in AVAILABLE_MODELS]
-# Stems of models that ship with the repository (MODEL_DIR only). Uploaded files
-# are in UPLOAD_DIR and are excluded. Used by the client to filter the dropdown
-# to built-ins + the current session's own uploads.
-BUILTIN_MODEL_STEMS: list[str] = [p.stem for p in AVAILABLE_MODELS if p.parent == MODEL_DIR]
+# Stems of models that ship with the repository. When UPLOAD_DIR resolves to a
+# different directory than MODEL_DIR, files in MODEL_DIR are the built-ins. When
+# they're the same directory we can't distinguish built-ins from persisted uploads,
+# so we return [] — the client treats null/empty as "show all", avoiding a privacy
+# leak where uploaded files appear as built-ins visible to every session.
+BUILTIN_MODEL_STEMS: list[str] = (
+    [p.stem for p in AVAILABLE_MODELS if p.parent == MODEL_DIR]
+    if MODEL_DIR.resolve() != UPLOAD_DIR.resolve()
+    else []
+)
 _model_list_last_refresh: float = 0.0
 _MODEL_LIST_REFRESH_INTERVAL = 2.0  # seconds
 
