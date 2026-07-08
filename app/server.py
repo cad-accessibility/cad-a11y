@@ -156,13 +156,17 @@ def _get_or_create_session_id() -> str:
 
 
 def _attach_session_cookie(response: Response, session_id: str) -> Response:
+    is_https = (
+        request.is_secure
+        or request.environ.get("HTTP_X_FORWARDED_PROTO", "").lower() == "https"
+    )
     response.set_cookie(
         _SESSION_COOKIE,
         session_id,
         max_age=_SESSION_MAX_AGE,
         httponly=True,
-        samesite="Lax",
-        secure=False,
+        samesite="Strict",
+        secure=is_https,
     )
     return response
 
