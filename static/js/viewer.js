@@ -1404,8 +1404,13 @@ function updateModelList(model_list) {
         const option = document.createElement("option");
         // option.value carries the ORIGINAL server index so currentModel round-trips correctly.
         option.value = i;
-        const owned = [...sessionOwnedModels].some(fn => fn.replace(/\.[^.]+$/, '') === stem);
-        option.text = owned ? stem + ' (your upload)' : stem;
+        const ownedFile = [...sessionOwnedModels].find(fn => fn.replace(/\.[^.]+$/, '') === stem);
+        if (ownedFile) {
+            option.text = stem + ' (your upload)';
+            option.dataset.ownedFilename = ownedFile;
+        } else {
+            option.text = stem;
+        }
         dropdown.appendChild(option);
     });
 
@@ -1457,11 +1462,13 @@ function refreshDeleteButton() {
     const dropdown = document.getElementById('model-list-dropdown');
     const btn = document.getElementById('delete-model-btn');
     if (!btn || !dropdown || dropdown.selectedIndex < 0) return;
-    const optText = dropdown.options[dropdown.selectedIndex]?.text || '';
-    const stem = optText.replace(/ \(your upload\)$/, '');
-    const isOwned = [...sessionOwnedModels].some(fn => fn.replace(/\.[^.]+$/, '') === stem);
-    btn.hidden = !isOwned;
-    if (isOwned) btn.textContent = `Remove "${stem}"`;
+    const selectedOption = dropdown.options[dropdown.selectedIndex];
+    const ownedFile = selectedOption?.dataset.ownedFilename || '';
+    btn.hidden = !ownedFile;
+    if (ownedFile) {
+        const stem = selectedOption.text.replace(/ \(your upload\)$/, '');
+        btn.textContent = `Remove "${stem}"`;
+    }
 }
 
 async function initSessionModels() {
@@ -1482,10 +1489,10 @@ document.getElementById('delete-model-btn').addEventListener('click', async func
     const statusEl = document.getElementById('upload-model-status');
     if (!dropdown || dropdown.selectedIndex < 0) return;
 
-    const optText = dropdown.options[dropdown.selectedIndex].text;
-    const stem = optText.replace(/ \(your upload\)$/, '');
-    const filename = [...sessionOwnedModels].find(fn => fn.replace(/\.[^.]+$/, '') === stem);
+    const selectedOption = dropdown.options[dropdown.selectedIndex];
+    const filename = selectedOption?.dataset.ownedFilename;
     if (!filename) return;
+    const stem = selectedOption.text.replace(/ \(your upload\)$/, '');
 
     this.disabled = true;
     try {
