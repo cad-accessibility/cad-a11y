@@ -275,6 +275,11 @@ def record_render(
 ) -> None:
     """Append one row to render_stats. Errors are swallowed — analytics must not break renders."""
     try:
+        if not session_id:
+            return
+        session = get_session(session_id)
+        if not session or session.get("consent_given") != 1:
+            return
         conn = _get_conn()
         conn.execute(
             """INSERT INTO render_stats
@@ -294,6 +299,11 @@ def record_page_event(
 ) -> None:
     """Append one client-side interaction event. Errors are swallowed."""
     try:
+        if not session_id:
+            return
+        session = get_session(session_id)
+        if not session or session.get("consent_given") != 1:
+            return
         conn = _get_conn()
         conn.execute(
             "INSERT INTO page_events (session_id, event_type, event_data) VALUES (?, ?, ?)",

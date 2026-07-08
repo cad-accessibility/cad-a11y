@@ -93,19 +93,43 @@ class TestDbSession:
 class TestDbAnalytics:
     def test_record_render(self, tmp_db):
         import sqlite3
-        db_module.record_render(None, "x+", "Outline", 0.5, 1.0, "single", "http_render")
+        sid = "test-render-sid"
+        db_module.upsert_session(sid)
+        db_module.save_session_identifier(sid, None, True)
+        db_module.record_render(sid, "x+", "Outline", 0.5, 1.0, "single", "http_render")
         conn = sqlite3.connect(str(tmp_db))
         row = conn.execute("SELECT view, render_mode FROM render_stats").fetchone()
         assert row == ("x+", "Outline")
         conn.close()
 
+    def test_record_render_requires_consent(self, tmp_db):
+        import sqlite3
+        sid = "test-no-consent-sid"
+        db_module.upsert_session(sid)
+        db_module.record_render(sid, "x+", "Outline", 0.5, 1.0, "single", "http_render")
+        conn = sqlite3.connect(str(tmp_db))
+        row = conn.execute("SELECT view FROM render_stats").fetchone()
+        assert row is None
+        conn.close()
+
     def test_record_page_event(self, tmp_db):
         import sqlite3
-        db_module.record_page_event(None, "keyboard_shortcut", {"key": "ArrowUp"})
+        sid = "test-event-sid"
+        db_module.upsert_session(sid)
+        db_module.save_session_identifier(sid, None, True)
+        db_module.record_page_event(sid, "keyboard_shortcut", {"key": "ArrowUp"})
         conn = sqlite3.connect(str(tmp_db))
         row = conn.execute("SELECT event_type, event_data FROM page_events").fetchone()
         assert row[0] == "keyboard_shortcut"
         assert json.loads(row[1])["key"] == "ArrowUp"
+        conn.close()
+
+    def test_record_page_event_requires_consent(self, tmp_db):
+        import sqlite3
+        db_module.record_page_event(None, "keyboard_shortcut", {"key": "ArrowUp"})
+        conn = sqlite3.connect(str(tmp_db))
+        row = conn.execute("SELECT event_type FROM page_events").fetchone()
+        assert row is None
         conn.close()
 
 
@@ -388,7 +412,7 @@ class TestEventsTrack:
         )
         assert resp.status_code == 400
 
-    def test_event_without_session_still_recorded(self, client, tmp_db):
+    def test_event_without_consent_not_recorded(self, client, tmp_db):
         import sqlite3
         resp = client.post(
             "/events/track",
@@ -397,5 +421,5 @@ class TestEventsTrack:
         assert resp.status_code == 200
         conn = sqlite3.connect(str(tmp_db))
         row = conn.execute("SELECT session_id FROM page_events").fetchone()
-        assert row[0] is None  # no session cookie was set
+        assert row is None  # consent not given; event must not be persisted
         conn.close()
