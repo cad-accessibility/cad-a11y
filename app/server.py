@@ -82,6 +82,14 @@ STUDY_LOG_DIR = REPO_ROOT / "data" / "logs"
 BRAILLE_LOG_PATH = Path(os.getenv("BRAILLE_LOG_PATH", str(STUDY_LOG_DIR / "braille_send_events.jsonl")))
 
 
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _is_writable_directory(path: Path) -> bool:
     try:
         path.mkdir(parents=True, exist_ok=True)
@@ -1307,10 +1315,10 @@ def upload_model():
                 filename,
                 file.filename,
                 dest.stat().st_size,
-                hashlib.sha256(dest.read_bytes()).hexdigest(),
+                _sha256_file(dest),
             )
-        except Exception:
-            pass
+        except Exception as err:
+            _log(f"register_model failed for {filename}: {err}")
 
     with models_lock:
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
