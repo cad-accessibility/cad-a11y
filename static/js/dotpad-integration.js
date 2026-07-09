@@ -127,9 +127,9 @@ const DOTPAD_KEY_ACTIONS = {
 const DOTPAD_ONE_STEP = 1;
 const DOTPAD_HOLD_START_MS = 350;
 const DOTPAD_HOLD_REPEAT_MS = 100;
-const DOTPAD_HOLD_STEPS = [2, 4, 8, 16]
+const DOTPAD_HOLD_STEPS = [2, 4, 8, 16];
 const DOTPAD_MULTI_TAP_WINDOW_MS = 250;
-const DOTPAD_TAP_STEPS = [1, 5, 12]
+const DOTPAD_TAP_STEPS = [1, 5, 12];
 
 let pendingTap = null;
 
@@ -286,14 +286,6 @@ function onKey(device, currKeyCode, keyMsg) {
     const byte6 = labelToByte6(label);
     const letter = byte6ToLetter(byte6);
     const cursorState = window.whichCursor ? window.whichCursor() : 'none';
-    console.log('onKey raw:', {
-        currKeyCode,
-        keyMsg,
-        label,
-        byte6,
-        letter,
-        beforeState: window.whichCursor ? window.whichCursor() : 'none',
-    });
     
     if (letter === 'v'){
         if (typeof window.cycleCursorState === 'function') {
@@ -422,15 +414,6 @@ async function sendHexToDotPad(renderParams) {
     // at the correct pixel size. Falls back to DotPad 300A defaults (30×10).
     const dotpadCols = connectedDevice.numberCellColumns || 30;
     const dotpadRows = connectedDevice.numberCellRows || 10;
-
-    console.log('sending to DotPad:', {
-        cursor_state: renderParams.cursor_state,
-        cursor_col: renderParams.cursor_col,
-        cursor_row: renderParams.cursor_row,
-        dotpadCols,
-        dotpadRows,
-        sendInFlight,
-    });
     
     sendInFlight = true;
     try {

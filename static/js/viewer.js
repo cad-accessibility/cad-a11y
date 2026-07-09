@@ -229,7 +229,7 @@ async function sendStateToServer() {
             move_camera_center: moveCamera,
             print_view: currentPrintView,
             current_model: currentModel,
-            compose_cursor: true, // for now always true, maybe later make it configurable SMB
+            compose_cursor: true, // for now always true, maybe later make it configurable
             cursor_col: currentCursorCol,
             cursor_row: currentCursorRow,
             cursor_state: whichCursor(),
@@ -375,7 +375,7 @@ let pendingInputSource = 'keyboard'; // consumed once per sendStateToServer call
 let modelLoadAnnouncement = null;
 let modelLoadAnnouncementSeq = 0;
 
-// Cursor position is in 2D display coordinates, not CAD/world coordinates. SMB
+// Cursor position is in 2D display coordinates, not CAD/world coordinates.
 // Mapping to CAD X/Y/Z depends on currentView and currentSliceDepth.
 function moveCursor(dCol, dRow, stepSize = cursorStep) {
     // Simple movement: advance by the configured cursorStep (pixels).
@@ -647,7 +647,7 @@ const sbDotPad = document.getElementById('sb-dotpad');
 const sbPanCmd = document.getElementById('sb-pan-cmd');
 const sbPanCenter = document.getElementById('sb-pan-center');
 
-// Ensure a high-fidelity preview overlay exists for drawing a scaled DotPad cursor SMB
+// Ensure a high-fidelity preview overlay exists for drawing a scaled DotPad cursor
 
 
 function formatCenter2(value) {

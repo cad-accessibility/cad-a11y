@@ -770,7 +770,6 @@ class CADComparisonRenderer:
 
         if compose_cursor:
             if cursor_state == "none":
-                # TODO: Get rid of any cursor artifacts from previous renders.
                 pass
             elif cursor_state == "crosshair":
                 # Draw a small crosshair cursor using display-space coordinates.

@@ -581,7 +581,7 @@ def _build_quantized_render_key(params: dict[str, Any], model_index: int) -> str
         "projectionMode": str(params.get("projectionMode", "orthographic")).lower(),
         "mode": str(params.get("mode", "single")).lower(),
         "compose_scrollbar": bool(params.get("compose_scrollbar", False)),
-        "compose_cursor": bool(params.get("compose_cursor", False)), # compose cursor parameters added to quantized key SMB
+        "compose_cursor": bool(params.get("compose_cursor", False)), # compose cursor parameters added to quantized key
         "cursor_col": int(params.get("cursor_col", 0)),
         "cursor_row": int(params.get("cursor_row", 0)),
         "cursor_state": str(params.get("cursor_state", "none")).lower(),
@@ -625,7 +625,7 @@ def _build_preview_payload_cache_key(
         "camera_center",
         "world_camera_center",
         "compose_scrollbar",
-        "compose_cursor", # compose cursor parameters added to preview payload cache key SMB
+        "compose_cursor", # compose cursor parameters added to preview payload cache key
         "cursor_col",
         "cursor_row",
         "cursor_state",
