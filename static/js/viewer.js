@@ -232,6 +232,7 @@ async function sendStateToServer() {
             compose_cursor: true, // for now always true, maybe later make it configurable SMB
             cursor_col: currentCursorCol,
             cursor_row: currentCursorRow,
+            cursor_state: whichCursor(),
             compose_scrollbar: composeScrollbar,
             compose_slicegraph: composeSliceGraph,
             show_view_info_box: showViewInfoBox,
@@ -241,6 +242,8 @@ async function sendStateToServer() {
             slicegraph_depth: requestedGraphDepth,
             slicegraph_mode: sliceGraphMode,
             input_source: pendingInputSource,
+            target_pixel_width: window.connectedTactileDisplay?.pixelWidth || null,
+            target_pixel_height: window.connectedTactileDisplay?.pixelHeight || null,
         };
         if (sbPanCmd) {
             sbPanCmd.textContent = String(moveCamera || 'none');
@@ -356,6 +359,9 @@ let sliceGraphMode = 'difference';
 let currentCursorCol = 2;
 let currentCursorRow = 2;
 const cursorStep = 1;
+let cursorStates = ['none', 'crosshair', 'full-screen', 'horizontal-bar', 'vertical-bar'];
+let currentCursorStateIndex = 0;
+
 
 // Tracking variables
 let serverConnected = null;       // null = unknown, true = up, false = confirmed down
@@ -371,16 +377,50 @@ let modelLoadAnnouncementSeq = 0;
 
 // Cursor position is in 2D display coordinates, not CAD/world coordinates. SMB
 // Mapping to CAD X/Y/Z depends on currentView and currentSliceDepth.
-function moveCursor(dCol, dRow) {
+function moveCursor(dCol, dRow, stepSize = cursorStep) {
     // Simple movement: advance by the configured cursorStep (pixels).
-    currentCursorCol += dCol * cursorStep;
-    currentCursorRow += dRow * cursorStep;
+    if (!Number.isFinite(dCol) || !Number.isFinite(dRow) || !Number.isFinite(stepSize)) {
+        console.error('Invalid cursor movement values.');
+        return;
+    }
+    else if (!Number.isInteger(dCol) || !Number.isInteger(dRow) || !Number.isInteger(stepSize)) {
+        console.error('Cursor movement values must be integers.');
+        return;
+    }
+    const displayWidth = window.connectedTactileDisplay?.pixelWidth || 96;
+    const displayHeight = window.connectedTactileDisplay?.pixelHeight || 40;
+
+    const usableWidth = composeScrollbar? Math.max(1, displayWidth - 2) : displayWidth;
+    const usableHeight = composeScrollbar? Math.max(1, displayHeight - 2) : displayHeight;
+    // dont let cursor go negative or beyond the display bounds (for 40x60 tactile display)
+    const maxCol = usableWidth - 1;
+    const maxRow = usableHeight - 1;
+
+    const nextCol = currentCursorCol + dCol * stepSize;
+    currentCursorCol = Math.min(Math.max(nextCol, 0), maxCol);
+    const nextRow = currentCursorRow + dRow * stepSize;
+    currentCursorRow = Math.min(Math.max(nextRow, 0), maxRow);
+
     pendingInputSource = 'dotpad';
     console.log(`Display cursor: col ${currentCursorCol}, row ${currentCursorRow}`);
     announce(`Cursor column ${currentCursorCol}, row ${currentCursorRow}`);
     sendStateToServer();
 }
 window.moveCursor = moveCursor; // Expose for external use (e.g., Monarch HID integration)
+
+function whichCursor() {
+    return cursorStates[currentCursorStateIndex] || 'none';
+}
+
+function cycleCursorState() {
+    currentCursorStateIndex = (currentCursorStateIndex + 1) % cursorStates.length;
+    const newState = whichCursor();
+    announce(`Cursor state changed to ${newState}`);
+    pendingInputSource = 'dotpad';
+    sendStateToServer();
+}
+window.cycleCursorState = cycleCursorState;
+window.whichCursor = whichCursor;
 
 function isSliceGraphRepresentationMode(modeValue = currentRepresentationMode) {
     return modeValue === 'slice-graph-difference' || modeValue === 'slice-graph-column-count';
