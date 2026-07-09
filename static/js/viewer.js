@@ -215,7 +215,7 @@ async function sendStateToServer() {
         const moveCamera = currentMoveCamera;
         const cameraCenter = getCurrentCameraCenter(currentView, orientationPayload);
         const worldCameraCenter = currentWorldCameraCenter;
-        
+
         const state = {
             view: currentView,
             orientation: orientationPayload,
@@ -329,7 +329,7 @@ async function sendStateToServer() {
                 clearModelLoadTask(activeModelLoadTask);
             }
         });
-        
+
     } catch (error) {
         console.warn('Error sending state:', error);
     }
@@ -359,7 +359,7 @@ let sliceGraphMode = 'difference';
 let currentCursorCol = 2;
 let currentCursorRow = 2;
 const cursorStep = 1;
-let cursorStates = ['none', 'crosshair', 'full-screen', 'horizontal-bar', 'vertical-bar'];
+let cursorStates = ['none', 'crosshair', 'guidelines', 'horizontal-line', 'vertical-line'];
 let currentCursorStateIndex = 0;
 
 
@@ -1382,7 +1382,7 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
     if (oldView !== currentView && shouldAnnounce) {
         announce(`${currentView.toLowerCase()} view`);
     }
-    
+
     // Send state to server if changed
     if (oldView !== currentView) {
         if (isSliceGraphRepresentationMode()) {
@@ -1808,11 +1808,11 @@ sliceSlider.addEventListener('input', function() {
     const newValue = parseInt(this.value);
     currentSliceDepth = newValue;
     slicePercentage.textContent = currentSliceDepth;
-    
+
     // Update ARIA attributes immediately
     this.setAttribute('aria-valuenow', currentSliceDepth);
     this.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
-    
+
     // Update button labels immediately
     updateButtonLabels();
 });
@@ -1833,7 +1833,7 @@ sliceSlider.addEventListener('focus', function() {
 // Keyboard support for slider
 sliceSlider.addEventListener('keydown', function(e) {
     let newValue = currentSliceDepth;
-    
+
     switch(e.key) {
         case 'ArrowUp':
         case 'ArrowRight':
@@ -1858,7 +1858,7 @@ sliceSlider.addEventListener('keydown', function(e) {
         default:
             return; // Don't prevent default for other keys
     }
-    
+
     e.preventDefault();
     updateSliceDepth(newValue, true);
 });
@@ -2132,7 +2132,7 @@ document.addEventListener('keydown', function(e) {
                 }
             }
             break;
-            
+
         // View shortcuts
         case '7':
             e.preventDefault();
@@ -2377,7 +2377,7 @@ function focusTopOfPage() {
 document.addEventListener('DOMContentLoaded', function() {
     // Move focus to the top element (page title) on load.
     focusTopOfPage();
-    
+
     // Set initial values
     updateSliceDepth(50, false);
     updateView('x+');
@@ -2410,7 +2410,7 @@ window.addEventListener('pageshow', function() {
 function handleZoomChanges() {
     // Ensure the interface remains usable at different zoom levels
     const container = document.querySelector('.container');
-    
+
     function checkZoom() {
         const devicePixelRatio = window.devicePixelRatio || 1;
         if (devicePixelRatio !== 1) {
@@ -2419,7 +2419,7 @@ function handleZoomChanges() {
             container.style.maxWidth = '900px';
         }
     }
-    
+
     window.addEventListener('resize', checkZoom);
     checkZoom();
 }

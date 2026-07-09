@@ -286,7 +286,7 @@ function onKey(device, currKeyCode, keyMsg) {
     const byte6 = labelToByte6(label);
     const letter = byte6ToLetter(byte6);
     const cursorState = window.whichCursor ? window.whichCursor() : 'none';
-    
+
     if (letter === 'v'){
         if (typeof window.cycleCursorState === 'function') {
             window.cycleCursorState();
@@ -310,7 +310,7 @@ function onKey(device, currKeyCode, keyMsg) {
         console.log('DotPad key pressed but cursor state is "vertical-bar":', currKeyCode, keyMsg);
         return;
     }
-    
+
     if (!cursorAction) {
         console.log('Unmapped DotPad key:', currKeyCode, keyMsg);
     }
@@ -328,7 +328,7 @@ function onKey(device, currKeyCode, keyMsg) {
                     pendingTap = null;
                 }, DOTPAD_MULTI_TAP_WINDOW_MS)
             };
-        } 
+        }
         else if (pendingTap.keyCode === currKeyCode) {
             pendingTap.repeatCount++;
             clearTimeout(pendingTap.timer);
@@ -378,7 +378,7 @@ function stopDotPadHold() {
 
 function startDotPadHold(keyCode, action) {
     stopDotPadHold();
-    
+
     activeHold = {
         keyCode: keyCode,
         action: action,
@@ -400,8 +400,7 @@ function startDotPadHold(keyCode, action) {
             );
         }, DOTPAD_HOLD_REPEAT_MS);
     }, DOTPAD_HOLD_START_MS);
-} 
-            
+}
 
 // --- Send hex data to DotPad ---
 let sendInFlight = false;
@@ -414,7 +413,7 @@ async function sendHexToDotPad(renderParams) {
     // at the correct pixel size. Falls back to DotPad 300A defaults (30×10).
     const dotpadCols = connectedDevice.numberCellColumns || 30;
     const dotpadRows = connectedDevice.numberCellRows || 10;
-    
+
     sendInFlight = true;
     try {
         const resp = await fetch(`${SERVER_URL}/render/dotpad-hex`, {

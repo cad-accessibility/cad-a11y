@@ -791,8 +791,8 @@ class CADComparisonRenderer:
                     img_array[y0:y1, x0:x1, 3] = 255
                     img_array[row, x0:x1, 3] = 255
                     img_array[y0:y1, col, 3] = 255
-            elif cursor_state == "full-screen":
-                # Draw a full-screen cursor using display-space coordinates.
+            elif cursor_state == "guidelines":
+                # Draw horizontal and vertical guide lines using display-space coordinates.
                 draw_w, draw_h = render_screen_size[0], render_screen_size[1]
                 col = max(0, min(draw_w - 1, cursor_col))
                 row = max(0, min(draw_h - 1, cursor_row))
@@ -810,8 +810,8 @@ class CADComparisonRenderer:
                     img_array[:, x0:x1, 3] = 255
                     img_array[row, :, 3] = 255
                     img_array[:, col, 3] = 255
-            elif cursor_state == "horizontal-bar":
-                # Draw a horizontal bar cursor using display-space coordinates.
+            elif cursor_state == "horizontal-line":
+                # Draw a horizontal guide line cursor using display-space coordinates.
                 draw_w, draw_h = render_screen_size[0], render_screen_size[1]
                 row = max(0, min(draw_h - 1, cursor_row))
                 y0 = max(0, row - 1)
@@ -820,8 +820,8 @@ class CADComparisonRenderer:
                 img_array[row, :, 0:3] = [0, 0, 0]
                 if img_array.shape[2] > 3:
                     img_array[row, :, 3] = 255
-            elif cursor_state == "vertical-bar":
-                # Draw a vertical bar cursor using display-space coordinates.
+            elif cursor_state == "vertical-line":
+                # Draw a vertical guide line cursor using display-space coordinates.
                 draw_w, draw_h = render_screen_size[0], render_screen_size[1]
                 col = max(0, min(draw_w - 1, cursor_col))
                 x0 = max(0, col - 1)
