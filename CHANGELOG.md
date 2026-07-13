@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-07-13
+
+#### Changed
+*   The first-visit consent dialog now decides what is stored *before* anything is saved. No session cookie or record is created until you respond to the dialog, and dismissing it with the Escape key stores nothing at all. Previously a cookie was set the moment the page loaded, before you had made a choice.
+*   The consent dialog is clearer about what each choice does. The buttons are now "Allow analytics" and "Don't track me" (previously "Accept & Continue" and "Continue without email", which behaved almost identically when no email was entered), and sharing your email is now independent of the analytics choice.
+
+#### Fixed
+*   Entering an invalid email address in the consent dialog now shows an inline error and keeps the dialog open, instead of quietly failing and re-showing the dialog on your next visit.
+
 ### 2026-06-29
 
 #### Added
