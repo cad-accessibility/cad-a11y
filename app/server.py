@@ -32,7 +32,7 @@ from typing import Any
 import uuid
 
 import numpy as np
-from flask import Flask, Response, has_request_context, jsonify, make_response, request, send_file, stream_with_context
+from flask import Flask, Response, has_request_context, jsonify, request, send_file, stream_with_context
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
@@ -908,12 +908,13 @@ def start_optional_hardware_watchers() -> None:
 
 @app.route("/viewer", methods=["GET"])
 def serve_viewer():
-    """Serve the main HTML viewer and establish a persistent cad_session cookie."""
-    session_id = _get_or_create_session_id()
-    db.upsert_session(session_id)
-    response = make_response(send_file(REPO_ROOT / "accessible-3d-viewer.html"))
-    _attach_session_cookie(response, session_id)
-    return response
+    """Serve the main HTML viewer.
+
+    No session cookie or DB row is created here. Under GDPR/ePrivacy even an
+    anonymous persistent identifier requires prior consent, so the session is
+    established only once the user answers the consent dialog (POST /session/identify).
+    """
+    return send_file(REPO_ROOT / "accessible-3d-viewer.html")
 
 
 @app.route("/", methods=["GET"])
@@ -1370,12 +1371,13 @@ def session_me():
 
 @app.route("/session/identify", methods=["POST"])
 def session_identify():
-    session_id = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE))
-    if not session_id:
-        return jsonify({"status": "error", "message": "No active session"}), 400
-    if not db.get_session(session_id):
-        return jsonify({"status": "error", "message": "Session not found"}), 400
+    """Record the user's consent choice (and optional email), creating the session.
 
+    This is the first point at which a session is persisted: /viewer deliberately
+    does not, so no identifier is stored before the user answers the consent dialog.
+    Email is validated before the row is created, so a rejected request leaves no
+    orphan session behind. The response carries the persistent cad_session cookie.
+    """
     data = request.get_json(silent=True) or {}
     email = data.get("email")
     consent = data.get("consent", False)
@@ -1386,8 +1388,13 @@ def session_identify():
             return jsonify({"status": "error", "message": "Invalid email address"}), 400
         email = email or None
 
+    session_id = _get_or_create_session_id()  # reuse a valid cookie or mint a new UUID
+    db.upsert_session(session_id)
     db.save_session_identifier(session_id, email, bool(consent))
-    return jsonify({"status": "success"}), 200
+
+    response = jsonify({"status": "success"})
+    _attach_session_cookie(response, session_id)
+    return response, 200
 
 
 @app.route("/session/models", methods=["GET"])

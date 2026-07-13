@@ -36,6 +36,16 @@ def client(tmp_db):
         yield c
 
 
+def _identify(client, email=None, consent=True):
+    """Establish a session the way the app now does — via the consent endpoint.
+
+    /viewer no longer issues a cookie or creates a DB row; POST /session/identify is
+    the first point at which a session row and cad_session cookie are created, so
+    tests that need an active session call this instead of GET /viewer.
+    """
+    return client.post("/session/identify", json={"email": email, "consent": consent})
+
+
 # ---------------------------------------------------------------------------
 # DB layer
 # ---------------------------------------------------------------------------
@@ -134,27 +144,22 @@ class TestDbAnalytics:
 
 
 # ---------------------------------------------------------------------------
-# /viewer — cookie issuance
+# /viewer — must NOT create a session before consent (GDPR)
 # ---------------------------------------------------------------------------
 
-class TestViewerCookie:
-    def test_sets_cookie_on_first_visit(self, client):
+class TestViewerNoSessionBeforeConsent:
+    def test_viewer_serves_html_without_cookie(self, client):
         resp = client.get("/viewer")
         assert resp.status_code == 200
-        assert "cad_session" in resp.headers.get("Set-Cookie", "")
+        assert "cad_session" not in resp.headers.get("Set-Cookie", "")
 
-    def test_cookie_is_httponly(self, client):
-        resp = client.get("/viewer")
-        cookie_header = resp.headers.get("Set-Cookie", "")
-        assert "HttpOnly" in cookie_header
-
-    def test_returns_same_cookie_on_return(self, client):
+    def test_viewer_creates_no_session_row(self, client, tmp_db):
+        import sqlite3
         client.get("/viewer")
-        sid1 = client.get_cookie("cad_session")
-        client.get("/viewer")
-        sid2 = client.get_cookie("cad_session")
-        assert sid1 is not None
-        assert sid1.value == sid2.value
+        conn = sqlite3.connect(str(tmp_db))
+        rows = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        conn.close()
+        assert rows == 0
 
 
 # ---------------------------------------------------------------------------
@@ -168,12 +173,12 @@ class TestSessionMe:
         assert data["session_id"] is None
         assert data["consent_given"] is None
 
-    def test_new_session_consent_null(self, client):
-        client.get("/viewer")   # establishes cookie
+    def test_reports_consent_after_identify(self, client):
+        _identify(client, email=None, consent=True)
         resp = client.get("/session/me")
         data = resp.get_json()
         assert data["session_id"] is not None
-        assert data["consent_given"] is None
+        assert data["consent_given"] == 1
         assert data["model_count"] == 0
 
 
@@ -182,8 +187,31 @@ class TestSessionMe:
 # ---------------------------------------------------------------------------
 
 class TestSessionIdentify:
+    def test_creates_session_and_sets_cookie(self, client):
+        # No prior cookie: identify is the first point a session is created.
+        resp = client.post("/session/identify", json={"email": None, "consent": True})
+        assert resp.status_code == 200
+        cookie_header = resp.headers.get("Set-Cookie", "")
+        assert "cad_session" in cookie_header
+        assert "HttpOnly" in cookie_header
+
+    def test_accept_creates_row_with_consent(self, client, tmp_db):
+        import sqlite3
+        client.post("/session/identify", json={"email": None, "consent": True})
+        conn = sqlite3.connect(str(tmp_db))
+        rows = conn.execute("SELECT consent_given FROM sessions").fetchall()
+        conn.close()
+        assert rows == [(1,)]
+
+    def test_decline_creates_row_with_consent_zero(self, client, tmp_db):
+        import sqlite3
+        client.post("/session/identify", json={"email": None, "consent": False})
+        conn = sqlite3.connect(str(tmp_db))
+        rows = conn.execute("SELECT consent_given FROM sessions").fetchall()
+        conn.close()
+        assert rows == [(0,)]
+
     def test_stores_email_and_consent(self, client):
-        client.get("/viewer")
         resp = client.post(
             "/session/identify",
             json={"email": "hello@example.com", "consent": True},
@@ -194,20 +222,31 @@ class TestSessionIdentify:
         assert me["consent_given"] == 1
 
     def test_decline_stores_no_email(self, client):
-        client.get("/viewer")
         client.post("/session/identify", json={"email": None, "consent": False})
         me = client.get("/session/me").get_json()
         assert me["identifier"] is None
         assert me["consent_given"] == 0
 
     def test_rejects_invalid_email(self, client):
-        client.get("/viewer")
         resp = client.post("/session/identify", json={"email": "notanemail", "consent": True})
         assert resp.status_code == 400
 
-    def test_no_session_returns_400(self, client):
-        resp = client.post("/session/identify", json={"email": "x@y.com", "consent": True})
+    def test_invalid_email_creates_no_orphan_session(self, client, tmp_db):
+        import sqlite3
+        resp = client.post("/session/identify", json={"email": "notanemail", "consent": True})
         assert resp.status_code == 400
+        conn = sqlite3.connect(str(tmp_db))
+        rows = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        conn.close()
+        assert rows == 0  # validation runs before the row is created
+
+    def test_reuses_existing_cookie(self, client):
+        client.post("/session/identify", json={"email": None, "consent": False})
+        sid1 = client.get_cookie("cad_session")
+        client.post("/session/identify", json={"email": "later@example.com", "consent": True})
+        sid2 = client.get_cookie("cad_session")
+        assert sid1 is not None
+        assert sid1.value == sid2.value  # same session upgraded, not a new one
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +255,7 @@ class TestSessionIdentify:
 
 class TestSessionModels:
     def test_empty_without_uploads(self, client):
-        client.get("/viewer")
+        _identify(client)
         resp = client.get("/session/models")
         assert resp.status_code == 200
         assert resp.get_json()["models"] == []
@@ -254,13 +293,13 @@ class TestUploadRegistration:
         )
 
     def test_upload_returns_success(self, client):
-        client.get("/viewer")
+        _identify(client)
         resp = self._upload(client)
         assert resp.status_code == 200
         assert resp.get_json()["status"] == "success"
 
     def test_upload_registers_model_in_db(self, client):
-        client.get("/viewer")
+        _identify(client)
         upload_resp = self._upload(client)
         filename = upload_resp.get_json()["filename"]
 
@@ -273,7 +312,7 @@ class TestUploadRegistration:
         assert len(models[0]["sha256"]) == 64
 
     def test_session_models_endpoint_reflects_upload(self, client):
-        client.get("/viewer")
+        _identify(client)
         upload_resp = self._upload(client)
         filename = upload_resp.get_json()["filename"]
 
@@ -296,7 +335,7 @@ class TestUploadRegistration:
         assert rows == 0
 
     def test_delete_model_after_upload(self, client, tmp_path):
-        client.get("/viewer")
+        _identify(client)
         upload_resp = self._upload(client)
         filename = upload_resp.get_json()["filename"]
 
@@ -308,7 +347,7 @@ class TestUploadRegistration:
         assert db_module.get_session_models(sid) == []
 
     def test_delete_nonexistent_returns_404(self, client):
-        client.get("/viewer")
+        _identify(client)
         resp = client.delete("/models/ghost.stl")
         assert resp.status_code == 404
 
@@ -330,16 +369,14 @@ class TestCrossSessionModels:
     def test_second_session_sees_first_session_models(self, tmp_db):
         flask_app.config["TESTING"] = True
 
-        # Session A: upload a model then identify with email.
+        # Session A: identify with email first (creates the session), then upload.
         with flask_app.test_client() as client_a:
-            client_a.get("/viewer")
+            client_a.post("/session/identify", json={"email": "user@example.com", "consent": True})
             upload_resp = self._upload(client_a, "model_a.stl")
             assert upload_resp.get_json()["status"] == "success"
-            client_a.post("/session/identify", json={"email": "user@example.com", "consent": True})
 
         # Session B: fresh client (different cookie), same email.
         with flask_app.test_client() as client_b:
-            client_b.get("/viewer")
             client_b.post("/session/identify", json={"email": "user@example.com", "consent": True})
             resp = client_b.get("/session/models")
             models = resp.get_json()["models"]
@@ -353,13 +390,11 @@ class TestCrossSessionModels:
         filename_a = None
 
         with flask_app.test_client() as client_a:
-            client_a.get("/viewer")
+            client_a.post("/session/identify", json={"email": "user@example.com", "consent": True})
             upload_resp = self._upload(client_a, "shared.stl")
             filename_a = upload_resp.get_json()["filename"]
-            client_a.post("/session/identify", json={"email": "user@example.com", "consent": True})
 
         with flask_app.test_client() as client_b:
-            client_b.get("/viewer")
             client_b.post("/session/identify", json={"email": "user@example.com", "consent": True})
             del_resp = client_b.delete(f"/models/{filename_a}")
             assert del_resp.status_code == 200
@@ -372,13 +407,12 @@ class TestCrossSessionModels:
         flask_app.config["TESTING"] = True
 
         with flask_app.test_client() as client_a:
-            client_a.get("/viewer")
-            self._upload(client_a, "private.stl")
             client_a.post("/session/identify", json={"email": "user@example.com", "consent": True})
+            self._upload(client_a, "private.stl")
 
-        # Session with no email: should see an empty list.
+        # A different session with no email must not see the identified user's models.
         with flask_app.test_client() as client_anon:
-            client_anon.get("/viewer")
+            client_anon.post("/session/identify", json={"email": None, "consent": True})
             models = client_anon.get("/session/models").get_json()["models"]
             assert models == []
 
@@ -389,7 +423,7 @@ class TestCrossSessionModels:
 
 class TestEventsTrack:
     def test_valid_event_accepted(self, client):
-        client.get("/viewer")
+        _identify(client, consent=True)
         resp = client.post(
             "/events/track",
             json={"event_type": "keyboard_shortcut", "event_data": {"key": "ArrowUp"}},
@@ -397,7 +431,7 @@ class TestEventsTrack:
         assert resp.status_code == 200
 
     def test_unknown_event_type_rejected(self, client):
-        client.get("/viewer")
+        _identify(client, consent=True)
         resp = client.post(
             "/events/track",
             json={"event_type": "unknown_type", "event_data": {}},
@@ -405,7 +439,7 @@ class TestEventsTrack:
         assert resp.status_code == 400
 
     def test_invalid_event_data_rejected(self, client):
-        client.get("/viewer")
+        _identify(client, consent=True)
         resp = client.post(
             "/events/track",
             json={"event_type": "section_dwell", "event_data": "not-an-object"},
