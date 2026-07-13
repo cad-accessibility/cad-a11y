@@ -866,6 +866,26 @@ button:focus-visible {
     color: #596871;
 }
 
+/* Validation / submission error for the consent form. #b71c1c on white ≈ 6.6:1 (AA pass) */
+.consent-error {
+    font-size: 0.82em;
+    font-weight: 600;
+    color: #b71c1c;
+}
+
+.consent-error[hidden] {
+    display: none;
+}
+
+/*
+ * After the consent dialog closes we move focus to <main> (tabindex=-1) so screen-reader
+ * users are not stranded at the top of the document. It is a managed focus target, not a
+ * keyboard-tabbable control, so suppress the full-width outline that would otherwise show.
+ */
+#main-content:focus {
+    outline: none;
+}
+
 .consent-actions {
     display: flex;
     gap: 12px;

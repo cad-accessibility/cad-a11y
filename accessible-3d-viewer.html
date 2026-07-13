@@ -517,9 +517,10 @@
     >
         <h2 id="consent-dialog-title">Welcome to CAD A11y</h2>
         <p id="consent-dialog-desc">
-            We use a session cookie to remember your visit and any models you upload.
-            You may optionally provide your email to receive project updates.
-            Providing an email is optional — the viewer is fully usable without it.
+            We store a cookie to remember your visit and any models you upload.
+            You can optionally allow anonymous usage analytics to help us improve the
+            tool, and optionally share your email to receive project updates.
+            Analytics and email are independent, and the viewer is fully usable without either.
         </p>
         <form method="dialog" id="consent-form" novalidate>
             <div class="consent-field">
@@ -533,15 +534,16 @@
                     aria-describedby="consent-email-hint"
                 >
                 <span id="consent-email-hint" class="consent-hint">
-                    Leave blank to continue anonymously.
+                    Optional. Only used to send you project updates.
                 </span>
+                <span id="consent-email-error" class="consent-error" role="alert" hidden></span>
             </div>
             <div class="consent-actions">
                 <button type="submit" value="accept" id="consent-accept">
-                    Accept &amp; Continue
+                    Allow analytics
                 </button>
                 <button type="submit" value="decline" id="consent-decline">
-                    Continue without email
+                    Don't track me
                 </button>
             </div>
         </form>
@@ -575,40 +577,124 @@
                 const res = await fetch('/session/me');
                 if (res.ok) sessionData = await res.json();
             } catch (_) {
-                return; // server unavailable — skip dialog silently
+                return; // server unavailable, so skip the dialog silently
             }
 
-            // Show dialog only on a genuinely new session (consent_given is null).
-            if (sessionData && sessionData.consent_given === null) {
-                const dialog = document.getElementById('session-consent-dialog');
-                const main = document.getElementById('main-content');
-                if (!dialog || !dialog.showModal) return;
+            // Show the dialog only for a genuinely new session (no consent decision yet).
+            if (!sessionData || sessionData.consent_given !== null) return;
 
-                // Hide background from screen readers while dialog is open (ARIA best practice).
-                if (main) main.setAttribute('aria-hidden', 'true');
+            const dialog = document.getElementById('session-consent-dialog');
+            const form = document.getElementById('consent-form');
+            const emailInput = document.getElementById('consent-email');
+            const errorEl = document.getElementById('consent-email-error');
+            const main = document.getElementById('main-content');
+            if (!dialog || !dialog.showModal || !form) return;
 
-                dialog.showModal();
+            // The error lives inside the dialog so its role="alert" is announced even while
+            // the modal makes the rest of the page inert. We also mark the field invalid and
+            // point its description at the error, so anyone who navigates back to the field
+            // hears what went wrong rather than relying on catching the live announcement.
+            function showError(msg) {
+                if (errorEl) {
+                    errorEl.hidden = false;        // reveal before setting text so AT announces it
+                    errorEl.textContent = msg;
+                }
+                if (emailInput) {
+                    emailInput.setAttribute('aria-invalid', 'true');
+                    emailInput.setAttribute('aria-describedby', 'consent-email-hint consent-email-error');
+                    emailInput.focus();
+                }
+            }
+            function clearError() {
+                if (errorEl) {
+                    errorEl.textContent = '';
+                    errorEl.hidden = true;
+                }
+                if (emailInput) {
+                    emailInput.removeAttribute('aria-invalid');
+                    emailInput.setAttribute('aria-describedby', 'consent-email-hint');
+                }
+            }
+            // Drop a stale error as soon as the user starts correcting the address.
+            if (emailInput) emailInput.addEventListener('input', clearError);
 
-                dialog.addEventListener('close', function onClose() {
-                    dialog.removeEventListener('close', onClose);
-                    if (main) main.removeAttribute('aria-hidden');
+            // Hide the background from screen readers while the dialog is open. This backs up
+            // the native modal inertness (showModal + aria-modal="true") for older assistive tech.
+            function restoreBackground() {
+                if (main) main.removeAttribute('aria-hidden');
+            }
+            if (main) main.setAttribute('aria-hidden', 'true');
+            dialog.showModal();
 
-                    const value = dialog.returnValue; // 'accept' or 'decline'
-                    const email = (document.getElementById('consent-email')?.value || '').trim();
-                    fetch('/session/identify', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            email: email || null,
-                            consent: value === 'accept',
-                        }),
-                    }).then(function() {
+            // Restore the background on every close path. dialog.close() fires its 'close' event
+            // asynchronously (and not at all in some engines), so we never rely on it alone:
+            // Escape is caught via keydown and cancel, and the submit handler restores it directly.
+            dialog.addEventListener('close', restoreBackground);
+            dialog.addEventListener('cancel', restoreBackground);
+            dialog.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape') restoreBackground();
+            });
+
+            // Persist the choice only on an explicit button submit. preventDefault keeps the
+            // dialog open if the email is invalid or the request fails; Escape closes the
+            // dialog without submitting, so no session is created until the user chooses.
+            form.addEventListener('submit', function onSubmit(e) {
+                e.preventDefault();
+                const action = (e.submitter && e.submitter.value) || '';
+                if (action !== 'accept' && action !== 'decline') return;
+
+                const email = (emailInput?.value || '').trim();
+                // Lightweight client-side check; the server re-validates authoritatively.
+                if (email && emailInput && !emailInput.checkValidity()) {
+                    showError('Please enter a valid email address, or leave the field blank.');
+                    return;
+                }
+                clearError();
+
+                fetch('/session/identify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email: email || null,
+                        consent: action === 'accept',
+                    }),
+                }).then(function (res) {
+                    if (res.ok) {
+                        dialog.close(action);
+                        // Expose the page to assistive tech again *before* moving focus into it.
+                        // dialog.close() fires its 'close' event asynchronously, so restore the
+                        // background synchronously here rather than waiting on that handler.
+                        restoreBackground();
+                        // Confirm the saved choice to screen-reader and Braille users, then move
+                        // focus out of the closed dialog into the main content so they are not
+                        // stranded at the top of the document.
+                        announceConsentResult(action);
+                        if (main) {
+                            main.setAttribute('tabindex', '-1');
+                            main.focus();
+                        }
                         // Email may link this session to prior uploads on other devices;
                         // refresh the model list so those files appear immediately.
                         initSessionModels();
-                    }).catch(function () {});
+                        return;
+                    }
+                    return res.json().catch(function () { return {}; }).then(function (body) {
+                        showError(body.message || 'Sorry, we could not save your choice. Please try again.');
+                    });
+                }).catch(function () {
+                    showError('Sorry, we could not save your choice. Please try again.');
                 });
-            }
+            });
+        }
+
+        // Announce the saved consent choice through the shared live-region helper (announce()
+        // from viewer.js), which drives the alternating sr-live regions and Braille output.
+        // Safe to call only after the dialog closes, since a modal makes the page inert.
+        function announceConsentResult(action) {
+            const msg = action === 'accept'
+                ? 'Analytics allowed. Your preference has been saved.'
+                : 'You will not be tracked. Your preference has been saved.';
+            if (typeof announce === 'function') announce(msg);
         }
 
         // ---------------------------------------------------------------------------
