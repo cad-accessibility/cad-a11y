@@ -1,6 +1,13 @@
 """Persistent SQLite storage for sessions, uploaded model records, and interaction analytics.
 
-One thread-local connection per thread; WAL mode for concurrent readers.
+One thread-local connection per thread. The database runs in WAL (Write-Ahead
+Logging) journal mode: rather than writing changes to a rollback journal and
+blocking readers for the duration, SQLite appends committed changes to a separate
+``-wal`` file and checkpoints them into the main database later. Readers never
+block the writer and the writer never blocks readers, so this multi-threaded Flask
+server can keep serving reads while a write is in flight, with better write
+throughput and fewer fsyncs than the default rollback journal.
+
 DB_PATH can be overridden by the DB_PATH environment variable or by
 reassigning the module-level attribute before calling init_db() (useful in tests).
 
@@ -69,6 +76,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_identifier
 -- One row per successful /render call. session_id is nullable: renders triggered
 -- without a browser session (direct API calls) are still recorded for aggregate stats.
 -- Structured columns enable plain GROUP BY queries without JSON extraction.
+-- TODO(#62): migrate to Felix's structured rendering-state payload (likely a JSON
+-- column mirroring page_events.event_data) once that code lands.
 CREATE TABLE IF NOT EXISTS render_stats (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id   TEXT REFERENCES sessions(id),
@@ -115,6 +124,8 @@ def _get_conn() -> sqlite3.Connection:
         Path(current_path).parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(current_path, check_same_thread=True)
         conn.row_factory = sqlite3.Row
+        # WAL (Write-Ahead Logging): concurrent readers and one writer without mutual
+        # blocking, plus better write throughput than the default rollback journal.
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         _local.conn = conn
