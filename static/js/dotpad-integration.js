@@ -286,6 +286,7 @@ function onKey(device, currKeyCode, keyMsg) {
     const byte6 = labelToByte6(label);
     const letter = byte6ToLetter(byte6);
     const cursorState = window.whichCursor ? window.whichCursor() : 'none';
+    const n = 10; // TODO: make this global and dynamic
 
     if (letter === 'v'){
         if (typeof window.cycleCursorState === 'function') {
@@ -295,6 +296,22 @@ function onKey(device, currKeyCode, keyMsg) {
         }
         return;
     }
+    if (byte6 === 0x01){
+        // Go shallower (decrease depth by 100/N)
+        const previousDepth = currentSliceDepth;
+        const nextDepth = Math.max(0, currentSliceDepth - 100/n); // TODO: calculate integer value
+        updateSliceDepth(nextDepth, false);
+        announceDepthShortcut('ArrowDown', previousDepth, nextDepth);
+        return;
+    }
+    if (byte6 === 0x08){
+        // Go deeper (increase depth by 100/N)
+        const previousDepth = currentSliceDepth;
+        const nextDepth = Math.min(100, currentSliceDepth + 100/n); // TODO: calculate integer value
+        updateSliceDepth(nextDepth, false);
+        announceDepthShortcut('ArrowUp', previousDepth, nextDepth);
+        return;
+    }
     if (typeof window.moveCursor != 'function') return;
 
     const cursorAction = DOTPAD_KEY_ACTIONS[currKeyCode];
@@ -302,12 +319,12 @@ function onKey(device, currKeyCode, keyMsg) {
         console.log('DotPad key pressed but cursor state is "none":', currKeyCode, keyMsg);
         return;
     }
-    if (cursorState === 'horizontal-bar' && (currKeyCode === 'PanningLeft' || currKeyCode === 'PanningRight')) {
-        console.log('DotPad key pressed but cursor state is "horizontal-bar":', currKeyCode, keyMsg);
+    if (cursorState === 'horizontal-line' && (currKeyCode === 'PanningLeft' || currKeyCode === 'PanningRight')) {
+        console.log('DotPad key pressed but cursor state is "horizontal-line":', currKeyCode, keyMsg);
         return;
     }
-    if (cursorState === 'vertical-bar' && (currKeyCode === 'KeyFunction1' || currKeyCode === 'KeyFunction4')) {
-        console.log('DotPad key pressed but cursor state is "vertical-bar":', currKeyCode, keyMsg);
+    if (cursorState === 'vertical-line' && (currKeyCode === 'KeyFunction1' || currKeyCode === 'KeyFunction4')) {
+        console.log('DotPad key pressed but cursor state is "vertical-line":', currKeyCode, keyMsg);
         return;
     }
 
