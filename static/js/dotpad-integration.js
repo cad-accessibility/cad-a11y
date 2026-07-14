@@ -302,12 +302,12 @@ function onKey(device, currKeyCode, keyMsg) {
         console.log('DotPad key pressed but cursor state is "none":', currKeyCode, keyMsg);
         return;
     }
-    if (cursorState === 'horizontal-bar' && (currKeyCode === 'PanningLeft' || currKeyCode === 'PanningRight')) {
-        console.log('DotPad key pressed but cursor state is "horizontal-bar":', currKeyCode, keyMsg);
+    if (cursorState === 'horizontal-line' && (currKeyCode === 'KeyFunction1' || currKeyCode === 'KeyFunction4')) {
+        console.log('DotPad key pressed but cursor state is "horizontal-line":', currKeyCode, keyMsg);
         return;
     }
-    if (cursorState === 'vertical-bar' && (currKeyCode === 'KeyFunction1' || currKeyCode === 'KeyFunction4')) {
-        console.log('DotPad key pressed but cursor state is "vertical-bar":', currKeyCode, keyMsg);
+    if (cursorState === 'vertical-line' && (currKeyCode === 'PanningLeft' || currKeyCode === 'PanningRight')) {
+        console.log('DotPad key pressed but cursor state is "vertical-line":', currKeyCode, keyMsg);
         return;
     }
 

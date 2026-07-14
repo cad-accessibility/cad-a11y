@@ -522,7 +522,7 @@ class CADComparisonRenderer:
         cursor_col = max(0, min(render_screen_size[0] - 1, cursor_col))
         cursor_row = max(0, min(render_screen_size[1] - 1, cursor_row))
 
-        cursor_state = str(params.get("cursor_state", "none").lower())
+        cursor_state = str(params.get("cursor_state", "none")).lower()
 
 
         view_legend = params.get("view", "top")
