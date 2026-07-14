@@ -717,6 +717,9 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     # payload at that size for the preview image. Otherwise, use the main payload.
     target_width = params.get("target_pixel_width")
     target_height = params.get("target_pixel_height")
+
+    preview_payload = braille_payload
+
     if target_width is not None and target_height is not None:
         try:
             target_width = int(target_width)
@@ -731,8 +734,6 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
                 )
         except (TypeError, ValueError):
             pass
-    else:
-        preview_payload = braille_payload
 
     engine = get_or_create_renderer(model_index)
     _save_print_if_requested(params, engine, rendered)
