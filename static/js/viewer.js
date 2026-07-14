@@ -2237,7 +2237,7 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             {
                 const previousZoom = currentZoom;
-                const zoomChanged = updateZoom(currentZoom - ZOOM_STEP, false);
+                const zoomChanged = updateZoom(currentZoom - 0.01, false);
                 if (zoomChanged) {
                     announceZoomValue(currentZoom, previousZoom);
                 } else {
@@ -2249,7 +2249,7 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             {
                 const previousZoom = currentZoom;
-                const zoomChanged = updateZoom(currentZoom + ZOOM_STEP, false);
+                const zoomChanged = updateZoom(currentZoom + 0.01, false);
                 if (zoomChanged) {
                     announceZoomValue(currentZoom, previousZoom);
                 } else {
