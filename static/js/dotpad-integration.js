@@ -319,11 +319,11 @@ function onKey(device, currKeyCode, keyMsg) {
         console.log('DotPad key pressed but cursor state is "none":', currKeyCode, keyMsg);
         return;
     }
-    if (cursorState === 'horizontal-line' && (currKeyCode === 'PanningLeft' || currKeyCode === 'PanningRight')) {
+    if (cursorState === 'horizontal-line' && (currKeyCode === 'KeyFunction1' || currKeyCode === 'KeyFunction4')) {
         console.log('DotPad key pressed but cursor state is "horizontal-line":', currKeyCode, keyMsg);
         return;
     }
-    if (cursorState === 'vertical-line' && (currKeyCode === 'KeyFunction1' || currKeyCode === 'KeyFunction4')) {
+    if (cursorState === 'vertical-line' && (currKeyCode === 'PanningLeft' || currKeyCode === 'PanningRight')) {
         console.log('DotPad key pressed but cursor state is "vertical-line":', currKeyCode, keyMsg);
         return;
     }

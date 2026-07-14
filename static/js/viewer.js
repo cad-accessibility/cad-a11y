@@ -402,7 +402,7 @@ function moveCursor(dCol, dRow, stepSize = cursorStep) {
     currentCursorRow = Math.min(Math.max(nextRow, 0), maxRow);
 
     pendingInputSource = 'dotpad';
-    console.log(`Display cursor: col ${currentCursorCol}, row ${currentCursorRow}`);
+    console.debug(`Display cursor: col ${currentCursorCol}, row ${currentCursorRow}`);
     announce(`Cursor column ${currentCursorCol}, row ${currentCursorRow}`);
     sendStateToServer();
 }
