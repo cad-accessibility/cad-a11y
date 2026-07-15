@@ -11,9 +11,6 @@ services:
       SERVER_VERBOSE: "${SERVER_VERBOSE:-0}"
     volumes:
       # Bind mount so the container reads directly from the local data/models folder.
-      - ./app:/project/app
-      - ./static:/project/static
-      - ./accessible-3d-viewer.html:/project/accessible-3d-viewer.html
       - ./data/models:/project/data/models
       - renders:/project/data/renders
       - logs:/project/data/logs

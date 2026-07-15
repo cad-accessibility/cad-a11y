@@ -65,7 +65,7 @@ function notifyUploadCleanupOnClose() {
 
     // Keyboard resize support (arrow keys on the divider)
     divider.addEventListener('keydown', function(e) {
-        console.log("keydown seen:", e.key, e.code, e.target.tagName);
+        console.debug("keydown seen:", e.key, e.code, e.target.tagName);
         const step = e.shiftKey ? 50 : 10;
         const layoutWidth = layout.getBoundingClientRect().width;
         const currentWidth = leftCol.getBoundingClientRect().width;
@@ -406,7 +406,6 @@ function moveCursor(dCol, dRow, stepSize = cursorStep) {
     announce(`Cursor column ${currentCursorCol}, row ${currentCursorRow}`);
     sendStateToServer();
 }
-window.moveCursor = moveCursor; // Expose for external use (e.g., Monarch HID integration)
 
 function whichCursor() {
     return cursorStates[currentCursorStateIndex] || 'none';
@@ -419,8 +418,6 @@ function cycleCursorState() {
     pendingInputSource = 'dotpad';
     sendStateToServer();
 }
-window.cycleCursorState = cycleCursorState;
-window.whichCursor = whichCursor;
 
 function isSliceGraphRepresentationMode(modeValue = currentRepresentationMode) {
     return modeValue === 'slice-graph-difference' || modeValue === 'slice-graph-column-count';
@@ -1294,6 +1291,10 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
     return oldDepth !== currentSliceDepth;
 }
 
+function getCurrentSliceDepth(){
+    return currentSliceDepth;
+}
+
 // Helper to sync radios with current state
 function syncRadios() {
     renderModeRadios().forEach(r => { r.checked = (r.value === currentRenderMode); });
@@ -1793,6 +1794,14 @@ function announceDepthShortcut(shortcutLabel, previousDepth, depthValue) {
     announceDepthValue(depthValue, previousDepth);
 }
 
+// External API used by hardware integration modules.
+window.moveCursor = moveCursor;
+window.cycleCursorState = cycleCursorState;
+window.whichCursor = whichCursor;
+window.getCurrentSliceDepth = getCurrentSliceDepth;
+window.updateSliceDepth = updateSliceDepth;
+window.announceDepthShortcut = announceDepthShortcut;
+
 if (clearAnnouncementsBtn && announcementHistory) {
     clearAnnouncementsBtn.addEventListener('click', function() {
         announcementHistory.innerHTML = '';
@@ -2059,7 +2068,7 @@ document.addEventListener('keydown', function(e) {
     const repeatableShortcuts = new Set([
         'pageup', 'pagedown',
         'arrowup', 'arrowdown', '2', '3',
-        '4', '5', 'n', 'm'
+        '4', '5'
     ]);
     if (e.repeat && !repeatableShortcuts.has(normalizedKey)) {
         e.preventDefault();

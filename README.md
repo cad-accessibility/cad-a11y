@@ -16,6 +16,8 @@ A tool for making 3D CAD models accessible to blind and low-vision (BLV) users. 
 
 ## Running the app
 
+Run the default Docker image configuration:
+
 ```bash
 docker compose up --build
 ```
@@ -23,6 +25,12 @@ docker compose up --build
 Then open `http://localhost:8635/viewer` in a browser.
 
 Model files placed in `data/models/` are available immediately without rebuilding the image.
+
+For local development with live source-code bind mounts:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
 
 ## Directory structure
 
@@ -53,7 +61,8 @@ cad-a11y/
 ├── docs/                         # Extended documentation
 ├── environment.yml               # Conda environment used inside the Docker image
 ├── requirements.txt              # pip dependencies installed inside the Docker image
-└── docker-compose.yml            # Docker Compose configuration
+├── docker-compose.yml            # Default Docker Compose configuration
+└── docker-compose.dev.yml        # Optional local-development bind mounts
 ```
 
 ## Hardware setup
@@ -94,8 +103,8 @@ The DotPad supports cursor controls and depth changes with the following inputs:
     - `none`: hides the cursor and disables cursor movement.
     - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
     - `guidelines`: shows horizontal and vertical guide lines through the cursor.
-    - `horizontal-line`: shows only the horizontal guide line; up and down movement are disabled.
-    - `vertical-line`: shows only the vertical guide line; left and right movement are disabled.
+    - `horizontal-line`: shows only the horizontal guide line; left and right movement are disabled.
+    - `vertical-line`: shows only the vertical guide line; up and down movement are disabled.
 - dot 3: move cursor or horizontal line left
 - dot 6: move cursor or horizontal line right
 - dot 2: move cursor or vertical line up

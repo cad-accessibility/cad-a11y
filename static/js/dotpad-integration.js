@@ -124,10 +124,7 @@ const DOTPAD_KEY_ACTIONS = {
     PanningLeft: [-1, 0],
     PanningRight: [1, 0],
 };
-const DOTPAD_ONE_STEP = 1;
-const DOTPAD_HOLD_START_MS = 350;
-const DOTPAD_HOLD_REPEAT_MS = 100;
-const DOTPAD_HOLD_STEPS = [2, 4, 8, 16];
+
 const DOTPAD_MULTI_TAP_WINDOW_MS = 250;
 const DOTPAD_TAP_STEPS = [1, 5, 12];
 
@@ -135,20 +132,12 @@ let pendingTap = null;
 
 // ── Braille key chord → letter ───────────────────────────────────────────
 // Buttons: LP=dot3, 8=dot2, 4=dot1, 2=dot4, 1=dot5, RP=dot6
-// Key label format examples: "LP +0", "RP +4", "AP +12", "+7"
-// nabccToChar: braille byte → printable ASCII character (6-dot patterns only).
 // Lowercase letters take priority over any punctuation sharing the same pattern.
-const nabccToChar = {};
 (function buildReverseNabcc() {
     window._nabccReverse = {};
-    for (let ascii = 0x20; ascii <= 0x7E; ascii++) {
-    const b = NABCC[ascii - 0x20];
-    if (b < 0x40 && !nabccToChar[b]) nabccToChar[b] = String.fromCharCode(ascii);
-    }
     for (let ascii = 0x61; ascii <= 0x7A; ascii++) {
-    const b = NABCC[ascii - 0x20];
-    nabccToChar[b] = String.fromCharCode(ascii);       // lowercase wins conflicts
-    window._nabccReverse[b] = String.fromCharCode(ascii);
+        const b = NABCC[ascii - 0x20];
+        window._nabccReverse[b] = String.fromCharCode(ascii);
     }
 })();
 
@@ -287,6 +276,14 @@ function onKey(device, currKeyCode, keyMsg) {
     const letter = byte6ToLetter(byte6);
     const cursorState = window.whichCursor ? window.whichCursor() : 'none';
     const n = 10; // TODO: make this global and dynamic
+    if (
+        typeof window.getCurrentSliceDepth !== 'function' ||
+        typeof window.updateSliceDepth !== 'function' ||
+        typeof window.announceDepthShortcut !== 'function'
+    ) {
+        console.warn('DotPad depth controls are unavailable because viewer depth helpers are not exposed.');
+        return;
+    }
 
     if (letter === 'v'){
         if (typeof window.cycleCursorState === 'function') {
@@ -298,18 +295,18 @@ function onKey(device, currKeyCode, keyMsg) {
     }
     if (byte6 === 0x01){
         // Go shallower (decrease depth by 100/N)
-        const previousDepth = currentSliceDepth;
+        const previousDepth = window.getCurrentSliceDepth();
         const nextDepth = Math.max(0, currentSliceDepth - 100/n); // TODO: calculate integer value
-        updateSliceDepth(nextDepth, false);
-        announceDepthShortcut('ArrowDown', previousDepth, nextDepth);
+        window.updateSliceDepth(nextDepth, false);
+        window.announceDepthShortcut('Dot 1', previousDepth, nextDepth);
         return;
     }
     if (byte6 === 0x08){
         // Go deeper (increase depth by 100/N)
-        const previousDepth = currentSliceDepth;
+        const previousDepth = window.getCurrentSliceDepth();
         const nextDepth = Math.min(100, currentSliceDepth + 100/n); // TODO: calculate integer value
-        updateSliceDepth(nextDepth, false);
-        announceDepthShortcut('ArrowUp', previousDepth, nextDepth);
+        window.updateSliceDepth(nextDepth, false);
+        window.announceDepthShortcut('Dot 4', previousDepth, nextDepth);
         return;
     }
     if (typeof window.moveCursor != 'function') return;
@@ -373,51 +370,6 @@ function onKey(device, currKeyCode, keyMsg) {
     }
 }
 
-
-
-// Hold handling unused for now, waiting for SDK to support key release events
-let activeHold = null;
-
-function getHoldStep(repeatCount){
-    if (repeatCount < 2) return DOTPAD_ONE_STEP;
-    if (repeatCount < 5) return DOTPAD_HOLD_STEPS[0];
-    if (repeatCount < 10) return DOTPAD_HOLD_STEPS[1];
-    if (repeatCount < 20) return DOTPAD_HOLD_STEPS[2];
-    return DOTPAD_HOLD_STEPS[3];
-}
-
-function stopDotPadHold() {
-    if (!activeHold) return;
-    clearTimeout(activeHold.startTimer);
-    clearInterval(activeHold.repeatTimer);
-    activeHold = null;
-}
-
-function startDotPadHold(keyCode, action) {
-    stopDotPadHold();
-
-    activeHold = {
-        keyCode: keyCode,
-        action: action,
-        repeatCount: 0,
-        startTimer: null,
-        repeatTimer: null,
-    };
-
-    activeHold.startTimer = setTimeout(() => {
-        if (!activeHold) return;
-
-        activeHold.repeatTimer = setInterval(() => {
-            if (!activeHold || typeof window.moveCursor !== 'function') return;
-            activeHold.repeatCount++;
-            window.moveCursor(
-                activeHold.action[0],
-                activeHold.action[1],
-                getHoldStep(activeHold.repeatCount)
-            );
-        }, DOTPAD_HOLD_REPEAT_MS);
-    }, DOTPAD_HOLD_START_MS);
-}
 
 // --- Send hex data to DotPad ---
 let sendInFlight = false;
