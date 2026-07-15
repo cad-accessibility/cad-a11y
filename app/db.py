@@ -173,6 +173,20 @@ def save_session_identifier(session_id: str, email: str | None, consent_given: b
     conn.commit()
 
 
+def get_session_id_for_identifier(identifier: str) -> str | None:
+    """Return the most recent session id bound to this identifier, or None.
+
+    Used to reuse a session across workshop uploads sharing the same word code,
+    and as the collision check when assigning a new code.
+    """
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT id FROM sessions WHERE identifier = ? ORDER BY last_seen_at DESC LIMIT 1",
+        (identifier,),
+    ).fetchone()
+    return row["id"] if row else None
+
+
 # ---------------------------------------------------------------------------
 # Uploaded model tracking (§3 extensibility hooks)
 # ---------------------------------------------------------------------------
@@ -204,6 +218,22 @@ def get_session_models(session_id: str) -> list[dict[str, Any]]:
             (session_id,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def get_latest_model_for_identifier(identifier: str) -> str | None:
+    """Return the filename of the most recently uploaded, non-deleted model for
+    any session bound to this identifier, or None. Backs /workshop code lookup."""
+    conn = _get_conn()
+    row = conn.execute(
+        """SELECT um.filename
+           FROM uploaded_models um
+           JOIN sessions s ON um.session_id = s.id
+           WHERE s.identifier = ? AND um.deleted_at IS NULL
+           ORDER BY um.uploaded_at DESC
+           LIMIT 1""",
+        (identifier,),
+    ).fetchone()
+    return row["filename"] if row else None
 
 
 def register_model(
