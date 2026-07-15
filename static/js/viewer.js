@@ -319,6 +319,40 @@ async function sendStateToServer() {
 
 // State management
 let currentSliceDepth = 50;
+
+// Simplified workshop viewer (/workshop or ?ui=simple): depth is constrained to
+// four fixed steps through the model so blind users get a small, repeatable set of
+// cross-sections. The server still receives the underlying 0-100 percentage.
+const SIMPLE_DEPTH_STOPS = [0, 33, 67, 100];
+function isSimpleDepthMode() {
+    return document.body.classList.contains('simple-ui');
+}
+function snapDepthToStop(value) {
+    return SIMPLE_DEPTH_STOPS.reduce(
+        (best, stop) => (Math.abs(stop - value) < Math.abs(best - value) ? stop : best),
+        SIMPLE_DEPTH_STOPS[0]
+    );
+}
+function steppedDepthStop(current, direction) {
+    let idx = SIMPLE_DEPTH_STOPS.indexOf(snapDepthToStop(current));
+    idx = Math.max(0, Math.min(SIMPLE_DEPTH_STOPS.length - 1, idx + direction));
+    return SIMPLE_DEPTH_STOPS[idx];
+}
+// Target depth for a "go deeper"/"go shallower" nudge: one stop in simple mode,
+// otherwise the normal continuous delta (±1 for arrows, ±10 for page/buttons).
+function deeperDepthTarget(delta) {
+    return isSimpleDepthMode() ? steppedDepthStop(currentSliceDepth, 1) : Math.min(100, currentSliceDepth + delta);
+}
+function shallowerDepthTarget(delta) {
+    return isSimpleDepthMode() ? steppedDepthStop(currentSliceDepth, -1) : Math.max(0, currentSliceDepth - delta);
+}
+function depthValueText() {
+    if (isSimpleDepthMode()) {
+        const idx = SIMPLE_DEPTH_STOPS.indexOf(snapDepthToStop(currentSliceDepth));
+        return `${currentSliceDepth} percent depth, step ${idx + 1} of ${SIMPLE_DEPTH_STOPS.length}`;
+    }
+    return `${currentSliceDepth} percent depth`;
+}
 let currentView = 'x+';
 let currentZoom = 0.0;
 let currentRenderMode = 'Shaded';
@@ -785,9 +819,9 @@ function getStatusBarAnnouncement() {
 function updateButtonLabels() {
     const depthText = `${currentSliceDepth}%`;
     deeperBtn.textContent = `Deeper: Currently ${depthText}`;
-    deeperBtn.setAttribute('aria-label', `Go deeper. Current depth: ${depthText}. Will increase to ${Math.min(100, currentSliceDepth + 10)}%`);
+    deeperBtn.setAttribute('aria-label', `Go deeper. Current depth: ${depthText}. Will increase to ${deeperDepthTarget(10)}%`);
     shallowerBtn.textContent = `Shallower: Currently ${depthText}`;
-    shallowerBtn.setAttribute('aria-label', `Go shallower. Current depth: ${depthText}. Will decrease to ${Math.max(0, currentSliceDepth - 10)}%`);
+    shallowerBtn.setAttribute('aria-label', `Go shallower. Current depth: ${depthText}. Will decrease to ${shallowerDepthTarget(10)}%`);
 }
 
 function updateSliceGraphLockUI() {
@@ -1193,7 +1227,11 @@ async function exportCurrentSliceAsPng() {
 // Update slice depth display and announce changes
 function updateSliceDepth(newDepth, shouldAnnounce = true) {
     const oldDepth = currentSliceDepth;
-    currentSliceDepth = Math.max(0, Math.min(100, newDepth));
+    let target = Math.max(0, Math.min(100, newDepth));
+    // In the simplified viewer, any depth set snaps to the nearest fixed stop so
+    // drag and hardware-slider input land on a valid step too.
+    if (isSimpleDepthMode()) target = snapDepthToStop(target);
+    currentSliceDepth = target;
     sliceSlider.value = currentSliceDepth;
     slicePercentage.textContent = currentSliceDepth;
     refreshViewInfoSummary();
@@ -1210,7 +1248,7 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
         // When shouldAnnounce=true (slider focused, hardware input) the mutation
         // IS the correct announcement channel, so we set it as before.
         if (shouldAnnounce) {
-            sliceSlider.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
+            sliceSlider.setAttribute('aria-valuetext', depthValueText());
         }
         updateButtonLabels();
         sendStateToServer();
@@ -1372,6 +1410,18 @@ function _visibleModelEntries(model_list) {
 function updateModelList(model_list) {
     if (!Array.isArray(model_list)) return;
     lastFullModelList = model_list;
+
+    // In the simplified workshop viewer the model dropdown is hidden and the model
+    // is chosen from the URL, so never rebuild it or reset the current selection
+    // (the ownership filter would otherwise drop an ingested model and reset to 0).
+    // Just keep the status-bar label in sync with the URL-selected model.
+    if (document.body.classList.contains('simple-ui')) {
+        const simpleIdx = Number(currentModel);
+        if (sbModel && lastFullModelList[simpleIdx] !== undefined) {
+            sbModel.textContent = lastFullModelList[simpleIdx];
+        }
+        return;
+    }
 
     const dropdown = document.getElementById("model-list-dropdown");
     const entries = _visibleModelEntries(model_list);
@@ -1613,6 +1663,18 @@ function applyServerState(data) {
     if (data.bbox) {
         updateBoundingBox(data.bbox);
     }
+    // Live model switch pushed by /ingest?open=1 over SSE: jump an already-open
+    // viewer to a freshly-ingested model. Transient — /get_data never carries this,
+    // and the index guard keeps it idempotent.
+    if (data.load_model) {
+        const idx = lastFullModelList.indexOf(data.load_model);
+        if (idx >= 0 && String(idx) !== currentModel) {
+            currentModel = String(idx);
+            clearCameraCenterState();
+            pendingInputSource = 'ingest';
+            sendStateToServer();
+        }
+    }
 }
 
 // SSE: server pushes hardware state changes (WitMotion IMU, Slider) immediately
@@ -1826,13 +1888,18 @@ if (clearAnnouncementsBtn && announcementHistory) {
 let sliderUpdateTimeout = null;
 
 sliceSlider.addEventListener('input', function() {
-    const newValue = parseInt(this.value);
+    let newValue = parseInt(this.value);
+    // Snap drag input to the nearest fixed stop in the simplified viewer.
+    if (isSimpleDepthMode()) {
+        newValue = snapDepthToStop(newValue);
+        this.value = newValue;
+    }
     currentSliceDepth = newValue;
     slicePercentage.textContent = currentSliceDepth;
     
     // Update ARIA attributes immediately
     this.setAttribute('aria-valuenow', currentSliceDepth);
-    this.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
+    this.setAttribute('aria-valuetext', depthValueText());
     
     // Update button labels immediately
     updateButtonLabels();
@@ -1848,7 +1915,7 @@ sliceSlider.addEventListener('change', function() {
 // changes made via keyboard shortcuts while focus was elsewhere.
 sliceSlider.addEventListener('focus', function() {
     this.setAttribute('aria-valuenow', currentSliceDepth);
-    this.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
+    this.setAttribute('aria-valuetext', depthValueText());
 });
 
 // Keyboard support for slider
@@ -1858,17 +1925,17 @@ sliceSlider.addEventListener('keydown', function(e) {
     switch(e.key) {
         case 'ArrowUp':
         case 'ArrowRight':
-            newValue += 1;
+            newValue = deeperDepthTarget(1);
             break;
         case 'ArrowDown':
         case 'ArrowLeft':
-            newValue -= 1;
+            newValue = shallowerDepthTarget(1);
             break;
         case 'PageUp':
-            newValue += 10;
+            newValue = deeperDepthTarget(10);
             break;
         case 'PageDown':
-            newValue -= 10;
+            newValue = shallowerDepthTarget(10);
             break;
         case 'Home':
             newValue = 0;
@@ -1968,13 +2035,13 @@ showViewInfoBoxCheckbox.addEventListener('change', function() {
 // Deeper depth button
 deeperBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
-    updateSliceDepth(currentSliceDepth + 10, true);
+    updateSliceDepth(deeperDepthTarget(10), true);
 });
 
 // Shallower depth button
 shallowerBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
-    updateSliceDepth(currentSliceDepth - 10, true);
+    updateSliceDepth(shallowerDepthTarget(10), true);
 });
 
 sliceGraphLockBtn.addEventListener('click', function() {
@@ -2093,7 +2160,7 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             {
                 const previousDepth = currentSliceDepth;
-                const nextDepth = Math.min(100, currentSliceDepth + 1);
+                const nextDepth = deeperDepthTarget(1);
                 updateSliceDepth(nextDepth, false);
                 announceDepthShortcut('ArrowUp', previousDepth, nextDepth);
             }
@@ -2103,7 +2170,7 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             {
                 const previousDepth = currentSliceDepth;
-                const nextDepth = Math.max(0, currentSliceDepth - 1);
+                const nextDepth = shallowerDepthTarget(1);
                 updateSliceDepth(nextDepth, false);
                 announceDepthShortcut('ArrowDown', previousDepth, nextDepth);
             }
@@ -2113,7 +2180,7 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             {
                 const previousDeeperDepth = currentSliceDepth;
-                const newDeeperDepth = Math.min(100, currentSliceDepth + 10);
+                const newDeeperDepth = deeperDepthTarget(10);
                 updateSliceDepth(newDeeperDepth, false);
                 announceDepthShortcut('PageUp', previousDeeperDepth, newDeeperDepth);
             }
@@ -2123,7 +2190,7 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             {
                 const previousShallowerDepth = currentSliceDepth;
-                const newShallowerDepth = Math.max(0, currentSliceDepth - 10);
+                const newShallowerDepth = shallowerDepthTarget(10);
                 updateSliceDepth(newShallowerDepth, false);
                 announceDepthShortcut('PageDown/1', previousShallowerDepth, newShallowerDepth);
             }
@@ -2394,9 +2461,16 @@ function focusTopOfPage() {
 }
 
 // Initialize the interface
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', async function() {
     // Move focus to the top element (page title) on load.
     focusTopOfPage();
+
+    // Simplified workshop viewer: the /workshop route (or ?ui=simple) shows only
+    // the core controls (see viewer.css) and constrains depth to four steps.
+    const workshopParams = new URLSearchParams(location.search);
+    if (location.pathname.replace(/\/+$/, '') === '/workshop' || workshopParams.get('ui') === 'simple') {
+        document.body.classList.add('simple-ui');
+    }
     
     // Set initial values
     updateSliceDepth(50, false);
@@ -2414,6 +2488,22 @@ document.addEventListener('DOMContentLoaded', function() {
     // Expose globally so display-connect handlers can trigger a send.
     window.sendStateToServer = sendStateToServer;
     initializeDebugPipelineVisibility();
+
+    // Pre-select a model when opened via /workshop?model=<stem> or ?model=<stem>.
+    // Resolve the stem to its server index before the first render so the viewer
+    // opens directly on that model instead of flashing model 0.
+    const wantedModel = workshopParams.get('model');
+    if (wantedModel) {
+        const wantedStem = wantedModel.replace(/\.[^.]+$/, '');
+        try {
+            const gd = await (await fetch(`${SERVER_URL}/get_data`)).json();
+            const idx = (gd.model_list || []).indexOf(wantedStem);
+            if (idx >= 0) {
+                currentModel = String(idx);
+                if (sbModel) sbModel.textContent = wantedStem;
+            }
+        } catch (_) { /* fall back to the default model */ }
+    }
 
     // Send initial state to server
     pendingInputSource = 'init';
