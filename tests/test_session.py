@@ -37,7 +37,7 @@ def client(tmp_db):
 
 
 def _identify(client, email=None, consent=True):
-    """Establish a session the way the app now does — via the consent endpoint.
+    """Establish a session the way the app now does, via the consent endpoint.
 
     /viewer no longer issues a cookie or creates a DB row; POST /session/identify is
     the first point at which a session row and cad_session cookie are created, so
@@ -350,6 +350,73 @@ class TestUploadRegistration:
         _identify(client)
         resp = client.delete("/models/ghost.stl")
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# External-tool /ingest and the /workshop word-code retrieval flow
+# ---------------------------------------------------------------------------
+
+class TestIngestWorkshop:
+    def _ingest(self, client, filename="ingest.stl", content=_MINIMAL_STL, code=None):
+        data = {"file": (io.BytesIO(content), filename)}
+        if code is not None:
+            data["code"] = code
+        return client.post("/ingest", data=data, content_type="multipart/form-data")
+
+    def test_ingest_without_code_is_anonymous(self, client):
+        resp = self._ingest(client)
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "success"
+        assert data["code"] is None
+        assert "/workshop?model=" in data["workshop_url"]
+        assert data["workshop_entry_url"].endswith("/workshop")
+
+    def test_ingest_with_code_registers_model(self, client):
+        # The calling tool generates the code and sends it; we normalise + store it.
+        data = self._ingest(client, code="Cedar Mango").get_json()
+        assert data["code"] == "cedar-mango"
+        assert data["code_display"] == "CEDAR MANGO"
+        assert db_module.get_latest_model_for_identifier("cedar-mango") == data["filename"]
+
+    def test_ingest_raw_body_with_code(self, client):
+        resp = client.post(
+            "/ingest?filename=raw.stl&code=blue-otter",
+            data=_MINIMAL_STL,
+            content_type="application/octet-stream",
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["code"] == "blue-otter"
+
+    def test_ingest_rejects_bad_extension(self, client):
+        assert self._ingest(client, filename="notes.png").status_code == 400
+
+    def test_ingest_model_is_discoverable(self, client):
+        data = self._ingest(client).get_json()
+        gd = client.get("/get_data").get_json()
+        assert data["model_stem"] in gd["model_list"]
+
+    def test_workshop_code_redirects_case_insensitive(self, client):
+        data = self._ingest(client, code="cedar mango").get_json()
+        resp = client.get("/workshop?code=CEDAR%20MANGO")
+        assert resp.status_code == 302
+        assert f"model={data['model_stem']}" in resp.headers["Location"]
+
+    def test_workshop_unknown_code_shows_entry_page(self, client):
+        resp = client.get("/workshop?code=no-such-code")
+        assert resp.status_code == 200
+        assert b"Enter your code" in resp.data
+
+    def test_workshop_model_serves_viewer(self, client):
+        data = self._ingest(client).get_json()
+        resp = client.get(f"/workshop?model={data['model_stem']}")
+        assert resp.status_code == 200
+        assert b"Accessible 3D Model Viewer" in resp.data
+
+    def test_workshop_entry_page_has_code_input(self, client):
+        resp = client.get("/workshop")
+        assert resp.status_code == 200
+        assert b'name="code"' in resp.data
 
 
 # ---------------------------------------------------------------------------
