@@ -28,11 +28,12 @@ import webbrowser
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+from urllib.parse import quote
 import uuid
 
 import numpy as np
-from flask import Flask, Response, has_request_context, jsonify, request, send_file, stream_with_context
+from flask import Flask, Response, has_request_context, jsonify, redirect, request, send_file, stream_with_context
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
@@ -61,6 +62,9 @@ logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 app = Flask(__name__)
 CORS(app)
+# Cap request bodies (uploads and /ingest); default 100 MB. Oversized requests
+# are rejected with 413 before the handler runs.
+app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_UPLOAD_MB", "100") or "100") * 1024 * 1024
 
 
 @dataclass
@@ -177,6 +181,37 @@ def _attach_session_cookie(response: Response, session_id: str) -> Response:
         secure=is_https,
     )
     return response
+
+
+# ---------------------------------------------------------------------------
+# Workshop participant codes. The calling tool generates the code and sends it
+# with the STL; here we only normalise it into a stable, case- and separator-
+# insensitive lookup key (screen-reader/braille friendly, read word by word).
+# ---------------------------------------------------------------------------
+def _normalize_code(raw: Any) -> str | None:
+    """Normalise a participant code into a stable lookup key: lowercase, with any
+    run of non-alphanumeric characters collapsed to a single hyphen. So 'Cedar
+    Mango', 'cedar-mango' and 'CEDAR_MANGO' all match. Returns None if empty."""
+    if raw is None:
+        return None
+    key = re.sub(r"[^a-z0-9]+", "-", str(raw).strip().lower()).strip("-")
+    return key or None
+
+
+def _code_display(code: str) -> str:
+    """'cedar-mango' -> 'CEDAR MANGO' for display."""
+    return code.replace("-", " ").upper()
+
+
+def _session_for_identifier(identifier: str) -> str:
+    """Return an existing session id tied to this identifier, or create one."""
+    existing = db.get_session_id_for_identifier(identifier)
+    if existing:
+        return existing
+    sid = str(uuid.uuid4())
+    db.upsert_session(sid)
+    db.save_session_identifier(sid, identifier, consent_given=False)
+    return sid
 
 
 DEFAULT_RENDER_PARAMS: dict[str, Any] = {
@@ -917,6 +952,47 @@ def serve_viewer():
     return send_file(REPO_ROOT / "accessible-3d-viewer.html")
 
 
+def _render_workshop_entry(notice: bool = False) -> Response:
+    """Serve the accessible code-entry page. No JS required; screen-reader/braille
+    friendly. The code is generated and shown to the participant by the calling
+    tool, so we render a single free-text field and normalise it on submit."""
+    notice_html = (
+        '<p class="workshop-notice" role="alert">We could not find a model for that '
+        "code yet. Please check the words on your card and try again.</p>"
+        if notice
+        else ""
+    )
+    html = (REPO_ROOT / "workshop-entry.html").read_text(encoding="utf-8")
+    return Response(html.replace("<!--NOTICE-->", notice_html), mimetype="text/html")
+
+
+@app.route("/workshop", methods=["GET"])
+def workshop():
+    """Simplified workshop entry point.
+
+    ``?model=<stem>``  serve the viewer (viewer.js renders it in simplified mode).
+    ``?code=<code>``   resolve the participant code to their latest model and redirect
+                       into the pre-loaded viewer.
+    (no params)        the accessible code-entry page.
+    """
+    if request.args.get("model"):
+        return send_file(REPO_ROOT / "accessible-3d-viewer.html")
+
+    raw_code = (request.args.get("code") or "").strip()
+    if not raw_code:
+        return _render_workshop_entry(notice=False)
+
+    identifier = _normalize_code(raw_code)
+    if identifier:
+        filename = db.get_latest_model_for_identifier(identifier)
+        if filename:
+            _refresh_model_list_if_stale()
+            stem = Path(filename).stem
+            if stem in MODEL_NAME_LIST:
+                return redirect(f"/workshop?model={quote(stem)}", code=302)
+    return _render_workshop_entry(notice=True)
+
+
 @app.route("/", methods=["GET"])
 def home():
     return jsonify(
@@ -933,6 +1009,8 @@ def home():
                 "/commands/stats": "GET - Command statistics",
                 "/models": "GET/POST - List or update active model index",
                 "/upload": "POST - Upload an STL or STEP model file",
+                "/ingest": "POST - Ingest an STL from an external tool; returns a word code + workshop_url",
+                "/workshop": "GET - Simplified viewer; ?model= pre-loads, ?code= resolves a participant code",
                 "/get_data": "GET - Optional cube/slider state",
                 "/render/dotpad-hex": "POST - Get render as DotPad hex string for Web SDK",
                 "/viewer": "GET - Serve the HTML viewer (required for DotPad Web SDK)",
@@ -1270,11 +1348,75 @@ def _cleanup_uploaded_models_for_session(session_id: str | None) -> dict[str, An
     return {"deleted": deleted, "errors": errors}
 
 
+def _save_and_index_stl(
+    save_fn: Callable[[Path], Any],
+    requested_name: str,
+    *,
+    session_id: str | None = None,
+    original_name: str | None = None,
+) -> tuple[str, Path, int]:
+    """Persist an uploaded STL/STEP file and refresh the in-memory model list.
+
+    ``save_fn(dest)`` writes the bytes to the chosen path (e.g. ``FileStorage.save``
+    or ``dest.write_bytes``). Shared by /upload and /ingest so both apply the
+    identical sanitisation, collision-rename, DB registration and cache
+    invalidation under the same locks.
+
+    Returns ``(filename, dest_path, new_index)``. Raises ``ValueError`` for a
+    missing name or unsupported extension; save/registration errors propagate.
+    """
+    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response, renderers_by_model
+
+    filename = secure_filename(requested_name or "")
+    if not filename:
+        raise ValueError("No file selected")
+    suffix = Path(filename).suffix.lower()
+    if suffix not in _ALLOWED_EXTENSIONS:
+        raise ValueError(f"Unsupported file type '{suffix}'. Use .stl or .step")
+
+    dest = UPLOAD_DIR / filename
+    if dest.exists():
+        stem = Path(filename).stem
+        filename = f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
+        dest = UPLOAD_DIR / filename
+
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    save_fn(dest)
+
+    if session_id:
+        try:
+            db.register_model(
+                session_id,
+                filename,
+                original_name or filename,
+                dest.stat().st_size,
+                _sha256_file(dest),
+            )
+        except Exception as err:
+            _log(f"register_model failed for {filename}: {err}")
+
+    with models_lock:
+        AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
+        MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
+        # A new or renamed file reorders the discovered model list, so any
+        # renderer cached by index may now point at stale data.
+        renderers_by_model.clear()
+        new_index = next((i for i, p in enumerate(AVAILABLE_MODELS) if p == dest), 0)
+
+    with state_lock:
+        last_render_fingerprint = None
+        last_render_response = None
+    with quantized_render_cache_lock:
+        quantized_render_cache.clear()
+    with preview_payload_cache_lock:
+        preview_payload_cache.clear()
+
+    return filename, dest, new_index
+
+
 @app.route("/upload", methods=["POST"])
 def upload_model():
     """Accept an STL or STEP file upload and add it to the model list."""
-    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response, renderers_by_model
-
     if "file" not in request.files:
         return jsonify({"status": "error", "message": "No file field in request"}), 400
 
@@ -1285,59 +1427,23 @@ def upload_model():
     upload_session_id = _sanitize_upload_session_id(
         request.form.get("upload_session_id") or request.headers.get("X-Upload-Session")
     )
+    cookie_sid = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE))
 
-    filename = secure_filename(file.filename)
-    suffix = Path(filename).suffix.lower()
-    if suffix not in _ALLOWED_EXTENSIONS:
-        return jsonify({"status": "error", "message": f"Unsupported file type '{suffix}'. Use .stl or .step"}), 400
-
-    dest = UPLOAD_DIR / filename
-    if dest.exists():
-        stem = Path(filename).stem
-        unique_name = f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
-        dest = UPLOAD_DIR / unique_name
-        filename = unique_name
     try:
-        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        file.save(dest)
+        filename, dest, new_index = _save_and_index_stl(
+            file.save,
+            file.filename,
+            session_id=cookie_sid,
+            original_name=file.filename,
+        )
+    except ValueError as err:
+        return jsonify({"status": "error", "message": str(err)}), 400
     except Exception as error:
         return jsonify(
-            {
-                "status": "error",
-                "message": f"Could not save file in '{UPLOAD_DIR}': {error}",
-            }
+            {"status": "error", "message": f"Could not save file in '{UPLOAD_DIR}': {error}"}
         ), 500
 
-    cookie_sid = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE))
-    if cookie_sid:
-        try:
-            db.register_model(
-                cookie_sid,
-                filename,
-                file.filename,
-                dest.stat().st_size,
-                _sha256_file(dest),
-            )
-        except Exception as err:
-            _log(f"register_model failed for {filename}: {err}")
-
-    with models_lock:
-        AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
-        MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
-        # Uploads can overwrite an existing filename or reorder the discovered
-        # model list, so any renderer cached by index may now point at stale data.
-        renderers_by_model.clear()
-        new_index = next((i for i, p in enumerate(AVAILABLE_MODELS) if p == dest), 0)
-
     _register_uploaded_model(upload_session_id, dest)
-
-    with state_lock:
-        last_render_fingerprint = None
-        last_render_response = None
-    with quantized_render_cache_lock:
-        quantized_render_cache.clear()
-    with preview_payload_cache_lock:
-        preview_payload_cache.clear()
 
     _log(f"Model uploaded: {filename} → index {new_index}", force=True)
     return jsonify({
@@ -1345,6 +1451,87 @@ def upload_model():
         "filename": filename,
         "model_list": MODEL_NAME_LIST,
         "new_model_index": new_index,
+    }), 200
+
+
+@app.route("/ingest", methods=["POST"])
+def ingest_model():
+    """Receive an STL from an external tool, store it, and return a two-word code
+    plus a URL that opens it in the simplified /workshop viewer.
+
+    Body: multipart form-data with a ``file`` field, or a raw STL body (name via
+    ``?filename=`` / ``X-Filename``). Every ingest is tagged with an auto-assigned
+    word code so a participant can retrieve the model at a braille station.
+    """
+    upload = request.files.get("file")
+    if upload and upload.filename:
+        save_fn = upload.save
+        requested_name = upload.filename
+    else:
+        raw = request.get_data(cache=False)
+        if not raw:
+            return jsonify({"status": "error", "message": "No STL provided"}), 400
+        requested_name = (
+            request.args.get("filename") or request.headers.get("X-Filename") or "model.stl"
+        )
+
+        def save_fn(dest: Path) -> None:
+            dest.write_bytes(raw)
+
+    # The participant code is generated and shown to the user by the calling tool;
+    # we just take it from the request and use it as the lookup key. Without one the
+    # ingest is anonymous (single-station: the returned workshop_url opens it directly).
+    code = _normalize_code(
+        request.form.get("code") or request.args.get("code") or request.headers.get("X-Code")
+    )
+    session_id = _session_for_identifier(code) if code else None
+
+    try:
+        filename, dest, new_index = _save_and_index_stl(
+            save_fn,
+            requested_name,
+            session_id=session_id,
+            original_name=requested_name,
+        )
+    except ValueError as err:
+        return jsonify({"status": "error", "message": str(err)}), 400
+    except Exception as error:
+        return jsonify(
+            {"status": "error", "message": f"Could not save file in '{UPLOAD_DIR}': {error}"}
+        ), 500
+
+    stem = dest.stem
+    base = (os.getenv("PUBLIC_BASE_URL") or request.host_url).rstrip("/")
+    workshop_url = f"{base}/workshop?model={quote(stem)}"
+
+    # Single-station conveniences are opt-in so a shared braille station is never
+    # yanked away from the model it is currently showing.
+    if request.args.get("open") == "1" or request.args.get("open_here") == "1":
+        _push_sse({"load_model": stem})
+    if os.getenv("INGEST_OPEN_ON_HOST", "0") == "1":
+        try:
+            webbrowser.open(f"http://localhost:6969/workshop?model={quote(stem)}", new=1)
+        except Exception as err:
+            _log(f"INGEST_OPEN_ON_HOST failed: {err}")
+
+    _log(f"Model ingested: {filename} → index {new_index} (code {code or 'none'})", force=True)
+
+    # A plain browser form navigation gets redirected straight into the pre-loaded
+    # viewer; fetch/XHR and other API clients get JSON.
+    accepts_html = "text/html" in request.headers.get("Accept", "")
+    is_xhr = request.headers.get("X-Requested-With") == "XMLHttpRequest"
+    if accepts_html and not is_xhr:
+        return redirect(workshop_url, code=302)
+
+    return jsonify({
+        "status": "success",
+        "filename": filename,
+        "model_stem": stem,
+        "new_model_index": new_index,
+        "code": code,
+        "code_display": _code_display(code) if code else None,
+        "workshop_url": workshop_url,
+        "workshop_entry_url": f"{base}/workshop",
     }), 200
 
 

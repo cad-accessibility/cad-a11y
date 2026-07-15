@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Open your model — Accessible 3D Viewer</title>
+    <meta name="description" content="Enter your two words to open your 3D model in the accessible viewer.">
+    <link rel="stylesheet" href="/static/css/viewer.css?v=20260529-7">
+</head>
+<body class="workshop-entry">
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+    <div class="container">
+        <header role="banner">
+            <h1 id="page-title" tabindex="-1">Open your model</h1>
+        </header>
+        <main id="main-content">
+            <!--NOTICE-->
+            <form method="get" action="/workshop" class="section" aria-labelledby="code-heading">
+                <h2 id="code-heading">Enter your code</h2>
+                <p class="help-text" id="code-help">
+                    Type the words on your card. Capital letters and spaces do not matter.
+                </p>
+                <div class="field">
+                    <label for="code">Your code</label>
+                    <input type="text" id="code" name="code" autocomplete="off"
+                           autocapitalize="none" autocorrect="off" spellcheck="false"
+                           required aria-describedby="code-help">
+                </div>
+                <div class="button-group">
+                    <button type="submit">Open my model</button>
+                </div>
+            </form>
+        </main>
+    </div>
+</body>
+</html>
