@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-07-15
+
+#### Added
+*   Another tool can now send a 3D model straight into cad-a11y. A new endpoint receives an STL file, together with a short participant code supplied by the sending tool, and returns a link that opens the model in a workshop-ready viewer.
+*   A simplified workshop viewer at `/workshop` shows only the controls that matter during a session: View, Depth, Rendering Mode, the output-device selector, and the Monarch and DotPad connection panels, alongside the tactile preview. In this viewer the Depth control moves through four fixed steps (0%, 33%, 67%, 100%) so it is quick and repeatable on a braille display.
+*   Participants open their model by entering their code (for example "CEDAR MANGO") on an accessible page. The code is read word by word by a screen reader, shows cleanly on a braille display, and ignores capitalisation and spacing. No email address or account is required.
+
 ### 2026-07-13
 
 #### Changed
