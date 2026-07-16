@@ -10,17 +10,18 @@ services:
     environment:
       SERVER_VERBOSE: "${SERVER_VERBOSE:-0}"
     volumes:
-      # Bind mount so the container reads directly from the local data/models folder.
-      - ./data/models:/project/data/models
-      - renders:/project/data/renders
-      - logs:/project/data/logs
+      # DATA_DIR should point to the persistent host path for each environment.
+      # Local dev default:  DATA_DIR=./data  (relative to this file)
+      # Hosted server:      DATA_DIR=/projects/<lab-share>/<subdir>
+      # The four subdirs (models, renders, logs, db) must exist on the host and
+      # be writable by UID 48 (apache).
+      - ${DATA_DIR:-./data}/models:/project/data/models
+      - ${DATA_DIR:-./data}/renders:/project/data/renders
+      - ${DATA_DIR:-./data}/logs:/project/data/logs
+      - ${DATA_DIR:-./data}/db:/project/data/db
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:6969/"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
-
-volumes:
-  renders:
-  logs:

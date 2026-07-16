@@ -1,15 +1,13 @@
 import matplotlib
 matplotlib.use('Agg')  # Use non-GUI backend for thread safety
 import numpy as np
-import io, PIL
+import io
 from PIL import Image
-import os, json
 import matplotlib.pyplot as plt
 import trimesh
 from .render_low_res import get_outlines
-from .plane_intersection_utils import depth_peeling_single_depth_with_bbox, faces_on_plane, compute_area
+from .plane_intersection_utils import depth_peeling_single_depth_with_bbox, compute_area
 
-from OCC.Core.STEPControl import STEPControl_Reader
 from OCC.Extend.DataExchange import write_stl_file
 from OCC.Core.gp import gp_Pnt, gp_Dir 
 
@@ -38,11 +36,6 @@ def get_juxtaposition_view(shapes, bbox, cut_depth=0.9, view_key="top", renderin
                                                                   depth=cut_depth, bbox=bbox)
     shape_brep_1, plane_origin_1 = depth_peeling_single_depth_with_bbox(shapes[1], gp_Dir(normal_dir.X(), normal_dir.Y(), normal_dir.Z()), 
                                                                   depth=cut_depth, bbox=bbox)
-    # TODO:
-    #if rendering_mode == "slice":
-    #    shape_brep_0 = faces_on_plane(shape_brep_0, plane_origin_0, normal_dir)
-    #    shape_brep_1 = faces_on_plane(shape_brep_1, plane_origin_1, normal_dir)
-
     # Target pixel resolution
     width_px, height_px = screen_size[0], screen_size[1]
     dpi = 100 
@@ -105,13 +98,10 @@ def get_juxtaposition_view(shapes, bbox, cut_depth=0.9, view_key="top", renderin
 
     img = Image.open(buf)
     img_np = np.array(img)
-    #plt.imshow(img_np)
-    #plt.show()
     if plt.fignum_exists(fig.number):
         plt.close(fig.number)
 
     # extract outline
-    #print(img_np)
     if rendering_mode in ["filled", "slice"]:
         return img_np, ax_limits
     if rendering_mode == "outline":
