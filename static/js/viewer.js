@@ -399,6 +399,7 @@ const views = ['y-', 'x-', 'z+', 'z-', 'x+', 'y+'];
 const MIN_ZOOM = 0.0;
 const MAX_ZOOM = Number.POSITIVE_INFINITY;
 const ZOOM_STEP = 0.1;
+const Fine_Zoom_Step = 0.01;
 //const views = ['front', 'side', 'top'];
 
 const VIEW_FORWARD_VECTORS = {
@@ -2044,7 +2045,7 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             {
                 const previousZoom = currentZoom;
-                const zoomChanged = updateZoom(currentZoom - 0.1, false, true);
+                const zoomChanged = updateZoom(currentZoom - Zoom_Step, false, true);
                 if (zoomChanged) {
                     announceZoomValue(currentZoom, previousZoom);
                 } else {
@@ -2056,7 +2057,7 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             {
                 const previousZoom = currentZoom;
-                const zoomChanged = updateZoom(currentZoom + 0.1, false, true);
+                const zoomChanged = updateZoom(currentZoom + Zoom_Step, false, true);
                 if (zoomChanged) {
                     announceZoomValue(currentZoom, previousZoom);
                 } else {
@@ -2237,7 +2238,7 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             {
                 const previousZoom = currentZoom;
-                const zoomChanged = updateZoom(currentZoom - 0.01, false);
+                const zoomChanged = updateZoom(currentZoom - Fine_Zoom_Step, false);
                 if (zoomChanged) {
                     announceZoomValue(currentZoom, previousZoom);
                 } else {
@@ -2249,7 +2250,7 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             {
                 const previousZoom = currentZoom;
-                const zoomChanged = updateZoom(currentZoom + 0.01, false);
+                const zoomChanged = updateZoom(currentZoom + Fine_Zoom_Step, false);
                 if (zoomChanged) {
                     announceZoomValue(currentZoom, previousZoom);
                 } else {
