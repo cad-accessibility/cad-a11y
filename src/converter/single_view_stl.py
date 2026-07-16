@@ -166,8 +166,8 @@ def project_vertices(vertices, view_key, projection_mode="orthographic", orienta
 
     return np.column_stack((x, y))
 
-def _collect_feature_edges(shape, view_key, projection_mode="orthographic", crease_degrees=22.5, orientation_basis=None):
-    """Return projected line segments for silhouette + crease edges."""
+def _collect_feature_edges(shape, view_key, projection_mode="orthographic", xray_degrees=22.5, orientation_basis=None):
+    """Return projected line segments for silhouette + xray edges."""
     if shape is None or len(shape.faces) == 0:
         return []
 
@@ -185,7 +185,7 @@ def _collect_feature_edges(shape, view_key, projection_mode="orthographic", crea
         for edge_id in edge_ids:
             edge_to_faces[int(edge_id)].append(face_idx)
 
-    crease_threshold = np.deg2rad(float(crease_degrees))
+    xray_threshold = np.deg2rad(float(xray_degrees))
     segments = []
     for edge_idx, adjacent_faces in enumerate(edge_to_faces):
         include_edge = False
@@ -198,10 +198,10 @@ def _collect_feature_edges(shape, view_key, projection_mode="orthographic", crea
             dot = float(np.clip(np.dot(n0, n1), -1.0, 1.0))
             angle = np.arccos(dot)
             silhouette = bool(front_facing[f0]) != bool(front_facing[f1])
-            # Keep crease edges regardless of facing to preserve interior detail
+            # Keep x-ray edges regardless of facing to preserve interior detail
             # in orthographic tactile views.
-            crease = angle >= crease_threshold
-            include_edge = silhouette or crease
+            xray = angle >= xray_threshold
+            include_edge = silhouette or xray
 
         if not include_edge:
             continue
@@ -281,7 +281,7 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
 
     if rendering_mode in ["filled", "slice"]:
         return img_np, ax_limits
-    if rendering_mode == "crease":
+    if rendering_mode == "x-ray":
         outlines_np, outline_mask = get_outlines(img_np)
         fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=800)
         ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
