@@ -1013,7 +1013,7 @@ def home():
                 "/commands/stats": "GET - Command statistics",
                 "/models": "GET/POST - List or update active model index",
                 "/upload": "POST - Upload an STL or STEP model file",
-                "/ingest": "POST - Ingest an STL from an external tool; returns a word code + workshop_url",
+                "/ingest": "POST - Ingest an STL from an external tool; optional caller-supplied code, returns a workshop_url",
                 "/workshop": "GET - Simplified viewer; ?model= pre-loads, ?code= resolves a participant code",
                 "/get_data": "GET - Optional cube/slider state",
                 "/render/dotpad-hex": "POST - Get render as DotPad hex string for Web SDK",
