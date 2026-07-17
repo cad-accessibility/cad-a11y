@@ -779,11 +779,12 @@ function announceParameterValue(parameterKey, firstText, repeatText) {
     const useFirst = normalizedKey === '' || normalizedKey !== lastAnnouncedParameterKey;
     const message = useFirst ? String(firstText) : String(repeatText);
 
+    // announce() clears lastAnnouncedParameterKey; re-establish this parameter's
+    // key afterwards so a run of the SAME parameter still drops to the arrow.
+    announce(message);
     if (normalizedKey) {
         lastAnnouncedParameterKey = normalizedKey;
     }
-
-    announce(message);
 }
 
 function refreshViewInfoSummary() {
@@ -1845,6 +1846,12 @@ function cycleRepresentationMode(shouldAnnounce = true) {
 // Announce a change: adds to visible history, shows toast, and speaks via SR live region.
 function emitAnnouncement(message, politeness, isAlert) {
     const normalizedMessage = String(message);
+
+    // Any announcement ends the current zoom/depth run: the next such change
+    // re-includes its label, since the context is no longer obvious. A parameter
+    // announcement re-establishes its own key immediately after this returns
+    // (see announceParameterValue), so its own repeat behaviour is unaffected.
+    lastAnnouncedParameterKey = null;
 
     // Always refresh the status bar so it reflects the latest state.
     refreshStatusBar();
