@@ -1902,10 +1902,6 @@ function announceAlert(message) {
     emitAnnouncement(message, 'assertive', true);
 }
 
-function announceDepthShortcut(shortcutLabel, previousDepth, depthValue) {
-    announceDepthValue(depthValue, previousDepth);
-}
-
 if (clearAnnouncementsBtn && announcementHistory) {
     clearAnnouncementsBtn.addEventListener('click', function() {
         announcementHistory.innerHTML = '';
@@ -2187,7 +2183,7 @@ document.addEventListener('keydown', function(e) {
                 const previousDepth = currentSliceDepth;
                 const nextDepth = Math.min(100, currentSliceDepth + 1);
                 updateSliceDepth(nextDepth, false);
-                announceDepthShortcut('ArrowUp', previousDepth, nextDepth);
+                announceDepthValue(nextDepth, previousDepth);
             }
             break;
         case 'arrowdown':
@@ -2197,7 +2193,7 @@ document.addEventListener('keydown', function(e) {
                 const previousDepth = currentSliceDepth;
                 const nextDepth = Math.max(0, currentSliceDepth - 1);
                 updateSliceDepth(nextDepth, false);
-                announceDepthShortcut('ArrowDown', previousDepth, nextDepth);
+                announceDepthValue(nextDepth, previousDepth);
             }
             break;
         case 'pageup':
@@ -2207,7 +2203,7 @@ document.addEventListener('keydown', function(e) {
                 const previousDeeperDepth = currentSliceDepth;
                 const newDeeperDepth = Math.min(100, currentSliceDepth + 10);
                 updateSliceDepth(newDeeperDepth, false);
-                announceDepthShortcut('PageUp', previousDeeperDepth, newDeeperDepth);
+                announceDepthValue(newDeeperDepth, previousDeeperDepth);
             }
             break;
         case 'pagedown':
@@ -2217,7 +2213,7 @@ document.addEventListener('keydown', function(e) {
                 const previousShallowerDepth = currentSliceDepth;
                 const newShallowerDepth = Math.max(0, currentSliceDepth - 10);
                 updateSliceDepth(newShallowerDepth, false);
-                announceDepthShortcut('PageDown/1', previousShallowerDepth, newShallowerDepth);
+                announceDepthValue(newShallowerDepth, previousShallowerDepth);
             }
             break;
 
