@@ -136,7 +136,7 @@ These environment variables (see `.env.example`) tune the behaviour:
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `MAX_UPLOAD_MB` | `100` | Maximum request size; larger uploads get HTTP 413. |
-| `INGEST_OPEN_ON_HOST` | `0` | If `1`, `/ingest` also opens the model in a browser window on the server host. |
+| `INGEST_OPEN_ON_HOST` | `0` | If `1`, an `/ingest` call that also passes `open=1` opens the model in a browser window on the server host. Both are required. |
 | `PUBLIC_BASE_URL` | (unset) | Base URL used to build `workshop_url` behind a reverse proxy. |
 
 ## Notes
