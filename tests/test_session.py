@@ -407,6 +407,17 @@ class TestIngestWorkshop:
         assert resp.status_code == 200
         assert b"Enter your code" in resp.data
 
+    def test_workshop_blank_code_shows_notice(self, client):
+        # Submitted but blank: explain it, rather than silently re-rendering the form.
+        resp = client.get("/workshop?code=%20%20")
+        assert resp.status_code == 200
+        assert b"could not find a model for that code" in resp.data
+
+    def test_workshop_without_code_param_has_no_notice(self, client):
+        resp = client.get("/workshop")
+        assert resp.status_code == 200
+        assert b"could not find a model for that code" not in resp.data
+
     def test_workshop_model_serves_viewer(self, client):
         data = self._ingest(client).get_json()
         resp = client.get(f"/workshop?model={data['model_stem']}")

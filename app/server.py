@@ -978,9 +978,13 @@ def workshop():
     if request.args.get("model"):
         return send_file(REPO_ROOT / "accessible-3d-viewer.html")
 
-    raw_code = (request.args.get("code") or "").strip()
+    code_param = request.args.get("code")
+    raw_code = (code_param or "").strip()
     if not raw_code:
-        return _render_workshop_entry(notice=False)
+        # A code that is present but blank (e.g. only spaces) means the participant
+        # submitted something unusable, so tell them rather than silently re-rendering
+        # an empty form with no explanation for a screen reader to announce.
+        return _render_workshop_entry(notice=code_param is not None)
 
     identifier = _normalize_code(raw_code)
     if identifier:
