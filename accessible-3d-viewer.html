@@ -258,7 +258,7 @@
                         Graph Mode: Difference
                     </button>
                 </div>
-                <div class="help-text" id="slice-graph-lock-status" aria-live="assertive">Graph lock ON.</div>
+                <div class="help-text" id="slice-graph-lock-status">Graph lock ON.</div>
 
                 <fieldset style="margin-top: 8px;">
                     <legend class="sr-only">Output device</legend>
@@ -290,7 +290,7 @@
                     <input type="file" id="upload-model-input" accept=".stl,.step,.STEP"
                         aria-label="Upload an STL or STEP model file">
                     <label for="upload-model-input" id="upload-model-label">Upload model…</label>
-                    <div id="upload-model-status" class="help-text" aria-live="assertive" aria-atomic="true"></div>
+                    <div id="upload-model-status" class="help-text"></div>
                 </div>
             </section>
 
@@ -303,7 +303,7 @@
                     <button type="button" id="monarch-hid-connect-btn">Connect USB</button>
                     <button type="button" id="monarch-hid-disconnect-btn" disabled>Disconnect</button>
                 </div>
-                <div id="monarch-hid-status" role="status" aria-live="assertive" aria-atomic="true" class="help-text">
+                <div id="monarch-hid-status" class="help-text">
                     Not connected.
                 </div>
             </section>
@@ -317,7 +317,7 @@
                     <button type="button" id="trinkey-connect-btn">Connect USB</button>
                     <button type="button" id="trinkey-disconnect-btn" disabled>Disconnect</button>
                 </div>
-                <div id="trinkey-status" role="status" aria-live="assertive" aria-atomic="true" class="help-text">
+                <div id="trinkey-status" class="help-text">
                     Not connected.
                 </div>
                 <div class="help-text">Depth: <span id="trinkey-depth-value">--</span></div>
@@ -332,7 +332,7 @@
                     <button type="button" id="witmotion-connect-btn">Connect BLE</button>
                     <button type="button" id="witmotion-disconnect-btn" disabled>Disconnect</button>
                 </div>
-                <div id="witmotion-status" role="status" aria-live="assertive" aria-atomic="true" class="help-text">
+                <div id="witmotion-status" class="help-text">
                     Not connected.
                 </div>
                 <div class="help-text">View: <span id="witmotion-view-value">--</span></div>
@@ -349,7 +349,7 @@
                     <button type="button" id="dotpad-scan-usb-btn">Connect USB</button>
                     <button type="button" id="dotpad-disconnect-btn" disabled>Disconnect</button>
                 </div>
-                <div id="dotpad-status" role="status" aria-live="assertive" aria-atomic="true" class="help-text">
+                <div id="dotpad-status" class="help-text">
                     Not connected.
                 </div>
                 <label class="checkbox-label" for="dotpad-auto-send">

@@ -62,8 +62,12 @@
             if (typeof announce === 'function') announce('Trinkey Slider connected.');
             startReading();
         } catch (err) {
-            if (err.name !== 'NotFoundError') setStatus('Error: ' + err.message);
-            else setStatus('No device selected.');
+            if (err.name !== 'NotFoundError') {
+                setStatus('Error: ' + err.message);
+                if (typeof announceAlert === 'function') announceAlert('Trinkey Slider connection error: ' + err.message);
+            } else {
+                setStatus('No device selected.');
+            }
             connectBtn.disabled = false;
         }
     });

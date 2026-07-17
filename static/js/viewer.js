@@ -276,8 +276,10 @@ async function sendStateToServer() {
             if (data.image_base64) {
                 updateTactilePreview(data.image_base64, data.image_shape);
                 if (isActiveModelLoadTask(activeModelLoadTask)) {
-                    announce(`${activeModelLoadTask.label}: tactile preview ready.`);
-                    announce(`${activeModelLoadTask.label} loaded.`);
+                    // One announcement per event: two calls in the same tick would
+                    // land in the two swap slots and the first would be blanked
+                    // before AT reads it.
+                    announce(`${activeModelLoadTask.label} loaded. Tactile preview ready.`);
                     clearModelLoadTask(activeModelLoadTask);
                 }
             }
