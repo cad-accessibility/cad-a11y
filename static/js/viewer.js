@@ -369,7 +369,6 @@ let lastModelListSignature = '';  // prevents redundant dropdown rebuilds
 let currentBBoxDimensionsText = '';
 let lastAnnouncementMessage = '';
 let lastAnnouncedParameterKey = null;
-const lastAnnouncedParameterValues = new Map();
 let pendingInputSource = 'keyboard'; // consumed once per sendStateToServer call
 let modelLoadAnnouncement = null;
 let modelLoadAnnouncementSeq = 0;
@@ -689,98 +688,65 @@ function showToast(message, politeness = 'polite') {
     }, toastDurationSec * 1000);
 }
 
-// Consistent depth announcement formatter
-function depthAnnouncement(pct) {
+// A depth value as a single spoken token: the ends get words, the middle a percent.
+function depthToken(pct) {
     if (pct === 0) return 'surface';
     if (pct === 100) return 'full depth';
-    return `depth ${pct}%`;
+    return `${pct}%`;
 }
 
-function announceParameterWithRepeatRule(parameterKey, parameterLabel, currentValueToken, verboseValueText, repeatValueText) {
-    const normalizedKey = String(parameterKey || '').trim().toLowerCase();
-    const normalizedToken = String(currentValueToken ?? '').trim();
-    const previousToken = normalizedKey ? lastAnnouncedParameterValues.get(normalizedKey) : undefined;
-    const useRepeatText = normalizedKey !== '' && normalizedToken !== '' && previousToken === normalizedToken;
-    const valueText = useRepeatText ? repeatValueText : verboseValueText;
-
-    announceParameterValue(parameterKey, parameterLabel, valueText);
-
-    if (normalizedKey !== '' && normalizedToken !== '') {
-        lastAnnouncedParameterValues.set(normalizedKey, normalizedToken);
-    }
+function clampDepth(value) {
+    const n = Math.max(0, Math.min(100, Number(value)));
+    return Number.isFinite(n) ? Math.round(n) : null;
 }
 
+// Announce a slice-depth change as "from <a> to <b>". The first time depth is
+// announced the phrase carries its label; an immediately following depth change
+// drops to just the new value (see announceParameterValue). A press that changes
+// nothing still speaks, since silence reads as a dropped key.
 function announceDepthValue(depthValue, previousDepth = null) {
-    const normalizedDepth = Math.max(0, Math.min(100, Number(depthValue)));
-    if (!Number.isFinite(normalizedDepth)) {
+    const to = clampDepth(depthValue);
+    if (to === null) return;
+    const from = previousDepth === null || previousDepth === undefined ? null : clampDepth(previousDepth);
+    const toToken = depthToken(to);
+
+    if (from === null || from === to) {
+        // "surface"/"full depth" are self-identifying; a mid-range no-op keeps the label.
+        const text = to === 0 || to === 100 ? toToken : `depth ${toToken}`;
+        announceParameterValue('slice-depth', text, text);
         return;
     }
 
-    const roundedDepth = Math.round(normalizedDepth);
-    const roundedPrevious = previousDepth === null || previousDepth === undefined
-        ? null
-        : Math.round(Math.max(0, Math.min(100, Number(previousDepth))));
-
-    let valueText = depthAnnouncement(roundedDepth);
-    if (roundedPrevious !== null && roundedPrevious !== roundedDepth) {
-        const direction = roundedDepth > roundedPrevious ? 'deeper' : 'shallower';
-        if (roundedDepth === 0) {
-            valueText = `${direction} to surface`;
-        } else if (roundedDepth === 100) {
-            valueText = `${direction} to full depth`;
-        } else {
-            valueText = `${direction} to ${roundedDepth}%`;
-        }
-    }
-
-    announceParameterWithRepeatRule(
-        'slice-depth',
-        'Slice depth',
-        String(roundedDepth),
-        valueText,
-        `${roundedDepth}%`
-    );
+    const arrow = `${from}% to ${toToken}`;
+    announceParameterValue('slice-depth', `depth from ${arrow}`, toToken);
 }
 
+// Zoom, same pattern. Zoom has no upper limit, so the only boundary is minimum.
 function announceZoomValue(zoomValue, previousZoom = null) {
-    const normalizedZoom = Number(zoomValue);
-    if (!Number.isFinite(normalizedZoom)) {
+    const to = Number(zoomValue);
+    if (!Number.isFinite(to)) return;
+    const from = previousZoom === null || previousZoom === undefined ? null : Number(previousZoom);
+    const toPercent = formatZoomPercent(to);
+
+    if (from === null || !Number.isFinite(from) || from === to) {
+        const text = to <= MIN_ZOOM ? 'minimum zoom' : `zoom ${toPercent}`;
+        announceParameterValue('zoom-level', text, text);
         return;
     }
 
-    const percentText = formatZoomPercent(normalizedZoom);
-    const normalizedPrevious = previousZoom === null || previousZoom === undefined
-        ? null
-        : Number(previousZoom);
-
-    let verboseText = `zoom ${percentText}`;
-    if (normalizedPrevious !== null && Number.isFinite(normalizedPrevious)) {
-        if (normalizedZoom > normalizedPrevious) {
-            verboseText = `zoom in to ${percentText}`;
-        } else if (normalizedZoom < normalizedPrevious) {
-            verboseText = `zoom out to ${percentText}`;
-        } else {
-            verboseText = `zoom unchanged: ${percentText}`;
-        }
-    }
-
-    announceParameterWithRepeatRule(
-        'zoom-level',
-        'Zoom level',
-        percentText,
-        verboseText,
-        percentText
-    );
+    const arrow = `${formatZoomPercent(from)} to ${toPercent}`;
+    announceParameterValue('zoom-level', `zooming from ${arrow}`, toPercent);
 }
 
-function announceParameterValue(parameterKey, parameterLabel, valueText) {
+// Speak firstText the first time this parameter is announced, then repeatText on
+// an immediately following announcement of the SAME parameter. Any other
+// announcement in between resets the run, so the fuller phrasing returns once the
+// context is no longer obvious. Only zoom and depth use this; everything else
+// calls announce() directly.
+function announceParameterValue(parameterKey, firstText, repeatText) {
     const normalizedKey = String(parameterKey || '').trim().toLowerCase();
-    const normalizedLabel = String(parameterLabel || '').trim();
-    const normalizedValue = String(valueText || '').trim();
-    const shouldIncludeLabel = normalizedKey !== '' && normalizedKey !== lastAnnouncedParameterKey;
-    const message = shouldIncludeLabel && normalizedLabel
-        ? `${normalizedLabel}: ${normalizedValue}`
-        : normalizedValue;
+    const useFirst = normalizedKey === '' || normalizedKey !== lastAnnouncedParameterKey;
+    const message = useFirst ? String(firstText) : String(repeatText);
 
     if (normalizedKey) {
         lastAnnouncedParameterKey = normalizedKey;
@@ -1760,7 +1726,7 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
     updateButtonLabels();
 
     if (shouldAnnounce) {
-        announceZoomValue(currentZoom, oldZoom, false);
+        announceZoomValue(currentZoom, oldZoom);
     }
 
     console.log(oldZoom, currentZoom);
