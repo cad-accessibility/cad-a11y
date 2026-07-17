@@ -700,42 +700,73 @@ function clampDepth(value) {
     return Number.isFinite(n) ? Math.round(n) : null;
 }
 
-// Announce a slice-depth change as "from <a> to <b>". The first time depth is
-// announced the phrase carries its label; an immediately following depth change
-// drops to just the new value (see announceParameterValue). A press that changes
-// nothing still speaks, since silence reads as a dropped key.
-function announceDepthValue(depthValue, previousDepth = null) {
-    const to = clampDepth(depthValue);
-    if (to === null) return;
-    const from = previousDepth === null || previousDepth === undefined ? null : clampDepth(previousDepth);
-    const toToken = depthToken(to);
+// Zoom and depth changes are announced on a trailing debounce that accumulates:
+// the first press of a burst anchors `from`, later presses only move `to`, and
+// one announcement fires once the burst settles. Holding a key, and the 1%-step
+// zoom that would otherwise announce ten times across a range, collapse to a
+// single "from <start> to <final>". The render and the braille display are NOT
+// debounced — those update on every press so tactile feedback stays immediate;
+// only the spoken summary waits.
+const PARAMETER_SETTLE_MS = 150;
+const pendingParameterAnnouncements = {};
 
+function scheduleAccumulatedAnnouncement(key, from, to, emit) {
+    let pending = pendingParameterAnnouncements[key];
+    if (!pending) {
+        pending = pendingParameterAnnouncements[key] = { timer: null, from: null, to: null };
+    }
+    if (pending.timer === null) {
+        pending.from = from; // anchor once, at the start of the burst
+    } else {
+        clearTimeout(pending.timer);
+    }
+    pending.to = to;
+    pending.timer = setTimeout(() => {
+        pending.timer = null;
+        emit(pending.from, pending.to);
+    }, PARAMETER_SETTLE_MS);
+}
+
+// Build and speak a settled depth change. The first time depth is announced the
+// phrase carries its label; an immediately following depth change drops to just
+// the new value (see announceParameterValue). A burst that changed nothing still
+// speaks, since silence reads as a dropped key.
+function emitDepthAnnouncement(from, to) {
+    const toToken = depthToken(to);
     if (from === null || from === to) {
         // "surface"/"full depth" are self-identifying; a mid-range no-op keeps the label.
         const text = to === 0 || to === 100 ? toToken : `depth ${toToken}`;
         announceParameterValue('slice-depth', text, text);
         return;
     }
-
     const arrow = `${from}% to ${toToken}`;
     announceParameterValue('slice-depth', `depth from ${arrow}`, toToken);
 }
 
-// Zoom, same pattern. Zoom has no upper limit, so the only boundary is minimum.
-function announceZoomValue(zoomValue, previousZoom = null) {
-    const to = Number(zoomValue);
-    if (!Number.isFinite(to)) return;
-    const from = previousZoom === null || previousZoom === undefined ? null : Number(previousZoom);
-    const toPercent = formatZoomPercent(to);
+function announceDepthValue(depthValue, previousDepth = null) {
+    const to = clampDepth(depthValue);
+    if (to === null) return;
+    const from = previousDepth === null || previousDepth === undefined ? null : clampDepth(previousDepth);
+    scheduleAccumulatedAnnouncement('slice-depth', from, to, emitDepthAnnouncement);
+}
 
+// Zoom, same pattern. Zoom has no upper limit, so the only boundary is minimum.
+function emitZoomAnnouncement(from, to) {
+    const toPercent = formatZoomPercent(to);
     if (from === null || !Number.isFinite(from) || from === to) {
         const text = to <= MIN_ZOOM ? 'minimum zoom' : `zoom ${toPercent}`;
         announceParameterValue('zoom-level', text, text);
         return;
     }
-
     const arrow = `${formatZoomPercent(from)} to ${toPercent}`;
     announceParameterValue('zoom-level', `zooming from ${arrow}`, toPercent);
+}
+
+function announceZoomValue(zoomValue, previousZoom = null) {
+    const to = Number(zoomValue);
+    if (!Number.isFinite(to)) return;
+    const from = previousZoom === null || previousZoom === undefined ? null : Number(previousZoom);
+    scheduleAccumulatedAnnouncement('zoom-level', from, to, emitZoomAnnouncement);
 }
 
 // Speak firstText the first time this parameter is announced, then repeatText on
