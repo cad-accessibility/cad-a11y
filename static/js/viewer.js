@@ -321,13 +321,33 @@ async function sendStateToServer() {
 let currentSliceDepth = 50;
 let currentView = 'x+';
 let currentZoom = 0.0;
-let currentRenderMode = 'Shaded';
+let currentRenderMode = 'filled';
 let currentRepresentationMode = 'single';
 let currentMoveCamera = "none";
 let currentPrintView = false;
 let currentOutputDevice = 'monarch_hid';
-const renderModes = ['Shaded', 'Outline', 'Cut', 'X-Ray'];
-const representationModes = ['single', 'side-by-side', 'slice-graph-difference', 'slice-graph-column-count'];
+// Single source of truth for render modes.
+//   key        held in currentRenderMode and used as the radio `value`. Lowercase
+//              throughout, so a case mismatch cannot silently unselect the group.
+//   label      the only spelling the user ever sees or hears.
+//   wire       sent to the server and stored in render_stats.render_mode.
+//   projection paired with `wire` in the render request.
+const renderModes = [
+    { key: 'filled', label: 'Filled', wire: 'Filled', projection: 'orthographic' },
+    { key: 'outline', label: 'Outline', wire: 'Outline', projection: 'silhouette' },
+    { key: 'cut', label: 'Cut', wire: 'Cut', projection: 'orthographic' },
+    { key: 'xray', label: 'X-Ray', wire: 'x-ray', projection: 'x-ray' },
+];
+// Single source of truth for view modes. Same shape as renderModes, plus:
+//   sliceGraphMode  which slice-graph variant this mode selects, when it is one.
+// `wire` collapses both slice-graph variants to the one mode name the server
+// knows; the variant is a client-side concern.
+const representationModes = [
+    { key: 'single', label: 'Single (with scrollbar)', wire: 'single' },
+    { key: 'side-by-side', label: 'Side-by-Side', wire: 'side-by-side' },
+    { key: 'slice-graph-difference', label: 'Slice Graph (Difference)', wire: 'slice-graph', sliceGraphMode: 'difference' },
+    { key: 'slice-graph-column-count', label: 'Slice Graph (Slice Area)', wire: 'slice-graph', sliceGraphMode: 'column-count' },
+];
 let currentModel = "none";
 let sessionOwnedModels = new Set(); // filenames (with extension) owned by the current cookie session
 let builtinModelStems = null;       // stems from MODEL_DIR; null = not yet received, show all
@@ -352,12 +372,34 @@ let pendingInputSource = 'keyboard'; // consumed once per sendStateToServer call
 let modelLoadAnnouncement = null;
 let modelLoadAnnouncementSeq = 0;
 
+function renderModeByKey(modeKey) {
+    return renderModes.find(mode => mode.key === modeKey) || null;
+}
+
+/** User-facing name for a render mode key. Never leak the key itself to a person. */
+function renderModeLabel(modeKey = currentRenderMode) {
+    const mode = renderModeByKey(modeKey);
+    return mode ? mode.label : String(modeKey);
+}
+
+function representationModeByKey(modeKey) {
+    return representationModes.find(mode => mode.key === modeKey) || null;
+}
+
+/** User-facing name for a view mode key. Never leak the key itself to a person. */
+function representationModeLabel(modeKey = currentRepresentationMode) {
+    const mode = representationModeByKey(modeKey);
+    return mode ? mode.label : String(modeKey);
+}
+
 function isSliceGraphRepresentationMode(modeValue = currentRepresentationMode) {
-    return modeValue === 'slice-graph-difference' || modeValue === 'slice-graph-column-count';
+    const mode = representationModeByKey(modeValue);
+    return Boolean(mode) && mode.wire === 'slice-graph';
 }
 
 function getServerRepresentationMode(modeValue = currentRepresentationMode) {
-    return isSliceGraphRepresentationMode(modeValue) ? 'slice-graph' : modeValue;
+    const mode = representationModeByKey(modeValue);
+    return mode ? mode.wire : modeValue;
 }
 
 function beginModelLoadAnnouncement(modelLabel, source = 'selection') {
@@ -554,17 +596,8 @@ const outputDeviceRadios = () => document.querySelectorAll('input[name="output-d
 
 function getRenderPipelineParams(uiRenderMode) {
     // Single-mode UI mapping: projection is no longer a separate user control.
-    switch ((uiRenderMode || 'Shaded').toLowerCase()) {
-        case 'x-ray':
-            return { renderMode: 'x-ray', projectionMode: 'x-ray' };
-        case 'cut':
-            return { renderMode: 'Cut', projectionMode: 'orthographic' };
-        case 'outline':
-            return { renderMode: 'Outline', projectionMode: 'silhouette' };
-        case 'shaded':
-        default:
-            return { renderMode: 'Shaded', projectionMode: 'orthographic' };
-    }
+    const mode = renderModeByKey(uiRenderMode) || renderModes[0];
+    return { renderMode: mode.wire, projectionMode: mode.projection };
 }
 
 // Status bar elements
@@ -619,9 +652,9 @@ if (toastDurationSlider) {
 function refreshStatusBar() {
     if (sbView) sbView.textContent = currentView;
     if (sbDepth) sbDepth.textContent = currentSliceDepth + '%';
-    if (sbRenderMode) sbRenderMode.textContent = currentRenderMode;
+    if (sbRenderMode) sbRenderMode.textContent = renderModeLabel();
     if (sbZoom) sbZoom.textContent = Number(currentZoom).toFixed(1);
-    if (sbViewMode) sbViewMode.textContent = currentRepresentationMode;
+    if (sbViewMode) sbViewMode.textContent = representationModeLabel();
 }
 
 /** Show a brief on-screen toast and push text to the SR live region. */
@@ -752,7 +785,7 @@ function refreshViewInfoSummary() {
         currentSliceDepthInfo.textContent = `${currentSliceDepth}%`;
     }
     if (currentRenderModeInfo) {
-        currentRenderModeInfo.textContent = currentRenderMode;
+        currentRenderModeInfo.textContent = renderModeLabel();
     }
     if (currentZoomInfo) {
         currentZoomInfo.textContent = Number(currentZoom).toFixed(1);
@@ -774,9 +807,9 @@ function getStatusBarAnnouncement() {
     return [
         `View: ${readText(sbView, currentView)}`,
         `Depth: ${readText(sbDepth, `${currentSliceDepth}%`)}`,
-        `Render: ${readText(sbRenderMode, currentRenderMode)}`,
+        `Render: ${readText(sbRenderMode, renderModeLabel())}`,
         `Zoom: ${readText(sbZoom, Number(currentZoom).toFixed(1))}`,
-        `Layout: ${readText(sbViewMode, currentRepresentationMode)}`,
+        `Layout: ${readText(sbViewMode, representationModeLabel())}`,
         `Model: ${readText(sbModel)}`,
         `DotPad: ${readText(sbDotPad)}`,
     ].join('. ');
@@ -1141,11 +1174,11 @@ function updateHighFidelityPreview(data) {
     }
 
     highFidelityPreviewImg.src = 'data:image/png;base64,' + previewBase64;
-    highFidelityPreviewImg.alt = `Render preview: ${currentView} view, ${currentSliceDepth}% depth, ${currentRenderMode}`;
+    highFidelityPreviewImg.alt = `Render preview: ${currentView} view, ${currentSliceDepth}% depth, ${renderModeLabel()}`;
 
     const width = shape && shape.length > 1 ? shape[1] : '--';
     const height = shape && shape.length > 0 ? shape[0] : '--';
-    highFidelityPreviewMeta.textContent = `${currentView} · ${currentSliceDepth}% · ${currentRenderMode} · ${height}×${width}px`;
+    highFidelityPreviewMeta.textContent = `${currentView} · ${currentSliceDepth}% · ${renderModeLabel()} · ${height}×${width}px`;
 }
 
 async function exportCurrentSliceAsPng() {
@@ -1173,7 +1206,7 @@ async function exportCurrentSliceAsPng() {
 
         const downloadUrl = 'data:image/png;base64,' + data.image_base64;
         const sanitizedView = String(currentView).replace(/[^a-zA-Z0-9+-]/g, '_');
-        const filename = `slice_${sanitizedView}_${currentSliceDepth}_${currentRenderMode.toLowerCase()}.png`;
+        const filename = `slice_${sanitizedView}_${currentSliceDepth}_${currentRenderMode}.png`;
 
         const link = document.createElement('a');
         link.href = downloadUrl;
@@ -1220,12 +1253,36 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
     return oldDepth !== currentSliceDepth;
 }
 
+/**
+ * Check exactly the radio matching `currentValue`, and report when none does.
+ *
+ * A group whose values have drifted from the state they mirror ends up with
+ * every radio unchecked, because assigning `.checked` overrides the `checked`
+ * attribute in the markup. That is silent, survives review, and leaves the
+ * group announcing no selection. Say so instead.
+ */
+function syncRadioGroup(radios, currentValue, groupLabel) {
+    let matched = false;
+    radios.forEach(r => {
+        const isMatch = (r.value === currentValue);
+        r.checked = isMatch;
+        matched = matched || isMatch;
+    });
+    if (!matched && radios.length > 0) {
+        console.error(
+            `syncRadios: no ${groupLabel} radio has value "${currentValue}"; ` +
+            `the group is now showing no selection. Values: ` +
+            `${[...radios].map(r => r.value).join(', ')}`
+        );
+    }
+}
+
 // Helper to sync radios with current state
 function syncRadios() {
-    renderModeRadios().forEach(r => { r.checked = (r.value === currentRenderMode); });
-    viewModeRadios().forEach(r => { r.checked = (r.value === currentRepresentationMode); });
-    viewRadios().forEach(r => { r.checked = (r.value === currentView); });
-    outputDeviceRadios().forEach(r => { r.checked = (r.value === currentOutputDevice); });
+    syncRadioGroup(renderModeRadios(), currentRenderMode, 'render-mode');
+    syncRadioGroup(viewModeRadios(), currentRepresentationMode, 'view-mode');
+    syncRadioGroup(viewRadios(), currentView, 'view-select');
+    syncRadioGroup(outputDeviceRadios(), currentOutputDevice, 'output-device');
 }
 
 function switchOutputDevice(targetDevice) {
@@ -1326,11 +1383,11 @@ function updateTactilePreview(base64, shape) {
     const img = document.getElementById('tactile-display-img');
     const meta = document.getElementById('tactile-preview-meta');
     img.src = 'data:image/png;base64,' + base64;
-    img.alt = `Tactile display: ${currentView} view, ${currentSliceDepth}% depth, ${currentRenderMode}`;
+    img.alt = `Tactile display: ${currentView} view, ${currentSliceDepth}% depth, ${renderModeLabel()}`;
     if (shape) {
-        meta.textContent = `${currentView} \u00b7 ${currentSliceDepth}% \u00b7 ${currentRenderMode} \u00b7 ${shape[1]}\u00d7${shape[0]}px`;
+        meta.textContent = `${currentView} \u00b7 ${currentSliceDepth}% \u00b7 ${renderModeLabel()} \u00b7 ${shape[1]}\u00d7${shape[0]}px`;
     } else {
-        meta.textContent = `${currentView} \u00b7 ${currentSliceDepth}% \u00b7 ${currentRenderMode}`;
+        meta.textContent = `${currentView} \u00b7 ${currentSliceDepth}% \u00b7 ${renderModeLabel()}`;
     }
 }
 
@@ -1712,8 +1769,12 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
 
 // Switch to a specific render mode
 function switchToRenderMode(targetMode, shouldAnnounce = true) {
+    if (!renderModeByKey(targetMode)) {
+        console.error(`switchToRenderMode: unknown render mode ${targetMode}`);
+        return;
+    }
     if (currentRenderMode === targetMode) {
-        if (shouldAnnounce) announceStatus(`already ${targetMode.toLowerCase()}`);
+        if (shouldAnnounce) announceStatus(`already ${renderModeLabel(targetMode)}`);
         return;
     }
     const previousMode = currentRenderMode;
@@ -1721,7 +1782,7 @@ function switchToRenderMode(targetMode, shouldAnnounce = true) {
     refreshViewInfoSummary();
     updateButtonLabels();
     syncRadios();
-    if (shouldAnnounce) announce(`${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
+    if (shouldAnnounce) announce(`${renderModeLabel(previousMode)} to ${renderModeLabel()}`);
 
     // Send state to server
     sendStateToServer();
@@ -1729,23 +1790,26 @@ function switchToRenderMode(targetMode, shouldAnnounce = true) {
 }
 
 function cycleRenderMode(shouldAnnounce = true) {
-    const currentIndex = renderModes.indexOf(currentRenderMode);
+    const currentIndex = renderModes.findIndex(mode => mode.key === currentRenderMode);
     const nextIndex = (currentIndex + 1) % renderModes.length;
-    switchToRenderMode(renderModes[nextIndex], shouldAnnounce);
+    switchToRenderMode(renderModes[nextIndex].key, shouldAnnounce);
 }
 
 function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
+    const mode = representationModeByKey(targetMode);
+    if (!mode) {
+        console.error(`switchToRepresentationMode: unknown view mode ${targetMode}`);
+        return;
+    }
     if (currentRepresentationMode === targetMode) {
-        if (shouldAnnounce) announceStatus(`already ${targetMode.toLowerCase()}`);
+        if (shouldAnnounce) announceStatus(`already ${representationModeLabel(targetMode)}`);
         return;
     }
     const previousMode = currentRepresentationMode;
     const enteringSliceGraph = !isSliceGraphRepresentationMode(previousMode) && isSliceGraphRepresentationMode(targetMode);
 
-    if (targetMode === 'slice-graph-difference') {
-        sliceGraphMode = 'difference';
-    } else if (targetMode === 'slice-graph-column-count') {
-        sliceGraphMode = 'column-count';
+    if (mode.sliceGraphMode) {
+        sliceGraphMode = mode.sliceGraphMode;
     }
 
     currentRepresentationMode = targetMode;
@@ -1759,7 +1823,7 @@ function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
     updateSliceGraphModeUI();
     updateSideBySideAxisLabels();
     syncRadios();
-    if (shouldAnnounce) announce(`${previousMode.toLowerCase()} to ${currentRepresentationMode.toLowerCase()}`);
+    if (shouldAnnounce) announce(`${representationModeLabel(previousMode)} to ${representationModeLabel()}`);
 
     // Send state to server
     sendStateToServer();
@@ -1767,9 +1831,9 @@ function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
 }
 
 function cycleRepresentationMode(shouldAnnounce = true) {
-    const currentIndex = representationModes.indexOf(currentRepresentationMode);
+    const currentIndex = representationModes.findIndex(mode => mode.key === currentRepresentationMode);
     const nextIndex = (currentIndex + 1) % representationModes.length;
-    switchToRepresentationMode(representationModes[nextIndex], shouldAnnounce);
+    switchToRepresentationMode(representationModes[nextIndex].key, shouldAnnounce);
 }
 
 // Announce a change: adds to visible history, shows toast, and speaks via SR live region.
@@ -2210,7 +2274,7 @@ document.addEventListener('keydown', function(e) {
             {
                 const previousMode = currentRenderMode;
                 cycleRenderMode(false);
-                announce(`Render mode changed: ${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
+                announce(`Render mode changed: ${renderModeLabel(previousMode)} to ${renderModeLabel()}`);
             }
             break;
 
@@ -2219,7 +2283,7 @@ document.addEventListener('keydown', function(e) {
             {
                 const previousViewMode = currentRepresentationMode;
                 cycleRepresentationMode(false);
-                announce(`Display mode changed: ${previousViewMode} to ${currentRepresentationMode}`);
+                announce(`Display mode changed: ${representationModeLabel(previousViewMode)} to ${representationModeLabel()}`);
             }
             break;
 

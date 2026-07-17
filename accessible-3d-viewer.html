@@ -34,7 +34,7 @@
             <span class="status-separator" aria-hidden="true">|</span>
             <span class="status-item">
                 <span class="status-label">Render<span aria-hidden="true">:</span></span>
-                <span class="status-value" id="sb-render-mode">Shaded</span>
+                <span class="status-value" id="sb-render-mode">Filled</span>
             </span>
             <span class="status-separator" aria-hidden="true">|</span>
             <span class="status-item">
@@ -44,7 +44,7 @@
             <span class="status-separator" aria-hidden="true">|</span>
             <span class="status-item">
                 <span class="status-label">Layout<span aria-hidden="true">:</span></span>
-                <span class="status-value" id="sb-view-mode">single</span>
+                <span class="status-value" id="sb-view-mode">Single (with scrollbar)</span>
             </span>
             <span class="status-separator" aria-hidden="true">|</span>
             <span class="status-item">
@@ -153,25 +153,25 @@
             <section class="section" aria-labelledby="render-heading">
                 <h2 id="render-heading">Rendering Mode</h2>
                 <div id="render-help" class="help-text">
-                    Choose one top-level mode: Shaded, Outline, Cut, or X-Ray
+                    Choose one top-level mode: Filled, Outline, Cut, or X-Ray
                 </div>
                 <div aria-describedby="render-help">
                     <fieldset role="radiogroup" aria-labelledby="render-heading" class="top-mode-row">
                         <legend class="sr-only">Rendering Mode Options</legend>
                         <label>
-                            <input type="radio" name="render-mode" id="render-mode-shaded" value="Shaded" checked>
+                            <input type="radio" name="render-mode" id="render-mode-filled" value="filled" checked>
                             Filled
                         </label>
                         <label>
-                            <input type="radio" name="render-mode" id="render-mode-outline" value="Outline">
+                            <input type="radio" name="render-mode" id="render-mode-outline" value="outline">
                             Outline
                         </label>
                         <label>
-                            <input type="radio" name="render-mode" id="render-mode-cut" value="Cut">
+                            <input type="radio" name="render-mode" id="render-mode-cut" value="cut">
                             Cut
                         </label>
                         <label>
-                            <input type="radio" name="render-mode" id="render-mode-xray" value="X-Ray">
+                            <input type="radio" name="render-mode" id="render-mode-xray" value="xray">
                             X-Ray
                         </label>
                     </fieldset>
@@ -413,7 +413,7 @@
                 <div id="view-info">
                     <span id="current-view" class="sr-only">x+</span>
                     <span id="current-slice-depth-info" class="sr-only">50%</span>
-                    <span id="current-render-mode-info" class="sr-only">Shaded</span>
+                    <span id="current-render-mode-info" class="sr-only">Filled</span>
                     <span id="current-zoom-info" class="sr-only">0.0</span>
                     <span id="current-bbox-dimensions-info" class="sr-only">--</span>
                 </div>
