@@ -1512,14 +1512,16 @@ def ingest_model():
     workshop_url = f"{base}/workshop?model={quote(stem)}"
 
     # Single-station conveniences are opt-in so a shared braille station is never
-    # yanked away from the model it is currently showing.
+    # yanked away from the model it is currently showing. The host pop-up needs the
+    # client to ask (open=1) *and* the host to allow it (INGEST_OPEN_ON_HOST), so a
+    # remote caller cannot open windows on the server machine on its own.
     if request.args.get("open") == "1" or request.args.get("open_here") == "1":
         _push_sse({"load_model": stem})
-    if os.getenv("INGEST_OPEN_ON_HOST", "0") == "1":
-        try:
-            webbrowser.open(f"http://localhost:6969/workshop?model={quote(stem)}", new=1)
-        except Exception as err:
-            _log(f"INGEST_OPEN_ON_HOST failed: {err}")
+        if os.getenv("INGEST_OPEN_ON_HOST", "0") == "1":
+            try:
+                webbrowser.open(f"http://localhost:6969/workshop?model={quote(stem)}", new=1)
+            except Exception as err:
+                _log(f"INGEST_OPEN_ON_HOST failed: {err}")
 
     _log(f"Model ingested: {filename} → index {new_index} (code {code or 'none'})", force=True)
 
