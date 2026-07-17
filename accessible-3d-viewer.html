@@ -19,7 +19,10 @@
             STATUS: single terse line for braille display users.
             A braille reader sees: "x+ 50% Outline z:0.0 single cube"
             Sighted users see the full styled bar.
-            SR live region (polite) so it doesn't interrupt reading.
+            Not a live region: it updates silently and is read on demand, either by
+            the reader landing on this labelled region or via the "." shortcut, which
+            speaks the whole line through the announcement channel. Making it live
+            would re-announce on every state change and flood.
         -->
         <div id="status-bar" role="region" aria-label="Viewer status">
             <span class="status-item">

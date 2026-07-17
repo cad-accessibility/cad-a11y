@@ -147,19 +147,13 @@
                     }
 
                     // Announce the settled depth once after the slider has been idle.
+                    // viewer.js loads first as a classic script, so announceDepthValue
+                    // is defined by the time this fires; the guard is just defence
+                    // against a failed script load.
                     clearTimeout(depthSettleTimer);
                     depthSettleTimer = setTimeout(() => {
-                        if (lastHardwareDepth !== null && typeof announce === 'function') {
-                            if (typeof announceDepthValue === 'function') {
-                                announceDepthValue(lastHardwareDepth);
-                            } else if (typeof announceParameterValue === 'function') {
-                                announceParameterValue('slice-depth', 'Slice depth', `${lastHardwareDepth}%`);
-                            } else {
-                                const msg = typeof depthAnnouncement === 'function'
-                                    ? depthAnnouncement(lastHardwareDepth)
-                                    : `${lastHardwareDepth}%`;
-                                announce(msg);
-                            }
+                        if (lastHardwareDepth !== null && typeof announceDepthValue === 'function') {
+                            announceDepthValue(lastHardwareDepth);
                         }
                     }, DEPTH_SETTLE_MS);
                 }
