@@ -68,13 +68,19 @@
             </span>
         </div>
 
-        <!-- SR live regions: two-slot swap pattern. Alternating which element receives
-             text guarantees AT sees a fresh DOM mutation for every announcement,
-             including identical consecutive messages, without any clear+setTimeout
-             race. aria-live="assertive" so Braille displays and screen readers surface
-             state changes immediately even while the user is actively pressing keys. -->
-        <div id="sr-live-a" role="alert" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
-        <div id="sr-live-b" role="alert" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
+        <!-- SR live regions: two politeness tiers, each a two-slot swap.
+             Alternating which element in a tier receives text guarantees AT sees a
+             fresh DOM mutation for every announcement, including identical consecutive
+             messages, without any clear+setTimeout race. That matters here: a repeated
+             key at a limit must still speak, because silence reads as a dropped press.
+             Polite is the default; assertive interrupts and is reserved for conditions
+             the user did not cause and must act on (see announce/announceAlert in
+             viewer.js). No role="alert": it is redundant with aria-live and
+             double-speaks on some AT, and the polite tier could not carry it anyway. -->
+        <div id="sr-live-polite-a" aria-live="polite" aria-atomic="true" class="sr-only"></div>
+        <div id="sr-live-polite-b" aria-live="polite" aria-atomic="true" class="sr-only"></div>
+        <div id="sr-live-assertive-a" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
+        <div id="sr-live-assertive-b" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
 
         <!-- Visual toast for sighted users (hidden from SR – the live region above handles it) -->
         <div id="announcement-toast" aria-hidden="true"></div>

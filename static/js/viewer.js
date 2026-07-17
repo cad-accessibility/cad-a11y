@@ -237,7 +237,7 @@ async function sendStateToServer() {
             ? { ...modelLoadAnnouncement }
             : null;
         if (activeModelLoadTask) {
-            announceStatus(`${activeModelLoadTask.label}: generating render.`);
+            announce(`${activeModelLoadTask.label}: generating render.`);
         }
         pendingInputSource = 'keyboard'; // reset to default after consuming
 
@@ -276,7 +276,7 @@ async function sendStateToServer() {
             if (data.image_base64) {
                 updateTactilePreview(data.image_base64, data.image_shape);
                 if (isActiveModelLoadTask(activeModelLoadTask)) {
-                    announceStatus(`${activeModelLoadTask.label}: tactile preview ready.`);
+                    announce(`${activeModelLoadTask.label}: tactile preview ready.`);
                     announce(`${activeModelLoadTask.label} loaded.`);
                     clearModelLoadTask(activeModelLoadTask);
                 }
@@ -307,7 +307,7 @@ async function sendStateToServer() {
             // only sustained, confirmed outages interrupt the user.
             console.warn('Render request failed:', error.message);
             if (isActiveModelLoadTask(activeModelLoadTask)) {
-                announce(`Processing failed for ${activeModelLoadTask.label}.`);
+                announceAlert(`Processing failed for ${activeModelLoadTask.label}.`);
                 clearModelLoadTask(activeModelLoadTask);
             }
         });
@@ -625,14 +625,20 @@ function formatCenter2(value) {
 
 // Toast / live-region elements
 const announcementToast = document.getElementById('announcement-toast');
-// Two-slot live-region swap: toggling which element receives text each time
-// guarantees AT sees a fresh DOM mutation for every announcement, including
-// consecutive identical messages, without any clear+setTimeout race.
-const srLiveSlots = [
-    document.getElementById('sr-live-a'),
-    document.getElementById('sr-live-b')
-];
-let srLiveActiveSlot = 0;
+// Two politeness tiers, each a two-slot swap. Toggling which element in a tier
+// receives text guarantees AT sees a fresh DOM mutation for every announcement,
+// including consecutive identical messages, without any clear+setTimeout race.
+const srLiveTiers = {
+    polite: [
+        document.getElementById('sr-live-polite-a'),
+        document.getElementById('sr-live-polite-b'),
+    ],
+    assertive: [
+        document.getElementById('sr-live-assertive-a'),
+        document.getElementById('sr-live-assertive-b'),
+    ],
+};
+const srLiveActiveSlot = { polite: 0, assertive: 0 };
 const toastDurationSlider = document.getElementById('toast-duration-slider');
 const toastDurationValue = document.getElementById('toast-duration-value');
 let toastDurationSec = 3;  // default 3 seconds; 0 = off
@@ -657,15 +663,17 @@ function refreshStatusBar() {
     if (sbViewMode) sbViewMode.textContent = representationModeLabel();
 }
 
-/** Show a brief on-screen toast and push text to the SR live region. */
-function showToast(message) {
-    // Two-slot swap: write to the next slot and clear the previous one.
-    // AT always sees a genuine new-content mutation regardless of whether the
-    // message is identical to the last one, and there is no setTimeout race to
-    // lose when keys are pressed in rapid succession.
-    srLiveActiveSlot = 1 - srLiveActiveSlot;
-    const activeEl = srLiveSlots[srLiveActiveSlot];
-    const idleEl   = srLiveSlots[1 - srLiveActiveSlot];
+/** Show a brief on-screen toast and push text to the SR live region for a tier. */
+function showToast(message, politeness = 'polite') {
+    // Two-slot swap within the chosen tier: write to the next slot and clear the
+    // previous one. AT always sees a genuine new-content mutation regardless of
+    // whether the message is identical to the last one, and there is no setTimeout
+    // race to lose when keys are pressed in rapid succession.
+    const tier = srLiveTiers[politeness] ? politeness : 'polite';
+    const slots = srLiveTiers[tier];
+    srLiveActiveSlot[tier] = 1 - srLiveActiveSlot[tier];
+    const activeEl = slots[srLiveActiveSlot[tier]];
+    const idleEl   = slots[1 - srLiveActiveSlot[tier]];
     if (activeEl) activeEl.textContent = message;
     if (idleEl)   idleEl.textContent   = '';
 
@@ -686,14 +694,14 @@ function depthAnnouncement(pct) {
     return `depth ${pct}%`;
 }
 
-function announceParameterWithRepeatRule(parameterKey, parameterLabel, currentValueToken, verboseValueText, repeatValueText, isUrgent = true) {
+function announceParameterWithRepeatRule(parameterKey, parameterLabel, currentValueToken, verboseValueText, repeatValueText) {
     const normalizedKey = String(parameterKey || '').trim().toLowerCase();
     const normalizedToken = String(currentValueToken ?? '').trim();
     const previousToken = normalizedKey ? lastAnnouncedParameterValues.get(normalizedKey) : undefined;
     const useRepeatText = normalizedKey !== '' && normalizedToken !== '' && previousToken === normalizedToken;
     const valueText = useRepeatText ? repeatValueText : verboseValueText;
 
-    announceParameterValue(parameterKey, parameterLabel, valueText, isUrgent);
+    announceParameterValue(parameterKey, parameterLabel, valueText);
 
     if (normalizedKey !== '' && normalizedToken !== '') {
         lastAnnouncedParameterValues.set(normalizedKey, normalizedToken);
@@ -732,7 +740,7 @@ function announceDepthValue(depthValue, previousDepth = null) {
     );
 }
 
-function announceZoomValue(zoomValue, previousZoom = null, isUrgent = true) {
+function announceZoomValue(zoomValue, previousZoom = null) {
     const normalizedZoom = Number(zoomValue);
     if (!Number.isFinite(normalizedZoom)) {
         return;
@@ -759,12 +767,11 @@ function announceZoomValue(zoomValue, previousZoom = null, isUrgent = true) {
         'Zoom level',
         percentText,
         verboseText,
-        percentText,
-        isUrgent
+        percentText
     );
 }
 
-function announceParameterValue(parameterKey, parameterLabel, valueText, isUrgent = true) {
+function announceParameterValue(parameterKey, parameterLabel, valueText) {
     const normalizedKey = String(parameterKey || '').trim().toLowerCase();
     const normalizedLabel = String(parameterLabel || '').trim();
     const normalizedValue = String(valueText || '').trim();
@@ -777,7 +784,7 @@ function announceParameterValue(parameterKey, parameterLabel, valueText, isUrgen
         lastAnnouncedParameterKey = normalizedKey;
     }
 
-    announce(message, isUrgent);
+    announce(message);
 }
 
 function refreshViewInfoSummary() {
@@ -1184,7 +1191,7 @@ function updateHighFidelityPreview(data) {
 async function exportCurrentSliceAsPng() {
     try {
         exportSliceSvgBtn.disabled = true;
-        announceStatus('rendering high-fidelity export');
+        announce('rendering high-fidelity export');
 
         const response = await fetch(`${SERVER_URL}/render/export-source`, {
             method: 'POST',
@@ -1215,10 +1222,10 @@ async function exportCurrentSliceAsPng() {
         link.click();
         document.body.removeChild(link);
 
-        announceStatus('slice exported as png');
+        announce('slice exported as png');
     } catch (error) {
         console.warn('Failed to export slice as PNG:', error);
-        announceStatus('High-fidelity export failed');
+        announceAlert('High-fidelity export failed');
     } finally {
         exportSliceSvgBtn.disabled = false;
     }
@@ -1287,13 +1294,13 @@ function syncRadios() {
 
 function switchOutputDevice(targetDevice) {
     if (currentOutputDevice === targetDevice) {
-        announceStatus(`already using ${targetDevice}`);
+        announce(`already using ${targetDevice}`);
         return;
     }
 
     currentOutputDevice = targetDevice;
     syncRadios();
-    announceStatus(`output device ${targetDevice}`);
+    announce(`output device ${targetDevice}`);
     sendStateToServer();
     return true;
 }
@@ -1623,11 +1630,11 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             sendStateToServer();
         } else {
             statusEl.textContent = `Upload failed: ${data.message}`;
-            announce(`Upload failed: ${data.message}`);
+            announceAlert(`Upload failed: ${data.message}`);
         }
     } catch (err) {
         statusEl.textContent = `Upload error: ${err.message}`;
-        announce(`Upload error: ${err.message}`);
+        announceAlert(`Upload error: ${err.message}`);
     } finally {
         label.removeAttribute('aria-disabled');
         this.disabled = false;
@@ -1728,7 +1735,7 @@ setInterval(() => {
             console.warn(`Poll failed (${pollFailCount}/${POLL_FAIL_THRESHOLD}):`, error.message);
             if (pollFailCount >= POLL_FAIL_THRESHOLD && serverConnected !== false) {
                 serverConnected = false;
-                announce('Server unavailable — rendering paused.');
+                announceAlert('Server unavailable — rendering paused.');
             }
         });
 }, 5000);
@@ -1774,7 +1781,7 @@ function switchToRenderMode(targetMode, shouldAnnounce = true) {
         return;
     }
     if (currentRenderMode === targetMode) {
-        if (shouldAnnounce) announceStatus(`already ${renderModeLabel(targetMode)}`);
+        if (shouldAnnounce) announce(`already ${renderModeLabel(targetMode)}`);
         return;
     }
     const previousMode = currentRenderMode;
@@ -1802,7 +1809,7 @@ function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
         return;
     }
     if (currentRepresentationMode === targetMode) {
-        if (shouldAnnounce) announceStatus(`already ${representationModeLabel(targetMode)}`);
+        if (shouldAnnounce) announce(`already ${representationModeLabel(targetMode)}`);
         return;
     }
     const previousMode = currentRepresentationMode;
@@ -1837,20 +1844,21 @@ function cycleRepresentationMode(shouldAnnounce = true) {
 }
 
 // Announce a change: adds to visible history, shows toast, and speaks via SR live region.
-function announce(message, isUrgent = true) {
+function emitAnnouncement(message, politeness, isAlert) {
     const normalizedMessage = String(message);
 
     // Always refresh the status bar so it reflects the latest state.
     refreshStatusBar();
 
-    // Show the toast + push to screen-reader live region.
-    showToast(normalizedMessage);
+    // Show the toast + push to the screen-reader live region for this tier.
+    showToast(normalizedMessage, politeness);
 
-    // Append to visible history log.
+    // Append to visible history log; alerts are weighted so the log distinguishes
+    // an interrupting condition from routine state changes.
     if (announcementHistory) {
         if (normalizedMessage !== lastAnnouncementMessage) {
             const item = document.createElement('li');
-            if (isUrgent) item.style.fontWeight = '600';
+            if (isAlert) item.style.fontWeight = '600';
 
             const time = new Date();
             const timestamp = document.createElement('span');
@@ -1870,9 +1878,22 @@ function announce(message, isUrgent = true) {
     lastAnnouncementMessage = normalizedMessage;
 }
 
-// Announce status information (same mechanism, just non-urgent weight).
-function announceStatus(message) {
-    announce(message, false);
+/**
+ * Announce a state change politely: it waits for the user to pause rather than
+ * interrupting. This is the right default for anything the user just did, since
+ * they already know it happened and only need the result.
+ */
+function announce(message) {
+    emitAnnouncement(message, 'polite', false);
+}
+
+/**
+ * Announce assertively, interrupting whatever the AT is currently speaking.
+ * Reserve for conditions the user did not initiate and must act on: a lost
+ * server or device, a failed render, upload, or export.
+ */
+function announceAlert(message) {
+    emitAnnouncement(message, 'assertive', true);
 }
 
 function announceDepthShortcut(shortcutLabel, previousDepth, depthValue) {
@@ -2007,7 +2028,7 @@ zoomInput.addEventListener('change', function() {
     clearTimeout(zoomDebounceTimer);
     if (!Number.isFinite(this.valueAsNumber)) {
         this.value = currentZoom.toFixed(1);
-        announceStatus('zoom value unchanged');
+        announce('zoom value unchanged');
         return;
     }
     pendingInputSource = 'ui';
@@ -2048,7 +2069,7 @@ sliceGraphLockBtn.addEventListener('click', function() {
 
 sliceGraphRefreshBtn.addEventListener('click', function() {
     if (!isSliceGraphRepresentationMode()) {
-        announceStatus('refresh only available in slice-graph mode');
+        announce('refresh only available in slice-graph mode');
         return;
     }
     captureSliceGraphAnchor(true);
@@ -2322,7 +2343,7 @@ document.addEventListener('keydown', function(e) {
         case '.':
             // Read the full top-of-page status bar.
             e.preventDefault();
-            announceStatus(getStatusBarAnnouncement());
+            announce(getStatusBarAnnouncement());
             break;
 
         case 'g':
