@@ -498,17 +498,17 @@
                         id="debug-pipeline-toggle-btn"
                         class="debug-panel-toggle"
                         type="button"
-                        aria-expanded="true"
+                        aria-expanded="false"
                         aria-controls="debug-pipeline-content"
                     >
-                        Hide Debug Pipeline
+                        Show Debug Pipeline
                     </button>
                 </div>
-                <div id="debug-pipeline-content" class="debug-panel-content">
+                <div id="debug-pipeline-content" class="debug-panel-content" hidden>
                     <div class="help-text" id="debug-pipeline-summary">
                         Waiting for render debug data...
                     </div>
-                    <div id="debug-stage-list" class="debug-stage-list" aria-live="assertive"></div>
+                    <div id="debug-stage-list" class="debug-stage-list"></div>
                 </div>
             </section>
         </main>

@@ -951,14 +951,14 @@ function toggleDebugPipelineVisibility() {
 }
 
 function initializeDebugPipelineVisibility() {
-    let isVisible = true;
+    // Hidden by default: the panel is a developer diagnostic, and while visible it
+    // rebuilt a JSON dump on every render. Only a saved, explicit choice to show it
+    // ('1') brings it back; a first visit, a prior hide, or no storage stays hidden.
+    let isVisible = false;
     try {
-        const saved = window.localStorage.getItem(DEBUG_PIPELINE_VISIBILITY_KEY);
-        if (saved === '0') {
-            isVisible = false;
-        }
+        isVisible = window.localStorage.getItem(DEBUG_PIPELINE_VISIBILITY_KEY) === '1';
     } catch (_) {
-        // Keep default visible if persistence is unavailable.
+        // Keep default hidden if persistence is unavailable.
     }
     setDebugPipelineVisible(isVisible);
 }
