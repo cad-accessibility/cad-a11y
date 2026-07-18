@@ -36,8 +36,11 @@
             }
             setStatus(`Connected: ${monarchHidDevice.productName || 'Monarch'}`);
             disconnectBtn.disabled = false;
+            // Only flip the connection flag; leave the output-device radio as the
+            // user set it. getEffectiveOutputDevice() already routes to the Monarch
+            // when it's connected and the user's choice is 'monarch' or 'auto', so
+            // connecting shouldn't override an explicit selection.
             if (typeof setMonarchHidConnected === 'function') setMonarchHidConnected(true);
-            if (typeof switchOutputDevice === 'function') switchOutputDevice('monarch');
             if (typeof window.announce === 'function') window.announce('Monarch connected via USB.');
             // Send current model state immediately so the display shows the model on connect.
             if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
