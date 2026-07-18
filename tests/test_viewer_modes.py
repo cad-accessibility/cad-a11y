@@ -22,8 +22,6 @@ from pathlib import Path
 
 import pytest
 
-from app.cad_comparison_lib import CADComparisonRenderer
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VIEWER_JS = REPO_ROOT / "static" / "js" / "viewer.js"
 VIEWER_HTML = REPO_ROOT / "accessible-3d-viewer.html"
@@ -188,6 +186,11 @@ def test_wire_values_are_accepted_by_the_server(js_source, _radio_name, js_table
 
     Nothing else checks this JS-to-Python contract.
     """
+    # Imported lazily: app.cad_comparison_lib pulls in the heavy optional renderer
+    # deps (pythonocc-core via OCC.Core). Skipping here keeps the JS/HTML consistency
+    # tests in this file runnable in a pip-only environment without that stack.
+    CADComparisonRenderer = pytest.importorskip("app.cad_comparison_lib").CADComparisonRenderer
+
     entries = _js_mode_entries(js_source, js_table)
     wires = [entry["wire"] for entry in entries if "wire" in entry]
     assert wires, f"{js_table} has no wire values to check"

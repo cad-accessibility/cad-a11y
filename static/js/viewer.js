@@ -739,7 +739,7 @@ function emitDepthAnnouncement(from, to) {
         announceParameterValue('slice-depth', text, text);
         return;
     }
-    const arrow = `${from}% to ${toToken}`;
+    const arrow = `${depthToken(from)} to ${toToken}`;
     announceParameterValue('slice-depth', `depth from ${arrow}`, toToken);
 }
 
