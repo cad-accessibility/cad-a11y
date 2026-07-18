@@ -10,7 +10,7 @@ scikit-image
 
 # CAD / geometry stack
 trimesh>=4.12.2
-shapely>=2.0.0
+shapely>=2.1.2
 cascadio
 networkx
 meshlib
