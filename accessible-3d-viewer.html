@@ -19,7 +19,10 @@
             STATUS: single terse line for braille display users.
             A braille reader sees: "x+ 50% Outline z:0.0 single cube"
             Sighted users see the full styled bar.
-            SR live region (polite) so it doesn't interrupt reading.
+            Not a live region: it updates silently and is read on demand, either by
+            the reader landing on this labelled region or via the "." shortcut, which
+            speaks the whole line through the announcement channel. Making it live
+            would re-announce on every state change and flood.
         -->
         <div id="status-bar" role="region" aria-label="Viewer status">
             <span class="status-item">
@@ -34,7 +37,7 @@
             <span class="status-separator" aria-hidden="true">|</span>
             <span class="status-item">
                 <span class="status-label">Render<span aria-hidden="true">:</span></span>
-                <span class="status-value" id="sb-render-mode">Shaded</span>
+                <span class="status-value" id="sb-render-mode">Filled</span>
             </span>
             <span class="status-separator" aria-hidden="true">|</span>
             <span class="status-item">
@@ -44,7 +47,7 @@
             <span class="status-separator" aria-hidden="true">|</span>
             <span class="status-item">
                 <span class="status-label">Layout<span aria-hidden="true">:</span></span>
-                <span class="status-value" id="sb-view-mode">single</span>
+                <span class="status-value" id="sb-view-mode">Single (with scrollbar)</span>
             </span>
             <span class="status-separator" aria-hidden="true">|</span>
             <span class="status-item">
@@ -68,13 +71,19 @@
             </span>
         </div>
 
-        <!-- SR live regions: two-slot swap pattern. Alternating which element receives
-             text guarantees AT sees a fresh DOM mutation for every announcement,
-             including identical consecutive messages, without any clear+setTimeout
-             race. aria-live="assertive" so Braille displays and screen readers surface
-             state changes immediately even while the user is actively pressing keys. -->
-        <div id="sr-live-a" role="alert" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
-        <div id="sr-live-b" role="alert" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
+        <!-- SR live regions: two politeness tiers, each a two-slot swap.
+             Alternating which element in a tier receives text guarantees AT sees a
+             fresh DOM mutation for every announcement, including identical consecutive
+             messages, without any clear+setTimeout race. That matters here: a repeated
+             key at a limit must still speak, because silence reads as a dropped press.
+             Polite is the default; assertive interrupts and is reserved for conditions
+             the user did not cause and must act on (see announce/announceAlert in
+             viewer.js). No role="alert": it is redundant with aria-live and
+             double-speaks on some AT, and the polite tier could not carry it anyway. -->
+        <div id="sr-live-polite-a" aria-live="polite" aria-atomic="true" class="sr-only"></div>
+        <div id="sr-live-polite-b" aria-live="polite" aria-atomic="true" class="sr-only"></div>
+        <div id="sr-live-assertive-a" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
+        <div id="sr-live-assertive-b" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
 
         <!-- Visual toast for sighted users (hidden from SR – the live region above handles it) -->
         <div id="announcement-toast" aria-hidden="true"></div>
@@ -153,25 +162,25 @@
             <section class="section" aria-labelledby="render-heading">
                 <h2 id="render-heading">Rendering Mode</h2>
                 <div id="render-help" class="help-text">
-                    Choose one top-level mode: Shaded, Outline, Cut, or X-Ray
+                    Choose one top-level mode: Filled, Outline, Cut, or X-Ray
                 </div>
                 <div aria-describedby="render-help">
                     <fieldset role="radiogroup" aria-labelledby="render-heading" class="top-mode-row">
                         <legend class="sr-only">Rendering Mode Options</legend>
                         <label>
-                            <input type="radio" name="render-mode" id="render-mode-shaded" value="Filled" checked>
+                            <input type="radio" name="render-mode" id="render-mode-filled" value="filled" checked>
                             Filled
                         </label>
                         <label>
-                            <input type="radio" name="render-mode" id="render-mode-outline" value="Outline">
+                            <input type="radio" name="render-mode" id="render-mode-outline" value="outline">
                             Outline
                         </label>
                         <label>
-                            <input type="radio" name="render-mode" id="render-mode-cut" value="Cut">
+                            <input type="radio" name="render-mode" id="render-mode-cut" value="cut">
                             Cut
                         </label>
                         <label>
-                            <input type="radio" name="render-mode" id="render-mode-xray" value="x-ray">
+                            <input type="radio" name="render-mode" id="render-mode-xray" value="xray">
                             X-Ray
                         </label>
                     </fieldset>
@@ -252,7 +261,7 @@
                         Graph Mode: Difference
                     </button>
                 </div>
-                <div class="help-text" id="slice-graph-lock-status" aria-live="assertive">Graph lock ON.</div>
+                <div class="help-text" id="slice-graph-lock-status">Graph lock ON.</div>
 
                 <fieldset style="margin-top: 8px;">
                     <legend class="sr-only">Output device</legend>
@@ -284,7 +293,7 @@
                     <input type="file" id="upload-model-input" accept=".stl,.step,.STEP"
                         aria-label="Upload an STL or STEP model file">
                     <label for="upload-model-input" id="upload-model-label">Upload model…</label>
-                    <div id="upload-model-status" class="help-text" aria-live="assertive" aria-atomic="true"></div>
+                    <div id="upload-model-status" class="help-text"></div>
                 </div>
             </section>
 
@@ -297,7 +306,7 @@
                     <button type="button" id="monarch-hid-connect-btn">Connect USB</button>
                     <button type="button" id="monarch-hid-disconnect-btn" disabled>Disconnect</button>
                 </div>
-                <div id="monarch-hid-status" role="status" aria-live="assertive" aria-atomic="true" class="help-text">
+                <div id="monarch-hid-status" class="help-text">
                     Not connected.
                 </div>
             </section>
@@ -311,7 +320,7 @@
                     <button type="button" id="trinkey-connect-btn">Connect USB</button>
                     <button type="button" id="trinkey-disconnect-btn" disabled>Disconnect</button>
                 </div>
-                <div id="trinkey-status" role="status" aria-live="assertive" aria-atomic="true" class="help-text">
+                <div id="trinkey-status" class="help-text">
                     Not connected.
                 </div>
                 <div class="help-text">Depth: <span id="trinkey-depth-value">--</span></div>
@@ -326,7 +335,7 @@
                     <button type="button" id="witmotion-connect-btn">Connect BLE</button>
                     <button type="button" id="witmotion-disconnect-btn" disabled>Disconnect</button>
                 </div>
-                <div id="witmotion-status" role="status" aria-live="assertive" aria-atomic="true" class="help-text">
+                <div id="witmotion-status" class="help-text">
                     Not connected.
                 </div>
                 <div class="help-text">View: <span id="witmotion-view-value">--</span></div>
@@ -343,7 +352,7 @@
                     <button type="button" id="dotpad-scan-usb-btn">Connect USB</button>
                     <button type="button" id="dotpad-disconnect-btn" disabled>Disconnect</button>
                 </div>
-                <div id="dotpad-status" role="status" aria-live="assertive" aria-atomic="true" class="help-text">
+                <div id="dotpad-status" class="help-text">
                     Not connected.
                 </div>
                 <label class="checkbox-label" for="dotpad-auto-send">
@@ -413,7 +422,7 @@
                 <div id="view-info">
                     <span id="current-view" class="sr-only">x+</span>
                     <span id="current-slice-depth-info" class="sr-only">50%</span>
-                    <span id="current-render-mode-info" class="sr-only">Shaded</span>
+                    <span id="current-render-mode-info" class="sr-only">Filled</span>
                     <span id="current-zoom-info" class="sr-only">0.0</span>
                     <span id="current-bbox-dimensions-info" class="sr-only">--</span>
                 </div>
@@ -492,17 +501,17 @@
                         id="debug-pipeline-toggle-btn"
                         class="debug-panel-toggle"
                         type="button"
-                        aria-expanded="true"
+                        aria-expanded="false"
                         aria-controls="debug-pipeline-content"
                     >
-                        Hide Debug Pipeline
+                        Show Debug Pipeline
                     </button>
                 </div>
-                <div id="debug-pipeline-content" class="debug-panel-content">
+                <div id="debug-pipeline-content" class="debug-panel-content" hidden>
                     <div class="help-text" id="debug-pipeline-summary">
                         Waiting for render debug data...
                     </div>
-                    <div id="debug-stage-list" class="debug-stage-list" aria-live="assertive"></div>
+                    <div id="debug-stage-list" class="debug-stage-list"></div>
                 </div>
             </section>
         </main>
