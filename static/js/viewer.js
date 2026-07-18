@@ -338,7 +338,16 @@ const renderModes = [
     { key: 'cut', label: 'Cut', wire: 'Cut', projection: 'orthographic' },
     { key: 'xray', label: 'X-Ray', wire: 'x-ray', projection: 'x-ray' },
 ];
-const representationModes = ['single', 'side-by-side', 'slice-graph-difference', 'slice-graph-column-count'];
+// Single source of truth for view modes. Same shape as renderModes, plus:
+//   sliceGraphMode  which slice-graph variant this mode selects, when it is one.
+// `wire` collapses both slice-graph variants to the one mode name the server
+// knows; the variant is a client-side concern.
+const representationModes = [
+    { key: 'single', label: 'Single (with scrollbar)', wire: 'single' },
+    { key: 'side-by-side', label: 'Side-by-Side', wire: 'side-by-side' },
+    { key: 'slice-graph-difference', label: 'Slice Graph (Difference)', wire: 'slice-graph', sliceGraphMode: 'difference' },
+    { key: 'slice-graph-column-count', label: 'Slice Graph (Slice Area)', wire: 'slice-graph', sliceGraphMode: 'column-count' },
+];
 let currentModel = "none";
 let sessionOwnedModels = new Set(); // filenames (with extension) owned by the current cookie session
 let builtinModelStems = null;       // stems from MODEL_DIR; null = not yet received, show all
@@ -373,12 +382,24 @@ function renderModeLabel(modeKey = currentRenderMode) {
     return mode ? mode.label : String(modeKey);
 }
 
+function representationModeByKey(modeKey) {
+    return representationModes.find(mode => mode.key === modeKey) || null;
+}
+
+/** User-facing name for a view mode key. Never leak the key itself to a person. */
+function representationModeLabel(modeKey = currentRepresentationMode) {
+    const mode = representationModeByKey(modeKey);
+    return mode ? mode.label : String(modeKey);
+}
+
 function isSliceGraphRepresentationMode(modeValue = currentRepresentationMode) {
-    return modeValue === 'slice-graph-difference' || modeValue === 'slice-graph-column-count';
+    const mode = representationModeByKey(modeValue);
+    return Boolean(mode) && mode.wire === 'slice-graph';
 }
 
 function getServerRepresentationMode(modeValue = currentRepresentationMode) {
-    return isSliceGraphRepresentationMode(modeValue) ? 'slice-graph' : modeValue;
+    const mode = representationModeByKey(modeValue);
+    return mode ? mode.wire : modeValue;
 }
 
 function beginModelLoadAnnouncement(modelLabel, source = 'selection') {
@@ -633,7 +654,7 @@ function refreshStatusBar() {
     if (sbDepth) sbDepth.textContent = currentSliceDepth + '%';
     if (sbRenderMode) sbRenderMode.textContent = renderModeLabel();
     if (sbZoom) sbZoom.textContent = Number(currentZoom).toFixed(1);
-    if (sbViewMode) sbViewMode.textContent = currentRepresentationMode;
+    if (sbViewMode) sbViewMode.textContent = representationModeLabel();
 }
 
 /** Show a brief on-screen toast and push text to the SR live region. */
@@ -788,7 +809,7 @@ function getStatusBarAnnouncement() {
         `Depth: ${readText(sbDepth, `${currentSliceDepth}%`)}`,
         `Render: ${readText(sbRenderMode, renderModeLabel())}`,
         `Zoom: ${readText(sbZoom, Number(currentZoom).toFixed(1))}`,
-        `Layout: ${readText(sbViewMode, currentRepresentationMode)}`,
+        `Layout: ${readText(sbViewMode, representationModeLabel())}`,
         `Model: ${readText(sbModel)}`,
         `DotPad: ${readText(sbDotPad)}`,
     ].join('. ');
@@ -1751,17 +1772,20 @@ function cycleRenderMode(shouldAnnounce = true) {
 }
 
 function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
+    const mode = representationModeByKey(targetMode);
+    if (!mode) {
+        console.error(`switchToRepresentationMode: unknown view mode ${targetMode}`);
+        return;
+    }
     if (currentRepresentationMode === targetMode) {
-        if (shouldAnnounce) announceStatus(`already ${targetMode.toLowerCase()}`);
+        if (shouldAnnounce) announceStatus(`already ${representationModeLabel(targetMode)}`);
         return;
     }
     const previousMode = currentRepresentationMode;
     const enteringSliceGraph = !isSliceGraphRepresentationMode(previousMode) && isSliceGraphRepresentationMode(targetMode);
 
-    if (targetMode === 'slice-graph-difference') {
-        sliceGraphMode = 'difference';
-    } else if (targetMode === 'slice-graph-column-count') {
-        sliceGraphMode = 'column-count';
+    if (mode.sliceGraphMode) {
+        sliceGraphMode = mode.sliceGraphMode;
     }
 
     currentRepresentationMode = targetMode;
@@ -1775,7 +1799,7 @@ function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
     updateSliceGraphModeUI();
     updateSideBySideAxisLabels();
     syncRadios();
-    if (shouldAnnounce) announce(`${previousMode.toLowerCase()} to ${currentRepresentationMode.toLowerCase()}`);
+    if (shouldAnnounce) announce(`${representationModeLabel(previousMode)} to ${representationModeLabel()}`);
 
     // Send state to server
     sendStateToServer();
@@ -1783,9 +1807,9 @@ function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
 }
 
 function cycleRepresentationMode(shouldAnnounce = true) {
-    const currentIndex = representationModes.indexOf(currentRepresentationMode);
+    const currentIndex = representationModes.findIndex(mode => mode.key === currentRepresentationMode);
     const nextIndex = (currentIndex + 1) % representationModes.length;
-    switchToRepresentationMode(representationModes[nextIndex], shouldAnnounce);
+    switchToRepresentationMode(representationModes[nextIndex].key, shouldAnnounce);
 }
 
 // Announce a change: adds to visible history, shows toast, and speaks via SR live region.
@@ -2235,7 +2259,7 @@ document.addEventListener('keydown', function(e) {
             {
                 const previousViewMode = currentRepresentationMode;
                 cycleRepresentationMode(false);
-                announce(`Display mode changed: ${previousViewMode} to ${currentRepresentationMode}`);
+                announce(`Display mode changed: ${representationModeLabel(previousViewMode)} to ${representationModeLabel()}`);
             }
             break;
 
