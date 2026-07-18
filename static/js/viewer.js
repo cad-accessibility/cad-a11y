@@ -1253,12 +1253,36 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
     return oldDepth !== currentSliceDepth;
 }
 
+/**
+ * Check exactly the radio matching `currentValue`, and report when none does.
+ *
+ * A group whose values have drifted from the state they mirror ends up with
+ * every radio unchecked, because assigning `.checked` overrides the `checked`
+ * attribute in the markup. That is silent, survives review, and leaves the
+ * group announcing no selection. Say so instead.
+ */
+function syncRadioGroup(radios, currentValue, groupLabel) {
+    let matched = false;
+    radios.forEach(r => {
+        const isMatch = (r.value === currentValue);
+        r.checked = isMatch;
+        matched = matched || isMatch;
+    });
+    if (!matched && radios.length > 0) {
+        console.error(
+            `syncRadios: no ${groupLabel} radio has value "${currentValue}"; ` +
+            `the group is now showing no selection. Values: ` +
+            `${[...radios].map(r => r.value).join(', ')}`
+        );
+    }
+}
+
 // Helper to sync radios with current state
 function syncRadios() {
-    renderModeRadios().forEach(r => { r.checked = (r.value === currentRenderMode); });
-    viewModeRadios().forEach(r => { r.checked = (r.value === currentRepresentationMode); });
-    viewRadios().forEach(r => { r.checked = (r.value === currentView); });
-    outputDeviceRadios().forEach(r => { r.checked = (r.value === currentOutputDevice); });
+    syncRadioGroup(renderModeRadios(), currentRenderMode, 'render-mode');
+    syncRadioGroup(viewModeRadios(), currentRepresentationMode, 'view-mode');
+    syncRadioGroup(viewRadios(), currentView, 'view-select');
+    syncRadioGroup(outputDeviceRadios(), currentOutputDevice, 'output-device');
 }
 
 function switchOutputDevice(targetDevice) {
