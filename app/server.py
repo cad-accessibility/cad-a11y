@@ -1003,6 +1003,14 @@ def workshop():
     return _render_workshop_entry(notice=True)
 
 
+@app.route("/ingest-test", methods=["GET"])
+def ingest_test():
+    """Serve the static ingest test harness so it can be reached in a browser while the
+    app is running (e.g. in Docker): navigate here, enter a participant name, and send
+    the bundled sample STL to /ingest to exercise the whole workshop flow."""
+    return send_file(REPO_ROOT / "examples" / "ingest-test.html")
+
+
 @app.route("/", methods=["GET"])
 def home():
     return jsonify(
@@ -1021,6 +1029,7 @@ def home():
                 "/upload": "POST - Upload an STL or STEP model file",
                 "/ingest": "POST - Ingest an STL from an external tool; optional first_name, returns a workshop_url + user_id",
                 "/workshop": "GET - Simplified viewer; ?model= pre-loads, ?name= resolves a participant's first name",
+                "/ingest-test": "GET - Static harness to send the sample STL to /ingest from a browser",
                 "/get_data": "GET - Optional cube/slider state",
                 "/render/dotpad-hex": "POST - Get render as DotPad hex string for Web SDK",
                 "/viewer": "GET - Serve the HTML viewer (required for DotPad Web SDK)",

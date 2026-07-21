@@ -123,11 +123,20 @@ curl -F file=@result.stl -F first_name=Alex http://braille-station.local:8635/in
 
 ## Trying it without the partner tool
 
-`examples/ingest-test.html` is a static page that plays the role of the sending tool:
-open it in a browser, set the server URL and a first name, and click **Send** to POST
-a bundled sample model (`examples/sample-model.stl`) to `/ingest`. It shows the
-returned `user_id` and a link that opens the model in the viewer. Handy for verifying
-the endpoint end to end before the partner tool is wired up.
+The app serves a test harness that stands in for the sending tool. With the app
+running (for example `docker compose up`), open **`http://<host>:8635/ingest-test`**,
+type a participant first name, and click **Send**: it POSTs a bundled sample model to
+`/ingest`, shows the returned `user_id` and `workshop_url`, and links straight into the
+viewer. Because the page is served by the app, the server URL is filled in
+automatically, so it works with no configuration.
+
+The same page is the static file `examples/ingest-test.html` (with
+`examples/sample-model.stl`), so you can also open it directly from disk and point it
+at any server, or send the sample with curl:
+
+```
+curl -F file=@examples/sample-model.stl -F first_name=Alex http://<host>:8635/ingest
+```
 
 ## Configuration
 

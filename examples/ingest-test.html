@@ -30,7 +30,7 @@
     </p>
 
     <label for="server">cad-a11y server URL</label>
-    <input type="url" id="server" value="http://localhost:6969">
+    <input type="url" id="server">
 
     <label for="firstName">Participant first name</label>
     <input type="text" id="firstName" value="Test" autocomplete="off">
@@ -46,6 +46,12 @@
     <div id="result" role="status" aria-live="polite"></div>
 
     <script>
+        // Default the server URL to wherever this page is served from, so it "just
+        // works" when reached at /ingest-test in Docker; fall back to the dev port
+        // when the file is opened directly (file://).
+        document.getElementById('server').value =
+            (location.origin && location.origin.startsWith('http')) ? location.origin : 'http://localhost:6969';
+
         // Bundled sample so this page works even when opened directly (file://).
         const SAMPLE_STL = `solid sample_pyramid
   facet normal 0.000000 0.000000 -1.000000

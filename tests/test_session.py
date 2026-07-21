@@ -488,6 +488,12 @@ class TestIngestWorkshop:
         assert resp.status_code == 200
         assert b'name="name"' in resp.data
 
+    def test_ingest_test_harness_served(self, client):
+        resp = client.get("/ingest-test")
+        assert resp.status_code == 200
+        assert b"Participant first name" in resp.data
+        assert b"/ingest" in resp.data
+
 
 # ---------------------------------------------------------------------------
 # Cross-session model aggregation by email identifier
