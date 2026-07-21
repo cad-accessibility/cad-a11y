@@ -50,6 +50,7 @@
             });
         } catch (err) {
             setStatus('Error: ' + err.message);
+            if (typeof window.announceAlert === 'function') window.announceAlert('Monarch connection error: ' + err.message);
             connectBtn.disabled = false;
         }
     });

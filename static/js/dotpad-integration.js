@@ -73,10 +73,12 @@ bleScanBtn.addEventListener('click', async () => {
             if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
         } else {
             setStatus('BLE connection failed. Please try again.');
+            if (typeof window.announceAlert === 'function') window.announceAlert('DotPad Bluetooth connection failed.');
         }
     } catch (err) {
         console.error('BLE scan/connect error:', err);
         setStatus('BLE error: ' + err.message);
+        if (typeof window.announceAlert === 'function') window.announceAlert('DotPad Bluetooth error: ' + err.message);
     }
 });
 
@@ -100,10 +102,12 @@ usbScanBtn.addEventListener('click', async () => {
             if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
         } else {
             setStatus('USB connection failed.');
+            if (typeof window.announceAlert === 'function') window.announceAlert('DotPad USB connection failed.');
         }
     } catch (err) {
         console.error('USB scan/connect error:', err);
         setStatus('USB error: ' + err.message);
+        if (typeof window.announceAlert === 'function') window.announceAlert('DotPad USB error: ' + err.message);
     }
 });
 
@@ -131,7 +135,7 @@ function onMessage(device, dataCode, msg) {
         rawTarget = null;
         disconnectBtn.disabled = true;
         setStatus('DotPad disconnected unexpectedly.');
-        if (typeof window.announce === 'function') window.announce('DotPad disconnected.');
+        if (typeof window.announceAlert === 'function') window.announceAlert('DotPad disconnected unexpectedly.');
     } else if (dataCode === DataCodes.Connected) {
         // Device fully initialised (board info received, cell dimensions set).
         // Send initial render so the display shows the current model immediately.

@@ -237,7 +237,7 @@ async function sendStateToServer() {
             ? { ...modelLoadAnnouncement }
             : null;
         if (activeModelLoadTask) {
-            announceStatus(`${activeModelLoadTask.label}: generating render.`);
+            announce(`${activeModelLoadTask.label}: generating render.`);
         }
         pendingInputSource = 'keyboard'; // reset to default after consuming
 
@@ -276,8 +276,10 @@ async function sendStateToServer() {
             if (data.image_base64) {
                 updateTactilePreview(data.image_base64, data.image_shape);
                 if (isActiveModelLoadTask(activeModelLoadTask)) {
-                    announceStatus(`${activeModelLoadTask.label}: tactile preview ready.`);
-                    announce(`${activeModelLoadTask.label} loaded.`);
+                    // One announcement per event: two calls in the same tick would
+                    // land in the two swap slots and the first would be blanked
+                    // before AT reads it.
+                    announce(`${activeModelLoadTask.label} loaded. Tactile preview ready.`);
                     clearModelLoadTask(activeModelLoadTask);
                 }
             }
@@ -307,7 +309,7 @@ async function sendStateToServer() {
             // only sustained, confirmed outages interrupt the user.
             console.warn('Render request failed:', error.message);
             if (isActiveModelLoadTask(activeModelLoadTask)) {
-                announce(`Processing failed for ${activeModelLoadTask.label}.`);
+                announceAlert(`Processing failed for ${activeModelLoadTask.label}.`);
                 clearModelLoadTask(activeModelLoadTask);
             }
         });
@@ -321,7 +323,7 @@ async function sendStateToServer() {
 let currentSliceDepth = 50;
 let currentView = 'x+';
 let currentZoom = 0.0;
-let currentRenderMode = 'Shaded';
+let currentRenderMode = 'filled';
 let currentRepresentationMode = 'single';
 let currentMoveCamera = "none";
 let currentPrintView = false;
@@ -331,8 +333,28 @@ let currentPrintView = false;
 // Monarch feed — see getEffectiveOutputDevice and issue #75.
 let currentOutputDevice = 'monarch';
 let monarchHidConnected = false;
-const renderModes = ['Shaded', 'Outline', 'Cut', 'X-Ray'];
-const representationModes = ['single', 'side-by-side', 'slice-graph-difference', 'slice-graph-column-count'];
+// Single source of truth for render modes.
+//   key        held in currentRenderMode and used as the radio `value`. Lowercase
+//              throughout, so a case mismatch cannot silently unselect the group.
+//   label      the only spelling the user ever sees or hears.
+//   wire       sent to the server and stored in render_stats.render_mode.
+//   projection paired with `wire` in the render request.
+const renderModes = [
+    { key: 'filled', label: 'Filled', wire: 'Filled', projection: 'orthographic' },
+    { key: 'outline', label: 'Outline', wire: 'Outline', projection: 'silhouette' },
+    { key: 'cut', label: 'Cut', wire: 'Cut', projection: 'orthographic' },
+    { key: 'xray', label: 'X-Ray', wire: 'x-ray', projection: 'x-ray' },
+];
+// Single source of truth for view modes. Same shape as renderModes, plus:
+//   sliceGraphMode  which slice-graph variant this mode selects, when it is one.
+// `wire` collapses both slice-graph variants to the one mode name the server
+// knows; the variant is a client-side concern.
+const representationModes = [
+    { key: 'single', label: 'Single (with scrollbar)', wire: 'single' },
+    { key: 'side-by-side', label: 'Side-by-Side', wire: 'side-by-side' },
+    { key: 'slice-graph-difference', label: 'Slice Graph (Difference)', wire: 'slice-graph', sliceGraphMode: 'difference' },
+    { key: 'slice-graph-column-count', label: 'Slice Graph (Slice Area)', wire: 'slice-graph', sliceGraphMode: 'column-count' },
+];
 let currentModel = "none";
 let sessionOwnedModels = new Set(); // filenames (with extension) owned by the current cookie session
 let builtinModelStems = null;       // stems from MODEL_DIR; null = not yet received, show all
@@ -352,17 +374,38 @@ let lastModelListSignature = '';  // prevents redundant dropdown rebuilds
 let currentBBoxDimensionsText = '';
 let lastAnnouncementMessage = '';
 let lastAnnouncedParameterKey = null;
-const lastAnnouncedParameterValues = new Map();
 let pendingInputSource = 'keyboard'; // consumed once per sendStateToServer call
 let modelLoadAnnouncement = null;
 let modelLoadAnnouncementSeq = 0;
 
+function renderModeByKey(modeKey) {
+    return renderModes.find(mode => mode.key === modeKey) || null;
+}
+
+/** User-facing name for a render mode key. Never leak the key itself to a person. */
+function renderModeLabel(modeKey = currentRenderMode) {
+    const mode = renderModeByKey(modeKey);
+    return mode ? mode.label : String(modeKey);
+}
+
+function representationModeByKey(modeKey) {
+    return representationModes.find(mode => mode.key === modeKey) || null;
+}
+
+/** User-facing name for a view mode key. Never leak the key itself to a person. */
+function representationModeLabel(modeKey = currentRepresentationMode) {
+    const mode = representationModeByKey(modeKey);
+    return mode ? mode.label : String(modeKey);
+}
+
 function isSliceGraphRepresentationMode(modeValue = currentRepresentationMode) {
-    return modeValue === 'slice-graph-difference' || modeValue === 'slice-graph-column-count';
+    const mode = representationModeByKey(modeValue);
+    return Boolean(mode) && mode.wire === 'slice-graph';
 }
 
 function getServerRepresentationMode(modeValue = currentRepresentationMode) {
-    return isSliceGraphRepresentationMode(modeValue) ? 'slice-graph' : modeValue;
+    const mode = representationModeByKey(modeValue);
+    return mode ? mode.wire : modeValue;
 }
 
 function beginModelLoadAnnouncement(modelLabel, source = 'selection') {
@@ -559,17 +602,8 @@ const outputDeviceRadios = () => document.querySelectorAll('input[name="output-d
 
 function getRenderPipelineParams(uiRenderMode) {
     // Single-mode UI mapping: projection is no longer a separate user control.
-    switch ((uiRenderMode || 'Shaded').toLowerCase()) {
-        case 'x-ray':
-            return { renderMode: 'x-ray', projectionMode: 'x-ray' };
-        case 'cut':
-            return { renderMode: 'Cut', projectionMode: 'orthographic' };
-        case 'outline':
-            return { renderMode: 'Outline', projectionMode: 'silhouette' };
-        case 'shaded':
-        default:
-            return { renderMode: 'Shaded', projectionMode: 'orthographic' };
-    }
+    const mode = renderModeByKey(uiRenderMode) || renderModes[0];
+    return { renderMode: mode.wire, projectionMode: mode.projection };
 }
 
 // Status bar elements
@@ -597,14 +631,20 @@ function formatCenter2(value) {
 
 // Toast / live-region elements
 const announcementToast = document.getElementById('announcement-toast');
-// Two-slot live-region swap: toggling which element receives text each time
-// guarantees AT sees a fresh DOM mutation for every announcement, including
-// consecutive identical messages, without any clear+setTimeout race.
-const srLiveSlots = [
-    document.getElementById('sr-live-a'),
-    document.getElementById('sr-live-b')
-];
-let srLiveActiveSlot = 0;
+// Two politeness tiers, each a two-slot swap. Toggling which element in a tier
+// receives text guarantees AT sees a fresh DOM mutation for every announcement,
+// including consecutive identical messages, without any clear+setTimeout race.
+const srLiveTiers = {
+    polite: [
+        document.getElementById('sr-live-polite-a'),
+        document.getElementById('sr-live-polite-b'),
+    ],
+    assertive: [
+        document.getElementById('sr-live-assertive-a'),
+        document.getElementById('sr-live-assertive-b'),
+    ],
+};
+const srLiveActiveSlot = { polite: 0, assertive: 0 };
 const toastDurationSlider = document.getElementById('toast-duration-slider');
 const toastDurationValue = document.getElementById('toast-duration-value');
 let toastDurationSec = 3;  // default 3 seconds; 0 = off
@@ -624,20 +664,22 @@ if (toastDurationSlider) {
 function refreshStatusBar() {
     if (sbView) sbView.textContent = currentView;
     if (sbDepth) sbDepth.textContent = currentSliceDepth + '%';
-    if (sbRenderMode) sbRenderMode.textContent = currentRenderMode;
+    if (sbRenderMode) sbRenderMode.textContent = renderModeLabel();
     if (sbZoom) sbZoom.textContent = Number(currentZoom).toFixed(1);
-    if (sbViewMode) sbViewMode.textContent = currentRepresentationMode;
+    if (sbViewMode) sbViewMode.textContent = representationModeLabel();
 }
 
-/** Show a brief on-screen toast and push text to the SR live region. */
-function showToast(message) {
-    // Two-slot swap: write to the next slot and clear the previous one.
-    // AT always sees a genuine new-content mutation regardless of whether the
-    // message is identical to the last one, and there is no setTimeout race to
-    // lose when keys are pressed in rapid succession.
-    srLiveActiveSlot = 1 - srLiveActiveSlot;
-    const activeEl = srLiveSlots[srLiveActiveSlot];
-    const idleEl   = srLiveSlots[1 - srLiveActiveSlot];
+/** Show a brief on-screen toast and push text to the SR live region for a tier. */
+function showToast(message, politeness = 'polite') {
+    // Two-slot swap within the chosen tier: write to the next slot and clear the
+    // previous one. AT always sees a genuine new-content mutation regardless of
+    // whether the message is identical to the last one, and there is no setTimeout
+    // race to lose when keys are pressed in rapid succession.
+    const tier = srLiveTiers[politeness] ? politeness : 'polite';
+    const slots = srLiveTiers[tier];
+    srLiveActiveSlot[tier] = 1 - srLiveActiveSlot[tier];
+    const activeEl = slots[srLiveActiveSlot[tier]];
+    const idleEl   = slots[1 - srLiveActiveSlot[tier]];
     if (activeEl) activeEl.textContent = message;
     if (idleEl)   idleEl.textContent   = '';
 
@@ -651,105 +693,103 @@ function showToast(message) {
     }, toastDurationSec * 1000);
 }
 
-// Consistent depth announcement formatter
-function depthAnnouncement(pct) {
+// A depth value as a single spoken token: the ends get words, the middle a percent.
+function depthToken(pct) {
     if (pct === 0) return 'surface';
     if (pct === 100) return 'full depth';
-    return `depth ${pct}%`;
+    return `${pct}%`;
 }
 
-function announceParameterWithRepeatRule(parameterKey, parameterLabel, currentValueToken, verboseValueText, repeatValueText, isUrgent = true) {
-    const normalizedKey = String(parameterKey || '').trim().toLowerCase();
-    const normalizedToken = String(currentValueToken ?? '').trim();
-    const previousToken = normalizedKey ? lastAnnouncedParameterValues.get(normalizedKey) : undefined;
-    const useRepeatText = normalizedKey !== '' && normalizedToken !== '' && previousToken === normalizedToken;
-    const valueText = useRepeatText ? repeatValueText : verboseValueText;
+function clampDepth(value) {
+    const n = Math.max(0, Math.min(100, Number(value)));
+    return Number.isFinite(n) ? Math.round(n) : null;
+}
 
-    announceParameterValue(parameterKey, parameterLabel, valueText, isUrgent);
+// Zoom and depth changes are announced on a trailing debounce that accumulates:
+// the first press of a burst anchors `from`, later presses only move `to`, and
+// one announcement fires once the burst settles. Holding a key, and the 1%-step
+// zoom that would otherwise announce ten times across a range, collapse to a
+// single "from <start> to <final>". The render and the braille display are NOT
+// debounced — those update on every press so tactile feedback stays immediate;
+// only the spoken summary waits.
+const PARAMETER_SETTLE_MS = 150;
+const pendingParameterAnnouncements = {};
 
-    if (normalizedKey !== '' && normalizedToken !== '') {
-        lastAnnouncedParameterValues.set(normalizedKey, normalizedToken);
+function scheduleAccumulatedAnnouncement(key, from, to, emit) {
+    let pending = pendingParameterAnnouncements[key];
+    if (!pending) {
+        pending = pendingParameterAnnouncements[key] = { timer: null, from: null, to: null };
     }
+    if (pending.timer === null) {
+        pending.from = from; // anchor once, at the start of the burst
+    } else {
+        clearTimeout(pending.timer);
+    }
+    pending.to = to;
+    pending.timer = setTimeout(() => {
+        pending.timer = null;
+        emit(pending.from, pending.to);
+    }, PARAMETER_SETTLE_MS);
+}
+
+// Build and speak a settled depth change. The first time depth is announced the
+// phrase carries its label; an immediately following depth change drops to just
+// the new value (see announceParameterValue). A burst that changed nothing still
+// speaks, since silence reads as a dropped key.
+function emitDepthAnnouncement(from, to) {
+    const toToken = depthToken(to);
+    if (from === null || from === to) {
+        // "surface"/"full depth" are self-identifying; a mid-range no-op keeps the label.
+        const text = to === 0 || to === 100 ? toToken : `depth ${toToken}`;
+        announceParameterValue('slice-depth', text, text);
+        return;
+    }
+    const arrow = `${depthToken(from)} to ${toToken}`;
+    announceParameterValue('slice-depth', `depth from ${arrow}`, toToken);
 }
 
 function announceDepthValue(depthValue, previousDepth = null) {
-    const normalizedDepth = Math.max(0, Math.min(100, Number(depthValue)));
-    if (!Number.isFinite(normalizedDepth)) {
-        return;
-    }
-
-    const roundedDepth = Math.round(normalizedDepth);
-    const roundedPrevious = previousDepth === null || previousDepth === undefined
-        ? null
-        : Math.round(Math.max(0, Math.min(100, Number(previousDepth))));
-
-    let valueText = depthAnnouncement(roundedDepth);
-    if (roundedPrevious !== null && roundedPrevious !== roundedDepth) {
-        const direction = roundedDepth > roundedPrevious ? 'deeper' : 'shallower';
-        if (roundedDepth === 0) {
-            valueText = `${direction} to surface`;
-        } else if (roundedDepth === 100) {
-            valueText = `${direction} to full depth`;
-        } else {
-            valueText = `${direction} to ${roundedDepth}%`;
-        }
-    }
-
-    announceParameterWithRepeatRule(
-        'slice-depth',
-        'Slice depth',
-        String(roundedDepth),
-        valueText,
-        `${roundedDepth}%`
-    );
+    const to = clampDepth(depthValue);
+    if (to === null) return;
+    const from = previousDepth === null || previousDepth === undefined ? null : clampDepth(previousDepth);
+    scheduleAccumulatedAnnouncement('slice-depth', from, to, emitDepthAnnouncement);
 }
 
-function announceZoomValue(zoomValue, previousZoom = null, isUrgent = true) {
-    const normalizedZoom = Number(zoomValue);
-    if (!Number.isFinite(normalizedZoom)) {
+// Zoom, same pattern. Zoom has no upper limit, so the only boundary is minimum.
+function emitZoomAnnouncement(from, to) {
+    const toPercent = formatZoomPercent(to);
+    if (from === null || !Number.isFinite(from) || from === to) {
+        const text = to <= MIN_ZOOM ? 'minimum zoom' : `zoom ${toPercent}`;
+        announceParameterValue('zoom-level', text, text);
         return;
     }
-
-    const percentText = formatZoomPercent(normalizedZoom);
-    const normalizedPrevious = previousZoom === null || previousZoom === undefined
-        ? null
-        : Number(previousZoom);
-
-    let verboseText = `zoom ${percentText}`;
-    if (normalizedPrevious !== null && Number.isFinite(normalizedPrevious)) {
-        if (normalizedZoom > normalizedPrevious) {
-            verboseText = `zoom in to ${percentText}`;
-        } else if (normalizedZoom < normalizedPrevious) {
-            verboseText = `zoom out to ${percentText}`;
-        } else {
-            verboseText = `zoom unchanged: ${percentText}`;
-        }
-    }
-
-    announceParameterWithRepeatRule(
-        'zoom-level',
-        'Zoom level',
-        percentText,
-        verboseText,
-        percentText,
-        isUrgent
-    );
+    const arrow = `${formatZoomPercent(from)} to ${toPercent}`;
+    announceParameterValue('zoom-level', `zooming from ${arrow}`, toPercent);
 }
 
-function announceParameterValue(parameterKey, parameterLabel, valueText, isUrgent = true) {
+function announceZoomValue(zoomValue, previousZoom = null) {
+    const to = Number(zoomValue);
+    if (!Number.isFinite(to)) return;
+    const from = previousZoom === null || previousZoom === undefined ? null : Number(previousZoom);
+    scheduleAccumulatedAnnouncement('zoom-level', from, to, emitZoomAnnouncement);
+}
+
+// Speak firstText the first time this parameter is announced, then repeatText on
+// an immediately following announcement of the SAME parameter. Any other
+// announcement in between resets the run, so the fuller phrasing returns once the
+// context is no longer obvious. Only zoom and depth use this; everything else
+// calls announce() directly.
+function announceParameterValue(parameterKey, firstText, repeatText) {
     const normalizedKey = String(parameterKey || '').trim().toLowerCase();
-    const normalizedLabel = String(parameterLabel || '').trim();
-    const normalizedValue = String(valueText || '').trim();
-    const shouldIncludeLabel = normalizedKey !== '' && normalizedKey !== lastAnnouncedParameterKey;
-    const message = shouldIncludeLabel && normalizedLabel
-        ? `${normalizedLabel}: ${normalizedValue}`
-        : normalizedValue;
+    const useFirst = normalizedKey === '' || normalizedKey !== lastAnnouncedParameterKey;
+    const message = useFirst ? String(firstText) : String(repeatText);
 
+    // announce() clears lastAnnouncedParameterKey; re-establish this parameter's
+    // key afterwards so a run of the SAME parameter still drops to the arrow.
+    announce(message);
     if (normalizedKey) {
         lastAnnouncedParameterKey = normalizedKey;
     }
-
-    announce(message, isUrgent);
 }
 
 function refreshViewInfoSummary() {
@@ -757,7 +797,7 @@ function refreshViewInfoSummary() {
         currentSliceDepthInfo.textContent = `${currentSliceDepth}%`;
     }
     if (currentRenderModeInfo) {
-        currentRenderModeInfo.textContent = currentRenderMode;
+        currentRenderModeInfo.textContent = renderModeLabel();
     }
     if (currentZoomInfo) {
         currentZoomInfo.textContent = Number(currentZoom).toFixed(1);
@@ -779,9 +819,9 @@ function getStatusBarAnnouncement() {
     return [
         `View: ${readText(sbView, currentView)}`,
         `Depth: ${readText(sbDepth, `${currentSliceDepth}%`)}`,
-        `Render: ${readText(sbRenderMode, currentRenderMode)}`,
+        `Render: ${readText(sbRenderMode, renderModeLabel())}`,
         `Zoom: ${readText(sbZoom, Number(currentZoom).toFixed(1))}`,
-        `Layout: ${readText(sbViewMode, currentRepresentationMode)}`,
+        `Layout: ${readText(sbViewMode, representationModeLabel())}`,
         `Model: ${readText(sbModel)}`,
         `DotPad: ${readText(sbDotPad)}`,
     ].join('. ');
@@ -914,14 +954,14 @@ function toggleDebugPipelineVisibility() {
 }
 
 function initializeDebugPipelineVisibility() {
-    let isVisible = true;
+    // Hidden by default: the panel is a developer diagnostic, and while visible it
+    // rebuilt a JSON dump on every render. Only a saved, explicit choice to show it
+    // ('1') brings it back; a first visit, a prior hide, or no storage stays hidden.
+    let isVisible = false;
     try {
-        const saved = window.localStorage.getItem(DEBUG_PIPELINE_VISIBILITY_KEY);
-        if (saved === '0') {
-            isVisible = false;
-        }
+        isVisible = window.localStorage.getItem(DEBUG_PIPELINE_VISIBILITY_KEY) === '1';
     } catch (_) {
-        // Keep default visible if persistence is unavailable.
+        // Keep default hidden if persistence is unavailable.
     }
     setDebugPipelineVisible(isVisible);
 }
@@ -1146,17 +1186,17 @@ function updateHighFidelityPreview(data) {
     }
 
     highFidelityPreviewImg.src = 'data:image/png;base64,' + previewBase64;
-    highFidelityPreviewImg.alt = `Render preview: ${currentView} view, ${currentSliceDepth}% depth, ${currentRenderMode}`;
+    highFidelityPreviewImg.alt = `Render preview: ${currentView} view, ${currentSliceDepth}% depth, ${renderModeLabel()}`;
 
     const width = shape && shape.length > 1 ? shape[1] : '--';
     const height = shape && shape.length > 0 ? shape[0] : '--';
-    highFidelityPreviewMeta.textContent = `${currentView} · ${currentSliceDepth}% · ${currentRenderMode} · ${height}×${width}px`;
+    highFidelityPreviewMeta.textContent = `${currentView} · ${currentSliceDepth}% · ${renderModeLabel()} · ${height}×${width}px`;
 }
 
 async function exportCurrentSliceAsPng() {
     try {
         exportSliceSvgBtn.disabled = true;
-        announceStatus('rendering high-fidelity export');
+        announce('rendering high-fidelity export');
 
         const response = await fetch(`${SERVER_URL}/render/export-source`, {
             method: 'POST',
@@ -1178,7 +1218,7 @@ async function exportCurrentSliceAsPng() {
 
         const downloadUrl = 'data:image/png;base64,' + data.image_base64;
         const sanitizedView = String(currentView).replace(/[^a-zA-Z0-9+-]/g, '_');
-        const filename = `slice_${sanitizedView}_${currentSliceDepth}_${currentRenderMode.toLowerCase()}.png`;
+        const filename = `slice_${sanitizedView}_${currentSliceDepth}_${currentRenderMode}.png`;
 
         const link = document.createElement('a');
         link.href = downloadUrl;
@@ -1187,10 +1227,10 @@ async function exportCurrentSliceAsPng() {
         link.click();
         document.body.removeChild(link);
 
-        announceStatus('slice exported as png');
+        announce('slice exported as png');
     } catch (error) {
         console.warn('Failed to export slice as PNG:', error);
-        announceStatus('High-fidelity export failed');
+        announceAlert('High-fidelity export failed');
     } finally {
         exportSliceSvgBtn.disabled = false;
     }
@@ -1225,12 +1265,36 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
     return oldDepth !== currentSliceDepth;
 }
 
+/**
+ * Check exactly the radio matching `currentValue`, and report when none does.
+ *
+ * A group whose values have drifted from the state they mirror ends up with
+ * every radio unchecked, because assigning `.checked` overrides the `checked`
+ * attribute in the markup. That is silent, survives review, and leaves the
+ * group announcing no selection. Say so instead.
+ */
+function syncRadioGroup(radios, currentValue, groupLabel) {
+    let matched = false;
+    radios.forEach(r => {
+        const isMatch = (r.value === currentValue);
+        r.checked = isMatch;
+        matched = matched || isMatch;
+    });
+    if (!matched && radios.length > 0) {
+        console.error(
+            `syncRadios: no ${groupLabel} radio has value "${currentValue}"; ` +
+            `the group is now showing no selection. Values: ` +
+            `${[...radios].map(r => r.value).join(', ')}`
+        );
+    }
+}
+
 // Helper to sync radios with current state
 function syncRadios() {
-    renderModeRadios().forEach(r => { r.checked = (r.value === currentRenderMode); });
-    viewModeRadios().forEach(r => { r.checked = (r.value === currentRepresentationMode); });
-    viewRadios().forEach(r => { r.checked = (r.value === currentView); });
-    outputDeviceRadios().forEach(r => { r.checked = (r.value === currentOutputDevice); });
+    syncRadioGroup(renderModeRadios(), currentRenderMode, 'render-mode');
+    syncRadioGroup(viewModeRadios(), currentRepresentationMode, 'view-mode');
+    syncRadioGroup(viewRadios(), currentView, 'view-select');
+    syncRadioGroup(outputDeviceRadios(), currentOutputDevice, 'output-device');
 }
 
 // The server only attaches monarch_cells_hex to a render when output_device is
@@ -1252,13 +1316,13 @@ function setMonarchHidConnected(connected) {
 
 function switchOutputDevice(targetDevice) {
     if (currentOutputDevice === targetDevice) {
-        announceStatus(`already using ${targetDevice}`);
+        announce(`already using ${targetDevice}`);
         return;
     }
 
     currentOutputDevice = targetDevice;
     syncRadios();
-    announceStatus(`output device ${targetDevice}`);
+    announce(`output device ${targetDevice}`);
     sendStateToServer();
     return true;
 }
@@ -1348,11 +1412,11 @@ function updateTactilePreview(base64, shape) {
     const img = document.getElementById('tactile-display-img');
     const meta = document.getElementById('tactile-preview-meta');
     img.src = 'data:image/png;base64,' + base64;
-    img.alt = `Tactile display: ${currentView} view, ${currentSliceDepth}% depth, ${currentRenderMode}`;
+    img.alt = `Tactile display: ${currentView} view, ${currentSliceDepth}% depth, ${renderModeLabel()}`;
     if (shape) {
-        meta.textContent = `${currentView} \u00b7 ${currentSliceDepth}% \u00b7 ${currentRenderMode} \u00b7 ${shape[1]}\u00d7${shape[0]}px`;
+        meta.textContent = `${currentView} \u00b7 ${currentSliceDepth}% \u00b7 ${renderModeLabel()} \u00b7 ${shape[1]}\u00d7${shape[0]}px`;
     } else {
-        meta.textContent = `${currentView} \u00b7 ${currentSliceDepth}% \u00b7 ${currentRenderMode}`;
+        meta.textContent = `${currentView} \u00b7 ${currentSliceDepth}% \u00b7 ${renderModeLabel()}`;
     }
 }
 
@@ -1588,11 +1652,11 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             sendStateToServer();
         } else {
             statusEl.textContent = `Upload failed: ${data.message}`;
-            announce(`Upload failed: ${data.message}`);
+            announceAlert(`Upload failed: ${data.message}`);
         }
     } catch (err) {
         statusEl.textContent = `Upload error: ${err.message}`;
-        announce(`Upload error: ${err.message}`);
+        announceAlert(`Upload error: ${err.message}`);
     } finally {
         label.removeAttribute('aria-disabled');
         this.disabled = false;
@@ -1693,7 +1757,7 @@ setInterval(() => {
             console.warn(`Poll failed (${pollFailCount}/${POLL_FAIL_THRESHOLD}):`, error.message);
             if (pollFailCount >= POLL_FAIL_THRESHOLD && serverConnected !== false) {
                 serverConnected = false;
-                announce('Server unavailable — rendering paused.');
+                announceAlert('Server unavailable — rendering paused.');
             }
         });
 }, 5000);
@@ -1716,7 +1780,7 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
     updateButtonLabels();
 
     if (shouldAnnounce) {
-        announceZoomValue(currentZoom, oldZoom, false);
+        announceZoomValue(currentZoom, oldZoom);
     }
 
     console.log(oldZoom, currentZoom);
@@ -1734,8 +1798,12 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
 
 // Switch to a specific render mode
 function switchToRenderMode(targetMode, shouldAnnounce = true) {
+    if (!renderModeByKey(targetMode)) {
+        console.error(`switchToRenderMode: unknown render mode ${targetMode}`);
+        return;
+    }
     if (currentRenderMode === targetMode) {
-        if (shouldAnnounce) announceStatus(`already ${targetMode.toLowerCase()}`);
+        if (shouldAnnounce) announce(`already ${renderModeLabel(targetMode)}`);
         return;
     }
     const previousMode = currentRenderMode;
@@ -1743,7 +1811,7 @@ function switchToRenderMode(targetMode, shouldAnnounce = true) {
     refreshViewInfoSummary();
     updateButtonLabels();
     syncRadios();
-    if (shouldAnnounce) announce(`${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
+    if (shouldAnnounce) announce(`${renderModeLabel(previousMode)} to ${renderModeLabel()}`);
 
     // Send state to server
     sendStateToServer();
@@ -1751,23 +1819,26 @@ function switchToRenderMode(targetMode, shouldAnnounce = true) {
 }
 
 function cycleRenderMode(shouldAnnounce = true) {
-    const currentIndex = renderModes.indexOf(currentRenderMode);
+    const currentIndex = renderModes.findIndex(mode => mode.key === currentRenderMode);
     const nextIndex = (currentIndex + 1) % renderModes.length;
-    switchToRenderMode(renderModes[nextIndex], shouldAnnounce);
+    switchToRenderMode(renderModes[nextIndex].key, shouldAnnounce);
 }
 
 function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
+    const mode = representationModeByKey(targetMode);
+    if (!mode) {
+        console.error(`switchToRepresentationMode: unknown view mode ${targetMode}`);
+        return;
+    }
     if (currentRepresentationMode === targetMode) {
-        if (shouldAnnounce) announceStatus(`already ${targetMode.toLowerCase()}`);
+        if (shouldAnnounce) announce(`already ${representationModeLabel(targetMode)}`);
         return;
     }
     const previousMode = currentRepresentationMode;
     const enteringSliceGraph = !isSliceGraphRepresentationMode(previousMode) && isSliceGraphRepresentationMode(targetMode);
 
-    if (targetMode === 'slice-graph-difference') {
-        sliceGraphMode = 'difference';
-    } else if (targetMode === 'slice-graph-column-count') {
-        sliceGraphMode = 'column-count';
+    if (mode.sliceGraphMode) {
+        sliceGraphMode = mode.sliceGraphMode;
     }
 
     currentRepresentationMode = targetMode;
@@ -1781,7 +1852,7 @@ function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
     updateSliceGraphModeUI();
     updateSideBySideAxisLabels();
     syncRadios();
-    if (shouldAnnounce) announce(`${previousMode.toLowerCase()} to ${currentRepresentationMode.toLowerCase()}`);
+    if (shouldAnnounce) announce(`${representationModeLabel(previousMode)} to ${representationModeLabel()}`);
 
     // Send state to server
     sendStateToServer();
@@ -1789,26 +1860,33 @@ function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
 }
 
 function cycleRepresentationMode(shouldAnnounce = true) {
-    const currentIndex = representationModes.indexOf(currentRepresentationMode);
+    const currentIndex = representationModes.findIndex(mode => mode.key === currentRepresentationMode);
     const nextIndex = (currentIndex + 1) % representationModes.length;
-    switchToRepresentationMode(representationModes[nextIndex], shouldAnnounce);
+    switchToRepresentationMode(representationModes[nextIndex].key, shouldAnnounce);
 }
 
 // Announce a change: adds to visible history, shows toast, and speaks via SR live region.
-function announce(message, isUrgent = true) {
+function emitAnnouncement(message, politeness, isAlert) {
     const normalizedMessage = String(message);
+
+    // Any announcement ends the current zoom/depth run: the next such change
+    // re-includes its label, since the context is no longer obvious. A parameter
+    // announcement re-establishes its own key immediately after this returns
+    // (see announceParameterValue), so its own repeat behaviour is unaffected.
+    lastAnnouncedParameterKey = null;
 
     // Always refresh the status bar so it reflects the latest state.
     refreshStatusBar();
 
-    // Show the toast + push to screen-reader live region.
-    showToast(normalizedMessage);
+    // Show the toast + push to the screen-reader live region for this tier.
+    showToast(normalizedMessage, politeness);
 
-    // Append to visible history log.
+    // Append to visible history log; alerts are weighted so the log distinguishes
+    // an interrupting condition from routine state changes.
     if (announcementHistory) {
         if (normalizedMessage !== lastAnnouncementMessage) {
             const item = document.createElement('li');
-            if (isUrgent) item.style.fontWeight = '600';
+            if (isAlert) item.style.fontWeight = '600';
 
             const time = new Date();
             const timestamp = document.createElement('span');
@@ -1828,13 +1906,22 @@ function announce(message, isUrgent = true) {
     lastAnnouncementMessage = normalizedMessage;
 }
 
-// Announce status information (same mechanism, just non-urgent weight).
-function announceStatus(message) {
-    announce(message, false);
+/**
+ * Announce a state change politely: it waits for the user to pause rather than
+ * interrupting. This is the right default for anything the user just did, since
+ * they already know it happened and only need the result.
+ */
+function announce(message) {
+    emitAnnouncement(message, 'polite', false);
 }
 
-function announceDepthShortcut(shortcutLabel, previousDepth, depthValue) {
-    announceDepthValue(depthValue, previousDepth);
+/**
+ * Announce assertively, interrupting whatever the AT is currently speaking.
+ * Reserve for conditions the user did not initiate and must act on: a lost
+ * server or device, a failed render, upload, or export.
+ */
+function announceAlert(message) {
+    emitAnnouncement(message, 'assertive', true);
 }
 
 if (clearAnnouncementsBtn && announcementHistory) {
@@ -1965,7 +2052,7 @@ zoomInput.addEventListener('change', function() {
     clearTimeout(zoomDebounceTimer);
     if (!Number.isFinite(this.valueAsNumber)) {
         this.value = currentZoom.toFixed(1);
-        announceStatus('zoom value unchanged');
+        announce('zoom value unchanged');
         return;
     }
     pendingInputSource = 'ui';
@@ -2006,7 +2093,7 @@ sliceGraphLockBtn.addEventListener('click', function() {
 
 sliceGraphRefreshBtn.addEventListener('click', function() {
     if (!isSliceGraphRepresentationMode()) {
-        announceStatus('refresh only available in slice-graph mode');
+        announce('refresh only available in slice-graph mode');
         return;
     }
     captureSliceGraphAnchor(true);
@@ -2118,7 +2205,7 @@ document.addEventListener('keydown', function(e) {
                 const previousDepth = currentSliceDepth;
                 const nextDepth = Math.min(100, currentSliceDepth + 1);
                 updateSliceDepth(nextDepth, false);
-                announceDepthShortcut('ArrowUp', previousDepth, nextDepth);
+                announceDepthValue(nextDepth, previousDepth);
             }
             break;
         case 'arrowdown':
@@ -2128,7 +2215,7 @@ document.addEventListener('keydown', function(e) {
                 const previousDepth = currentSliceDepth;
                 const nextDepth = Math.max(0, currentSliceDepth - 1);
                 updateSliceDepth(nextDepth, false);
-                announceDepthShortcut('ArrowDown', previousDepth, nextDepth);
+                announceDepthValue(nextDepth, previousDepth);
             }
             break;
         case 'pageup':
@@ -2138,7 +2225,7 @@ document.addEventListener('keydown', function(e) {
                 const previousDeeperDepth = currentSliceDepth;
                 const newDeeperDepth = Math.min(100, currentSliceDepth + 10);
                 updateSliceDepth(newDeeperDepth, false);
-                announceDepthShortcut('PageUp', previousDeeperDepth, newDeeperDepth);
+                announceDepthValue(newDeeperDepth, previousDeeperDepth);
             }
             break;
         case 'pagedown':
@@ -2148,7 +2235,7 @@ document.addEventListener('keydown', function(e) {
                 const previousShallowerDepth = currentSliceDepth;
                 const newShallowerDepth = Math.max(0, currentSliceDepth - 10);
                 updateSliceDepth(newShallowerDepth, false);
-                announceDepthShortcut('PageDown/1', previousShallowerDepth, newShallowerDepth);
+                announceDepthValue(newShallowerDepth, previousShallowerDepth);
             }
             break;
 
@@ -2232,7 +2319,7 @@ document.addEventListener('keydown', function(e) {
             {
                 const previousMode = currentRenderMode;
                 cycleRenderMode(false);
-                announce(`Render mode changed: ${previousMode.toLowerCase()} to ${currentRenderMode.toLowerCase()}`);
+                announce(`Render mode changed: ${renderModeLabel(previousMode)} to ${renderModeLabel()}`);
             }
             break;
 
@@ -2241,7 +2328,7 @@ document.addEventListener('keydown', function(e) {
             {
                 const previousViewMode = currentRepresentationMode;
                 cycleRepresentationMode(false);
-                announce(`Display mode changed: ${previousViewMode} to ${currentRepresentationMode}`);
+                announce(`Display mode changed: ${representationModeLabel(previousViewMode)} to ${representationModeLabel()}`);
             }
             break;
 
@@ -2280,7 +2367,7 @@ document.addEventListener('keydown', function(e) {
         case '.':
             // Read the full top-of-page status bar.
             e.preventDefault();
-            announceStatus(getStatusBarAnnouncement());
+            announce(getStatusBarAnnouncement());
             break;
 
         case 'g':
