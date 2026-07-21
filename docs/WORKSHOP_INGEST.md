@@ -6,31 +6,35 @@ simplified, screen-reader- and braille-friendly viewer.
 
 There are two pieces:
 
-* `POST /ingest` receives the STL (and, optionally, a participant code that **your
-  tool generates**) and returns a ready-to-open **workshop URL**.
+* `POST /ingest` receives the STL (and the participant's first name) and returns a
+  ready-to-open **workshop URL**.
 * `GET /workshop` is a stripped-down viewer that shows only the controls that matter
-  in a workshop: View / face, Depth (four fixed steps), Rendering Mode, the output
-  device selector, and the Monarch and DotPad connection panels.
+  in a workshop: View / face, Depth, Rendering Mode, the output-device selector, and
+  the Monarch and DotPad connection panels.
 
-## Participant codes
+## Participants
 
-In a two-station setup (the design tool on one machine, the braille display on
-another), each model is tagged with a short **participant code** so the participant
-can pull up their model at the braille station. **Your tool generates the code and
-shows it to the participant** (for example on a printed card); cad-a11y only stores
-it and matches it later.
+Each ingest is tagged with the participant's **first name**, which the sending tool
+collects (the experimenter types it in) and sends with the STL. First names are used
+because the workshop participants are minors and only first names are available; they
+are also what a participant knows and can enter at a braille station.
 
-Use a code that is easy to read aloud, hear, and braille, for example two common
-words like `CEDAR MANGO`. This is friendlier for participants who are blind, low
-vision, or have cognitive disabilities than an email or password (see WCAG 2.2
-Success Criterion 3.3.8, Accessible Authentication): a screen reader reads it word
-by word, it shows cleanly on a braille display, and there is nothing to memorise.
+cad-a11y gives each first name a unique **`user_id`** the first time it is seen and
+reuses it for that name's later uploads, so:
 
-cad-a11y matches codes case- and separator-insensitively, so `Cedar Mango`,
-`cedar-mango`, and `CEDAR_MANGO` all resolve to the same model. No email, name, or
-other personal data is collected; the code is stored locally in the existing SQLite
-database. If you omit the code, the ingest is anonymous and the returned
-`workshop_url` opens the model directly (handy for a single-station setup).
+* **every model a participant sends is saved**, but only their **most recent** one is
+  shown when their first name is looked up;
+* the participant's **in-app actions** (renders, key presses) are recorded against the
+  same `user_id`, so models and interaction data can be linked for the research.
+
+Because first names are not unique, two people sharing one first name share one
+record; the workshop distinguishes them out of band (name tags, photos). Names are
+matched case- and spacing-insensitively (`Alex`, `alex`, `  Alex `), and no email or
+account is involved.
+
+> Note: workshop participants' actions are recorded without the usual analytics
+> consent dialog (the workshop does not show it). This is intentional for the
+> research; keep it in mind for any deployment outside the workshop.
 
 ## Endpoint contract
 
@@ -38,31 +42,34 @@ database. If you omit the code, the ingest is anonymous and the returned
 POST /ingest
   Body:  multipart/form-data with a "file" field   (recommended)
          OR a raw STL request body, with the name in ?filename= or the X-Filename header
-  Code:  optional, in a "code" form field, a ?code= query parameter, or an X-Code header
+  Name:  optional "first_name" (form field, ?first_name= query, or X-First-Name header)
   Query: open=1   (optional) single-station convenience: also live-update an already
                   open viewer on this host and, if INGEST_OPEN_ON_HOST=1, pop a window
   ->  200 application/json
       {
         "status": "success",
-        "filename": "part_ab12cd34.stl",
-        "model_stem": "part_ab12cd34",
+        "filename": "ingest_ab12cd34.stl",
+        "model_stem": "ingest_ab12cd34",
         "new_model_index": 7,
-        "code": "cedar-mango",           // normalised echo of the code you sent, or null
-        "code_display": "CEDAR MANGO",    // or null when no code was sent
-        "workshop_url": "http://<host>/workshop?model=part_ab12cd34",
+        "first_name": "Alex",                                 // echo, or null if none sent
+        "user_id": "5f0c…",                                   // participant id, or null
+        "workshop_url": "http://<host>/workshop?name=Alex",   // opens their latest model
         "workshop_entry_url": "http://<host>/workshop"
       }
   Errors: 400 (no/invalid file or unsupported type; only .stl and .step are allowed)
           413 (larger than MAX_UPLOAD_MB)
           500 (could not save)
 
+  With no first_name the ingest is anonymous and workshop_url is
+  http://<host>/workshop?model=<stem> (opens the model directly).
   A plain browser form navigation (Accept: text/html, not an XHR) is answered with a
-  302 redirect straight to workshop_url instead of JSON.
+  302 redirect to workshop_url instead of JSON.
 
 GET /workshop
   ?model=<stem>   Serve the simplified viewer for that model.
-  ?code=<code>    Resolve the participant code and 302-redirect to ?model=...
-  (no parameters) The accessible code-entry page.
+  ?name=<first>   Resolve the participant's first name to their latest model, attach
+                  their session cookie, and 302-redirect to ?model=...
+  (no parameters) The accessible first-name entry page.
 ```
 
 ## Integrating in a web app
@@ -72,34 +79,32 @@ example `http://braille-station.local:8635`. CORS is already open, so a cross-or
 `fetch` works.
 
 ```js
-async function sendToAccessibleViewer(stlBlob, filename = "result.stl", code) {
+async function sendToAccessibleViewer(stlBlob, firstName, filename = "result.stl") {
   const fd = new FormData();
   fd.append("file", stlBlob, filename);
-  if (code) fd.append("code", code);            // the code your tool generated + showed
+  if (firstName) fd.append("first_name", firstName);   // the participant's first name
   const res = await fetch(`${CAD_A11Y}/ingest`, { method: "POST", body: fd });
   const data = await res.json();
   if (data.status !== "success") throw new Error(data.message || "ingest failed");
-  return data; // { workshop_url, workshop_entry_url, ... }
+  return data; // { user_id, workshop_url, workshop_entry_url, ... }
 }
 ```
 
 **Single station** (the design tool and the braille display are the same machine, or
-the participant reads the result themselves): skip the code and open the viewer.
+the participant reads the result themselves): open the viewer.
 
 ```js
-const data = await sendToAccessibleViewer(stlBlob);
+const data = await sendToAccessibleViewer(stlBlob, "Alex");
 window.open(data.workshop_url, "_blank", "noopener");
 ```
 
 **Two stations** (the design tool is on the participant's machine; the braille
-display is on a separate station): generate a code, show it to the participant, and
-send it with the STL. The participant then enters it at the station.
+display is on a separate station): send the name with the STL, then the participant
+enters their first name at the station.
 
 ```js
-const code = myCodeGenerator();               // e.g. "CEDAR MANGO"
-showCard(code);                               // display / print for the participant
-await sendToAccessibleViewer(stlBlob, "result.stl", code);
-// At the braille station: open  CAD_A11Y + "/workshop"  and type the code.
+await sendToAccessibleViewer(stlBlob, "Alex");
+// At the braille station: open  CAD_A11Y + "/workshop"  and type "Alex".
 ```
 
 If the tool holds geometry in three.js, export an STL Blob first:
@@ -110,24 +115,19 @@ const stl = new STLExporter().parse(scene, { binary: false });
 const stlBlob = new Blob([stl], { type: "model/stl" });
 ```
 
-### Zero-JavaScript option
-
-A plain HTML form works too; the new tab is redirected straight into the viewer:
-
-```html
-<form action="http://braille-station.local:8635/ingest" method="post"
-      enctype="multipart/form-data" target="_blank">
-  <input type="file" name="file" accept=".stl,.step">
-  <input type="hidden" name="code" value="CEDAR MANGO">
-  <button>Open in accessible viewer</button>
-</form>
-```
-
 ### Command line
 
 ```
-curl -F file=@result.stl -F code="cedar mango" http://braille-station.local:8635/ingest
+curl -F file=@result.stl -F first_name=Alex http://braille-station.local:8635/ingest
 ```
+
+## Trying it without the partner tool
+
+`examples/ingest-test.html` is a static page that plays the role of the sending tool:
+open it in a browser, set the server URL and a first name, and click **Send** to POST
+a bundled sample model (`examples/sample-model.stl`) to `/ingest`. It shows the
+returned `user_id` and a link that opens the model in the viewer. Handy for verifying
+the endpoint end to end before the partner tool is wired up.
 
 ## Configuration
 
@@ -142,6 +142,5 @@ These environment variables (see `.env.example`) tune the behaviour:
 ## Notes
 
 * `.stl` and `.step` are the only accepted file types.
-* If a participant sends several models under the same code, entering that code opens
-  the most recent one.
-* Codes are matched case- and separator-insensitively (`CEDAR MANGO` == `cedar-mango`).
+* Sending several models under the same first name keeps them all; entering that name
+  opens the most recent one.
