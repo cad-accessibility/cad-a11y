@@ -137,7 +137,22 @@ def init_db() -> None:
     """Create all tables and indexes. Safe to call multiple times (CREATE IF NOT EXISTS)."""
     conn = _get_conn()
     conn.executescript(_DDL)
+    _backfill_render_mode_labels(conn)
     conn.commit()
+
+
+def _backfill_render_mode_labels(conn: sqlite3.Connection) -> None:
+    """Rewrite render_mode values the viewer no longer sends.
+
+    The viewer used to send "Shaded" for the mode its UI has always labelled
+    "Filled", and render_stats stores whatever it was sent. Both names render
+    identically server-side, so the split was cosmetic, but it fragments
+    "SELECT render_mode, COUNT(*) ... GROUP BY render_mode" into two series
+    either side of the rename.
+
+    Idempotent: the second run matches no rows.
+    """
+    conn.execute("UPDATE render_stats SET render_mode = 'Filled' WHERE render_mode = 'Shaded'")
 
 
 # ---------------------------------------------------------------------------
