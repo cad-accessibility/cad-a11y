@@ -357,36 +357,60 @@ class TestUploadRegistration:
 # ---------------------------------------------------------------------------
 
 class TestIngestWorkshop:
-    def _ingest(self, client, filename="ingest.stl", content=_MINIMAL_STL, code=None):
+    def _ingest(self, client, filename="ingest.stl", content=_MINIMAL_STL, first_name=None):
         data = {"file": (io.BytesIO(content), filename)}
-        if code is not None:
-            data["code"] = code
+        if first_name is not None:
+            data["first_name"] = first_name
         return client.post("/ingest", data=data, content_type="multipart/form-data")
 
-    def test_ingest_without_code_is_anonymous(self, client):
+    def test_ingest_without_name_is_anonymous(self, client):
         resp = self._ingest(client)
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["status"] == "success"
-        assert data["code"] is None
+        assert data["first_name"] is None
+        assert data["user_id"] is None
         assert "/workshop?model=" in data["workshop_url"]
         assert data["workshop_entry_url"].endswith("/workshop")
 
-    def test_ingest_with_code_registers_model(self, client):
-        # The calling tool generates the code and sends it; we normalise + store it.
-        data = self._ingest(client, code="Cedar Mango").get_json()
-        assert data["code"] == "cedar-mango"
-        assert data["code_display"] == "CEDAR MANGO"
-        assert db_module.get_latest_model_for_identifier("cedar-mango") == data["filename"]
+    def test_ingest_with_name_creates_participant_and_registers_model(self, client):
+        data = self._ingest(client, first_name="Alex").get_json()
+        assert data["first_name"] == "Alex"
+        assert data["user_id"]  # a unique participant id
+        assert db_module.get_latest_model_for_identifier("alex") == data["filename"]
+        assert "/workshop?name=" in data["workshop_url"]
 
-    def test_ingest_raw_body_with_code(self, client):
+    def test_same_name_reuses_participant_and_saves_all_models(self, client):
+        a = self._ingest(client, first_name="Alex").get_json()
+        b = self._ingest(client, first_name="alex ").get_json()  # case/space-insensitive
+        assert a["user_id"] == b["user_id"]  # one participant per first name
+        # Both iterations are saved; lookup returns the latest.
+        assert len(db_module.get_session_models(a["user_id"])) == 2
+        assert db_module.get_latest_model_for_identifier("alex") == b["filename"]
+
+    def test_workshop_participant_actions_logged_without_consent(self, client):
+        import sqlite3
+        data = self._ingest(client, first_name="Alex").get_json()
+        # No consent dialog is shown in the workshop, but a participant's renders must
+        # still record because they are flagged as a workshop session.
+        db_module.record_render(
+            data["user_id"], "x+", "Filled", 0.5, 1.0, "single", "http_render"
+        )
+        conn = sqlite3.connect(str(db_module.DB_PATH))
+        n = conn.execute(
+            "SELECT COUNT(*) FROM render_stats WHERE session_id=?", (data["user_id"],)
+        ).fetchone()[0]
+        conn.close()
+        assert n == 1
+
+    def test_ingest_raw_body_with_name(self, client):
         resp = client.post(
-            "/ingest?filename=raw.stl&code=blue-otter",
+            "/ingest?filename=raw.stl&first_name=Blue",
             data=_MINIMAL_STL,
             content_type="application/octet-stream",
         )
         assert resp.status_code == 200
-        assert resp.get_json()["code"] == "blue-otter"
+        assert resp.get_json()["first_name"] == "Blue"
 
     def test_ingest_rejects_bad_extension(self, client):
         assert self._ingest(client, filename="notes.png").status_code == 400
@@ -396,27 +420,28 @@ class TestIngestWorkshop:
         gd = client.get("/get_data").get_json()
         assert data["model_stem"] in gd["model_list"]
 
-    def test_workshop_code_redirects_case_insensitive(self, client):
-        data = self._ingest(client, code="cedar mango").get_json()
-        resp = client.get("/workshop?code=CEDAR%20MANGO")
+    def test_workshop_name_redirects_and_sets_cookie(self, client):
+        data = self._ingest(client, first_name="Alex").get_json()
+        resp = client.get("/workshop?name=ALEX")  # case-insensitive
         assert resp.status_code == 302
         assert f"model={data['model_stem']}" in resp.headers["Location"]
+        # Participant cookie is attached so their in-app actions log against them.
+        assert "cad_session" in resp.headers.get("Set-Cookie", "")
 
-    def test_workshop_unknown_code_shows_entry_page(self, client):
-        resp = client.get("/workshop?code=no-such-code")
+    def test_workshop_unknown_name_shows_entry_page(self, client):
+        resp = client.get("/workshop?name=nobody")
         assert resp.status_code == 200
-        assert b"Enter your code" in resp.data
+        assert b"Enter your first name" in resp.data
 
-    def test_workshop_blank_code_shows_notice(self, client):
-        # Submitted but blank: explain it, rather than silently re-rendering the form.
-        resp = client.get("/workshop?code=%20%20")
+    def test_workshop_blank_name_shows_notice(self, client):
+        resp = client.get("/workshop?name=%20%20")
         assert resp.status_code == 200
-        assert b"could not find a model for that code" in resp.data
+        assert b"could not find a model for that name" in resp.data
 
-    def test_workshop_without_code_param_has_no_notice(self, client):
+    def test_workshop_without_name_param_has_no_notice(self, client):
         resp = client.get("/workshop")
         assert resp.status_code == 200
-        assert b"could not find a model for that code" not in resp.data
+        assert b"could not find a model for that name" not in resp.data
 
     def test_workshop_model_serves_viewer(self, client):
         data = self._ingest(client).get_json()
@@ -424,10 +449,10 @@ class TestIngestWorkshop:
         assert resp.status_code == 200
         assert b"Accessible 3D Model Viewer" in resp.data
 
-    def test_workshop_entry_page_has_code_input(self, client):
+    def test_workshop_entry_page_has_name_input(self, client):
         resp = client.get("/workshop")
         assert resp.status_code == 200
-        assert b'name="code"' in resp.data
+        assert b'name="name"' in resp.data
 
 
 # ---------------------------------------------------------------------------

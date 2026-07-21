@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Open your model — Accessible 3D Viewer</title>
-    <meta name="description" content="Enter your two words to open your 3D model in the accessible viewer.">
+    <meta name="description" content="Enter your first name to open your 3D model in the accessible viewer.">
     <link rel="stylesheet" href="/static/css/viewer.css?v=20260529-7">
 </head>
 <body class="workshop-entry">
@@ -15,17 +15,17 @@
         </header>
         <main id="main-content">
             <!--NOTICE-->
-            <form method="get" action="/workshop" class="section" aria-labelledby="code-heading">
-                <h2 id="code-heading">Enter your code</h2>
-                <p class="help-text" id="code-help">
-                    Type the words on your card. Capital letters, spaces, and dashes do not
-                    matter.
+            <form method="get" action="/workshop" class="section" aria-labelledby="name-heading">
+                <h2 id="name-heading">Enter your first name</h2>
+                <p class="help-text" id="name-help">
+                    Type your first name, the same one on your name tag. Capital letters
+                    and spaces do not matter.
                 </p>
                 <div class="field">
-                    <label for="code">Your code</label>
-                    <input type="text" id="code" name="code" autocomplete="off"
-                           autocapitalize="none" autocorrect="off" spellcheck="false"
-                           required aria-describedby="code-help">
+                    <label for="name">Your first name</label>
+                    <input type="text" id="name" name="name" autocomplete="given-name"
+                           autocapitalize="words" autocorrect="off" spellcheck="false"
+                           required aria-describedby="name-help">
                 </div>
                 <div class="button-group">
                     <button type="submit">Open my model</button>

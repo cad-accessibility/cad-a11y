@@ -184,34 +184,35 @@ def _attach_session_cookie(response: Response, session_id: str) -> Response:
 
 
 # ---------------------------------------------------------------------------
-# Workshop participant codes. The calling tool generates the code and sends it
-# with the STL; here we only normalise it into a stable, case- and separator-
-# insensitive lookup key (screen-reader/braille friendly, read word by word).
+# Workshop participants. The calling tool sends the participant's first name with the
+# STL; we key each participant on their (normalised) first name and give them a unique
+# user id so their models and in-app actions can be linked together for the research.
 # ---------------------------------------------------------------------------
-def _normalize_code(raw: Any) -> str | None:
-    """Normalise a participant code into a stable lookup key: lowercase, with any
-    run of non-alphanumeric characters collapsed to a single hyphen. So 'Cedar
-    Mango', 'cedar-mango' and 'CEDAR_MANGO' all match. Returns None if empty."""
+def _normalize_name(raw: Any) -> str | None:
+    """Normalise a participant first name into a stable, case- and spacing-insensitive
+    lookup key (e.g. '  Alex ' and 'alex' both match). Returns None if empty."""
     if raw is None:
         return None
-    key = re.sub(r"[^a-z0-9]+", "-", str(raw).strip().lower()).strip("-")
+    key = " ".join(str(raw).strip().lower().split())
     return key or None
 
 
-def _code_display(code: str) -> str:
-    """'cedar-mango' -> 'CEDAR MANGO' for display."""
-    return code.replace("-", " ").upper()
+def _participant_for_name(first_name: str) -> str:
+    """Return the workshop participant id (a unique session id) for this normalised
+    first name, creating one the first time the name is seen and reusing it afterwards
+    so a participant's iterations attach to the same record. Workshop participants are
+    flagged so their in-app actions are recorded without the analytics consent dialog.
 
-
-def _session_for_identifier(identifier: str) -> str:
-    """Return an existing session id tied to this identifier, or create one."""
-    existing = db.get_session_id_for_identifier(identifier)
+    First names are not unique, so two people sharing one first name share one record;
+    the workshop mitigates that out of band (name tags, photos)."""
+    existing = db.get_session_id_for_identifier(first_name)
     if existing:
+        db.upsert_session(existing)  # refresh last_seen_at
         return existing
-    sid = str(uuid.uuid4())
-    db.upsert_session(sid)
-    db.save_session_identifier(sid, identifier, consent_given=False)
-    return sid
+    user_id = str(uuid.uuid4())
+    db.upsert_session(user_id)
+    db.save_session_identifier(user_id, first_name, consent_given=False, is_workshop=True)
+    return user_id
 
 
 DEFAULT_RENDER_PARAMS: dict[str, Any] = {
@@ -953,12 +954,11 @@ def serve_viewer():
 
 
 def _render_workshop_entry(notice: bool = False) -> Response:
-    """Serve the accessible code-entry page. No JS required; screen-reader/braille
-    friendly. The code is generated and shown to the participant by the calling
-    tool, so we render a single free-text field and normalise it on submit."""
+    """Serve the accessible first-name entry page. No JS required; screen-reader/braille
+    friendly. The participant types their first name and we normalise it on submit."""
     notice_html = (
         '<p class="workshop-notice" role="alert">We could not find a model for that '
-        "code yet. Please check the words on your card and try again.</p>"
+        "name yet. Please check your first name and try again.</p>"
         if notice
         else ""
     )
@@ -971,29 +971,35 @@ def workshop():
     """Simplified workshop entry point.
 
     ``?model=<stem>``  serve the viewer (viewer.js renders it in simplified mode).
-    ``?code=<code>``   resolve the participant code to their latest model and redirect
-                       into the pre-loaded viewer.
-    (no params)        the accessible code-entry page.
+    ``?name=<first>``  resolve the participant's first name to their latest model and
+                       redirect into the pre-loaded viewer, attaching their cookie.
+    (no params)        the accessible first-name entry page.
     """
     if request.args.get("model"):
         return send_file(REPO_ROOT / "accessible-3d-viewer.html")
 
-    code_param = request.args.get("code")
-    raw_code = (code_param or "").strip()
-    if not raw_code:
-        # A code that is present but blank (e.g. only spaces) means the participant
+    name_param = request.args.get("name")
+    raw_name = (name_param or "").strip()
+    if not raw_name:
+        # A name that is present but blank (e.g. only spaces) means the participant
         # submitted something unusable, so tell them rather than silently re-rendering
         # an empty form with no explanation for a screen reader to announce.
-        return _render_workshop_entry(notice=code_param is not None)
+        return _render_workshop_entry(notice=name_param is not None)
 
-    identifier = _normalize_code(raw_code)
-    if identifier:
-        filename = db.get_latest_model_for_identifier(identifier)
+    normalized_name = _normalize_name(raw_name)
+    if normalized_name:
+        filename = db.get_latest_model_for_identifier(normalized_name)
         if filename:
             _refresh_model_list_if_stale()
             stem = Path(filename).stem
             if stem in MODEL_NAME_LIST:
-                return redirect(f"/workshop?model={quote(stem)}", code=302)
+                # Attach the participant's session cookie so their in-app actions
+                # (renders, key presses) log against them, then open their model.
+                resp = redirect(f"/workshop?model={quote(stem)}", code=302)
+                user_id = db.get_session_id_for_identifier(normalized_name)
+                if user_id:
+                    _attach_session_cookie(resp, user_id)
+                return resp
     return _render_workshop_entry(notice=True)
 
 
@@ -1013,8 +1019,8 @@ def home():
                 "/commands/stats": "GET - Command statistics",
                 "/models": "GET/POST - List or update active model index",
                 "/upload": "POST - Upload an STL or STEP model file",
-                "/ingest": "POST - Ingest an STL from an external tool; optional caller-supplied code, returns a workshop_url",
-                "/workshop": "GET - Simplified viewer; ?model= pre-loads, ?code= resolves a participant code",
+                "/ingest": "POST - Ingest an STL from an external tool; optional first_name, returns a workshop_url + user_id",
+                "/workshop": "GET - Simplified viewer; ?model= pre-loads, ?name= resolves a participant's first name",
                 "/get_data": "GET - Optional cube/slider state",
                 "/render/dotpad-hex": "POST - Get render as DotPad hex string for Web SDK",
                 "/viewer": "GET - Serve the HTML viewer (required for DotPad Web SDK)",
@@ -1464,10 +1470,11 @@ def ingest_model():
     in the simplified /workshop viewer.
 
     Body: multipart form-data with a ``file`` field, or a raw STL body (name via
-    ``?filename=`` / ``X-Filename``). The participant code is generated by the calling
-    tool and passed as ``code`` (form field, query parameter or ``X-Code`` header). It
-    is optional: when given, the model is registered under the normalised code so the
-    participant can retrieve it at a braille station; without one the ingest is
+    ``?filename=`` / ``X-Filename``). The participant's first name is sent by the
+    calling tool as ``first_name`` (form field, query parameter or ``X-First-Name``
+    header). It is optional: when given, the model is stored under a workshop
+    participant (a unique user id keyed on the first name) so it can be retrieved at a
+    braille station and the participant's actions are logged; without one the ingest is
     anonymous and the returned workshop_url opens the model directly.
     """
     upload = request.files.get("file")
@@ -1485,19 +1492,22 @@ def ingest_model():
         def save_fn(dest: Path) -> None:
             dest.write_bytes(raw)
 
-    # The participant code is generated and shown to the user by the calling tool;
-    # we just take it from the request and use it as the lookup key. Without one the
-    # ingest is anonymous (single-station: the returned workshop_url opens it directly).
-    code = _normalize_code(
-        request.form.get("code") or request.args.get("code") or request.headers.get("X-Code")
+    # The calling tool sends the participant's first name; we key the participant on it
+    # and give them a unique user id. Without a name the ingest is anonymous (single
+    # station: the returned workshop_url opens the model directly).
+    first_name = (
+        request.form.get("first_name")
+        or request.args.get("first_name")
+        or request.headers.get("X-First-Name")
     )
-    session_id = _session_for_identifier(code) if code else None
+    normalized_name = _normalize_name(first_name)
+    user_id = _participant_for_name(normalized_name) if normalized_name else None
 
     try:
         filename, dest, new_index = _save_and_index_stl(
             save_fn,
             requested_name,
-            session_id=session_id,
+            session_id=user_id,
             original_name=requested_name,
         )
     except ValueError as err:
@@ -1509,7 +1519,13 @@ def ingest_model():
 
     stem = dest.stem
     base = (os.getenv("PUBLIC_BASE_URL") or request.host_url).rstrip("/")
-    workshop_url = f"{base}/workshop?model={quote(stem)}"
+    if normalized_name:
+        # Open via the participant so the viewer sets their session cookie and loads
+        # their latest model (this ingest); their in-app actions then log against them.
+        workshop_path = f"/workshop?name={quote(first_name.strip())}"
+    else:
+        workshop_path = f"/workshop?model={quote(stem)}"
+    workshop_url = f"{base}{workshop_path}"
 
     # Single-station conveniences are opt-in so a shared braille station is never
     # yanked away from the model it is currently showing. The host pop-up needs the
@@ -1519,11 +1535,15 @@ def ingest_model():
         _push_sse({"load_model": stem})
         if os.getenv("INGEST_OPEN_ON_HOST", "0") == "1":
             try:
-                webbrowser.open(f"http://localhost:6969/workshop?model={quote(stem)}", new=1)
+                webbrowser.open(f"http://localhost:6969{workshop_path}", new=1)
             except Exception as err:
                 _log(f"INGEST_OPEN_ON_HOST failed: {err}")
 
-    _log(f"Model ingested: {filename} → index {new_index} (code {code or 'none'})", force=True)
+    _log(
+        f"Model ingested: {filename} → index {new_index} "
+        f"(participant {normalized_name or 'anonymous'})",
+        force=True,
+    )
 
     # A plain browser form navigation gets redirected straight into the pre-loaded
     # viewer; fetch/XHR and other API clients get JSON.
@@ -1537,8 +1557,8 @@ def ingest_model():
         "filename": filename,
         "model_stem": stem,
         "new_model_index": new_index,
-        "code": code,
-        "code_display": _code_display(code) if code else None,
+        "first_name": first_name.strip() if first_name else None,
+        "user_id": user_id,
         "workshop_url": workshop_url,
         "workshop_entry_url": f"{base}/workshop",
     }), 200

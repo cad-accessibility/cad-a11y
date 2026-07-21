@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     id            TEXT PRIMARY KEY,
     identifier    TEXT,
     consent_given INTEGER,
+    is_workshop   INTEGER DEFAULT 0,
     created_at    DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     last_seen_at  DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
@@ -137,7 +138,16 @@ def init_db() -> None:
     """Create all tables and indexes. Safe to call multiple times (CREATE IF NOT EXISTS)."""
     conn = _get_conn()
     conn.executescript(_DDL)
+    _migrate(conn)
     conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after a table's first CREATE. CREATE IF NOT EXISTS never
+    alters an existing table, so new columns need an explicit ALTER on older databases."""
+    session_cols = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)")}
+    if "is_workshop" not in session_cols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN is_workshop INTEGER DEFAULT 0")
 
 
 # ---------------------------------------------------------------------------
@@ -158,17 +168,19 @@ def upsert_session(session_id: str) -> dict[str, Any]:
 
 def get_session(session_id: str) -> dict[str, Any] | None:
     row = _get_conn().execute(
-        "SELECT id, identifier, consent_given, created_at, last_seen_at FROM sessions WHERE id = ?",
+        "SELECT id, identifier, consent_given, is_workshop, created_at, last_seen_at FROM sessions WHERE id = ?",
         (session_id,),
     ).fetchone()
     return dict(row) if row else None
 
 
-def save_session_identifier(session_id: str, email: str | None, consent_given: bool) -> None:
+def save_session_identifier(
+    session_id: str, email: str | None, consent_given: bool, is_workshop: bool = False
+) -> None:
     conn = _get_conn()
     conn.execute(
-        "UPDATE sessions SET identifier = ?, consent_given = ? WHERE id = ?",
-        (email, 1 if consent_given else 0, session_id),
+        "UPDATE sessions SET identifier = ?, consent_given = ?, is_workshop = ? WHERE id = ?",
+        (email, 1 if consent_given else 0, 1 if is_workshop else 0, session_id),
     )
     conn.commit()
 
@@ -229,7 +241,7 @@ def get_latest_model_for_identifier(identifier: str) -> str | None:
            FROM uploaded_models um
            JOIN sessions s ON um.session_id = s.id
            WHERE s.identifier = ? AND um.deleted_at IS NULL
-           ORDER BY um.uploaded_at DESC
+           ORDER BY um.uploaded_at DESC, um.id DESC
            LIMIT 1""",
         (identifier,),
     ).fetchone()
@@ -319,7 +331,7 @@ def record_render(
         if not session_id:
             return
         session = get_session(session_id)
-        if not session or session.get("consent_given") != 1:
+        if not session or (session.get("consent_given") != 1 and session.get("is_workshop") != 1):
             return
         conn = _get_conn()
         conn.execute(
@@ -343,7 +355,7 @@ def record_page_event(
         if not session_id:
             return
         session = get_session(session_id)
-        if not session or session.get("consent_given") != 1:
+        if not session or (session.get("consent_given") != 1 and session.get("is_workshop") != 1):
             return
         conn = _get_conn()
         conn.execute(
