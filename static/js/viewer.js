@@ -319,40 +319,6 @@ async function sendStateToServer() {
 
 // State management
 let currentSliceDepth = 50;
-
-// Simplified workshop viewer (/workshop or ?ui=simple): depth is constrained to
-// four fixed steps through the model so blind users get a small, repeatable set of
-// cross-sections. The server still receives the underlying 0-100 percentage.
-const SIMPLE_DEPTH_STOPS = [0, 33, 67, 100];
-function isSimpleDepthMode() {
-    return document.body.classList.contains('simple-ui');
-}
-function snapDepthToStop(value) {
-    return SIMPLE_DEPTH_STOPS.reduce(
-        (best, stop) => (Math.abs(stop - value) < Math.abs(best - value) ? stop : best),
-        SIMPLE_DEPTH_STOPS[0]
-    );
-}
-function steppedDepthStop(current, direction) {
-    let idx = SIMPLE_DEPTH_STOPS.indexOf(snapDepthToStop(current));
-    idx = Math.max(0, Math.min(SIMPLE_DEPTH_STOPS.length - 1, idx + direction));
-    return SIMPLE_DEPTH_STOPS[idx];
-}
-// Target depth for a "go deeper"/"go shallower" nudge: one stop in simple mode,
-// otherwise the normal continuous delta (±1 for arrows, ±10 for page/buttons).
-function deeperDepthTarget(delta) {
-    return isSimpleDepthMode() ? steppedDepthStop(currentSliceDepth, 1) : Math.min(100, currentSliceDepth + delta);
-}
-function shallowerDepthTarget(delta) {
-    return isSimpleDepthMode() ? steppedDepthStop(currentSliceDepth, -1) : Math.max(0, currentSliceDepth - delta);
-}
-function depthValueText() {
-    if (isSimpleDepthMode()) {
-        const idx = SIMPLE_DEPTH_STOPS.indexOf(snapDepthToStop(currentSliceDepth));
-        return `${currentSliceDepth} percent depth, step ${idx + 1} of ${SIMPLE_DEPTH_STOPS.length}`;
-    }
-    return `${currentSliceDepth} percent depth`;
-}
 let currentView = 'x+';
 let currentZoom = 0.0;
 let currentRenderMode = 'Shaded';
@@ -819,9 +785,9 @@ function getStatusBarAnnouncement() {
 function updateButtonLabels() {
     const depthText = `${currentSliceDepth}%`;
     deeperBtn.textContent = `Deeper: Currently ${depthText}`;
-    deeperBtn.setAttribute('aria-label', `Go deeper. Current depth: ${depthText}. Will increase to ${deeperDepthTarget(10)}%`);
+    deeperBtn.setAttribute('aria-label', `Go deeper. Current depth: ${depthText}. Will increase to ${Math.min(100, currentSliceDepth + 10)}%`);
     shallowerBtn.textContent = `Shallower: Currently ${depthText}`;
-    shallowerBtn.setAttribute('aria-label', `Go shallower. Current depth: ${depthText}. Will decrease to ${shallowerDepthTarget(10)}%`);
+    shallowerBtn.setAttribute('aria-label', `Go shallower. Current depth: ${depthText}. Will decrease to ${Math.max(0, currentSliceDepth - 10)}%`);
 }
 
 function updateSliceGraphLockUI() {
@@ -1227,11 +1193,7 @@ async function exportCurrentSliceAsPng() {
 // Update slice depth display and announce changes
 function updateSliceDepth(newDepth, shouldAnnounce = true) {
     const oldDepth = currentSliceDepth;
-    let target = Math.max(0, Math.min(100, newDepth));
-    // In the simplified viewer, any depth set snaps to the nearest fixed stop so
-    // drag and hardware-slider input land on a valid step too.
-    if (isSimpleDepthMode()) target = snapDepthToStop(target);
-    currentSliceDepth = target;
+    currentSliceDepth = Math.max(0, Math.min(100, newDepth));
     sliceSlider.value = currentSliceDepth;
     slicePercentage.textContent = currentSliceDepth;
     refreshViewInfoSummary();
@@ -1248,7 +1210,7 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
         // When shouldAnnounce=true (slider focused, hardware input) the mutation
         // IS the correct announcement channel, so we set it as before.
         if (shouldAnnounce) {
-            sliceSlider.setAttribute('aria-valuetext', depthValueText());
+            sliceSlider.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
         }
         updateButtonLabels();
         sendStateToServer();
@@ -1888,18 +1850,13 @@ if (clearAnnouncementsBtn && announcementHistory) {
 let sliderUpdateTimeout = null;
 
 sliceSlider.addEventListener('input', function() {
-    let newValue = parseInt(this.value);
-    // Snap drag input to the nearest fixed stop in the simplified viewer.
-    if (isSimpleDepthMode()) {
-        newValue = snapDepthToStop(newValue);
-        this.value = newValue;
-    }
+    const newValue = parseInt(this.value);
     currentSliceDepth = newValue;
     slicePercentage.textContent = currentSliceDepth;
     
     // Update ARIA attributes immediately
     this.setAttribute('aria-valuenow', currentSliceDepth);
-    this.setAttribute('aria-valuetext', depthValueText());
+    this.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
     
     // Update button labels immediately
     updateButtonLabels();
@@ -1915,7 +1872,7 @@ sliceSlider.addEventListener('change', function() {
 // changes made via keyboard shortcuts while focus was elsewhere.
 sliceSlider.addEventListener('focus', function() {
     this.setAttribute('aria-valuenow', currentSliceDepth);
-    this.setAttribute('aria-valuetext', depthValueText());
+    this.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
 });
 
 // Keyboard support for slider
@@ -1925,17 +1882,17 @@ sliceSlider.addEventListener('keydown', function(e) {
     switch(e.key) {
         case 'ArrowUp':
         case 'ArrowRight':
-            newValue = deeperDepthTarget(1);
+            newValue += 1;
             break;
         case 'ArrowDown':
         case 'ArrowLeft':
-            newValue = shallowerDepthTarget(1);
+            newValue -= 1;
             break;
         case 'PageUp':
-            newValue = deeperDepthTarget(10);
+            newValue += 10;
             break;
         case 'PageDown':
-            newValue = shallowerDepthTarget(10);
+            newValue -= 10;
             break;
         case 'Home':
             newValue = 0;
@@ -2035,13 +1992,13 @@ showViewInfoBoxCheckbox.addEventListener('change', function() {
 // Deeper depth button
 deeperBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
-    updateSliceDepth(deeperDepthTarget(10), true);
+    updateSliceDepth(currentSliceDepth + 10, true);
 });
 
 // Shallower depth button
 shallowerBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
-    updateSliceDepth(shallowerDepthTarget(10), true);
+    updateSliceDepth(currentSliceDepth - 10, true);
 });
 
 sliceGraphLockBtn.addEventListener('click', function() {
@@ -2160,7 +2117,7 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             {
                 const previousDepth = currentSliceDepth;
-                const nextDepth = deeperDepthTarget(1);
+                const nextDepth = Math.min(100, currentSliceDepth + 1);
                 updateSliceDepth(nextDepth, false);
                 announceDepthShortcut('ArrowUp', previousDepth, nextDepth);
             }
@@ -2170,7 +2127,7 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             {
                 const previousDepth = currentSliceDepth;
-                const nextDepth = shallowerDepthTarget(1);
+                const nextDepth = Math.max(0, currentSliceDepth - 1);
                 updateSliceDepth(nextDepth, false);
                 announceDepthShortcut('ArrowDown', previousDepth, nextDepth);
             }
@@ -2180,7 +2137,7 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             {
                 const previousDeeperDepth = currentSliceDepth;
-                const newDeeperDepth = deeperDepthTarget(10);
+                const newDeeperDepth = Math.min(100, currentSliceDepth + 10);
                 updateSliceDepth(newDeeperDepth, false);
                 announceDepthShortcut('PageUp', previousDeeperDepth, newDeeperDepth);
             }
@@ -2190,7 +2147,7 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             {
                 const previousShallowerDepth = currentSliceDepth;
-                const newShallowerDepth = shallowerDepthTarget(10);
+                const newShallowerDepth = Math.max(0, currentSliceDepth - 10);
                 updateSliceDepth(newShallowerDepth, false);
                 announceDepthShortcut('PageDown/1', previousShallowerDepth, newShallowerDepth);
             }
