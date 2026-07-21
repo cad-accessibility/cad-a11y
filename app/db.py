@@ -139,6 +139,7 @@ def init_db() -> None:
     conn = _get_conn()
     conn.executescript(_DDL)
     _migrate(conn)
+    _backfill_render_mode_labels(conn)
     conn.commit()
 
 
@@ -148,6 +149,20 @@ def _migrate(conn: sqlite3.Connection) -> None:
     session_cols = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)")}
     if "is_workshop" not in session_cols:
         conn.execute("ALTER TABLE sessions ADD COLUMN is_workshop INTEGER DEFAULT 0")
+
+
+def _backfill_render_mode_labels(conn: sqlite3.Connection) -> None:
+    """Rewrite render_mode values the viewer no longer sends.
+
+    The viewer used to send "Shaded" for the mode its UI has always labelled
+    "Filled", and render_stats stores whatever it was sent. Both names render
+    identically server-side, so the split was cosmetic, but it fragments
+    "SELECT render_mode, COUNT(*) ... GROUP BY render_mode" into two series
+    either side of the rename.
+
+    Idempotent: the second run matches no rows.
+    """
+    conn.execute("UPDATE render_stats SET render_mode = 'Filled' WHERE render_mode = 'Shaded'")
 
 
 # ---------------------------------------------------------------------------

@@ -356,7 +356,7 @@ class CADComparisonRenderer:
         """Map render mode from JSON format to internal format."""
         mode_mapping = {
             "outline": "outline",
-            "crease": "crease",
+            "x-ray": "x-ray",
             "filled": "filled",
             "shaded": "filled",
             "slice": "slice",

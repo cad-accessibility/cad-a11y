@@ -112,6 +112,40 @@ class TestDbAnalytics:
         assert row == ("x+", "Outline")
         conn.close()
 
+    def test_shaded_rows_are_backfilled_to_filled(self, tmp_db):
+        """Historical 'Shaded' rows join the 'Filled' series the viewer now sends."""
+        import sqlite3
+        sid = "test-backfill-sid"
+        db_module.upsert_session(sid)
+        db_module.save_session_identifier(sid, None, True)
+        db_module.record_render(sid, "x+", "Shaded", 0.5, 1.0, "single", "http_render")
+        db_module.record_render(sid, "x+", "Outline", 0.5, 1.0, "single", "http_render")
+
+        db_module.init_db()
+
+        conn = sqlite3.connect(str(tmp_db))
+        modes = dict(
+            conn.execute("SELECT render_mode, COUNT(*) FROM render_stats GROUP BY render_mode")
+        )
+        conn.close()
+        assert modes == {"Filled": 1, "Outline": 1}, "Shaded should have become Filled"
+
+    def test_backfill_is_idempotent(self, tmp_db):
+        """A second init_db() must not disturb rows legitimately sent as Filled."""
+        import sqlite3
+        sid = "test-idempotent-sid"
+        db_module.upsert_session(sid)
+        db_module.save_session_identifier(sid, None, True)
+        db_module.record_render(sid, "x+", "Shaded", 0.5, 1.0, "single", "http_render")
+
+        db_module.init_db()
+        db_module.init_db()
+
+        conn = sqlite3.connect(str(tmp_db))
+        modes = [r[0] for r in conn.execute("SELECT render_mode FROM render_stats")]
+        conn.close()
+        assert modes == ["Filled"]
+
     def test_record_render_requires_consent(self, tmp_db):
         import sqlite3
         sid = "test-no-consent-sid"
