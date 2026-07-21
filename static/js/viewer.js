@@ -327,7 +327,7 @@ let currentRenderMode = 'filled';
 let currentRepresentationMode = 'single';
 let currentMoveCamera = "none";
 let currentPrintView = false;
-let currentOutputDevice = 'monarch_hid';
+let currentOutputDevice = 'monarch';
 // Single source of truth for render modes.
 //   key        held in currentRenderMode and used as the radio `value`. Lowercase
 //              throughout, so a case mismatch cannot silently unselect the group.
@@ -1289,7 +1289,10 @@ function syncRadios() {
     syncRadioGroup(renderModeRadios(), currentRenderMode, 'render-mode');
     syncRadioGroup(viewModeRadios(), currentRepresentationMode, 'view-mode');
     syncRadioGroup(viewRadios(), currentView, 'view-select');
-    syncRadioGroup(outputDeviceRadios(), currentOutputDevice, 'output-device');
+    // 'monarch_hid' is the active-HID sub-state of the Monarch output device; both it
+    // and 'monarch' map to the single "Monarch" radio.
+    const outputRadioValue = currentOutputDevice === 'monarch_hid' ? 'monarch' : currentOutputDevice;
+    syncRadioGroup(outputDeviceRadios(), outputRadioValue, 'output-device');
 }
 
 function switchOutputDevice(targetDevice) {
