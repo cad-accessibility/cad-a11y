@@ -296,7 +296,7 @@ function onKey(device, currKeyCode, keyMsg) {
     if (byte6 === 0x01){
         // Go shallower (decrease depth by 100/N)
         const previousDepth = window.getCurrentSliceDepth();
-        const nextDepth = Math.max(0, currentSliceDepth - 100/n); // TODO: calculate integer value
+        const nextDepth = Math.max(0, previousDepth - 100/n); // TODO: calculate integer value
         window.updateSliceDepth(nextDepth, false);
         window.announceDepthShortcut('Dot 1', previousDepth, nextDepth);
         return;
@@ -304,7 +304,7 @@ function onKey(device, currKeyCode, keyMsg) {
     if (byte6 === 0x08){
         // Go deeper (increase depth by 100/N)
         const previousDepth = window.getCurrentSliceDepth();
-        const nextDepth = Math.min(100, currentSliceDepth + 100/n); // TODO: calculate integer value
+        const nextDepth = Math.min(100, previousDepth + 100/n); // TODO: calculate integer value
         window.updateSliceDepth(nextDepth, false);
         window.announceDepthShortcut('Dot 4', previousDepth, nextDepth);
         return;
