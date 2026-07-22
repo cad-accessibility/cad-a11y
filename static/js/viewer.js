@@ -220,7 +220,7 @@ async function sendStateToServer() {
             compose_scrollbar: composeScrollbar,
             compose_slicegraph: composeSliceGraph,
             show_view_info_box: showViewInfoBox,
-            output_device: currentOutputDevice,
+            output_device: getEffectiveOutputDevice(),
             slicegraph_locked: sliceGraphLocked,
             slicegraph_view: requestedGraphView,
             slicegraph_depth: requestedGraphDepth,
@@ -327,7 +327,12 @@ let currentRenderMode = 'filled';
 let currentRepresentationMode = 'single';
 let currentMoveCamera = "none";
 let currentPrintView = false;
+// The output-device radio the user picked: 'monarch', 'dotpad', or 'auto'.
+// Kept separate from whether a Monarch is actually connected over Web HID
+// (monarchHidConnected) so that selecting a radio can never turn off a live
+// Monarch feed — see getEffectiveOutputDevice and issue #75.
 let currentOutputDevice = 'monarch';
+let monarchHidConnected = false;
 // Single source of truth for render modes.
 //   key        held in currentRenderMode and used as the radio `value`. Lowercase
 //              throughout, so a case mismatch cannot silently unselect the group.
@@ -1289,10 +1294,24 @@ function syncRadios() {
     syncRadioGroup(renderModeRadios(), currentRenderMode, 'render-mode');
     syncRadioGroup(viewModeRadios(), currentRepresentationMode, 'view-mode');
     syncRadioGroup(viewRadios(), currentView, 'view-select');
-    // 'monarch_hid' is the active-HID sub-state of the Monarch output device; both it
-    // and 'monarch' map to the single "Monarch" radio.
-    const outputRadioValue = currentOutputDevice === 'monarch_hid' ? 'monarch' : currentOutputDevice;
-    syncRadioGroup(outputDeviceRadios(), outputRadioValue, 'output-device');
+    syncRadioGroup(outputDeviceRadios(), currentOutputDevice, 'output-device');
+}
+
+// The server only attaches monarch_cells_hex to a render when output_device is
+// 'monarch_hid'. Send that whenever a Monarch is connected over Web HID and the
+// user has not explicitly chosen a different device, independent of which radio
+// is selected — so picking the Monarch radio cannot turn its own feed off (#75).
+function getEffectiveOutputDevice() {
+    if (monarchHidConnected && (currentOutputDevice === 'monarch' || currentOutputDevice === 'auto')) {
+        return 'monarch_hid';
+    }
+    return currentOutputDevice;
+}
+
+// Called by the Monarch Web HID integration on connect/disconnect. Only toggles
+// the connection flag; the radio preference is the user's and is left alone.
+function setMonarchHidConnected(connected) {
+    monarchHidConnected = Boolean(connected);
 }
 
 function switchOutputDevice(targetDevice) {
