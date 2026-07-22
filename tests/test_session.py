@@ -446,6 +446,21 @@ class TestIngestWorkshop:
         assert resp.status_code == 200
         assert resp.get_json()["first_name"] == "Blue"
 
+    def test_ingest_raw_body_with_default_content_type(self, client):
+        # Accessing request.files (even to find it empty) makes
+        # Werkzeug parse the whole body as form data whenever Content-Type
+        # looks like a form, including the default "application/
+        # x-www-form-urlencoded" that many HTTP clients send for a raw body
+        # with no explicit Content-Type. That parse drains the input stream,
+        # so the raw-body fallback must not depend on request.files having
+        # left it untouched.
+        resp = client.post(
+            "/ingest?filename=raw.stl",
+            data=_MINIMAL_STL,
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["status"] == "success"
+
     def test_ingest_rejects_bad_extension(self, client):
         assert self._ingest(client, filename="notes.png").status_code == 400
 
