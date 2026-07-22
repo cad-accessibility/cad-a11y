@@ -10,7 +10,6 @@ let rawTarget = null;          // BluetoothDevice | SerialPort
 
 const statusEl = document.getElementById('dotpad-status');
 const bleScanBtn = document.getElementById('dotpad-scan-ble-btn');
-const usbScanBtn = document.getElementById('dotpad-scan-usb-btn');
 const disconnectBtn = document.getElementById('dotpad-disconnect-btn');
 const autoSendCheckbox = document.getElementById('dotpad-auto-send');
 
@@ -79,35 +78,6 @@ bleScanBtn.addEventListener('click', async () => {
         console.error('BLE scan/connect error:', err);
         setStatus('BLE error: ' + err.message);
         if (typeof window.announceAlert === 'function') window.announceAlert('DotPad Bluetooth error: ' + err.message);
-    }
-});
-
-// --- USB scan & connect ---
-usbScanBtn.addEventListener('click', async () => {
-    try {
-        setStatus('Requesting USB DotPad...');
-        const port = await scanner.startUsbScan();
-        if (!port) { setStatus('No USB device selected.'); return; }
-        rawTarget = port;
-        setStatus('Connecting to USB DotPad...');
-        const dotDevice = await sdk.connectUsbDevice(port);
-        if (dotDevice) {
-            connectedDevice = dotDevice;
-            connectionType = 'usb';
-            sdk.setCallBack(onMessage, onKey);
-            setStatus(`Connected: USB DotPad`);
-            disconnectBtn.disabled = false;
-            if (typeof window.announce === 'function') window.announce('DotPad connected via USB.');
-            // Send current model state immediately so the display shows the model on connect.
-            if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
-        } else {
-            setStatus('USB connection failed.');
-            if (typeof window.announceAlert === 'function') window.announceAlert('DotPad USB connection failed.');
-        }
-    } catch (err) {
-        console.error('USB scan/connect error:', err);
-        setStatus('USB error: ' + err.message);
-        if (typeof window.announceAlert === 'function') window.announceAlert('DotPad USB error: ' + err.message);
     }
 });
 

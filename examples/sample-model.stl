@@ -1,0 +1,44 @@
+solid sample_pyramid
+  facet normal 0.000000 0.000000 -1.000000
+    outer loop
+      vertex 0.000000 0.000000 0.000000
+      vertex 20.000000 20.000000 0.000000
+      vertex 20.000000 0.000000 0.000000
+    endloop
+  endfacet
+  facet normal 0.000000 0.000000 -1.000000
+    outer loop
+      vertex 0.000000 0.000000 0.000000
+      vertex 0.000000 20.000000 0.000000
+      vertex 20.000000 20.000000 0.000000
+    endloop
+  endfacet
+  facet normal 0.000000 -0.923077 0.384615
+    outer loop
+      vertex 0.000000 0.000000 0.000000
+      vertex 20.000000 0.000000 0.000000
+      vertex 10.000000 10.000000 24.000000
+    endloop
+  endfacet
+  facet normal 0.923077 -0.000000 0.384615
+    outer loop
+      vertex 20.000000 0.000000 0.000000
+      vertex 20.000000 20.000000 0.000000
+      vertex 10.000000 10.000000 24.000000
+    endloop
+  endfacet
+  facet normal 0.000000 0.923077 0.384615
+    outer loop
+      vertex 20.000000 20.000000 0.000000
+      vertex 0.000000 20.000000 0.000000
+      vertex 10.000000 10.000000 24.000000
+    endloop
+  endfacet
+  facet normal -0.923077 0.000000 0.384615
+    outer loop
+      vertex 0.000000 20.000000 0.000000
+      vertex 0.000000 0.000000 0.000000
+      vertex 10.000000 10.000000 24.000000
+    endloop
+  endfacet
+endsolid sample_pyramid
