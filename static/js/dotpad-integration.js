@@ -10,7 +10,6 @@ let rawTarget = null;          // BluetoothDevice | SerialPort
 
 const statusEl = document.getElementById('dotpad-status');
 const bleScanBtn = document.getElementById('dotpad-scan-ble-btn');
-const usbScanBtn = document.getElementById('dotpad-scan-usb-btn');
 const disconnectBtn = document.getElementById('dotpad-disconnect-btn');
 const autoSendCheckbox = document.getElementById('dotpad-auto-send');
 

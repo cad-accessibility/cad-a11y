@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Accessible 3D Model Viewer</title>
     <meta name="description" content="An accessible interface for viewing and interacting with 3D models, optimized for screen readers and keyboard navigation">
-    <link rel="stylesheet" href="/static/css/viewer.css">
+    <link rel="stylesheet" href="/static/css/viewer.css?v=20260529-7">
 </head>
 <body>
     <!-- Skip navigation link – WCAG 2.4.1 -->
@@ -189,7 +189,7 @@
                 <div id="view-mode-help" class="help-text">
                     Choose how to visualize the model
                 </div>
-                <div aria-describedby="view-mode-help">
+                <div id="view-mode-block" aria-describedby="view-mode-help">
                     <fieldset role="radiogroup" aria-labelledby="render-heading">
                         <legend class="sr-only">View Mode Options</legend>
                         <label>
@@ -262,8 +262,13 @@
                     </button>
                 </div>
                 <div class="help-text" id="slice-graph-lock-status">Graph lock ON.</div>
+            </section>
 
-                <fieldset style="margin-top: 8px;">
+            <!-- Output device: braille display routing. Its own section so it stays
+                 visible in the simplified /workshop viewer. -->
+            <section class="section" aria-labelledby="output-device-heading">
+                <h2 id="output-device-heading">Output device</h2>
+                <fieldset>
                     <legend class="sr-only">Output device</legend>
                     <label>
                         <input type="radio" name="output-device" id="output-device-monarch" value="monarch" checked>
@@ -349,7 +354,6 @@
                 <h2 id="dotpad-heading">DotPad</h2>
                 <div class="button-group" style="margin-bottom: 8px;">
                     <button type="button" id="dotpad-scan-ble-btn">Connect BLE</button>
-                    <button type="button" id="dotpad-scan-usb-btn">Connect USB</button>
                     <button type="button" id="dotpad-disconnect-btn" disabled>Disconnect</button>
                 </div>
                 <div id="dotpad-status" class="help-text">
@@ -475,7 +479,7 @@
                         </div>
                     </section>
 
-                    <section class="section" aria-hidden="true">
+                    <section class="section" id="tactile-preview-section" aria-hidden="true">
                         <h2 aria-hidden="true">Tactile Display Preview</h2>
                         <div id="side-by-side-axis-labels" class="side-by-side-axis-labels" hidden>
                             <div id="left-view-axis-label" class="side-by-side-axis-label">Left view: --</div>
@@ -558,13 +562,13 @@
         </form>
     </dialog>
 
-    <script src="/static/js/viewer.js?v=20260529-5"></script>
+    <script src="/static/js/viewer.js?v=20260529-8"></script>
 
     <!-- Monarch USB Browser HID integration (mirrors braille_display.py _send_to_monarch) -->
     <script src="/static/js/monarch-hid.js"></script>
 
     <!-- DotPad Web SDK integration (ES module) -->
-    <script type="module" src="/static/js/dotpad-integration.js"></script>
+    <script type="module" src="/static/js/dotpad-integration.js?v=20260721"></script>
 
     <!-- Trinkey Slider (Web Serial) -->
     <script src="/static/js/trinkey-slider.js"></script>
@@ -581,6 +585,12 @@
         // GET /session/me tells us whether the user has already seen the consent prompt.
         // ---------------------------------------------------------------------------
         async function initSession() {
+            // Skip the consent prompt in the simplified workshop viewer: it is a
+            // transient, no-login flow and we deliberately set no tracking cookie there.
+            const workshopSimple = location.pathname.replace(/\/+$/, '') === '/workshop'
+                || new URLSearchParams(location.search).get('ui') === 'simple';
+            if (workshopSimple) return;
+
             let sessionData = null;
             try {
                 const res = await fetch('/session/me');

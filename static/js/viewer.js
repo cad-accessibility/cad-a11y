@@ -1525,6 +1525,18 @@ function updateModelList(model_list) {
     if (!Array.isArray(model_list)) return;
     lastFullModelList = model_list;
 
+    // In the simplified workshop viewer the model dropdown is hidden and the model
+    // is chosen from the URL, so never rebuild it or reset the current selection
+    // (the ownership filter would otherwise drop an ingested model and reset to 0).
+    // Just keep the status-bar label in sync with the URL-selected model.
+    if (document.body.classList.contains('simple-ui')) {
+        const simpleIdx = Number(currentModel);
+        if (sbModel && lastFullModelList[simpleIdx] !== undefined) {
+            sbModel.textContent = lastFullModelList[simpleIdx];
+        }
+        return;
+    }
+
     const dropdown = document.getElementById("model-list-dropdown");
     const entries = _visibleModelEntries(model_list);
     // Signature is over the visible stems only so filter changes force a rebuild.
@@ -1764,6 +1776,18 @@ function applyServerState(data) {
     }
     if (data.bbox) {
         updateBoundingBox(data.bbox);
+    }
+    // Live model switch pushed by /ingest?open=1 over SSE: jump an already-open
+    // viewer to a freshly-ingested model. Transient — /get_data never carries this,
+    // and the index guard keeps it idempotent.
+    if (data.load_model) {
+        const idx = lastFullModelList.indexOf(data.load_model);
+        if (idx >= 0 && String(idx) !== currentModel) {
+            currentModel = String(idx);
+            clearCameraCenterState();
+            pendingInputSource = 'ingest';
+            sendStateToServer();
+        }
     }
 }
 
@@ -2570,10 +2594,17 @@ function focusTopOfPage() {
 }
 
 // Initialize the interface
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', async function() {
     // Move focus to the top element (page title) on load.
     focusTopOfPage();
 
+    // Simplified workshop viewer: the /workshop route (or ?ui=simple) shows only
+    // the core controls (see viewer.css) and constrains depth to four steps.
+    const workshopParams = new URLSearchParams(location.search);
+    if (location.pathname.replace(/\/+$/, '') === '/workshop' || workshopParams.get('ui') === 'simple') {
+        document.body.classList.add('simple-ui');
+    }
+    
     // Set initial values
     updateSliceDepth(50, false);
     updateView('x+');
@@ -2590,6 +2621,22 @@ document.addEventListener('DOMContentLoaded', function() {
     // Expose globally so display-connect handlers can trigger a send.
     window.sendStateToServer = sendStateToServer;
     initializeDebugPipelineVisibility();
+
+    // Pre-select a model when opened via /workshop?model=<stem> or ?model=<stem>.
+    // Resolve the stem to its server index before the first render so the viewer
+    // opens directly on that model instead of flashing model 0.
+    const wantedModel = workshopParams.get('model');
+    if (wantedModel) {
+        const wantedStem = wantedModel.replace(/\.[^.]+$/, '');
+        try {
+            const gd = await (await fetch(`${SERVER_URL}/get_data`)).json();
+            const idx = (gd.model_list || []).indexOf(wantedStem);
+            if (idx >= 0) {
+                currentModel = String(idx);
+                if (sbModel) sbModel.textContent = wantedStem;
+            }
+        } catch (_) { /* fall back to the default model */ }
+    }
 
     // Send initial state to server
     pendingInputSource = 'init';
