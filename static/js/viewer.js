@@ -1905,6 +1905,19 @@ function emitAnnouncement(message, politeness, isAlert) {
     // Show the toast + push to the screen-reader live region for this tier.
     showToast(normalizedMessage, politeness);
 
+    // Send announcement to tactile display
+    if (typeof window.onTactileAnnouncement === 'function') {
+        try {
+            window.onTactileAnnouncement({
+                message: normalizedMessage,
+                politeness,
+                isAlert
+            });
+        } catch (err) {
+            console.warn('Tactile announcement failed:', err);
+        }
+    }
+
     // Append to visible history log; alerts are weighted so the log distinguishes
     // an interrupting condition from routine state changes.
     if (announcementHistory) {

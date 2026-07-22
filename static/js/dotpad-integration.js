@@ -13,6 +13,109 @@ const bleScanBtn = document.getElementById('dotpad-scan-ble-btn');
 const disconnectBtn = document.getElementById('dotpad-disconnect-btn');
 const autoSendCheckbox = document.getElementById('dotpad-auto-send');
 
+// --- NABCC 8-dot Computer Braille lookup table ---
+// Index = ASCII code - 0x20 (covers 0x20 space through 0x7E tilde)
+// Value = 8-dot braille byte: bit0=dot1, bit1=dot2, bit2=dot3, bit3=dot4,
+//                              bit4=dot5, bit5=dot6, bit6=dot7, bit7=dot8
+// Source: BRLTTY en-nabcc.ttb (North American Braille Computer Code)
+const NABCC = new Uint8Array([
+    0x00, // 0x20  (space)
+    0x2E, // 0x21  !  dots 2,3,4,6
+    0x10, // 0x22  "  dot 5
+    0x3C, // 0x23  #  dots 3,4,5,6
+    0x2B, // 0x24  $  dots 1,2,4,6
+    0x29, // 0x25  %  dots 1,4,6
+    0x2F, // 0x26  &  dots 1,2,3,4,6
+    0x04, // 0x27  '  dot 3
+    0x37, // 0x28  (  dots 1,2,3,5,6
+    0x3E, // 0x29  )  dots 2,3,4,5,6
+    0x21, // 0x2A  *  dots 1,6
+    0x2C, // 0x2B  +  dots 3,4,6
+    0x20, // 0x2C  ,  dot 6
+    0x24, // 0x2D  -  dots 3,6
+    0x28, // 0x2E  .  dots 4,6
+    0x0C, // 0x2F  /  dots 3,4
+    0x34, // 0x30  0  dots 3,5,6
+    0x02, // 0x31  1  dot 2
+    0x06, // 0x32  2  dots 2,3
+    0x12, // 0x33  3  dots 2,5
+    0x32, // 0x34  4  dots 2,5,6
+    0x22, // 0x35  5  dots 2,6
+    0x16, // 0x36  6  dots 2,3,5
+    0x36, // 0x37  7  dots 2,3,5,6
+    0x26, // 0x38  8  dots 2,3,6
+    0x14, // 0x39  9  dots 3,5
+    0x31, // 0x3A  :  dots 1,5,6
+    0x30, // 0x3B  ;  dots 5,6
+    0x23, // 0x3C  <  dots 1,2,6
+    0x3F, // 0x3D  =  dots 1,2,3,4,5,6
+    0x1C, // 0x3E  >  dots 3,4,5
+    0x39, // 0x3F  ?  dots 1,4,5,6
+    0x48, // 0x40  @  dots 4,7
+    0x41, // 0x41  A  dots 1,7
+    0x43, // 0x42  B  dots 1,2,7
+    0x49, // 0x43  C  dots 1,4,7
+    0x59, // 0x44  D  dots 1,4,5,7
+    0x51, // 0x45  E  dots 1,5,7
+    0x4B, // 0x46  F  dots 1,2,4,7
+    0x5B, // 0x47  G  dots 1,2,4,5,7
+    0x53, // 0x48  H  dots 1,2,5,7
+    0x4A, // 0x49  I  dots 2,4,7
+    0x5A, // 0x4A  J  dots 2,4,5,7
+    0x45, // 0x4B  K  dots 1,3,7
+    0x47, // 0x4C  L  dots 1,2,3,7
+    0x4D, // 0x4D  M  dots 1,3,4,7
+    0x5D, // 0x4E  N  dots 1,3,4,5,7
+    0x55, // 0x4F  O  dots 1,3,5,7
+    0x4F, // 0x50  P  dots 1,2,3,4,7
+    0x5F, // 0x51  Q  dots 1,2,3,4,5,7
+    0x57, // 0x52  R  dots 1,2,3,5,7
+    0x4E, // 0x53  S  dots 2,3,4,7
+    0x5E, // 0x54  T  dots 2,3,4,5,7
+    0x65, // 0x55  U  dots 1,3,6,7
+    0x67, // 0x56  V  dots 1,2,3,6,7
+    0x7A, // 0x57  W  dots 2,4,5,6,7
+    0x6D, // 0x58  X  dots 1,3,4,6,7
+    0x7D, // 0x59  Y  dots 1,3,4,5,6,7
+    0x75, // 0x5A  Z  dots 1,3,5,6,7
+    0x6A, // 0x5B  [  dots 2,4,6,7
+    0x73, // 0x5C  \  dots 1,2,5,6,7
+    0x7B, // 0x5D  ]  dots 1,2,4,5,6,7
+    0x58, // 0x5E  ^  dots 4,5,7
+    0x38, // 0x5F  _  dots 4,5,6
+    0x08, // 0x60  `  dot 4
+    0x01, // 0x61  a  dot 1
+    0x03, // 0x62  b  dots 1,2
+    0x09, // 0x63  c  dots 1,4
+    0x19, // 0x64  d  dots 1,4,5
+    0x11, // 0x65  e  dots 1,5
+    0x0B, // 0x66  f  dots 1,2,4
+    0x1B, // 0x67  g  dots 1,2,4,5
+    0x13, // 0x68  h  dots 1,2,5
+    0x0A, // 0x69  i  dots 2,4
+    0x1A, // 0x6A  j  dots 2,4,5
+    0x05, // 0x6B  k  dots 1,3
+    0x07, // 0x6C  l  dots 1,2,3
+    0x0D, // 0x6D  m  dots 1,3,4
+    0x1D, // 0x6E  n  dots 1,3,4,5
+    0x15, // 0x6F  o  dots 1,3,5
+    0x0F, // 0x70  p  dots 1,2,3,4
+    0x1F, // 0x71  q  dots 1,2,3,4,5
+    0x17, // 0x72  r  dots 1,2,3,5
+    0x0E, // 0x73  s  dots 2,3,4
+    0x1E, // 0x74  t  dots 2,3,4,5
+    0x25, // 0x75  u  dots 1,3,6
+    0x27, // 0x76  v  dots 1,2,3,6
+    0x3A, // 0x77  w  dots 2,4,5,6
+    0x2D, // 0x78  x  dots 1,3,4,6
+    0x3D, // 0x79  y  dots 1,3,4,5,6
+    0x35, // 0x7A  z  dots 1,3,5,6
+    0x2A, // 0x7B  {  dots 2,4,6
+    0x33, // 0x7C  |  dots 1,2,5,6
+    0x3B, // 0x7D  }  dots 1,2,4,5,6
+    0x18, // 0x7E  ~  dots 4,5
+]);
+
 function setStatus(msg) {
     if (statusEl) statusEl.textContent = msg;
     // Also update the top status bar DotPad field.
@@ -151,3 +254,27 @@ async function sendHexToDotPad(renderParams) {
 
 // Hook into the main render cycle
 window._dotpadOnRender = sendHexToDotPad;
+
+
+// --- Send announcements to DotPad ---
+
+function encodeAnnouncementForDotPad(message, cellCount) {
+    let hex = '';
+    for (let i = 0; i < cellCount; i++) {
+        const ch   = i < message.length ? message[i] : ' ';
+        const code = ch.charCodeAt(0);
+        const b    = (code >= 0x20 && code <= 0x7E) ? NABCC[code - 0x20] : 0x00;
+        hex += b.toString(16).padStart(2, '0').toUpperCase();
+    }
+    return hex;
+}
+
+function sendAnnouncementToDotPad({message}) {
+    if (!connectedDevice) return;
+
+    const cellCount = connectedDevice.numberBrailleCellColumns || 20;
+    const textHex = encodeAnnouncementForDotPad(message, cellCount);
+    sdk.displayTextData(textHex, connectedDevice, DisplayMode.TextMode);
+}
+
+window.onTactileAnnouncement = sendAnnouncementToDotPad;
