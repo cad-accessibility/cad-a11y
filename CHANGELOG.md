@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-07-15
+
+#### Added
+*   Another tool can now send a 3D model straight into cad-a11y. A new endpoint receives an STL file, together with the participant's first name, and returns a link that opens the model in a workshop-ready viewer.
+*   A simplified workshop viewer at `/workshop` shows only the controls that matter during a session: View, Depth, Rendering Mode, the output-device selector, and the Monarch and DotPad connection panels, alongside the tactile preview.
+*   Participants open their model by entering their first name on an accessible page. Each participant is given a stable id, so every model they send is saved and their in-app actions are recorded together, while only their most recent model is shown. No email address or account is required.
+
 ### 2026-07-13
 
 #### Changed

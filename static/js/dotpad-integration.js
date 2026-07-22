@@ -10,7 +10,6 @@ let rawTarget = null;          // BluetoothDevice | SerialPort
 
 const statusEl = document.getElementById('dotpad-status');
 const bleScanBtn = document.getElementById('dotpad-scan-ble-btn');
-const usbScanBtn = document.getElementById('dotpad-scan-usb-btn');
 const disconnectBtn = document.getElementById('dotpad-disconnect-btn');
 const autoSendCheckbox = document.getElementById('dotpad-auto-send');
 
@@ -184,14 +183,46 @@ function setConnectedDotPadDisplay(dotDevice, connectionType){
     console.log(`DotPad dimensions: ${cellCols}×${cellRows} cells, ${pixelWidth}×${pixelHeight} pixels`);
 }
 // --- BLE scan & connect ---
+// A DotPad over Web Bluetooth frequently resolves gatt.connect() before its GATT
+// services are discoverable (common on Windows/Edge), so the SDK's getPrimaryService
+// throws and the attempt fails while leaving the raw GATT half-open. That dangling
+// connection is why a first "Connect" can report failure and only a manual
+// disconnect+reconnect recovers (#45); a busy page like this viewer, with its SSE
+// stream and continuous renders, seems to hit the race more often than a light one.
+// Retry a few times, tearing the GATT down between attempts so each starts clean —
+// the automatic form of the disconnect-then-reconnect that already works by hand.
+const BLE_CONNECT_ATTEMPTS = 3;
+const BLE_RETRY_DELAY_MS = 400;
+
+async function connectBleWithRetry(device) {
+    for (let attempt = 1; attempt <= BLE_CONNECT_ATTEMPTS; attempt++) {
+        const suffix = attempt > 1 ? ` (attempt ${attempt} of ${BLE_CONNECT_ATTEMPTS})` : '';
+        setStatus(`Connecting to ${device.name || 'BLE DotPad'}${suffix}...`);
+        try {
+            const dotDevice = await sdk.connectBleDevice(device);
+            if (dotDevice) return dotDevice;
+        } catch (err) {
+            console.warn(`DotPad BLE connect attempt ${attempt} failed:`, err);
+        }
+        // Clear the half-open GATT the failed attempt may have left, so the next
+        // attempt (and any later manual one) starts from a clean state.
+        try {
+            if (device.gatt && device.gatt.connected) device.gatt.disconnect();
+        } catch (_) { /* already gone */ }
+        if (attempt < BLE_CONNECT_ATTEMPTS) {
+            await new Promise(resolve => setTimeout(resolve, BLE_RETRY_DELAY_MS));
+        }
+    }
+    return null;
+}
+
 bleScanBtn.addEventListener('click', async () => {
     try {
         setStatus('Scanning for BLE DotPad...');
         const device = await scanner.startBleScan();
         if (!device) { setStatus('No BLE device selected.'); return; }
         rawTarget = device;
-        setStatus(`Connecting to ${device.name || 'BLE DotPad'}...`);
-        const dotDevice = await sdk.connectBleDevice(device);
+        const dotDevice = await connectBleWithRetry(device);
         if (dotDevice) {
             connectedDevice = dotDevice;
             connectionType = 'ble';
@@ -203,11 +234,13 @@ bleScanBtn.addEventListener('click', async () => {
             // Send current model state immediately so the display shows the model on connect.
             if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
         } else {
-            setStatus('BLE connection failed.');
+            setStatus('BLE connection failed. Please try again.');
+            if (typeof window.announceAlert === 'function') window.announceAlert('DotPad Bluetooth connection failed.');
         }
     } catch (err) {
         console.error('BLE scan/connect error:', err);
         setStatus('BLE error: ' + err.message);
+        if (typeof window.announceAlert === 'function') window.announceAlert('DotPad Bluetooth error: ' + err.message);
     }
 });
 
@@ -232,16 +265,23 @@ usbScanBtn.addEventListener('click', async () => {
             if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
         } else {
             setStatus('USB connection failed.');
+            if (typeof window.announceAlert === 'function') window.announceAlert('DotPad USB connection failed.');
         }
     } catch (err) {
         console.error('USB scan/connect error:', err);
         setStatus('USB error: ' + err.message);
+        if (typeof window.announceAlert === 'function') window.announceAlert('DotPad USB error: ' + err.message);
     }
 });
 
 // --- Disconnect ---
 disconnectBtn.addEventListener('click', () => {
-    sdk.disconnect(connectedDevice);
+    if (connectedDevice) sdk.disconnect(connectedDevice);
+    // Also tear down the raw GATT directly, in case a prior attempt left one open
+    // that the SDK never took ownership of (#45).
+    try {
+        if (rawTarget && rawTarget.gatt && rawTarget.gatt.connected) rawTarget.gatt.disconnect();
+    } catch (_) { /* already gone */ }
     connectedDevice = null;
     connectionType = null;
     rawTarget = null;
@@ -261,7 +301,7 @@ function onMessage(device, dataCode, msg) {
         disconnectBtn.disabled = true;
         window.connectedTactileDisplay = null;
         setStatus('DotPad disconnected unexpectedly.');
-        if (typeof window.announce === 'function') window.announce('DotPad disconnected.');
+        if (typeof window.announceAlert === 'function') window.announceAlert('DotPad disconnected unexpectedly.');
     } else if (dataCode === DataCodes.Connected) {
         // Device fully initialised (board info received, cell dimensions set).
         // Send initial render so the display shows the current model immediately.

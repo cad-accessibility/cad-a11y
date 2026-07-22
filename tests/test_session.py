@@ -37,7 +37,7 @@ def client(tmp_db):
 
 
 def _identify(client, email=None, consent=True):
-    """Establish a session the way the app now does — via the consent endpoint.
+    """Establish a session the way the app now does, via the consent endpoint.
 
     /viewer no longer issues a cookie or creates a DB row; POST /session/identify is
     the first point at which a session row and cad_session cookie are created, so
@@ -111,6 +111,40 @@ class TestDbAnalytics:
         row = conn.execute("SELECT view, render_mode FROM render_stats").fetchone()
         assert row == ("x+", "Outline")
         conn.close()
+
+    def test_shaded_rows_are_backfilled_to_filled(self, tmp_db):
+        """Historical 'Shaded' rows join the 'Filled' series the viewer now sends."""
+        import sqlite3
+        sid = "test-backfill-sid"
+        db_module.upsert_session(sid)
+        db_module.save_session_identifier(sid, None, True)
+        db_module.record_render(sid, "x+", "Shaded", 0.5, 1.0, "single", "http_render")
+        db_module.record_render(sid, "x+", "Outline", 0.5, 1.0, "single", "http_render")
+
+        db_module.init_db()
+
+        conn = sqlite3.connect(str(tmp_db))
+        modes = dict(
+            conn.execute("SELECT render_mode, COUNT(*) FROM render_stats GROUP BY render_mode")
+        )
+        conn.close()
+        assert modes == {"Filled": 1, "Outline": 1}, "Shaded should have become Filled"
+
+    def test_backfill_is_idempotent(self, tmp_db):
+        """A second init_db() must not disturb rows legitimately sent as Filled."""
+        import sqlite3
+        sid = "test-idempotent-sid"
+        db_module.upsert_session(sid)
+        db_module.save_session_identifier(sid, None, True)
+        db_module.record_render(sid, "x+", "Shaded", 0.5, 1.0, "single", "http_render")
+
+        db_module.init_db()
+        db_module.init_db()
+
+        conn = sqlite3.connect(str(tmp_db))
+        modes = [r[0] for r in conn.execute("SELECT render_mode FROM render_stats")]
+        conn.close()
+        assert modes == ["Filled"]
 
     def test_record_render_requires_consent(self, tmp_db):
         import sqlite3
@@ -350,6 +384,130 @@ class TestUploadRegistration:
         _identify(client)
         resp = client.delete("/models/ghost.stl")
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# External-tool /ingest and the /workshop word-code retrieval flow
+# ---------------------------------------------------------------------------
+
+class TestIngestWorkshop:
+    def _ingest(self, client, filename="ingest.stl", content=_MINIMAL_STL, first_name=None):
+        data = {"file": (io.BytesIO(content), filename)}
+        if first_name is not None:
+            data["first_name"] = first_name
+        return client.post("/ingest", data=data, content_type="multipart/form-data")
+
+    def test_ingest_without_name_is_anonymous(self, client):
+        resp = self._ingest(client)
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "success"
+        assert data["first_name"] is None
+        assert data["user_id"] is None
+        assert "/workshop?model=" in data["workshop_url"]
+        assert data["workshop_entry_url"].endswith("/workshop")
+
+    def test_ingest_with_name_creates_participant_and_registers_model(self, client):
+        data = self._ingest(client, first_name="Alex").get_json()
+        assert data["first_name"] == "Alex"
+        assert data["user_id"]  # a unique participant id
+        assert db_module.get_latest_model_for_identifier("alex") == data["filename"]
+        assert "/workshop?name=" in data["workshop_url"]
+
+    def test_same_name_reuses_participant_and_saves_all_models(self, client):
+        a = self._ingest(client, first_name="Alex").get_json()
+        b = self._ingest(client, first_name="alex ").get_json()  # case/space-insensitive
+        assert a["user_id"] == b["user_id"]  # one participant per first name
+        # Both iterations are saved; lookup returns the latest.
+        assert len(db_module.get_session_models(a["user_id"])) == 2
+        assert db_module.get_latest_model_for_identifier("alex") == b["filename"]
+
+    def test_workshop_participant_actions_logged_without_consent(self, client):
+        import sqlite3
+        data = self._ingest(client, first_name="Alex").get_json()
+        # No consent dialog is shown in the workshop, but a participant's renders must
+        # still record because they are flagged as a workshop session.
+        db_module.record_render(
+            data["user_id"], "x+", "Filled", 0.5, 1.0, "single", "http_render"
+        )
+        conn = sqlite3.connect(str(db_module.DB_PATH))
+        n = conn.execute(
+            "SELECT COUNT(*) FROM render_stats WHERE session_id=?", (data["user_id"],)
+        ).fetchone()[0]
+        conn.close()
+        assert n == 1
+
+    def test_ingest_raw_body_with_name(self, client):
+        resp = client.post(
+            "/ingest?filename=raw.stl&first_name=Blue",
+            data=_MINIMAL_STL,
+            content_type="application/octet-stream",
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["first_name"] == "Blue"
+
+    def test_ingest_raw_body_with_default_content_type(self, client):
+        # Accessing request.files (even to find it empty) makes
+        # Werkzeug parse the whole body as form data whenever Content-Type
+        # looks like a form, including the default "application/
+        # x-www-form-urlencoded" that many HTTP clients send for a raw body
+        # with no explicit Content-Type. That parse drains the input stream,
+        # so the raw-body fallback must not depend on request.files having
+        # left it untouched.
+        resp = client.post(
+            "/ingest?filename=raw.stl",
+            data=_MINIMAL_STL,
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["status"] == "success"
+
+    def test_ingest_rejects_bad_extension(self, client):
+        assert self._ingest(client, filename="notes.png").status_code == 400
+
+    def test_ingest_model_is_discoverable(self, client):
+        data = self._ingest(client).get_json()
+        gd = client.get("/get_data").get_json()
+        assert data["model_stem"] in gd["model_list"]
+
+    def test_workshop_name_redirects_and_sets_cookie(self, client):
+        data = self._ingest(client, first_name="Alex").get_json()
+        resp = client.get("/workshop?name=ALEX")  # case-insensitive
+        assert resp.status_code == 302
+        assert f"model={data['model_stem']}" in resp.headers["Location"]
+        # Participant cookie is attached so their in-app actions log against them.
+        assert "cad_session" in resp.headers.get("Set-Cookie", "")
+
+    def test_workshop_unknown_name_shows_entry_page(self, client):
+        resp = client.get("/workshop?name=nobody")
+        assert resp.status_code == 200
+        assert b"Enter your first name" in resp.data
+
+    def test_workshop_blank_name_shows_notice(self, client):
+        resp = client.get("/workshop?name=%20%20")
+        assert resp.status_code == 200
+        assert b"could not find a model for that name" in resp.data
+
+    def test_workshop_without_name_param_has_no_notice(self, client):
+        resp = client.get("/workshop")
+        assert resp.status_code == 200
+        assert b"could not find a model for that name" not in resp.data
+
+    def test_workshop_model_serves_viewer(self, client):
+        data = self._ingest(client).get_json()
+        resp = client.get(f"/workshop?model={data['model_stem']}")
+        assert resp.status_code == 200
+        assert b"Accessible 3D Model Viewer" in resp.data
+
+    def test_workshop_entry_page_has_name_input(self, client):
+        resp = client.get("/workshop")
+        assert resp.status_code == 200
+        assert b'name="name"' in resp.data
+
+    def test_ingest_test_harness_served(self, client):
+        resp = client.get("/ingest-test")
+        assert resp.status_code == 200
+        assert b"Participant first name" in resp.data
+        assert b"/ingest" in resp.data
 
 
 # ---------------------------------------------------------------------------

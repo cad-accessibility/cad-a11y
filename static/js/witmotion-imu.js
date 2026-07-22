@@ -193,8 +193,12 @@
             await connectGatt();
 
         } catch (err) {
-            if (err.name !== 'NotFoundError') setStatus('Error: ' + err.message);
-            else setStatus('No device selected.');
+            if (err.name !== 'NotFoundError') {
+                setStatus('Error: ' + err.message);
+                if (typeof announceAlert === 'function') announceAlert('WitMotion IMU connection error: ' + err.message);
+            } else {
+                setStatus('No device selected.');
+            }
             connectBtn.disabled = false;
         }
     });
