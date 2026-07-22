@@ -1486,7 +1486,15 @@ def ingest_model():
     braille station and the participant's actions are logged; without one the ingest is
     anonymous and the returned workshop_url opens the model directly.
     """
-    upload = request.files.get("file")
+    # Only touch request.files when the body actually is multipart: merely
+    # accessing it makes Werkzeug parse the whole body as form data whenever
+    # Content-Type looks like a form (multipart *or* x-www-form-urlencoded),
+    # which drains the input stream. A raw-body caller that doesn't set an
+    # explicit octet-stream content type (many HTTP clients default raw
+    # POSTs to x-www-form-urlencoded) would then hit request.get_data()
+    # below on an already-empty stream and get a bogus "No STL provided".
+    is_multipart = (request.content_type or "").startswith("multipart/form-data")
+    upload = request.files.get("file") if is_multipart else None
     if upload and upload.filename:
         save_fn = upload.save
         requested_name = upload.filename
