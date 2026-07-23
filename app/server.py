@@ -402,12 +402,14 @@ def get_or_create_renderer(model_index: int | None = None) -> CADComparisonRende
             _log(f"Initializing CAD renderer with: {model_path}")
             out_guard, err_guard = _renderer_stdio_guard()
             with out_guard, err_guard:
+                # Slice-graph precompute is expensive and only feeds a mode the
+                # simplified workshop viewer can't reach, so it's kicked off lazily
+                # (CADComparisonRenderer._get_zoom_filtered_slice_profile) on first
+                # actual use instead of unconditionally here.
                 renderer = CADComparisonRenderer(
                     str(model_path),
                     str(model_path),
-                    #defer_slice_graph_precompute=True,
                 )
-                renderer.start_background_slice_precompute()
                 renderers_by_model[index] = renderer
         return renderers_by_model[index]
 
