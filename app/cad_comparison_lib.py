@@ -182,11 +182,12 @@ class CADComparisonRenderer:
     # Background precompute is CPU-bound and runs in a plain thread, so without
     # yielding here it can hold the GIL long enough to starve Flask's other
     # request-handling threads (threaded=True) for the whole job. Sleeping
-    # briefly and periodically gives those threads regular chances to run, at
-    # the cost of stretching out the precompute's own wall-clock time.
-    _PRECOMPUTE_YIELD_EVERY = 1
+    # briefly and periodically gives those threads regular chances to run. The
+    # intervals are tuned to yield often enough to stay responsive while keeping
+    # the added wall-clock small (about ten yields per view in each loop).
+    _PRECOMPUTE_YIELD_EVERY = 10
     _PRECOMPUTE_YIELD_SECONDS = 0.01
-    _PRECOMPUTE_DIFF_YIELD_EVERY = 50
+    _PRECOMPUTE_DIFF_YIELD_EVERY = 500
 
     def _compute_slice_graphs(self):
 
