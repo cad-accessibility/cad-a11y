@@ -1886,6 +1886,50 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
     return oldZoom !== currentZoom;
 }
 
+async function fitCurrentViewToDevice() {
+    const renderPipelineParams = getRenderPipelineParams(currentRenderMode);
+    const orientationPayload = getOrientationPayload();
+
+    const payload = {
+        view: currentView,
+        orientation: orientationPayload,
+        zoom: currentZoom,
+        depth: currentSliceDepth,
+        renderMode: renderPipelineParams.renderMode,
+        projectionMode: renderPipelineParams.projectionMode,
+        mode: getServerRepresentationMode(),
+        current_model: currentModel,
+        output_device: getEffectiveOutputDevice(),
+        compose_scrollbar: composeScrollbar,
+        compose_slicegraph: composeSliceGraph,
+        show_view_info_box: showViewInfoBox,
+    };
+
+    const response = await fetch(`${SERVER_URL}/render/fit-view`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+
+    const data = await response.json();
+    console.log('fit view response', data);
+
+    if (data.status !== 'success') {
+        announceAlert('Fit view failed');
+        return;
+    }
+
+    if (Array.isArray(data.camera_center) && data.camera_center.length === 2) {
+        const key = getCameraCenterStateKey(currentView, orientationPayload);
+        cameraCenterByViewOrientation.set(key, data.camera_center);
+    }
+
+    updateZoom(data.zoom, false, false);
+    sendStateToServer();
+    announce('View fitted to tactile display');
+
+}
+
 // Switch to a specific render mode
 function switchToRenderMode(targetMode, shouldAnnounce = true) {
     if (!renderModeByKey(targetMode)) {
@@ -2288,7 +2332,7 @@ document.addEventListener('keydown', function(e) {
         'u', 'i', 'o', 'j', 'k', 'l',
         '4', '5', '6', '7', '8', '9', '0', '-', '=',
         'r', 't', 'g', 'v', 'z',
-        'w', 'a', 's', 'd', '[', ']', 'h', 'p', '.', 'escape'
+        'w', 'a', 's', 'd', '[', ']', 'h', 'p', '.', 'escape', 'f'
     ]);
 
     if (!supportedShortcuts.has(normalizedKey)) {
@@ -2375,6 +2419,11 @@ document.addEventListener('keydown', function(e) {
             }
             break;
 
+        case 'f':
+            e.preventDefault();
+            fitCurrentViewToDevice();
+            break;
+            
         // View shortcuts
         case '7':
             e.preventDefault();

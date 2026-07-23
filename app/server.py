@@ -1215,6 +1215,13 @@ def render_view():
         _log(f"Error rendering: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
 
+@app.route("/render/fit-view", methods=["POST"])
+def fit_render_view():
+    data = request.get_json(silent=True) or {}
+    merged_params, model_index, _, _ = _prepare_render_params(data)
+    engine = get_or_create_renderer(model_index)
+    fit = engine.compute_fit_view(merged_params)
+    return jsonify({"status": "success", **fit}), 200
 
 @app.route("/render/image", methods=["GET"])
 def get_render_image():
