@@ -32,7 +32,7 @@ def test_viewer_exposes_depth_helpers():
 
     assert "window.getCurrentSliceDepth = getCurrentSliceDepth;" in source
     assert "window.updateSliceDepth = updateSliceDepth;" in source
-    assert "window.announceDepthShortcut = announceDepthShortcut;" in source
+    assert "window.announceDepthValue = announceDepthValue;" in source
 
 
 def test_dotpad_depth_controls_run_before_cursor_movement_requirements():
@@ -56,7 +56,7 @@ def test_dot_1_goes_shallower():
     assert "Math.max(0," in body
     assert "-100/n" in compact or "-10" in compact
     assert "window.updateSliceDepth(nextDepth,false);" in compact
-    assert "window.announceDepthShortcut('Dot1',previousDepth,nextDepth);" in compact
+    assert "window.announceDepthValue(nextDepth,previousDepth);" in compact
 
 
 def test_dot_4_goes_deeper():
@@ -69,4 +69,4 @@ def test_dot_4_goes_deeper():
     assert "Math.min(100," in body
     assert "+100/n" in compact or "+10" in compact
     assert "window.updateSliceDepth(nextDepth,false);" in compact
-    assert "window.announceDepthShortcut('Dot4',previousDepth,nextDepth);" in compact
+    assert "window.announceDepthValue(nextDepth,previousDepth);" in compact

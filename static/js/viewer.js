@@ -2033,7 +2033,7 @@ window.cycleCursorState = cycleCursorState;
 window.whichCursor = whichCursor;
 window.getCurrentSliceDepth = getCurrentSliceDepth;
 window.updateSliceDepth = updateSliceDepth;
-window.announceDepthShortcut = announceDepthShortcut;
+window.announceDepthValue = announceDepthValue;
 
 if (clearAnnouncementsBtn && announcementHistory) {
     clearAnnouncementsBtn.addEventListener('click', function() {
