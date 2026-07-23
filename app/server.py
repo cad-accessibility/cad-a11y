@@ -83,7 +83,6 @@ else:
 MODEL_DIR = REPO_ROOT / "data" / "models"
 RENDERS_DIR = REPO_ROOT / "data" / "renders"
 STUDY_LOG_DIR = REPO_ROOT / "data" / "logs"
-BRAILLE_LOG_PATH = Path(os.getenv("BRAILLE_LOG_PATH", str(STUDY_LOG_DIR / "braille_send_events.jsonl")))
 
 
 def _sha256_file(path: Path) -> str:
@@ -135,6 +134,32 @@ def _resolve_upload_dir() -> Path:
 
 
 UPLOAD_DIR = _resolve_upload_dir()
+
+
+def _resolve_braille_log_path() -> Path:
+    """Resolve a writable path for the braille-send study log.
+
+    Mirrors _resolve_upload_dir(): on managed servers the repo-local
+    ``data/logs`` directory is frequently not writable by the app user
+    (root-owned bind mount, non-root container user, redeploy resets
+    ownership, etc.). Study telemetry must never dictate whether the app can
+    serve renders, so fall back to a writable location instead of pinning to
+    an unwritable one.
+    """
+    env_path = os.getenv("BRAILLE_LOG_PATH", "").strip()
+    if env_path:
+        candidate = Path(env_path)
+        if _is_writable_directory(candidate.parent):
+            return candidate
+        # An explicit but unwritable BRAILLE_LOG_PATH should not wedge
+        # rendering; fall through to the auto-detected writable dirs below.
+    for directory in (STUDY_LOG_DIR, Path("/tmp/cad-a11y/logs")):
+        if _is_writable_directory(directory):
+            return directory / "braille_send_events.jsonl"
+    return STUDY_LOG_DIR / "braille_send_events.jsonl"
+
+
+BRAILLE_LOG_PATH = _resolve_braille_log_path()
 
 _SESSION_COOKIE = "cad_session"
 _SESSION_MAX_AGE = 365 * 24 * 3600  # 1 year
@@ -423,11 +448,19 @@ def _collect_request_context() -> dict[str, Any]:
 
 
 def _write_braille_event(event: dict[str, Any]) -> None:
-    BRAILLE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(event, sort_keys=True, ensure_ascii=False)
-    with braille_log_lock:
-        with BRAILLE_LOG_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
+    # Study telemetry is strictly best-effort: the actual device send happens
+    # browser-side (Web HID / Web BLE), so a failure to append this research
+    # log must never turn an otherwise-successful render into an HTTP 400.
+    # Swallow and warn (e.g. read-only log dir on a managed server) rather
+    # than propagating into the /render exception handler.
+    try:
+        BRAILLE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(event, sort_keys=True, ensure_ascii=False)
+        with braille_log_lock:
+            with BRAILLE_LOG_PATH.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+    except OSError as error:
+        _log(f"Braille event logging skipped (write failed): {error}", force=True)
 
 
 def _next_braille_send_sequence() -> int:
