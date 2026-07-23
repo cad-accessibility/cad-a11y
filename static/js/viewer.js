@@ -55,7 +55,7 @@ function getUploadSessionId() {
 
     // Keyboard resize support (arrow keys on the divider)
     divider.addEventListener('keydown', function(e) {
-        console.log("keydown seen:", e.key, e.code, e.target.tagName);
+        console.debug("keydown seen:", e.key, e.code, e.target.tagName);
         const step = e.shiftKey ? 50 : 10;
         const layoutWidth = layout.getBoundingClientRect().width;
         const currentWidth = leftCol.getBoundingClientRect().width;
@@ -425,7 +425,6 @@ function moveCursor(dCol, dRow, stepSize = cursorStep) {
     announce(`Cursor column ${currentCursorCol}, row ${currentCursorRow}`);
     sendStateToServer();
 }
-window.moveCursor = moveCursor; // Expose for external use (e.g., Monarch HID integration)
 
 function whichCursor() {
     return cursorStates[currentCursorStateIndex] || 'none';
@@ -438,8 +437,6 @@ function cycleCursorState() {
     pendingInputSource = 'dotpad';
     sendStateToServer();
 }
-window.cycleCursorState = cycleCursorState;
-window.whichCursor = whichCursor;
 function renderModeByKey(modeKey) {
     return renderModes.find(mode => mode.key === modeKey) || null;
 }
@@ -1330,6 +1327,10 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
     return oldDepth !== currentSliceDepth;
 }
 
+function getCurrentSliceDepth(){
+    return currentSliceDepth;
+}
+
 /**
  * Check exactly the radio matching `currentValue`, and report when none does.
  *
@@ -2012,6 +2013,14 @@ function announce(message) {
 function announceAlert(message) {
     emitAnnouncement(message, 'assertive', true);
 }
+
+// External API used by hardware integration modules.
+window.moveCursor = moveCursor;
+window.cycleCursorState = cycleCursorState;
+window.whichCursor = whichCursor;
+window.getCurrentSliceDepth = getCurrentSliceDepth;
+window.updateSliceDepth = updateSliceDepth;
+window.announceDepthShortcut = announceDepthShortcut;
 
 if (clearAnnouncementsBtn && announcementHistory) {
     clearAnnouncementsBtn.addEventListener('click', function() {

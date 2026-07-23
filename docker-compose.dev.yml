@@ -1,0 +1,6 @@
+services:
+  app:
+    volumes:
+      - ./app:/project/app
+      - ./static:/project/static
+      - ./accessible-3d-viewer.html:/project/accessible-3d-viewer.html

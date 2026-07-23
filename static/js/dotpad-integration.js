@@ -326,6 +326,15 @@ function onKey(device, currKeyCode, keyMsg) {
     const byte6 = labelToByte6(label);
     const letter = byte6ToLetter(byte6);
     const cursorState = window.whichCursor ? window.whichCursor() : 'none';
+    const n = 10; // TODO: make this global and dynamic
+    if (
+        typeof window.getCurrentSliceDepth !== 'function' ||
+        typeof window.updateSliceDepth !== 'function' ||
+        typeof window.announceDepthShortcut !== 'function'
+    ) {
+        console.warn('DotPad depth controls are unavailable because viewer depth helpers are not exposed.');
+        return;
+    }
 
     if (letter === 'v'){
         if (typeof window.cycleCursorState === 'function') {
@@ -333,6 +342,22 @@ function onKey(device, currKeyCode, keyMsg) {
             // 20 character announcement for screen reader users to know the cursor state has changed
             console.log('Cursor state now ', window.whichCursor ? window.whichCursor() : 'none');
         }
+        return;
+    }
+    if (byte6 === 0x01){
+        // Go shallower (decrease depth by 100/N)
+        const previousDepth = window.getCurrentSliceDepth();
+        const nextDepth = Math.max(0, previousDepth - 100/n); // TODO: calculate integer value
+        window.updateSliceDepth(nextDepth, false);
+        window.announceDepthShortcut('Dot 1', previousDepth, nextDepth);
+        return;
+    }
+    if (byte6 === 0x08){
+        // Go deeper (increase depth by 100/N)
+        const previousDepth = window.getCurrentSliceDepth();
+        const nextDepth = Math.min(100, previousDepth + 100/n); // TODO: calculate integer value
+        window.updateSliceDepth(nextDepth, false);
+        window.announceDepthShortcut('Dot 4', previousDepth, nextDepth);
         return;
     }
     if (typeof window.moveCursor != 'function') return;
@@ -441,6 +466,7 @@ function startDotPadHold(keyCode, action) {
         }, DOTPAD_HOLD_REPEAT_MS);
     }, DOTPAD_HOLD_START_MS);
 }
+
 
 // --- Send hex data to DotPad ---
 let sendInFlight = false;

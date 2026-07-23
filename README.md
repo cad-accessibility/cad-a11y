@@ -16,6 +16,8 @@ A tool for making 3D CAD models accessible to blind and low-vision (BLV) users. 
 
 ## Running the app
 
+Run the default Docker image configuration:
+
 ```bash
 docker compose up --build
 ```
@@ -23,6 +25,12 @@ docker compose up --build
 Then open `http://localhost:8635/viewer` in a browser.
 
 Model files placed in `data/models/` are available immediately without rebuilding the image.
+
+For local development with live source-code bind mounts:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
 
 ## Directory structure
 
@@ -53,7 +61,8 @@ cad-a11y/
 ├── docs/                         # Extended documentation
 ├── environment.yml               # Conda environment used inside the Docker image
 ├── requirements.txt              # pip dependencies installed inside the Docker image
-└── docker-compose.yml            # Docker Compose configuration
+├── docker-compose.yml            # Default Docker Compose configuration
+└── docker-compose.dev.yml        # Optional local-development bind mounts
 ```
 
 ## Hardware setup
@@ -84,14 +93,24 @@ The viewer works without any hardware. Connect devices for full tactile and brai
 4. Press the down arrow until you find your DotPad device name, then press Enter.
 5. The DotPad should vibrate again after it connects.
 
-#### DotPad cursor modes
+#### DotPad controls
 
-The DotPad cursor can cycle through multiple modes:
-- `none`: hides the cursor and disables cursor movement.
-- `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
-- `guidelines`: shows horizontal and vertical guide lines through the cursor.
-- `horizontal-line`: shows only the horizontal guide line; up and down movement are disabled.
-- `vertical-line`: shows only the vertical guide line; left and right movement are disabled.
+The DotPad supports cursor controls and depth changes with the following inputs:
+
+- dot 1: change depth shallower by 10%.
+- dot 4: change depth deeper by 10%.
+- letter `v` or dot chord 1 2 3 6: cycles through cursor modes
+    - `none`: hides the cursor and disables cursor movement.
+    - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
+    - `guidelines`: shows horizontal and vertical guide lines through the cursor.
+    - `horizontal-line`: shows only the horizontal guide line; up and down movement are disabled.
+    - `vertical-line`: shows only the vertical guide line; left and right movement are disabled.
+- dot 3: move cursor or horizontal line left
+- dot 6: move cursor or horizontal line right
+- dot 2: move cursor or vertical line up
+- dot 5: move cursor or vertical line down
+
+NOTE: Cursor or guideline movements will only work when the cursor or guidelines are active. A single button press will move one pixel. A double or triple button press will move the line five or twelve pixels respectively.
 
 
 ## Uploads on managed servers
