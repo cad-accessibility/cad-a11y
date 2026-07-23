@@ -78,7 +78,7 @@ jobs:
           npm install --no-save playwright @axe-core/playwright
           npx playwright install chromium
 
-      - name: Run axe check against home page
+      - name: Run axe check and console-error smoke test against home page
         run: |
           node <<'EOF'
           const { chromium } = require('playwright');
@@ -88,7 +88,28 @@ jobs:
             const browser = await chromium.launch();
             const context = await browser.newContext();
             const page = await context.newPage();
+
+            // No hardware is attached in CI, so this also guards the "device not
+            // connected" code paths (e.g. handlers wired up against elements or
+            // functions that no longer exist) that only fail at runtime and are
+            // invisible to node --check or the Python test suite.
+            const consoleErrors = [];
+            page.on('console', (msg) => {
+              if (msg.type() === 'error') consoleErrors.push(msg.text());
+            });
+            page.on('pageerror', (err) => consoleErrors.push(err.message));
+
             await page.goto('http://localhost:8635/viewer', { waitUntil: 'domcontentloaded' });
+            await page.waitForTimeout(2000);
+
+            if (consoleErrors.length > 0) {
+              console.error('Console/page errors found on /viewer:');
+              for (const message of consoleErrors) {
+                console.error(`- ${message}`);
+              }
+              await browser.close();
+              process.exit(1);
+            }
 
             const results = await new AxeBuilder({ page }).analyze();
             const blocking = results.violations.filter((v) =>
@@ -107,7 +128,7 @@ jobs:
               process.exit(1);
             }
 
-            console.log('Axe check passed: no serious or critical violations found.');
+            console.log('Console-error and axe checks passed: no console errors, no serious or critical a11y violations.');
             await browser.close();
           })().catch((err) => {
             console.error(err);

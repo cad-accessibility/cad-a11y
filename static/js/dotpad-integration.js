@@ -255,36 +255,6 @@ bleScanBtn.addEventListener('click', async () => {
     }
 });
 
-// --- USB scan & connect ---
-usbScanBtn.addEventListener('click', async () => {
-    try {
-        setStatus('Requesting USB DotPad...');
-        const port = await scanner.startUsbScan();
-        if (!port) { setStatus('No USB device selected.'); return; }
-        rawTarget = port;
-        setStatus('Connecting to USB DotPad...');
-        const dotDevice = await sdk.connectUsbDevice(port);
-        if (dotDevice) {
-            connectedDevice = dotDevice;
-            connectionType = 'usb';
-            sdk.setCallBack(onMessage, onKey);
-            setStatus(`Connected: USB DotPad`);
-            disconnectBtn.disabled = false;
-            if (typeof window.announce === 'function') window.announce('DotPad connected via USB.');
-            setConnectedDotPadDisplay(dotDevice, 'usb');
-            // Send current model state immediately so the display shows the model on connect.
-            if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
-        } else {
-            setStatus('USB connection failed.');
-            if (typeof window.announceAlert === 'function') window.announceAlert('DotPad USB connection failed.');
-        }
-    } catch (err) {
-        console.error('USB scan/connect error:', err);
-        setStatus('USB error: ' + err.message);
-        if (typeof window.announceAlert === 'function') window.announceAlert('DotPad USB error: ' + err.message);
-    }
-});
-
 // --- Disconnect ---
 disconnectBtn.addEventListener('click', () => {
     if (connectedDevice) sdk.disconnect(connectedDevice);
@@ -330,7 +300,7 @@ function onKey(device, currKeyCode, keyMsg) {
     if (
         typeof window.getCurrentSliceDepth !== 'function' ||
         typeof window.updateSliceDepth !== 'function' ||
-        typeof window.announceDepthShortcut !== 'function'
+        typeof window.announceDepthValue !== 'function'
     ) {
         console.warn('DotPad depth controls are unavailable because viewer depth helpers are not exposed.');
         return;
@@ -349,7 +319,7 @@ function onKey(device, currKeyCode, keyMsg) {
         const previousDepth = window.getCurrentSliceDepth();
         const nextDepth = Math.max(0, previousDepth - 100/n); // TODO: calculate integer value
         window.updateSliceDepth(nextDepth, false);
-        window.announceDepthShortcut('Dot 1', previousDepth, nextDepth);
+        window.announceDepthValue(nextDepth, previousDepth);
         return;
     }
     if (byte6 === 0x08){
@@ -357,7 +327,7 @@ function onKey(device, currKeyCode, keyMsg) {
         const previousDepth = window.getCurrentSliceDepth();
         const nextDepth = Math.min(100, previousDepth + 100/n); // TODO: calculate integer value
         window.updateSliceDepth(nextDepth, false);
-        window.announceDepthShortcut('Dot 4', previousDepth, nextDepth);
+        window.announceDepthValue(nextDepth, previousDepth);
         return;
     }
     if (typeof window.moveCursor != 'function') return;
