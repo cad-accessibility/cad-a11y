@@ -20,6 +20,7 @@ def _bare_renderer():
     renderer = cad_lib.CADComparisonRenderer.__new__(cad_lib.CADComparisonRenderer)
     renderer.view_cut_polygons = {}
     renderer.view_diff_mats = {}
+    renderer.view_slice_pixel_counts = {}
     return renderer
 
 
@@ -59,3 +60,15 @@ def test_slice_profile_falls_back_to_diff_row_when_polygons_missing(monkeypatch)
     profile = renderer._get_zoom_filtered_slice_profile("top", 50, ZOOM)
 
     np.testing.assert_array_equal(profile, diff[50])
+
+
+def test_slice_area_profile_kicks_off_precompute_lazily(monkeypatch):
+    """Slice Area mode is a slice-graph consumer too, so requesting its profile
+    must also start the deferred precompute, not only the Difference path."""
+    renderer = _bare_renderer()
+    calls = []
+    monkeypatch.setattr(renderer, "start_background_slice_precompute", lambda: calls.append(1))
+
+    renderer._get_slice_pixel_count_profile("top")
+
+    assert calls, "expected _get_slice_pixel_count_profile to start precompute lazily"
