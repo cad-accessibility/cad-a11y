@@ -466,17 +466,22 @@ class CADComparisonRenderer:
         horizontal_dist = self.view_limits[view_index][0][1] - self.view_limits[view_index][0][0]
         vertical_dist = self.view_limits[view_index][1][1] - self.view_limits[view_index][1][0]
 
-        base_width = 2 * horizontal_dist
-        base_height = 2 * vertical_dist
+        screen_w_for_ratio = render_screen_size[0]
+        if str(params.get("mode", "single")).lower() == "side-by-side":
+            screen_w_for_ratio = 0.5 * render_screen_size[0]
 
-        base_aspect = base_width / base_height
+        base_x_lim, base_y_lim = compute_imposed_zoom_limits(
+            horizontal_dist,
+            vertical_dist,
+            self.view_current_camera_center[view_index][0],
+            self.view_current_camera_center[view_index][1],
+            0.0,
+            screen_w_for_ratio,
+            render_screen_size[1],
+        )
 
-        if base_aspect < device_aspect:
-            # Base view is too narrow for the device, so render() expands width.
-            base_width = base_height * device_aspect
-        else:
-            # Base view is too wide for the device, so render() expands height.
-            base_height = base_width / device_aspect
+        base_width = base_x_lim[1] - base_x_lim[0]
+        base_height = base_y_lim[1] - base_y_lim[0]
 
         width_scale = fitted_width / base_width
         height_scale = fitted_height / base_height
