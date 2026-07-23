@@ -28,6 +28,41 @@ import matplotlib.pyplot as plt
 import io, PIL, json
 from PIL import Image
 
+
+def compute_imposed_zoom_limits(horizontal_dist, vertical_dist, center_x, center_y, zoom_level, screen_w, screen_h):
+    """Compute the (x, y) axis limits CADComparisonRenderer.render() imposes for a
+    given zoom level, centered on (center_x, center_y) and corrected to match the
+    target screen's aspect ratio.
+
+    Pulled out as a standalone function (rather than inlined in render()) so it can
+    be unit-tested directly instead of via a hand-copied mirror that could drift
+    from the real formula.
+
+    Returns ([x_min, x_max], [y_min, y_max]).
+    """
+    zoom_scale = 1.0 / (zoom_level + 1.0)
+    current_aspect_ratio = screen_w / screen_h
+
+    # Use 0.5 * zoom_scale so the initial window exactly spans the model's
+    # bounding box (with matplotlib's auto-margin) at zoom_level=0. A factor of
+    # 1.0 here causes a 2x zoom-out, leaving the model occupying only ~50% of
+    # the display height before aspect-ratio correction, and even less after it.
+    x_lim = [center_x - 0.5*zoom_scale*horizontal_dist, center_x + 0.5*zoom_scale*horizontal_dist]
+    y_lim = [center_y - 0.5*zoom_scale*vertical_dist, center_y + 0.5*zoom_scale*vertical_dist]
+
+    if horizontal_dist/vertical_dist < current_aspect_ratio:
+        horizontal_scale_factor = current_aspect_ratio * (y_lim[1] - y_lim[0]) / (x_lim[1] - x_lim[0])
+        x_lim[0] = center_x - 0.5*horizontal_scale_factor*zoom_scale*horizontal_dist
+        x_lim[1] = center_x + 0.5*horizontal_scale_factor*zoom_scale*horizontal_dist
+    if horizontal_dist/vertical_dist > current_aspect_ratio:
+        vertical_scale_factor = current_aspect_ratio * (y_lim[1] - y_lim[0]) / (x_lim[1] - x_lim[0])
+        vertical_scale_factor = 1.0/vertical_scale_factor
+        y_lim[0] = center_y - 0.5*vertical_scale_factor*zoom_scale*vertical_dist
+        y_lim[1] = center_y + 0.5*vertical_scale_factor*zoom_scale*vertical_dist
+
+    return x_lim, y_lim
+
+
 class CADComparisonRenderer:
     """
     Renderer for CAD model comparisons.
@@ -592,18 +627,6 @@ class CADComparisonRenderer:
             self.view_current_camera_center[view_index][1] + 0.5*vertical_dist],
             ]
 
-        # Use 0.5 * zoom_scale so the initial window exactly spans the model's
-        # bounding box (with matplotlib's auto-margin) at zoom_level=0.  The
-        # previous factor of 1.0 caused a 2× zoom-out, leaving the model
-        # occupying only ~50 % of the display height before aspect-ratio
-        # correction—and even less after it.
-        imposed_zoom_ax_limits = [
-            [self.view_current_camera_center[view_index][0] - 0.5*zoom_scale*horizontal_dist,
-            self.view_current_camera_center[view_index][0] + 0.5*zoom_scale*horizontal_dist],
-            [self.view_current_camera_center[view_index][1] - 0.5*zoom_scale*vertical_dist,
-            self.view_current_camera_center[view_index][1] + 0.5*zoom_scale*vertical_dist],
-            ]
-
         # Compute scrollbar dimensions after final zoom/aspect correction so
         # scrollbar thumb size/position track zoom changes continuously.
         x_scroll_min = 0.0
@@ -612,22 +635,18 @@ class CADComparisonRenderer:
         y_scroll_max = 1.0
 
         # This needs to account for the aspect ratio of the monarch
-        current_aspect_ratio = render_screen_size[0]/render_screen_size[1]
+        screen_w_for_ratio = render_screen_size[0]
         if comparison_mode == "side-by-side":
-            current_aspect_ratio = 0.5*render_screen_size[0]/render_screen_size[1]
-        if horizontal_dist/vertical_dist < current_aspect_ratio:
-            horizontal_scale_factor = current_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
-            #imposed_zoom_ax_limits[0][0] = max(self.view_limits[view_index][0][0], self.view_current_camera_center[view_index][0] - 0.5*horizontal_scale_factor*zoom_scale*horizontal_dist)
-            imposed_zoom_ax_limits[0][0] = self.view_current_camera_center[view_index][0] - 0.5*horizontal_scale_factor*zoom_scale*horizontal_dist
-            #imposed_zoom_ax_limits[0][1] = min(self.view_limits[view_index][0][1], self.view_current_camera_center[view_index][0] + 0.5*horizontal_scale_factor*zoom_scale*horizontal_dist)
-            imposed_zoom_ax_limits[0][1] = self.view_current_camera_center[view_index][0] + 0.5*horizontal_scale_factor*zoom_scale*horizontal_dist
-        if horizontal_dist/vertical_dist > current_aspect_ratio:
-            vertical_scale_factor = current_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
-            vertical_scale_factor = 1.0/vertical_scale_factor
-            #imposed_zoom_ax_limits[1][0] = max(self.view_limits[view_index][1][0], self.view_current_camera_center[view_index][1] - 0.5*vertical_scale_factor*zoom_scale*vertical_dist)
-            #imposed_zoom_ax_limits[1][1] = min(self.view_limits[view_index][1][1], self.view_current_camera_center[view_index][1] + 0.5*vertical_scale_factor*zoom_scale*vertical_dist)
-            imposed_zoom_ax_limits[1][0] = self.view_current_camera_center[view_index][1] - 0.5*vertical_scale_factor*zoom_scale*vertical_dist
-            imposed_zoom_ax_limits[1][1] = self.view_current_camera_center[view_index][1] + 0.5*vertical_scale_factor*zoom_scale*vertical_dist
+            screen_w_for_ratio = 0.5*render_screen_size[0]
+        imposed_zoom_ax_limits = list(compute_imposed_zoom_limits(
+            horizontal_dist,
+            vertical_dist,
+            self.view_current_camera_center[view_index][0],
+            self.view_current_camera_center[view_index][1],
+            zoom_level,
+            screen_w_for_ratio,
+            render_screen_size[1],
+        ))
 
         x_min = self.view_limits[view_index][1][0]
         x_max = self.view_limits[view_index][1][1]

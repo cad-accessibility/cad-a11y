@@ -9,63 +9,16 @@ The fix halves the initial window (0.5 × zoom_scale × dist on each side) so th
 model fills the display at zoom_level=0, and applies the same 0.5 factor to the
 aspect-ratio correction formulas to keep the output ratio correct.
 
-These tests are pure-Python (no numpy / OCC / trimesh) so they can run in
-lightweight CI environments.
+These tests call compute_imposed_zoom_limits() directly (the same function
+render() uses) rather than a hand-copied mirror of the formula, so they can't
+silently drift from the real implementation.
 """
 
 from __future__ import annotations
 
 import math
 
-
-# ---------------------------------------------------------------------------
-# Helpers that reproduce the production logic from render()
-# ---------------------------------------------------------------------------
-
-def _compute_imposed_limits(
-    *,
-    horizontal_dist: float,
-    vertical_dist: float,
-    center_x: float,
-    center_y: float,
-    zoom_level: float,
-    screen_w: int,
-    screen_h: int,
-) -> tuple[list[float], list[float]]:
-    """Mirror the imposed_zoom_ax_limits computation from CADComparisonRenderer.render().
-
-    Returns (x_limits, y_limits) as [min, max] lists.
-    """
-    zoom_scale = 1.0 / (zoom_level + 1.0)
-    current_aspect_ratio = screen_w / screen_h
-
-    # Initial window — 0.5 × zoom_scale so zoom_level=0 matches the model bbox.
-    x_lim = [
-        center_x - 0.5 * zoom_scale * horizontal_dist,
-        center_x + 0.5 * zoom_scale * horizontal_dist,
-    ]
-    y_lim = [
-        center_y - 0.5 * zoom_scale * vertical_dist,
-        center_y + 0.5 * zoom_scale * vertical_dist,
-    ]
-
-    x_range = x_lim[1] - x_lim[0]
-    y_range = y_lim[1] - y_lim[0]
-
-    if horizontal_dist / vertical_dist < current_aspect_ratio:
-        # Model is narrower than the screen → expand horizontal axis.
-        hsf = current_aspect_ratio * y_range / x_range
-        x_lim[0] = center_x - 0.5 * hsf * zoom_scale * horizontal_dist
-        x_lim[1] = center_x + 0.5 * hsf * zoom_scale * horizontal_dist
-    elif horizontal_dist / vertical_dist > current_aspect_ratio:
-        # Model is wider than the screen → expand vertical axis.
-        vsf = current_aspect_ratio * y_range / x_range
-        vsf = 1.0 / vsf
-        y_lim[0] = center_y - 0.5 * vsf * zoom_scale * vertical_dist
-        y_lim[1] = center_y + 0.5 * vsf * zoom_scale * vertical_dist
-
-    return x_lim, y_lim
-
+from app.cad_comparison_lib import compute_imposed_zoom_limits
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -90,7 +43,7 @@ def test_model_fills_at_least_80pct_of_display_height_at_zero_zoom():
     fix it should reach ≥ 80 % (the mug is ~0.9 units tall, the Y window is
     ~0.99 units → ~91 % fill).
     """
-    x_lim, y_lim = _compute_imposed_limits(
+    x_lim, y_lim = compute_imposed_zoom_limits(
         horizontal_dist=MUG_HDIST,
         vertical_dist=MUG_VDIST,
         center_x=MUG_CX,
@@ -112,7 +65,7 @@ def test_model_fills_at_least_80pct_of_display_height_at_zero_zoom():
 
 def test_aspect_ratio_is_preserved_after_correction():
     """The final X/Y range must match the screen's aspect ratio."""
-    x_lim, y_lim = _compute_imposed_limits(
+    x_lim, y_lim = compute_imposed_zoom_limits(
         horizontal_dist=MUG_HDIST,
         vertical_dist=MUG_VDIST,
         center_x=MUG_CX,
@@ -133,7 +86,7 @@ def test_aspect_ratio_is_preserved_after_correction():
 
 def test_zoom_in_reduces_view_window():
     """zoom_level=1 should show half the model (2× zoom-in)."""
-    _, y_lim_0 = _compute_imposed_limits(
+    _, y_lim_0 = compute_imposed_zoom_limits(
         horizontal_dist=MUG_HDIST,
         vertical_dist=MUG_VDIST,
         center_x=MUG_CX,
@@ -142,7 +95,7 @@ def test_zoom_in_reduces_view_window():
         screen_w=SCREEN_W,
         screen_h=SCREEN_H,
     )
-    _, y_lim_1 = _compute_imposed_limits(
+    _, y_lim_1 = compute_imposed_zoom_limits(
         horizontal_dist=MUG_HDIST,
         vertical_dist=MUG_VDIST,
         center_x=MUG_CX,
@@ -164,7 +117,7 @@ def test_zoom_in_reduces_view_window():
 def test_wide_model_aspect_ratio_preserved():
     """A wide model (wider than screen) must also have correct aspect ratio."""
     # Simulate a wide flat plate: 0.9 × 0.3 (wide × tall).
-    x_lim, y_lim = _compute_imposed_limits(
+    x_lim, y_lim = compute_imposed_zoom_limits(
         horizontal_dist=0.99,   # 0.9 * 1.1 margin
         vertical_dist=0.33,     # 0.3 * 1.1 margin
         center_x=0.0,

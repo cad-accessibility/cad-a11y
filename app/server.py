@@ -412,11 +412,67 @@ def get_or_create_renderer(model_index: int | None = None) -> CADComparisonRende
         return renderers_by_model[index]
 
 
+def _max_contiguous_run(mask_1d: np.ndarray) -> int:
+    """Longest run of consecutive True values in a 1-D boolean array."""
+    if not mask_1d.any():
+        return 0
+    best = cur = 0
+    for value in mask_1d:
+        cur = cur + 1 if value else 0
+        best = max(best, cur)
+    return best
+
+
+def _ensure_minimum_feature_thickness(mask: np.ndarray, min_thickness: int = 2) -> np.ndarray:
+    """Dilate raised content by one pixel if the whole render is thinner than
+    min_thickness everywhere, so a degenerate view (e.g. a flat model seen
+    edge-on) doesn't come out as an all-but-invisible scattering of isolated
+    pixels on the physical display.
+
+    This only fires when NO row or column anywhere in the mask reaches
+    min_thickness, i.e. the render as a whole is uniformly hairline-thin —
+    a normal render with well-defined 1px edges alongside thicker filled or
+    curved regions is left untouched, so this can't re-thicken the crisp
+    single-pixel lines _to_braille_payload's majority threshold produces.
+    """
+    if not mask.any():
+        return mask
+
+    max_col_run = max(
+        (_max_contiguous_run(mask[:, c]) for c in range(mask.shape[1]) if mask[:, c].any()),
+        default=0,
+    )
+    max_row_run = max(
+        (_max_contiguous_run(mask[r, :]) for r in range(mask.shape[0]) if mask[r, :].any()),
+        default=0,
+    )
+    if max(max_col_run, max_row_run) >= min_thickness:
+        return mask
+
+    dilated = mask.copy()
+    dilated[1:, :] |= mask[:-1, :]
+    dilated[:-1, :] |= mask[1:, :]
+    dilated[:, 1:] |= mask[:, :-1]
+    dilated[:, :-1] |= mask[:, 1:]
+    return dilated
+
+
 def _to_braille_payload(rendered_rgba: np.ndarray) -> np.ndarray:
     # Convert renderer output to braille payload using a single deterministic
-    # rule for all modes: any non-white pixel is raised.
+    # rule for all modes: majority coverage is raised.
+    #
+    # The high-res render is downsampled to display resolution with an area-
+    # average filter (resize_local_mean), so a pixel's value reflects the
+    # fraction of its physical footprint actually covered by ink, not just
+    # whether it was touched at all. A thin line straddling a pixel boundary
+    # therefore leaves BOTH neighboring pixels partially gray. Any-non-white
+    # ("< 255") marks both of them raised regardless of how thin the source
+    # line is; a true majority rule ("< 128", i.e. >50% covered) raises only
+    # the one that a physical display pin's footprint would actually justify.
     channel = rendered_rgba[:, :, 0].astype(np.uint8, copy=False)
-    return np.where(channel < 255, 255, 0).astype(np.uint8)
+    raised = channel < 128
+    raised = _ensure_minimum_feature_thickness(raised)
+    return np.where(raised, 255, 0).astype(np.uint8)
 
 
 def _payload_stats(payload: np.ndarray) -> dict[str, Any]:
