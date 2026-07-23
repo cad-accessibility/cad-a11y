@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Accessible 3D Model Viewer</title>
     <meta name="description" content="An accessible interface for viewing and interacting with 3D models, optimized for screen readers and keyboard navigation">
-    <link rel="stylesheet" href="/static/css/viewer.css?v=20260529-7">
+    <link rel="stylesheet" href="/static/css/viewer.css?v=20260723-1">
 </head>
 <body>
     <!-- Skip navigation link – WCAG 2.4.1 -->
@@ -264,8 +264,9 @@
                 <div class="help-text" id="slice-graph-lock-status">Graph lock ON.</div>
             </section>
 
-            <!-- Output device: braille display routing. Its own section so it stays
-                 visible in the simplified /workshop viewer. -->
+            <!-- Output device: braille display routing. Its own section, hidden in the
+                 simplified /workshop viewer (the connected display already decides
+                 routing there); shown here in the full viewer. -->
             <section class="section" aria-labelledby="output-device-heading">
                 <h2 id="output-device-heading">Output device</h2>
                 <fieldset>
@@ -562,7 +563,7 @@
         </form>
     </dialog>
 
-    <script src="/static/js/viewer.js?v=20260529-8"></script>
+    <script src="/static/js/viewer.js?v=20260723-1"></script>
 
     <!-- Monarch USB Browser HID integration (mirrors braille_display.py _send_to_monarch) -->
     <script src="/static/js/monarch-hid.js"></script>

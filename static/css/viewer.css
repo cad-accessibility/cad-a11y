@@ -933,15 +933,19 @@ button:focus-visible {
 
 /* ---------------------------------------------------------------------------
    Simplified workshop viewer (/workshop or ?ui=simple).
-   Show only the core control sections: View, Depth, Rendering Mode, Output
-   device, Monarch and DotPad. Everything else in the left column is hidden;
+   Show only the core control sections: View, Depth, Rendering Mode, Zoom,
+   Monarch and DotPad. Everything else in the left column is hidden;
    the right-column tactile preview (not a .section) stays visible.
+   The output-device chooser is deliberately absent: the display that is
+   connected already receives the model (DotPad sends on every render while
+   connected, and a connected Monarch is fed by the default routing), so the
+   choice is redundant here and only adds a step that can be set wrong.
    --------------------------------------------------------------------------- */
 body.simple-ui .section { display: none; }
 body.simple-ui section[aria-labelledby="view-select-heading"],
 body.simple-ui section[aria-labelledby="slice-heading"],
 body.simple-ui section[aria-labelledby="render-heading"],
-body.simple-ui section[aria-labelledby="output-device-heading"],
+body.simple-ui section[aria-labelledby="zoom-select-heading"],
 body.simple-ui section[aria-labelledby="monarch-hid-heading"],
 body.simple-ui section[aria-labelledby="dotpad-heading"] { display: block; }
 /* Within Rendering Mode, hide the layout (view-mode) radios so only the
