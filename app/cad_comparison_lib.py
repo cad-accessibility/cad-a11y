@@ -107,6 +107,30 @@ def _projected_view_axis_limits(shape, view_key):
     return [[x_min - x_margin, x_max + x_margin], [y_min - y_margin, y_max + y_margin]]
 
 
+# The tactile grid is ~96x40 and the preview a few hundred pixels across, so
+# geometry finer than that is invisible on both while still costing render time
+# on every frame: the draw scales with face count, and one interaction pays for
+# several renders. A tessellation tolerance can cap this for STEP at load time,
+# but an STL arrives already tessellated, so cap it here for every source.
+MAX_RENDER_FACES = 40000
+
+
+def _decimate_for_display(mesh):
+    """Reduce face count to roughly what the display can resolve.
+
+    Best effort by design. Decimation needs an optional backend, and a model that
+    cannot be simplified should still load and render, just more slowly, so any
+    failure returns the mesh untouched rather than breaking the load.
+    """
+    if len(mesh.faces) <= MAX_RENDER_FACES:
+        return mesh
+    try:
+        simplified = mesh.simplify_quadric_decimation(face_count=MAX_RENDER_FACES)
+    except Exception:
+        return mesh
+    return simplified if len(simplified.faces) > 0 else mesh
+
+
 class CADComparisonRenderer:
     """
     Renderer for CAD model comparisons.
@@ -189,7 +213,7 @@ class CADComparisonRenderer:
         fix_inversion(mesh)
         fix_winding(mesh)
         #stitch(mesh)
-        return mesh
+        return _decimate_for_display(mesh)
 
     def _load_models(self):
         """Load mesh files and prepare shapes."""
