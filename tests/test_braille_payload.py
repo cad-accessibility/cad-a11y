@@ -14,6 +14,7 @@ easy to regress into each other:
 import numpy as np
 
 import app.server as server
+from src.converter.render_low_res import get_outlines, raised_ink_mask
 
 
 def _render(coverage_rows):
@@ -92,3 +93,53 @@ def test_blank_render_stays_blank():
     payload = server._to_braille_payload(_render([[255, 255], [255, 255]]))
 
     assert not payload.any()
+
+
+def test_rescued_feature_is_one_pin_wide():
+    """A faint feature with no majority pixel lands on a single pin.
+
+    Rescuing its antialiased fringe as well would spread it over three, which is
+    exactly the doubling the majority rule exists to prevent.
+    """
+    payload = server._to_braille_payload(_render([
+        [255, 210, 140, 200, 255],
+        [255, 210, 140, 200, 255],
+        [255, 210, 140, 200, 255],
+        [255, 210, 140, 200, 255],
+    ]))
+
+    assert payload[0].tolist() == [0, 0, 255, 0, 0]
+
+
+def test_near_white_speck_is_not_raised():
+    """Antialiasing spill is not a feature and must not reach the display.
+
+    With no coverage floor the speck survives the rescue and the hairline guard
+    then grows it into a multi-pin blob.
+    """
+    payload = server._to_braille_payload(_render([
+        [255, 255, 255],
+        [255, 254, 255],
+        [255, 255, 255],
+    ]))
+
+    assert not payload.any()
+
+
+def test_outline_never_sits_outside_what_the_display_raises():
+    """Outline detection and the payload share one boundary definition, so the
+    silhouette cannot land on pixels the filled render leaves down."""
+    gray = np.array([
+        [255, 255, 255, 255, 255],
+        [255, 0, 0, 200, 255],
+        [255, 0, 0, 200, 255],
+        [255, 255, 255, 255, 255],
+    ], dtype=np.uint8)
+    image = np.zeros(gray.shape + (4,), dtype=np.uint8)
+    for channel in range(3):
+        image[:, :, channel] = gray
+    image[:, :, 3] = 255
+
+    _, outline_mask = get_outlines(image)
+
+    assert not (outline_mask & ~raised_ink_mask(gray)).any(), "outline must stay within raised ink"

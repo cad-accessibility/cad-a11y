@@ -50,6 +50,11 @@ def compute_imposed_zoom_limits(horizontal_dist, vertical_dist, center_x, center
     x_lim = [center_x - 0.5*zoom_scale*horizontal_dist, center_x + 0.5*zoom_scale*horizontal_dist]
     y_lim = [center_y - 0.5*zoom_scale*vertical_dist, center_y + 0.5*zoom_scale*vertical_dist]
 
+    # A degenerate extent (a perfectly flat model seen edge-on) has no aspect to
+    # correct against, and dividing by it would raise.
+    if horizontal_dist <= 0 or vertical_dist <= 0:
+        return x_lim, y_lim
+
     if horizontal_dist/vertical_dist < current_aspect_ratio:
         horizontal_scale_factor = current_aspect_ratio * (y_lim[1] - y_lim[0]) / (x_lim[1] - x_lim[0])
         x_lim[0] = center_x - 0.5*horizontal_scale_factor*zoom_scale*horizontal_dist

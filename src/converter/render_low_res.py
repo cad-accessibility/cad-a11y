@@ -8,6 +8,11 @@ from matplotlib.patches import Rectangle, Circle
 # so the outline silhouette and the filled edge cannot drift apart.
 RAISED_INK_THRESHOLD = 128
 
+# Below a few percent coverage a pixel is antialiasing spill rather than a
+# feature, so it is never worth rescuing. Without this floor an essentially
+# white pixel survives and the hairline guard then grows it into a visible blob.
+FAINT_INK_FLOOR = 240
+
 
 def dilate_mask(mask):
     """One-pixel 4-connected dilation of a boolean mask."""
@@ -19,6 +24,16 @@ def dilate_mask(mask):
     return grown
 
 
+def _neighbour_min(gray):
+    """Heaviest ink (lowest gray value) among each pixel's four neighbours."""
+    lowest = np.full_like(gray, 255)
+    lowest[1:, :] = np.minimum(lowest[1:, :], gray[:-1, :])
+    lowest[:-1, :] = np.minimum(lowest[:-1, :], gray[1:, :])
+    lowest[:, 1:] = np.minimum(lowest[:, 1:], gray[:, :-1])
+    lowest[:, :-1] = np.minimum(lowest[:, :-1], gray[:, 1:])
+    return lowest
+
+
 def raised_ink_mask(gray):
     """Which pixels of a downsampled render a tactile display should raise.
 
@@ -26,17 +41,23 @@ def raised_ink_mask(gray):
     one pin rather than doubling onto both. Majority alone would silently delete
     any feature thinner than half a pixel (a thin cross-section wall, a rib),
     and dilation could not recover it because nothing would be left to dilate,
-    so faint ink with no majority pixel beside it is kept as well. The faint
-    outer edge of a solid shape still drops out, because it always has a
-    majority pixel adjacent.
+    so ink that no majority pixel represents is rescued as well.
+
+    That rescue is deliberately narrow. It ignores anything under FAINT_INK_FLOOR
+    coverage, which is spill rather than geometry, and within a faint cluster it
+    keeps only the heaviest pixel. Otherwise a thin feature would smear across
+    its own antialiased fringe and land on three pins instead of one, which is
+    the doubling the majority rule exists to prevent. The faint outer edge of a
+    solid shape still drops out, because it always has a majority pixel adjacent.
 
     This is the single definition of "raised" for the whole pipeline: the
     braille payload and the outline detection both use it, so the outline
     silhouette and the filled edge cannot drift apart.
     """
     strong = gray < RAISED_INK_THRESHOLD
-    any_ink = gray < 255
-    return strong | (any_ink & ~dilate_mask(strong))
+    orphan = (gray < FAINT_INK_FLOOR) & ~dilate_mask(strong)
+    heaviest = gray <= _neighbour_min(gray)
+    return strong | (orphan & heaviest)
 
 
 def save_binary_array_as_vector_pdf(array, filename="low_res.pdf"):
