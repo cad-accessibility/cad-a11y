@@ -13,7 +13,7 @@ const bleScanBtn = document.getElementById('dotpad-scan-ble-btn');
 const disconnectBtn = document.getElementById('dotpad-disconnect-btn');
 const autoSendCheckbox = document.getElementById('dotpad-auto-send');
 
-// --- NABCC 8-dot Computer Braille lookup table ---
+// ── NABCC 8-dot Computer Braille lookup table ────────────────────────────
 // Index = ASCII code - 0x20 (covers 0x20 space through 0x7E tilde)
 // Value = 8-dot braille byte: bit0=dot1, bit1=dot2, bit2=dot3, bit3=dot4,
 //                              bit4=dot5, bit5=dot6, bit6=dot7, bit7=dot8
@@ -116,13 +116,83 @@ const NABCC = new Uint8Array([
     0x18, // 0x7E  ~  dots 4,5
 ]);
 
+// --- DotPad key mapping to cursor movement ---
+const DOTPAD_KEY_ACTIONS = {
+    KeyFunction1: [0, -1],
+    KeyFunction4: [0, 1],
+    PanningLeft: [-1, 0],
+    PanningRight: [1, 0],
+};
+const DOTPAD_ONE_STEP = 1;
+const DOTPAD_HOLD_START_MS = 350;
+const DOTPAD_HOLD_REPEAT_MS = 100;
+const DOTPAD_HOLD_STEPS = [2, 4, 8, 16];
+const DOTPAD_MULTI_TAP_WINDOW_MS = 250;
+const DOTPAD_TAP_STEPS = [1, 5, 12];
+
+let pendingTap = null;
+
+// ── Braille key chord → letter ───────────────────────────────────────────
+// Buttons: LP=dot3, 8=dot2, 4=dot1, 2=dot4, 1=dot5, RP=dot6
+// Key label format examples: "LP +0", "RP +4", "AP +12", "+7"
+// nabccToChar: braille byte → printable ASCII character (6-dot patterns only).
+// Lowercase letters take priority over any punctuation sharing the same pattern.
+const nabccToChar = {};
+(function buildReverseNabcc() {
+    window._nabccReverse = {};
+    for (let ascii = 0x20; ascii <= 0x7E; ascii++) {
+    const b = NABCC[ascii - 0x20];
+    if (b < 0x40 && !nabccToChar[b]) nabccToChar[b] = String.fromCharCode(ascii);
+    }
+    for (let ascii = 0x61; ascii <= 0x7A; ascii++) {
+    const b = NABCC[ascii - 0x20];
+    nabccToChar[b] = String.fromCharCode(ascii);       // lowercase wins conflicts
+    window._nabccReverse[b] = String.fromCharCode(ascii);
+    }
+})();
+
+// Parse a key event label into a 6-dot braille byte.
+// Buttons: 4=dot1, 8=dot2, LP=dot3, 2=dot4, 1=dot5, RP=dot6
+function labelToByte6(label) {
+    const hasLP = /\bLP\b/.test(label) || /\bAP\b/.test(label);
+    const hasRP = /\bRP\b/.test(label) || /\bAP\b/.test(label);
+    const mPlus = label.match(/\+\s*(\d+)/);
+    const mBare = !mPlus && label.match(/^\d+$/);
+    const num   = mPlus ? parseInt(mPlus[1], 10) : mBare ? parseInt(mBare[0], 10) : 0;
+    return ((num & 4)  ? 0x01 : 0) |  // dot 1
+            ((num & 8)  ? 0x02 : 0) |  // dot 2
+            (hasLP      ? 0x04 : 0) |  // dot 3
+            ((num & 2)  ? 0x08 : 0) |  // dot 4
+            ((num & 1)  ? 0x10 : 0) |  // dot 5
+            (hasRP      ? 0x20 : 0);   // dot 6
+}
+
+function byte6ToLetter(byte6) {
+    return window._nabccReverse[byte6] || null;
+}
+
 function setStatus(msg) {
     if (statusEl) statusEl.textContent = msg;
     // Also update the top status bar DotPad field.
     const sbDotPad = document.getElementById('sb-dotpad');
     if (sbDotPad) sbDotPad.textContent = msg;
 }
-
+function setConnectedDotPadDisplay(dotDevice, connectionType){
+    if (!dotDevice) return;
+    const cellCols = dotDevice.numberCellColumns || 30;
+    const cellRows = dotDevice.numberCellRows || 10;
+    const pixelWidth = cellCols * 2;  // Each cell is 2 pixels wide
+    const pixelHeight = cellRows * 4;  // Each cell is 4 pixels tall
+    window.connectedTactileDisplay = {
+        type: 'DotPad',
+        connection: connectionType,
+        cellCols: cellCols,
+        cellRows: cellRows,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+    }
+    console.log(`DotPad dimensions: ${cellCols}×${cellRows} cells, ${pixelWidth}×${pixelHeight} pixels`);
+}
 // --- BLE scan & connect ---
 // A DotPad over Web Bluetooth frequently resolves gatt.connect() before its GATT
 // services are discoverable (common on Windows/Edge), so the SDK's getPrimaryService
@@ -171,6 +241,7 @@ bleScanBtn.addEventListener('click', async () => {
             setStatus(`Connected: ${device.name || 'BLE DotPad'}`);
             disconnectBtn.disabled = false;
             if (typeof window.announce === 'function') window.announce('DotPad connected via Bluetooth.');
+            setConnectedDotPadDisplay(dotDevice, 'ble');
             // Send current model state immediately so the display shows the model on connect.
             if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
         } else {
@@ -181,6 +252,36 @@ bleScanBtn.addEventListener('click', async () => {
         console.error('BLE scan/connect error:', err);
         setStatus('BLE error: ' + err.message);
         if (typeof window.announceAlert === 'function') window.announceAlert('DotPad Bluetooth error: ' + err.message);
+    }
+});
+
+// --- USB scan & connect ---
+usbScanBtn.addEventListener('click', async () => {
+    try {
+        setStatus('Requesting USB DotPad...');
+        const port = await scanner.startUsbScan();
+        if (!port) { setStatus('No USB device selected.'); return; }
+        rawTarget = port;
+        setStatus('Connecting to USB DotPad...');
+        const dotDevice = await sdk.connectUsbDevice(port);
+        if (dotDevice) {
+            connectedDevice = dotDevice;
+            connectionType = 'usb';
+            sdk.setCallBack(onMessage, onKey);
+            setStatus(`Connected: USB DotPad`);
+            disconnectBtn.disabled = false;
+            if (typeof window.announce === 'function') window.announce('DotPad connected via USB.');
+            setConnectedDotPadDisplay(dotDevice, 'usb');
+            // Send current model state immediately so the display shows the model on connect.
+            if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
+        } else {
+            setStatus('USB connection failed.');
+            if (typeof window.announceAlert === 'function') window.announceAlert('DotPad USB connection failed.');
+        }
+    } catch (err) {
+        console.error('USB scan/connect error:', err);
+        setStatus('USB error: ' + err.message);
+        if (typeof window.announceAlert === 'function') window.announceAlert('DotPad USB error: ' + err.message);
     }
 });
 
@@ -196,8 +297,10 @@ disconnectBtn.addEventListener('click', () => {
     connectionType = null;
     rawTarget = null;
     disconnectBtn.disabled = true;
+    window.connectedTactileDisplay = null;
     setStatus('Disconnected.');
     if (typeof window.announce === 'function') window.announce('DotPad disconnected.');
+    // No global device dimensions exposed in minimal setup
 });
 
 // --- SDK callbacks ---
@@ -207,6 +310,7 @@ function onMessage(device, dataCode, msg) {
         connectionType = null;
         rawTarget = null;
         disconnectBtn.disabled = true;
+        window.connectedTactileDisplay = null;
         setStatus('DotPad disconnected unexpectedly.');
         if (typeof window.announceAlert === 'function') window.announceAlert('DotPad disconnected unexpectedly.');
     } else if (dataCode === DataCodes.Connected) {
@@ -217,9 +321,152 @@ function onMessage(device, dataCode, msg) {
     console.log('[DotPad]', dataCode, msg);
 }
 
-function onKey(device, keyCode, keyMsg) {
-    console.log('[DotPad key]', keyCode, keyMsg);
+function onKey(device, currKeyCode, keyMsg) {
+    const label = keyMsg || currKeyCode;
+    const byte6 = labelToByte6(label);
+    const letter = byte6ToLetter(byte6);
+    const cursorState = window.whichCursor ? window.whichCursor() : 'none';
+    const n = 10; // TODO: make this global and dynamic
+    if (
+        typeof window.getCurrentSliceDepth !== 'function' ||
+        typeof window.updateSliceDepth !== 'function' ||
+        typeof window.announceDepthShortcut !== 'function'
+    ) {
+        console.warn('DotPad depth controls are unavailable because viewer depth helpers are not exposed.');
+        return;
+    }
+
+    if (letter === 'v'){
+        if (typeof window.cycleCursorState === 'function') {
+            window.cycleCursorState();
+            // 20 character announcement for screen reader users to know the cursor state has changed
+            console.log('Cursor state now ', window.whichCursor ? window.whichCursor() : 'none');
+        }
+        return;
+    }
+    if (byte6 === 0x01){
+        // Go shallower (decrease depth by 100/N)
+        const previousDepth = window.getCurrentSliceDepth();
+        const nextDepth = Math.max(0, previousDepth - 100/n); // TODO: calculate integer value
+        window.updateSliceDepth(nextDepth, false);
+        window.announceDepthShortcut('Dot 1', previousDepth, nextDepth);
+        return;
+    }
+    if (byte6 === 0x08){
+        // Go deeper (increase depth by 100/N)
+        const previousDepth = window.getCurrentSliceDepth();
+        const nextDepth = Math.min(100, previousDepth + 100/n); // TODO: calculate integer value
+        window.updateSliceDepth(nextDepth, false);
+        window.announceDepthShortcut('Dot 4', previousDepth, nextDepth);
+        return;
+    }
+    if (typeof window.moveCursor != 'function') return;
+
+    const cursorAction = DOTPAD_KEY_ACTIONS[currKeyCode];
+    if (cursorState === 'none') {
+        console.log('DotPad key pressed but cursor state is "none":', currKeyCode, keyMsg);
+        return;
+    }
+    if (cursorState === 'horizontal-line' && (currKeyCode === 'KeyFunction1' || currKeyCode === 'KeyFunction4')) {
+        console.log('DotPad key pressed but cursor state is "horizontal-line":', currKeyCode, keyMsg);
+        return;
+    }
+    if (cursorState === 'vertical-line' && (currKeyCode === 'PanningLeft' || currKeyCode === 'PanningRight')) {
+        console.log('DotPad key pressed but cursor state is "vertical-line":', currKeyCode, keyMsg);
+        return;
+    }
+
+    if (!cursorAction) {
+        console.log('Unmapped DotPad key:', currKeyCode, keyMsg);
+    }
+    else {
+        console.log(`DotPad key: ${currKeyCode} -> action: [${cursorAction[0]}, ${cursorAction[1]}]`);
+        if (!pendingTap) {
+            pendingTap = {
+                keyCode: currKeyCode,
+                action: cursorAction,
+                repeatCount: 1,
+                timer: setTimeout(() => {
+                    // Execute the tap action after the multi-tap window expires
+                    if (!pendingTap) return;
+                    window.moveCursor(cursorAction[0], cursorAction[1]);
+                    pendingTap = null;
+                }, DOTPAD_MULTI_TAP_WINDOW_MS)
+            };
+        }
+        else if (pendingTap.keyCode === currKeyCode) {
+            pendingTap.repeatCount++;
+            clearTimeout(pendingTap.timer);
+            pendingTap.timer = setTimeout(() => {
+                if (!pendingTap) return;
+                window.moveCursor(cursorAction[0], cursorAction[1], DOTPAD_TAP_STEPS[Math.min(pendingTap.repeatCount - 1, DOTPAD_TAP_STEPS.length - 1)]);
+                pendingTap = null;
+            }, DOTPAD_MULTI_TAP_WINDOW_MS);
+        }
+        else if (pendingTap.keyCode !== currKeyCode) {
+            // Different key pressed, execute the previous tap action immediately then start a new tap sequence
+            clearTimeout(pendingTap.timer);
+            window.moveCursor(pendingTap.action[0], pendingTap.action[1], DOTPAD_TAP_STEPS[Math.min(pendingTap.repeatCount - 1, DOTPAD_TAP_STEPS.length - 1)]);
+            pendingTap = {
+                keyCode: currKeyCode,
+                action: cursorAction,
+                repeatCount: 1,
+                timer: setTimeout(() => {
+                    if (!pendingTap) return;
+                    window.moveCursor(cursorAction[0], cursorAction[1]);
+                    pendingTap = null;
+                }, DOTPAD_MULTI_TAP_WINDOW_MS)
+            };
+        }
+    }
 }
+
+
+
+// Hold handling unused for now, waiting for SDK to support key release events
+let activeHold = null;
+
+function getHoldStep(repeatCount){
+    if (repeatCount < 2) return DOTPAD_ONE_STEP;
+    if (repeatCount < 5) return DOTPAD_HOLD_STEPS[0];
+    if (repeatCount < 10) return DOTPAD_HOLD_STEPS[1];
+    if (repeatCount < 20) return DOTPAD_HOLD_STEPS[2];
+    return DOTPAD_HOLD_STEPS[3];
+}
+
+function stopDotPadHold() {
+    if (!activeHold) return;
+    clearTimeout(activeHold.startTimer);
+    clearInterval(activeHold.repeatTimer);
+    activeHold = null;
+}
+
+function startDotPadHold(keyCode, action) {
+    stopDotPadHold();
+
+    activeHold = {
+        keyCode: keyCode,
+        action: action,
+        repeatCount: 0,
+        startTimer: null,
+        repeatTimer: null,
+    };
+
+    activeHold.startTimer = setTimeout(() => {
+        if (!activeHold) return;
+
+        activeHold.repeatTimer = setInterval(() => {
+            if (!activeHold || typeof window.moveCursor !== 'function') return;
+            activeHold.repeatCount++;
+            window.moveCursor(
+                activeHold.action[0],
+                activeHold.action[1],
+                getHoldStep(activeHold.repeatCount)
+            );
+        }, DOTPAD_HOLD_REPEAT_MS);
+    }, DOTPAD_HOLD_START_MS);
+}
+
 
 // --- Send hex data to DotPad ---
 let sendInFlight = false;
