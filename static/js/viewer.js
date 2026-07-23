@@ -2625,11 +2625,18 @@ document.addEventListener('DOMContentLoaded', async function() {
     const workshopParams = new URLSearchParams(location.search);
     if (location.pathname.replace(/\/+$/, '') === '/workshop' || workshopParams.get('ui') === 'simple') {
         document.body.classList.add('simple-ui');
+        // The workshop viewer opens on the y+ face in X-Ray, the orientation and
+        // rendering a session starts from. The full viewer keeps x+ and Filled.
+        // Set directly rather than through updateView/switchToRenderMode so no
+        // extra render is sent before the requested model is resolved below.
+        currentView = 'y+';
+        setOrientationFromView(currentView);
+        currentRenderMode = 'xray';
     }
-    
+
     // Set initial values
     updateSliceDepth(50, false);
-    updateView('x+');
+    updateView(currentView);
     updateDisplayOptions();
     updateZoom(0, false);
     syncRadios();
