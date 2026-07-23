@@ -78,7 +78,7 @@ jobs:
           npm install --no-save playwright @axe-core/playwright
           npx playwright install chromium
 
-      - name: Run axe check and console-error smoke test against home page
+      - name: Run axe, console-error, and model-dropdown smoke test against viewer
         run: |
           node <<'EOF'
           const { chromium } = require('playwright');
@@ -111,6 +111,35 @@ jobs:
               process.exit(1);
             }
 
+            // Regression guard for #102 ("No Models Available"): in Docker the
+            // uploads dir and the built-in models dir are the same writable
+            // directory, so the server sends builtin_model_stems: [] to mean
+            // "show all". The client must treat that empty list as "show all",
+            // not "allow nothing" ([] is truthy in JS). builtin_model_stems is
+            // only delivered by the /get_data poll, so wait for that response
+            // before reading the dropdown's steady state.
+            await page.waitForResponse(
+              (r) => r.url().includes('/get_data') && r.ok(),
+              { timeout: 20000 }
+            );
+            await page.waitForTimeout(1000); // let applyServerState() apply it
+
+            const modelDropdown = await page.evaluate(() => {
+              const d = document.getElementById('model-list-dropdown');
+              if (!d) return { found: false, disabled: true, realOptions: 0 };
+              const realOptions = [...d.options].filter((o) => o.value !== '');
+              return { found: true, disabled: d.disabled, realOptions: realOptions.length };
+            });
+
+            if (!modelDropdown.found || modelDropdown.disabled || modelDropdown.realOptions === 0) {
+              console.error(
+                'Model dropdown is empty after /get_data (regression of #102 — empty builtin_model_stems hid every model):',
+                JSON.stringify(modelDropdown)
+              );
+              await browser.close();
+              process.exit(1);
+            }
+
             const results = await new AxeBuilder({ page }).analyze();
             const blocking = results.violations.filter((v) =>
               ['serious', 'critical'].includes(v.impact)
@@ -128,7 +157,7 @@ jobs:
               process.exit(1);
             }
 
-            console.log('Console-error and axe checks passed: no console errors, no serious or critical a11y violations.');
+            console.log('Console-error, model-dropdown, and axe checks passed: no console errors, model list populated, no serious or critical a11y violations.');
             await browser.close();
           })().catch((err) => {
             console.error(err);

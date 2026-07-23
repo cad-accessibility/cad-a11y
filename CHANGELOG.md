@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-07-23
+
+#### Fixed
+*   The model dropdown showed "No models found" and listed nothing when uploaded models and the built-in models are stored in the same directory. Built-in models and your own uploads are now listed correctly again.
+
 ### 2026-07-15
 
 #### Added

@@ -365,7 +365,7 @@ const representationModes = [
 ];
 let currentModel = "none";
 let sessionOwnedModels = new Set(); // filenames (with extension) owned by the current cookie session
-let builtinModelStems = null;       // stems from MODEL_DIR; null = not yet received, show all
+let builtinModelStems = null;       // stems from MODEL_DIR; null (not yet received) or empty (server can't distinguish built-ins from uploads) = show all
 let lastFullModelList = [];         // unfiltered server model_list for re-filtering on state change
 let composeScrollbar = true;
 let composeSliceGraph = false;
@@ -1511,8 +1511,14 @@ function updateBoundingBox(bbox) {
 }
 
 function _visibleModelEntries(model_list) {
-    // Before builtinModelStems arrives, show the full list unfiltered.
-    if (!builtinModelStems) {
+    // Show the full list unfiltered when the built-in filter isn't usable:
+    //   - null: not received from the server yet.
+    //   - empty array: the server can't distinguish built-ins from uploads
+    //     because UPLOAD_DIR == MODEL_DIR, and sends [] to mean "show all".
+    // The `.length` check is essential — [] is truthy in JS, so `!builtinModelStems`
+    // alone would treat the documented "empty = show all" contract as "allow
+    // nothing" and hide every model ("No models found").
+    if (!builtinModelStems || builtinModelStems.length === 0) {
         return model_list.map((stem, i) => ({ stem, i }));
     }
     const builtinSet = new Set(builtinModelStems);
