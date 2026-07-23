@@ -311,7 +311,19 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
             segments_2d = segments[:,[1,2]]
             segments_2d[:,0] *= -1
         segments_2d = segments_2d.reshape(-1,2,2)
-        line_collection = LineCollection(segments_2d, colors="black", linewidths=1.0)# linewidths=4)
+        # With _to_braille_payload's majority (>50%) threshold, a line that
+        # straddles an output-pixel boundary splits its coverage as (a, W-a)
+        # between the two neighbors: too thin and both sides can land under
+        # 50% (a gap, neither pixel raised); too thick and both can reach
+        # 50%+ (a doubled line). 8x oversampling at 800dpi puts the boundary
+        # exactly at 1 output-pixel = 0.72pt, but matplotlib's own line
+        # antialiasing spreads coverage further than the nominal width, so
+        # the real crossover was found empirically by sweeping a line across
+        # a pixel boundary and counting raised pixels at each sub-pixel
+        # offset: 0.65pt gave exactly 1 raised pixel at all 41 positions
+        # tested, with zero gaps and zero doubles (0.72pt still doubled at
+        # ~15% of offsets; 0.6pt gapped at ~15-27%).
+        line_collection = LineCollection(segments_2d, colors="black", linewidths=0.65)
         ax.add_collection(line_collection)
 
         fig.canvas.draw()
