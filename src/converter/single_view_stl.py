@@ -311,7 +311,10 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
             segments_2d = segments[:,[1,2]]
             segments_2d[:,0] *= -1
         segments_2d = segments_2d.reshape(-1,2,2)
-        line_collection = LineCollection(segments_2d, colors="black", linewidths=1.0)# linewidths=4)
+        # At dpi=800 with 8× downsampling to the target resolution, 0.75 pt
+        # renders as approximately 1 pixel wide in the final image, preserving
+        # fine edge detail that 1.0 pt obscures at small display sizes.
+        line_collection = LineCollection(segments_2d, colors="black", linewidths=0.75)
         ax.add_collection(line_collection)
 
         fig.canvas.draw()

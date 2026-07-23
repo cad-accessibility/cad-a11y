@@ -592,11 +592,16 @@ class CADComparisonRenderer:
             self.view_current_camera_center[view_index][1] + 0.5*vertical_dist],
             ]
 
+        # Use 0.5 * zoom_scale so the initial window exactly spans the model's
+        # bounding box (with matplotlib's auto-margin) at zoom_level=0.  The
+        # previous factor of 1.0 caused a 2× zoom-out, leaving the model
+        # occupying only ~50 % of the display height before aspect-ratio
+        # correction—and even less after it.
         imposed_zoom_ax_limits = [
-            [self.view_current_camera_center[view_index][0] - zoom_scale*horizontal_dist,
-            self.view_current_camera_center[view_index][0] + zoom_scale*horizontal_dist],
-            [self.view_current_camera_center[view_index][1] - zoom_scale*vertical_dist,
-            self.view_current_camera_center[view_index][1] + zoom_scale*vertical_dist],
+            [self.view_current_camera_center[view_index][0] - 0.5*zoom_scale*horizontal_dist,
+            self.view_current_camera_center[view_index][0] + 0.5*zoom_scale*horizontal_dist],
+            [self.view_current_camera_center[view_index][1] - 0.5*zoom_scale*vertical_dist,
+            self.view_current_camera_center[view_index][1] + 0.5*zoom_scale*vertical_dist],
             ]
 
         # Compute scrollbar dimensions after final zoom/aspect correction so
@@ -612,17 +617,17 @@ class CADComparisonRenderer:
             current_aspect_ratio = 0.5*render_screen_size[0]/render_screen_size[1]
         if horizontal_dist/vertical_dist < current_aspect_ratio:
             horizontal_scale_factor = current_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
-            #imposed_zoom_ax_limits[0][0] = max(self.view_limits[view_index][0][0], self.view_current_camera_center[view_index][0] - horizontal_scale_factor*zoom_scale*horizontal_dist)
-            imposed_zoom_ax_limits[0][0] = self.view_current_camera_center[view_index][0] - horizontal_scale_factor*zoom_scale*horizontal_dist
-            #imposed_zoom_ax_limits[0][1] = min(self.view_limits[view_index][0][1], self.view_current_camera_center[view_index][0] + horizontal_scale_factor*zoom_scale*horizontal_dist)
-            imposed_zoom_ax_limits[0][1] = self.view_current_camera_center[view_index][0] + horizontal_scale_factor*zoom_scale*horizontal_dist
+            #imposed_zoom_ax_limits[0][0] = max(self.view_limits[view_index][0][0], self.view_current_camera_center[view_index][0] - 0.5*horizontal_scale_factor*zoom_scale*horizontal_dist)
+            imposed_zoom_ax_limits[0][0] = self.view_current_camera_center[view_index][0] - 0.5*horizontal_scale_factor*zoom_scale*horizontal_dist
+            #imposed_zoom_ax_limits[0][1] = min(self.view_limits[view_index][0][1], self.view_current_camera_center[view_index][0] + 0.5*horizontal_scale_factor*zoom_scale*horizontal_dist)
+            imposed_zoom_ax_limits[0][1] = self.view_current_camera_center[view_index][0] + 0.5*horizontal_scale_factor*zoom_scale*horizontal_dist
         if horizontal_dist/vertical_dist > current_aspect_ratio:
             vertical_scale_factor = current_aspect_ratio * (imposed_zoom_ax_limits[1][1] - imposed_zoom_ax_limits[1][0]) / (imposed_zoom_ax_limits[0][1] - imposed_zoom_ax_limits[0][0])
             vertical_scale_factor = 1.0/vertical_scale_factor
-            #imposed_zoom_ax_limits[1][0] = max(self.view_limits[view_index][1][0], self.view_current_camera_center[view_index][1] - vertical_scale_factor*zoom_scale*vertical_dist)
-            #imposed_zoom_ax_limits[1][1] = min(self.view_limits[view_index][1][1], self.view_current_camera_center[view_index][1] + vertical_scale_factor*zoom_scale*vertical_dist)
-            imposed_zoom_ax_limits[1][0] = self.view_current_camera_center[view_index][1] - vertical_scale_factor*zoom_scale*vertical_dist
-            imposed_zoom_ax_limits[1][1] = self.view_current_camera_center[view_index][1] + vertical_scale_factor*zoom_scale*vertical_dist
+            #imposed_zoom_ax_limits[1][0] = max(self.view_limits[view_index][1][0], self.view_current_camera_center[view_index][1] - 0.5*vertical_scale_factor*zoom_scale*vertical_dist)
+            #imposed_zoom_ax_limits[1][1] = min(self.view_limits[view_index][1][1], self.view_current_camera_center[view_index][1] + 0.5*vertical_scale_factor*zoom_scale*vertical_dist)
+            imposed_zoom_ax_limits[1][0] = self.view_current_camera_center[view_index][1] - 0.5*vertical_scale_factor*zoom_scale*vertical_dist
+            imposed_zoom_ax_limits[1][1] = self.view_current_camera_center[view_index][1] + 0.5*vertical_scale_factor*zoom_scale*vertical_dist
 
         x_min = self.view_limits[view_index][1][0]
         x_max = self.view_limits[view_index][1][1]
