@@ -3,14 +3,14 @@ Flask>=3.1.3
 flask-cors>=6.0.5
 
 # Numeric + image stack
-numpy>=2.5.0
-Pillow>=12.2.0
-matplotlib>=3.11.0
+numpy>=2.5.1
+Pillow>=12.3.0
+matplotlib>=3.11.1
 scikit-image
 
 # CAD / geometry stack
 trimesh>=4.12.2
-shapely>=2.0.0
+shapely>=2.1.2
 cascadio
 networkx
 meshlib

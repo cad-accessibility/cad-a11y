@@ -7,6 +7,7 @@ It processes STEP files and returns rendered image arrays based on specified par
 
 import numpy as np
 import threading
+import time
 import os
 from OCC.Core.STEPControl import STEPControl_Reader
 import trimesh as tm
@@ -73,55 +74,64 @@ class CADComparisonRenderer:
         # Load and normalize shapes
         self._load_models()
         
+    def _load_one_mesh(self, model_file):
+        """Load a single mesh file and apply the standard repairs."""
+        ext = os.path.splitext(model_file)[1].lower()
+
+        if ext == ".stl":
+            # STL parsing expects binary bytes for binary STL files.
+            with open(model_file, "rb") as fp:
+                mesh_dict = load_stl(fp)
+                mesh = Trimesh(mesh_dict["vertices"], mesh_dict["faces"], mesh_dict["face_normals"])
+        else:
+            # STEP/BREP and other mesh-like formats should go through trimesh's generic loader.
+            try:
+                loaded = tm.load(model_file, force='mesh')
+            except Exception as exc:
+                raise ValueError(f"Failed to load model file '{model_file}': {exc}") from exc
+
+            if isinstance(loaded, tm.Scene):
+                geometries = [geom for geom in loaded.geometry.values() if isinstance(geom, tm.Trimesh)]
+                if not geometries:
+                    raise ValueError(f"Model file '{model_file}' produced an empty scene")
+                mesh = tm.util.concatenate(geometries)
+            elif isinstance(loaded, tm.Trimesh):
+                mesh = loaded
+            else:
+                raise ValueError(f"Unsupported mesh object type for '{model_file}': {type(loaded)}")
+
+        fill_holes(mesh)
+        fix_inversion(mesh)
+        fix_winding(mesh)
+        #stitch(mesh)
+        return mesh
+
     def _load_models(self):
         """Load mesh files and prepare shapes."""
-        shapes = []
-        for model_file in [self.before_model_path, self.after_model_path]:
-            ext = os.path.splitext(model_file)[1].lower()
+        same_file = os.path.abspath(self.before_model_path) == os.path.abspath(self.after_model_path)
 
-            if ext == ".stl":
-                # STL parsing expects binary bytes for binary STL files.
-                with open(model_file, "rb") as fp:
-                    mesh_dict = load_stl(fp)
-                    mesh = Trimesh(mesh_dict["vertices"], mesh_dict["faces"], mesh_dict["face_normals"])
-            else:
-                # STEP/BREP and other mesh-like formats should go through trimesh's generic loader.
-                try:
-                    loaded = tm.load(model_file, force='mesh')
-                except Exception as exc:
-                    raise ValueError(f"Failed to load model file '{model_file}': {exc}") from exc
+        before_mesh = self._load_one_mesh(self.before_model_path)
+        # "before" and "after" are the same upload for every caller today (e.g. the
+        # /ingest workshop flow never does a real comparison), so skip loading and
+        # repairing the identical file a second time and just copy the result.
+        after_mesh = before_mesh.copy() if same_file else self._load_one_mesh(self.after_model_path)
+        shapes = [before_mesh, after_mesh]
 
-                if isinstance(loaded, tm.Scene):
-                    geometries = [geom for geom in loaded.geometry.values() if isinstance(geom, tm.Trimesh)]
-                    if not geometries:
-                        raise ValueError(f"Model file '{model_file}' produced an empty scene")
-                    mesh = tm.util.concatenate(geometries)
-                elif isinstance(loaded, tm.Trimesh):
-                    mesh = loaded
-                else:
-                    raise ValueError(f"Unsupported mesh object type for '{model_file}': {type(loaded)}")
-
-            fill_holes(mesh)
-            fix_inversion(mesh)
-            fix_winding(mesh)
-            #stitch(mesh)
-            shapes.append(mesh)
-        
         # Normalize both shapes
         shape_before, shape_after = plane_inter_utils.normalize_shapes_diagonal(shapes)
         self.shapes = [shape_before, shape_after]
-        
+
         # Get common bounds
         xmin, ymin, zmin, xmax, ymax, zmax = plane_inter_utils.get_bbox_from_shapes(
             [shape_before, shape_after]
         )
         self.bbox = [xmin, ymin, zmin, xmax, ymax, zmax]
-        
+
         # Calculate view limits for all views
-        self._calculate_view_limits()
+        self._calculate_view_limits(same_shapes=same_file)
         #self._compute_slice_graphs()
-    
-    def _calculate_view_limits(self):
+
+    def _calculate_view_limits(self, same_shapes=False):
         """Calculate axis limits for all views for both shapes."""
         #view_keys = ["top", "front", "side"]
         view_keys = ["top", "front", "left", "bottom", "back", "right"]
@@ -152,9 +162,14 @@ class CADComparisonRenderer:
             _, ax_limits_before = get_single_view(
                 shape_before, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
             )
-            _, ax_limits_after = get_single_view(
-                shape_after, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
-            )
+            if same_shapes:
+                # Identical shapes always produce identical limits, so the min/max
+                # below against a second render would be a no-op; skip it.
+                ax_limits_after = ax_limits_before
+            else:
+                _, ax_limits_after = get_single_view(
+                    shape_after, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
+                )
             view_limits[i][0][0] = min(ax_limits_before[0][0], ax_limits_after[0][0])
             view_limits[i][0][1] = max(ax_limits_before[0][1], ax_limits_after[0][1])
             view_limits[i][1][0] = min(ax_limits_before[1][0], ax_limits_after[1][0])
@@ -165,6 +180,16 @@ class CADComparisonRenderer:
         self.view_limits = np.array(view_limits)
         self.view_current_camera_center = np.array(self.view_current_camera_center)
 
+    # Background precompute is CPU-bound and runs in a plain thread, so without
+    # yielding here it can hold the GIL long enough to starve Flask's other
+    # request-handling threads (threaded=True) for the whole job. Sleeping
+    # briefly and periodically gives those threads regular chances to run. The
+    # intervals are tuned to yield often enough to stay responsive while keeping
+    # the added wall-clock small (about ten yields per view in each loop).
+    _PRECOMPUTE_YIELD_EVERY = 10
+    _PRECOMPUTE_YIELD_SECONDS = 0.01
+    _PRECOMPUTE_DIFF_YIELD_EVERY = 500
+
     def _compute_slice_graphs(self):
 
         shape = copy(self.shapes[0])
@@ -173,7 +198,6 @@ class CADComparisonRenderer:
         for view_key in view_keys:
             cut_percent = 0
             cut_faces_list = []
-            diff_mat = np.zeros([101, 101])
             while cut_percent <= 100:
                 #shape = deepcopy(self.shapes[0])
                 cut_depth = cut_percent/100.0
@@ -203,25 +227,24 @@ class CADComparisonRenderer:
                 merged = unary_union(triangles)
                 cut_faces_list.append(merged)
                 cut_percent += 1
+                if cut_percent % self._PRECOMPUTE_YIELD_EVERY == 0:
+                    time.sleep(self._PRECOMPUTE_YIELD_SECONDS)
                 #plot_polygon(merged)
                 #plt.axis("equal")
                 #plt.savefig("cut_depth_"+view_key+"_"+str(cut_percent)+".png")
                 #plt.close()
 
-            #print(len(cut_faces_list))
             # pairwise diff
-            #cut_faces_list = list(reversed(cut_faces_list))
+            diff_mat = np.zeros([101, 101])
+            pair_count = 0
             for i in range(len(cut_faces_list)):
                 for j in range(i+1, len(cut_faces_list)):
                     diff = symmetric_difference(cut_faces_list[i], cut_faces_list[j]).area
                     diff_mat[i][j] = diff
                     diff_mat[j][i] = diff
-            #print(diff_mat[10, :])
-            #print(len(cut_faces_list))
-            #plt.plot(range(len(cut_faces_list)), diff_mat[10,:])
-            #plt.ylim(0.0, 1.0)
-            #plt.savefig("diff_mat_cut_"+view_key+".png")
-            #plt.close()
+                    pair_count += 1
+                    if pair_count % self._PRECOMPUTE_DIFF_YIELD_EVERY == 0:
+                        time.sleep(self._PRECOMPUTE_YIELD_SECONDS)
 
             max_diff = np.max(diff_mat)
             if max_diff > 0:
@@ -231,7 +254,6 @@ class CADComparisonRenderer:
             self.view_slice_pixel_counts[view_key] = [
                 self._count_raised_pixels(poly, view_key) for poly in cut_faces_list
             ]
-        #exit()
 
     def start_background_slice_precompute(self):
         """Kick off slice-graph precompute without blocking first render."""
@@ -305,9 +327,21 @@ class CADComparisonRenderer:
 
     def _get_zoom_filtered_slice_profile(self, view_key, anchor_depth_percent, zoom_ax_limits):
         """Compute a slice-graph profile using only geometry inside current zoom limits."""
+        # Slice-graph mode is the only consumer of the precomputed data, so it is
+        # kicked off here, lazily, on first actual use rather than for every model.
+        # This call is a no-op once precompute has started or finished.
+        self.start_background_slice_precompute()
+
         cut_polygons = self.view_cut_polygons.get(view_key)
         if cut_polygons is None or len(cut_polygons) == 0:
-            return self.view_diff_mats[view_key][anchor_depth_percent]
+            # Precompute for this view hasn't finished yet (view_diff_mats and
+            # view_cut_polygons for a view are always populated together, so this
+            # is effectively "nothing ready"); return a flat profile so the graph
+            # shows something sane instead of crashing while precompute runs.
+            diff_row = self.view_diff_mats.get(view_key)
+            if diff_row is None:
+                return np.zeros(101, dtype=float)
+            return diff_row[anchor_depth_percent]
 
         x0 = min(float(zoom_ax_limits[0][0]), float(zoom_ax_limits[0][1]))
         x1 = max(float(zoom_ax_limits[0][0]), float(zoom_ax_limits[0][1]))
@@ -384,6 +418,11 @@ class CADComparisonRenderer:
     def _get_slice_pixel_count_profile(self, view_key):
         """Slice Area mode: absolute per-slice raised-pixel counts normalized to
         [0, 1]. Anchor- and zoom-independent, unlike the difference profile."""
+        # Slice Area is a slice-graph consumer too, so it must also kick off the
+        # (now lazy) precompute; without this it would stay a flat profile until
+        # the Difference graph happened to trigger it. No-op once started.
+        self.start_background_slice_precompute()
+
         counts = np.asarray(self.view_slice_pixel_counts.get(view_key, []), dtype=float)
         if counts.size == 0:
             return np.zeros(101, dtype=float)
@@ -579,6 +618,19 @@ class CADComparisonRenderer:
         render_screen_size = [self.screen_size[0], self.screen_size[1]]
         if compose_scrollbar:
             render_screen_size = [max(1, self.screen_size[0] - 2), max(1, self.screen_size[1] - 2)]
+
+        # Cursor coordinates are display-space row/column values from the frontend.
+        # They are relative to the current drawable render area, not CAD x/y/z.
+        compose_cursor = bool(params.get("compose_cursor", False))
+        default_cursor_col = render_screen_size[0] // 2
+        default_cursor_row = render_screen_size[1] // 2
+        cursor_col = int(params.get("cursor_col", default_cursor_col))
+        cursor_row = int(params.get("cursor_row", default_cursor_row))
+        cursor_col = max(0, min(render_screen_size[0] - 1, cursor_col))
+        cursor_row = max(0, min(render_screen_size[1] - 1, cursor_row))
+
+        cursor_state = str(params.get("cursor_state", "none")).lower()
+
 
         view_legend = params.get("view", "top")
         view_cut = "x+"
@@ -822,6 +874,69 @@ class CADComparisonRenderer:
             x1 = min(int(draw_w * y_scroll_max) + 1, draw_w)
             img_array[y0:y1, -1, :] = [0,0,0,255]
             img_array[-1, x0:x1, :] = [0,0,0,255]
+
+        if compose_cursor:
+            if cursor_state == "none":
+                pass
+            elif cursor_state == "crosshair":
+                # Draw a small crosshair cursor using display-space coordinates.
+                crosshair_size = 5
+                draw_w, draw_h = render_screen_size[0], render_screen_size[1]
+                col = max(0, min(draw_w - 1, cursor_col))
+                row = max(0, min(draw_h - 1, cursor_row))
+                half = crosshair_size // 2
+                x0 = max(0, col - half)
+                x1 = min(draw_w, col + half + 1)
+                y0 = max(0, row - half)
+                y1 = min(draw_h, row + half + 1)
+                # First draw a white square background to ensure visibility against any model color.
+                img_array[y0:y1, x0:x1, 0:3] = [255, 255, 255]
+                # Then draw the black crosshair lines on top of the white square.
+                img_array[row, x0:x1, 0:3] = [0, 0, 0]
+                img_array[y0:y1, col, 0:3] = [0, 0, 0]
+                if img_array.shape[2] > 3:
+                    img_array[y0:y1, x0:x1, 3] = 255
+                    img_array[row, x0:x1, 3] = 255
+                    img_array[y0:y1, col, 3] = 255
+            elif cursor_state == "guidelines":
+                # Draw horizontal and vertical guide lines using display-space coordinates.
+                draw_w, draw_h = render_screen_size[0], render_screen_size[1]
+                col = max(0, min(draw_w - 1, cursor_col))
+                row = max(0, min(draw_h - 1, cursor_row))
+                x0 = max(0, col - 1)
+                x1 = min(draw_w, col + 2)
+                y0 = max(0, row - 1)
+                y1 = min(draw_h, row + 2)
+                # Draw white lines on both sides of each black cursor line to ensure visibility against any model color.
+                img_array[y0:y1, :, 0:3] = [255, 255, 255]
+                img_array[:, x0:x1, 0:3] = [255, 255, 255]
+                img_array[row, :, 0:3] = [0, 0, 0]
+                img_array[:, col, 0:3] = [0, 0, 0]
+                if img_array.shape[2] > 3:
+                    img_array[y0:y1, :, 3] = 255
+                    img_array[:, x0:x1, 3] = 255
+                    img_array[row, :, 3] = 255
+                    img_array[:, col, 3] = 255
+            elif cursor_state == "horizontal-line":
+                # Draw a horizontal guide line cursor using display-space coordinates.
+                draw_w, draw_h = render_screen_size[0], render_screen_size[1]
+                row = max(0, min(draw_h - 1, cursor_row))
+                y0 = max(0, row - 1)
+                y1 = min(draw_h, row + 2)
+                img_array[y0:y1, :, 0:3] = [255, 255, 255]
+                img_array[row, :, 0:3] = [0, 0, 0]
+                if img_array.shape[2] > 3:
+                    img_array[row, :, 3] = 255
+            elif cursor_state == "vertical-line":
+                # Draw a vertical guide line cursor using display-space coordinates.
+                draw_w, draw_h = render_screen_size[0], render_screen_size[1]
+                col = max(0, min(draw_w - 1, cursor_col))
+                x0 = max(0, col - 1)
+                x1 = min(draw_w, col + 2)
+                img_array[:, x0:x1, 0:3] = [255, 255, 255]
+                img_array[:, col, 0:3] = [0, 0, 0]
+                if img_array.shape[2] > 3:
+                    img_array[:, col, 3] = 255
 
         if "compose_scrollbar" in params.keys():
             compose_slice_graph = params["compose_slicegraph"]

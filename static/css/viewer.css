@@ -930,3 +930,67 @@ button:focus-visible {
     outline: 3px solid #1e6fa4;
     outline-offset: 2px;
 }
+
+/* ---------------------------------------------------------------------------
+   Simplified workshop viewer (/workshop or ?ui=simple).
+   Show only the core control sections: View, Depth, Rendering Mode, Output
+   device, Monarch and DotPad. Everything else in the left column is hidden;
+   the right-column tactile preview (not a .section) stays visible.
+   --------------------------------------------------------------------------- */
+body.simple-ui .section { display: none; }
+body.simple-ui section[aria-labelledby="view-select-heading"],
+body.simple-ui section[aria-labelledby="slice-heading"],
+body.simple-ui section[aria-labelledby="render-heading"],
+body.simple-ui section[aria-labelledby="output-device-heading"],
+body.simple-ui section[aria-labelledby="monarch-hid-heading"],
+body.simple-ui section[aria-labelledby="dotpad-heading"] { display: block; }
+/* Within Rendering Mode, hide the layout (view-mode) radios so only the
+   render-mode choice (Filled/Outline/Cut/Crease) remains. */
+body.simple-ui #view-mode-block,
+body.simple-ui #view-mode-help { display: none; }
+/* Keep the tactile display preview (what the braille device shows) visible for
+   sighted facilitators; it stays aria-hidden so screen readers still ignore it. */
+body.simple-ui #tactile-preview-section { display: block; }
+
+/* ---------------------------------------------------------------------------
+   Workshop word-entry page (workshop-entry.html).
+   --------------------------------------------------------------------------- */
+.workshop-entry .field { margin: 12px 0; }
+.workshop-entry .field label { display: block; font-weight: 600; margin-bottom: 4px; }
+.workshop-entry .field input {
+    font-size: 1.1rem;
+    padding: 10px 12px;
+    width: 100%;
+    max-width: 320px;
+    box-sizing: border-box;
+    border: 2px solid #1e6fa4;
+    border-radius: 6px;
+    font-family: inherit;
+}
+.workshop-notice {
+    border: 2px solid #8a1f11;
+    color: #8a1f11;
+    background: #fdecea;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    border-radius: 6px;
+    font-weight: 600;
+}
+.skip-link {
+    position: absolute;
+    left: -9999px;
+    top: auto;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+}
+.skip-link:focus {
+    position: static;
+    width: auto;
+    height: auto;
+    left: auto;
+    overflow: visible;
+    padding: 8px 16px;
+    background: #1e6fa4;
+    color: #fff;
+}

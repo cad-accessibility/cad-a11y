@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>cad-a11y /ingest test harness</title>
+    <style>
+        body { font-family: system-ui, sans-serif; line-height: 1.5; max-width: 720px;
+               margin: 24px auto; padding: 0 16px; color: #222; }
+        h1 { font-size: 1.4rem; }
+        label { display: block; font-weight: 600; margin: 14px 0 4px; }
+        input[type=text], input[type=url] { width: 100%; padding: 8px 10px; font-size: 1rem;
+               box-sizing: border-box; }
+        .hint { color: #555; font-size: 0.9rem; margin: 4px 0 0; }
+        button { margin-top: 18px; padding: 10px 18px; font-size: 1rem; cursor: pointer; }
+        #result { margin-top: 20px; }
+        pre { background: #f4f4f4; padding: 12px; overflow-x: auto; border-radius: 6px; }
+        a.open { display: inline-block; margin-top: 8px; font-size: 1.05rem; font-weight: 600; }
+        .err { color: #a11; font-weight: 600; }
+    </style>
+</head>
+<body>
+    <h1>cad-a11y <code>/ingest</code> test harness</h1>
+    <p>
+        This page stands in for the partner (Kate's) tool. It POSTs an STL to
+        <code>/ingest</code> with a participant's first name, then gives you the returned
+        <code>user_id</code> and a link that opens the model in the simplified
+        <code>/workshop</code> viewer. It is a static file, so just open it in a browser;
+        the server's CORS is open, so it can post from anywhere.
+    </p>
+
+    <label for="server">cad-a11y server URL</label>
+    <input type="url" id="server">
+
+    <label for="firstName">Participant first name</label>
+    <input type="text" id="firstName" value="Test" autocomplete="off">
+    <p class="hint">Sent as <code>first_name</code>. Leave blank for an anonymous ingest.</p>
+
+    <label for="file">STL file (optional)</label>
+    <input type="file" id="file" accept=".stl,.step">
+    <p class="hint">If empty, the bundled sample pyramid (also in
+        <code>examples/sample-model.stl</code>) is sent.</p>
+
+    <button id="send" type="button">Send to /ingest</button>
+
+    <div id="result" role="status" aria-live="polite"></div>
+
+    <script>
+        // Default the server URL to wherever this page is served from, so it "just
+        // works" when reached at /ingest-test in Docker; fall back to the dev port
+        // when the file is opened directly (file://).
+        document.getElementById('server').value =
+            (location.origin && location.origin.startsWith('http')) ? location.origin : 'http://localhost:6969';
+
+        // Bundled sample so this page works even when opened directly (file://).
+        const SAMPLE_STL = `solid sample_pyramid
+  facet normal 0.000000 0.000000 -1.000000
+    outer loop
+      vertex 0.000000 0.000000 0.000000
+      vertex 20.000000 20.000000 0.000000
+      vertex 20.000000 0.000000 0.000000
+    endloop
+  endfacet
+  facet normal 0.000000 0.000000 -1.000000
+    outer loop
+      vertex 0.000000 0.000000 0.000000
+      vertex 0.000000 20.000000 0.000000
+      vertex 20.000000 20.000000 0.000000
+    endloop
+  endfacet
+  facet normal 0.000000 -0.923077 0.384615
+    outer loop
+      vertex 0.000000 0.000000 0.000000
+      vertex 20.000000 0.000000 0.000000
+      vertex 10.000000 10.000000 24.000000
+    endloop
+  endfacet
+  facet normal 0.923077 -0.000000 0.384615
+    outer loop
+      vertex 20.000000 0.000000 0.000000
+      vertex 20.000000 20.000000 0.000000
+      vertex 10.000000 10.000000 24.000000
+    endloop
+  endfacet
+  facet normal 0.000000 0.923077 0.384615
+    outer loop
+      vertex 20.000000 20.000000 0.000000
+      vertex 0.000000 20.000000 0.000000
+      vertex 10.000000 10.000000 24.000000
+    endloop
+  endfacet
+  facet normal -0.923077 0.000000 0.384615
+    outer loop
+      vertex 0.000000 20.000000 0.000000
+      vertex 0.000000 0.000000 0.000000
+      vertex 10.000000 10.000000 24.000000
+    endloop
+  endfacet
+endsolid sample_pyramid
+`;
+
+        document.getElementById('send').addEventListener('click', async () => {
+            const base = (document.getElementById('server').value || 'http://localhost:6969').replace(/\/+$/, '');
+            const firstName = document.getElementById('firstName').value.trim();
+            const fileInput = document.getElementById('file');
+            const result = document.getElementById('result');
+
+            let blob, filename;
+            if (fileInput.files.length) {
+                blob = fileInput.files[0];
+                filename = fileInput.files[0].name;
+            } else {
+                blob = new Blob([SAMPLE_STL], { type: 'model/stl' });
+                filename = 'sample-model.stl';
+            }
+
+            const fd = new FormData();
+            fd.append('file', blob, filename);
+            if (firstName) fd.append('first_name', firstName);
+
+            result.textContent = 'Sending…';
+            try {
+                const res = await fetch(base + '/ingest', { method: 'POST', body: fd });
+                const data = await res.json();
+                if (data.status !== 'success') {
+                    result.innerHTML = '<p class="err">Error: ' + (data.message || ('HTTP ' + res.status)) + '</p>';
+                    return;
+                }
+                const workshopUrl = data.workshop_url;
+                const entryUrl = data.workshop_entry_url;
+                result.innerHTML =
+                    '<p><strong>Ingested.</strong> user_id: <code>' + (data.user_id || '(anonymous)') + '</code></p>'
+                    + '<pre>' + JSON.stringify(data, null, 2) + '</pre>'
+                    + '<a class="open" href="' + workshopUrl + '" target="_blank" rel="noopener">Open in the workshop viewer &rarr;</a>'
+                    + (firstName
+                        ? '<p class="hint">Or retrieve it at a braille station: open <a href="' + entryUrl
+                          + '" target="_blank" rel="noopener">' + entryUrl + '</a> and enter <strong>'
+                          + firstName + '</strong>.</p>'
+                        : '');
+            } catch (e) {
+                result.innerHTML = '<p class="err">Request failed: ' + e.message
+                    + '. Is the server running at ' + base + '?</p>';
+            }
+        });
+    </script>
+</body>
+</html>

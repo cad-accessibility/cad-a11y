@@ -55,6 +55,7 @@ function getUploadSessionId() {
 
     // Keyboard resize support (arrow keys on the divider)
     divider.addEventListener('keydown', function(e) {
+        console.debug("keydown seen:", e.key, e.code, e.target.tagName);
         const step = e.shiftKey ? 50 : 10;
         const layoutWidth = layout.getBoundingClientRect().width;
         const currentWidth = leftCol.getBoundingClientRect().width;
@@ -204,6 +205,7 @@ async function sendStateToServer() {
         const moveCamera = currentMoveCamera;
         const cameraCenter = getCurrentCameraCenter(currentView, orientationPayload);
         const worldCameraCenter = currentWorldCameraCenter;
+
         const state = {
             view: currentView,
             orientation: orientationPayload,
@@ -217,15 +219,21 @@ async function sendStateToServer() {
             move_camera_center: moveCamera,
             print_view: currentPrintView,
             current_model: currentModel,
+            compose_cursor: true, // for now always true, maybe later make it configurable
+            cursor_col: currentCursorCol,
+            cursor_row: currentCursorRow,
+            cursor_state: whichCursor(),
             compose_scrollbar: composeScrollbar,
             compose_slicegraph: composeSliceGraph,
             show_view_info_box: showViewInfoBox,
-            output_device: currentOutputDevice,
+            output_device: getEffectiveOutputDevice(),
             slicegraph_locked: sliceGraphLocked,
             slicegraph_view: requestedGraphView,
             slicegraph_depth: requestedGraphDepth,
             slicegraph_mode: sliceGraphMode,
             input_source: pendingInputSource,
+            target_pixel_width: window.connectedTactileDisplay?.pixelWidth || null,
+            target_pixel_height: window.connectedTactileDisplay?.pixelHeight || null,
         };
         if (sbPanCmd) {
             sbPanCmd.textContent = String(moveCamera || 'none');
@@ -313,7 +321,7 @@ async function sendStateToServer() {
                 clearModelLoadTask(activeModelLoadTask);
             }
         });
-        
+
     } catch (error) {
         console.warn('Error sending state:', error);
     }
@@ -327,7 +335,12 @@ let currentRenderMode = 'filled';
 let currentRepresentationMode = 'single';
 let currentMoveCamera = "none";
 let currentPrintView = false;
-let currentOutputDevice = 'monarch_hid';
+// The output-device radio the user picked: 'monarch', 'dotpad', or 'auto'.
+// Kept separate from whether a Monarch is actually connected over Web HID
+// (monarchHidConnected) so that selecting a radio can never turn off a live
+// Monarch feed — see getEffectiveOutputDevice and issue #75.
+let currentOutputDevice = 'monarch';
+let monarchHidConnected = false;
 // Single source of truth for render modes.
 //   key        held in currentRenderMode and used as the radio `value`. Lowercase
 //              throughout, so a case mismatch cannot silently unselect the group.
@@ -362,6 +375,14 @@ let sliceGraphAnchorView = 'y-';
 let sliceGraphAnchorDepth = 50;
 let sliceGraphMode = 'difference';
 
+// Cursor variables
+let currentCursorCol = 2;
+let currentCursorRow = 2;
+const cursorStep = 1;
+let cursorStates = ['none', 'crosshair', 'guidelines', 'horizontal-line', 'vertical-line'];
+let currentCursorStateIndex = 0;
+
+
 // Tracking variables
 let serverConnected = null;       // null = unknown, true = up, false = confirmed down
 let lastPolledView = null;        // last cube_value received from server
@@ -373,6 +394,49 @@ let pendingInputSource = 'keyboard'; // consumed once per sendStateToServer call
 let modelLoadAnnouncement = null;
 let modelLoadAnnouncementSeq = 0;
 
+// Cursor position is in 2D display coordinates, not CAD/world coordinates.
+// Mapping to CAD X/Y/Z depends on currentView and currentSliceDepth.
+function moveCursor(dCol, dRow, stepSize = cursorStep) {
+    // Simple movement: advance by the configured cursorStep (pixels).
+    if (!Number.isFinite(dCol) || !Number.isFinite(dRow) || !Number.isFinite(stepSize)) {
+        console.error('Invalid cursor movement values.');
+        return;
+    }
+    else if (!Number.isInteger(dCol) || !Number.isInteger(dRow) || !Number.isInteger(stepSize)) {
+        console.error('Cursor movement values must be integers.');
+        return;
+    }
+    const displayWidth = window.connectedTactileDisplay?.pixelWidth || 96;
+    const displayHeight = window.connectedTactileDisplay?.pixelHeight || 40;
+
+    const usableWidth = composeScrollbar? Math.max(1, displayWidth - 2) : displayWidth;
+    const usableHeight = composeScrollbar? Math.max(1, displayHeight - 2) : displayHeight;
+    // dont let cursor go negative or beyond the display bounds (for 40x60 tactile display)
+    const maxCol = usableWidth - 1;
+    const maxRow = usableHeight - 1;
+
+    const nextCol = currentCursorCol + dCol * stepSize;
+    currentCursorCol = Math.min(Math.max(nextCol, 0), maxCol);
+    const nextRow = currentCursorRow + dRow * stepSize;
+    currentCursorRow = Math.min(Math.max(nextRow, 0), maxRow);
+
+    pendingInputSource = 'dotpad';
+    console.debug(`Display cursor: col ${currentCursorCol}, row ${currentCursorRow}`);
+    announce(`Cursor column ${currentCursorCol}, row ${currentCursorRow}`);
+    sendStateToServer();
+}
+
+function whichCursor() {
+    return cursorStates[currentCursorStateIndex] || 'none';
+}
+
+function cycleCursorState() {
+    currentCursorStateIndex = (currentCursorStateIndex + 1) % cursorStates.length;
+    const newState = whichCursor();
+    announce(`Cursor state changed to ${newState}`);
+    pendingInputSource = 'dotpad';
+    sendStateToServer();
+}
 function renderModeByKey(modeKey) {
     return renderModes.find(mode => mode.key === modeKey) || null;
 }
@@ -611,6 +675,9 @@ const sbModel = document.getElementById('sb-model');
 const sbDotPad = document.getElementById('sb-dotpad');
 const sbPanCmd = document.getElementById('sb-pan-cmd');
 const sbPanCenter = document.getElementById('sb-pan-center');
+
+// Ensure a high-fidelity preview overlay exists for drawing a scaled DotPad cursor
+
 
 function formatCenter2(value) {
     if (!Array.isArray(value) || value.length !== 2) {
@@ -1260,6 +1327,10 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
     return oldDepth !== currentSliceDepth;
 }
 
+function getCurrentSliceDepth(){
+    return currentSliceDepth;
+}
+
 /**
  * Check exactly the radio matching `currentValue`, and report when none does.
  *
@@ -1290,6 +1361,23 @@ function syncRadios() {
     syncRadioGroup(viewModeRadios(), currentRepresentationMode, 'view-mode');
     syncRadioGroup(viewRadios(), currentView, 'view-select');
     syncRadioGroup(outputDeviceRadios(), currentOutputDevice, 'output-device');
+}
+
+// The server only attaches monarch_cells_hex to a render when output_device is
+// 'monarch_hid'. Send that whenever a Monarch is connected over Web HID and the
+// user has not explicitly chosen a different device, independent of which radio
+// is selected — so picking the Monarch radio cannot turn its own feed off (#75).
+function getEffectiveOutputDevice() {
+    if (monarchHidConnected && (currentOutputDevice === 'monarch' || currentOutputDevice === 'auto')) {
+        return 'monarch_hid';
+    }
+    return currentOutputDevice;
+}
+
+// Called by the Monarch Web HID integration on connect/disconnect. Only toggles
+// the connection flag; the radio preference is the user's and is left alone.
+function setMonarchHidConnected(connected) {
+    monarchHidConnected = Boolean(connected);
 }
 
 function switchOutputDevice(targetDevice) {
@@ -1372,7 +1460,7 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
     if (oldView !== currentView && shouldAnnounce) {
         announce(`${currentView.toLowerCase()} view`);
     }
-    
+
     // Send state to server if changed
     if (oldView !== currentView) {
         if (isSliceGraphRepresentationMode()) {
@@ -1437,6 +1525,18 @@ function _visibleModelEntries(model_list) {
 function updateModelList(model_list) {
     if (!Array.isArray(model_list)) return;
     lastFullModelList = model_list;
+
+    // In the simplified workshop viewer the model dropdown is hidden and the model
+    // is chosen from the URL, so never rebuild it or reset the current selection
+    // (the ownership filter would otherwise drop an ingested model and reset to 0).
+    // Just keep the status-bar label in sync with the URL-selected model.
+    if (document.body.classList.contains('simple-ui')) {
+        const simpleIdx = Number(currentModel);
+        if (sbModel && lastFullModelList[simpleIdx] !== undefined) {
+            sbModel.textContent = lastFullModelList[simpleIdx];
+        }
+        return;
+    }
 
     const dropdown = document.getElementById("model-list-dropdown");
     const entries = _visibleModelEntries(model_list);
@@ -1678,6 +1778,18 @@ function applyServerState(data) {
     if (data.bbox) {
         updateBoundingBox(data.bbox);
     }
+    // Live model switch pushed by /ingest?open=1 over SSE: jump an already-open
+    // viewer to a freshly-ingested model. Transient — /get_data never carries this,
+    // and the index guard keeps it idempotent.
+    if (data.load_model) {
+        const idx = lastFullModelList.indexOf(data.load_model);
+        if (idx >= 0 && String(idx) !== currentModel) {
+            currentModel = String(idx);
+            clearCameraCenterState();
+            pendingInputSource = 'ingest';
+            sendStateToServer();
+        }
+    }
 }
 
 // SSE: server pushes hardware state changes (WitMotion IMU, Slider) immediately
@@ -1859,6 +1971,19 @@ function emitAnnouncement(message, politeness, isAlert) {
     // Show the toast + push to the screen-reader live region for this tier.
     showToast(normalizedMessage, politeness);
 
+    // Send announcement to tactile display
+    if (typeof window.onTactileAnnouncement === 'function') {
+        try {
+            window.onTactileAnnouncement({
+                message: normalizedMessage,
+                politeness,
+                isAlert
+            });
+        } catch (err) {
+            console.warn('Tactile announcement failed:', err);
+        }
+    }
+
     // Append to visible history log; alerts are weighted so the log distinguishes
     // an interrupting condition from routine state changes.
     if (announcementHistory) {
@@ -1902,6 +2027,14 @@ function announceAlert(message) {
     emitAnnouncement(message, 'assertive', true);
 }
 
+// External API used by hardware integration modules.
+window.moveCursor = moveCursor;
+window.cycleCursorState = cycleCursorState;
+window.whichCursor = whichCursor;
+window.getCurrentSliceDepth = getCurrentSliceDepth;
+window.updateSliceDepth = updateSliceDepth;
+window.announceDepthValue = announceDepthValue;
+
 if (clearAnnouncementsBtn && announcementHistory) {
     clearAnnouncementsBtn.addEventListener('click', function() {
         announcementHistory.innerHTML = '';
@@ -1917,11 +2050,11 @@ sliceSlider.addEventListener('input', function() {
     const newValue = parseInt(this.value);
     currentSliceDepth = newValue;
     slicePercentage.textContent = currentSliceDepth;
-    
+
     // Update ARIA attributes immediately
     this.setAttribute('aria-valuenow', currentSliceDepth);
     this.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
-    
+
     // Update button labels immediately
     updateButtonLabels();
 });
@@ -1942,7 +2075,7 @@ sliceSlider.addEventListener('focus', function() {
 // Keyboard support for slider
 sliceSlider.addEventListener('keydown', function(e) {
     let newValue = currentSliceDepth;
-    
+
     switch(e.key) {
         case 'ArrowUp':
         case 'ArrowRight':
@@ -1967,7 +2100,7 @@ sliceSlider.addEventListener('keydown', function(e) {
         default:
             return; // Don't prevent default for other keys
     }
-    
+
     e.preventDefault();
     updateSliceDepth(newValue, true);
 });
@@ -2168,7 +2301,7 @@ document.addEventListener('keydown', function(e) {
     const repeatableShortcuts = new Set([
         'pageup', 'pagedown',
         'arrowup', 'arrowdown', '2', '3',
-        '4', '5', 
+        '4', '5', 'n', 'm'
     ]);
     if (e.repeat && !repeatableShortcuts.has(normalizedKey)) {
         e.preventDefault();
@@ -2241,7 +2374,7 @@ document.addEventListener('keydown', function(e) {
                 }
             }
             break;
-            
+
         // View shortcuts
         case '7':
             e.preventDefault();
@@ -2403,6 +2536,7 @@ document.addEventListener('keydown', function(e) {
             sendStateToServer();
             announce(`Compose slice graph ${composeSliceGraph ? 'on' : 'off'}`);
             break;
+
         case 'a':
             currentMoveCamera = "left";
             sendStateToServer();
@@ -2482,9 +2616,16 @@ function focusTopOfPage() {
 }
 
 // Initialize the interface
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', async function() {
     // Move focus to the top element (page title) on load.
     focusTopOfPage();
+
+    // Simplified workshop viewer: the /workshop route (or ?ui=simple) shows only
+    // the core controls (see viewer.css) and constrains depth to four steps.
+    const workshopParams = new URLSearchParams(location.search);
+    if (location.pathname.replace(/\/+$/, '') === '/workshop' || workshopParams.get('ui') === 'simple') {
+        document.body.classList.add('simple-ui');
+    }
     
     // Set initial values
     updateSliceDepth(50, false);
@@ -2503,6 +2644,22 @@ document.addEventListener('DOMContentLoaded', function() {
     window.sendStateToServer = sendStateToServer;
     initializeDebugPipelineVisibility();
 
+    // Pre-select a model when opened via /workshop?model=<stem> or ?model=<stem>.
+    // Resolve the stem to its server index before the first render so the viewer
+    // opens directly on that model instead of flashing model 0.
+    const wantedModel = workshopParams.get('model');
+    if (wantedModel) {
+        const wantedStem = wantedModel.replace(/\.[^.]+$/, '');
+        try {
+            const gd = await (await fetch(`${SERVER_URL}/get_data`)).json();
+            const idx = (gd.model_list || []).indexOf(wantedStem);
+            if (idx >= 0) {
+                currentModel = String(idx);
+                if (sbModel) sbModel.textContent = wantedStem;
+            }
+        } catch (_) { /* fall back to the default model */ }
+    }
+
     // Send initial state to server
     pendingInputSource = 'init';
     sendStateToServer();
@@ -2518,7 +2675,7 @@ window.addEventListener('pageshow', function() {
 function handleZoomChanges() {
     // Ensure the interface remains usable at different zoom levels
     const container = document.querySelector('.container');
-    
+
     function checkZoom() {
         const devicePixelRatio = window.devicePixelRatio || 1;
         if (devicePixelRatio !== 1) {
@@ -2527,7 +2684,7 @@ function handleZoomChanges() {
             container.style.maxWidth = '900px';
         }
     }
-    
+
     window.addEventListener('resize', checkZoom);
     checkZoom();
 }
