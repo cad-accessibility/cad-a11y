@@ -512,6 +512,19 @@ class CADComparisonRenderer:
         if compose_scrollbar:
             render_screen_size = [max(1, self.screen_size[0] - 2), max(1, self.screen_size[1] - 2)]
 
+        # Cursor coordinates are display-space row/column values from the frontend.
+        # They are relative to the current drawable render area, not CAD x/y/z.
+        compose_cursor = bool(params.get("compose_cursor", False))
+        default_cursor_col = render_screen_size[0] // 2
+        default_cursor_row = render_screen_size[1] // 2
+        cursor_col = int(params.get("cursor_col", default_cursor_col))
+        cursor_row = int(params.get("cursor_row", default_cursor_row))
+        cursor_col = max(0, min(render_screen_size[0] - 1, cursor_col))
+        cursor_row = max(0, min(render_screen_size[1] - 1, cursor_row))
+
+        cursor_state = str(params.get("cursor_state", "none")).lower()
+
+
         view_legend = params.get("view", "top")
         view_cut = "x+"
         if comparison_mode == "side-by-side":
@@ -754,6 +767,69 @@ class CADComparisonRenderer:
             x1 = min(int(draw_w * y_scroll_max) + 1, draw_w)
             img_array[y0:y1, -1, :] = [0,0,0,255]
             img_array[-1, x0:x1, :] = [0,0,0,255]
+
+        if compose_cursor:
+            if cursor_state == "none":
+                pass
+            elif cursor_state == "crosshair":
+                # Draw a small crosshair cursor using display-space coordinates.
+                crosshair_size = 5
+                draw_w, draw_h = render_screen_size[0], render_screen_size[1]
+                col = max(0, min(draw_w - 1, cursor_col))
+                row = max(0, min(draw_h - 1, cursor_row))
+                half = crosshair_size // 2
+                x0 = max(0, col - half)
+                x1 = min(draw_w, col + half + 1)
+                y0 = max(0, row - half)
+                y1 = min(draw_h, row + half + 1)
+                # First draw a white square background to ensure visibility against any model color.
+                img_array[y0:y1, x0:x1, 0:3] = [255, 255, 255]
+                # Then draw the black crosshair lines on top of the white square.
+                img_array[row, x0:x1, 0:3] = [0, 0, 0]
+                img_array[y0:y1, col, 0:3] = [0, 0, 0]
+                if img_array.shape[2] > 3:
+                    img_array[y0:y1, x0:x1, 3] = 255
+                    img_array[row, x0:x1, 3] = 255
+                    img_array[y0:y1, col, 3] = 255
+            elif cursor_state == "guidelines":
+                # Draw horizontal and vertical guide lines using display-space coordinates.
+                draw_w, draw_h = render_screen_size[0], render_screen_size[1]
+                col = max(0, min(draw_w - 1, cursor_col))
+                row = max(0, min(draw_h - 1, cursor_row))
+                x0 = max(0, col - 1)
+                x1 = min(draw_w, col + 2)
+                y0 = max(0, row - 1)
+                y1 = min(draw_h, row + 2)
+                # Draw white lines on both sides of each black cursor line to ensure visibility against any model color.
+                img_array[y0:y1, :, 0:3] = [255, 255, 255]
+                img_array[:, x0:x1, 0:3] = [255, 255, 255]
+                img_array[row, :, 0:3] = [0, 0, 0]
+                img_array[:, col, 0:3] = [0, 0, 0]
+                if img_array.shape[2] > 3:
+                    img_array[y0:y1, :, 3] = 255
+                    img_array[:, x0:x1, 3] = 255
+                    img_array[row, :, 3] = 255
+                    img_array[:, col, 3] = 255
+            elif cursor_state == "horizontal-line":
+                # Draw a horizontal guide line cursor using display-space coordinates.
+                draw_w, draw_h = render_screen_size[0], render_screen_size[1]
+                row = max(0, min(draw_h - 1, cursor_row))
+                y0 = max(0, row - 1)
+                y1 = min(draw_h, row + 2)
+                img_array[y0:y1, :, 0:3] = [255, 255, 255]
+                img_array[row, :, 0:3] = [0, 0, 0]
+                if img_array.shape[2] > 3:
+                    img_array[row, :, 3] = 255
+            elif cursor_state == "vertical-line":
+                # Draw a vertical guide line cursor using display-space coordinates.
+                draw_w, draw_h = render_screen_size[0], render_screen_size[1]
+                col = max(0, min(draw_w - 1, cursor_col))
+                x0 = max(0, col - 1)
+                x1 = min(draw_w, col + 2)
+                img_array[:, x0:x1, 0:3] = [255, 255, 255]
+                img_array[:, col, 0:3] = [0, 0, 0]
+                if img_array.shape[2] > 3:
+                    img_array[:, col, 3] = 255
 
         if "compose_scrollbar" in params.keys():
             compose_slice_graph = params["compose_slicegraph"]

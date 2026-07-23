@@ -76,6 +76,24 @@ The viewer works without any hardware. Connect devices for full tactile and brai
 
 1. Plug the Trinkey into a USB port (use the USB-A adapter for USB-C ports).
 
+### DotPad display
+
+1. Turn on the DotPad using the switch on right side of device. The device vibrates when it powers on.
+2. Wait a few seconds for the device name to appear on the tactile graphic area and Braille text display.
+3. In the browser, navigate to the DotPad section and select **Connect BLE**.
+4. Press the down arrow until you find your DotPad device name, then press Enter.
+5. The DotPad should vibrate again after it connects.
+
+#### DotPad cursor modes
+
+The DotPad cursor can cycle through multiple modes:
+- `none`: hides the cursor and disables cursor movement.
+- `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
+- `guidelines`: shows horizontal and vertical guide lines through the cursor.
+- `horizontal-line`: shows only the horizontal guide line; up and down movement are disabled.
+- `vertical-line`: shows only the vertical guide line; left and right movement are disabled.
+
+
 ## Uploads on managed servers
 
 If the container cannot write to `/project/data/models`, uploads fall back to `/tmp/cad-a11y/models`. Override the path with:

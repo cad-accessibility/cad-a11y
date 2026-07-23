@@ -640,7 +640,7 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
                "orientation",
                "camera_center",
                "world_camera_center",
-               "compose_scrollbar", "compose_slicegraph", "show_view_info_box",
+               "compose_scrollbar", "compose_cursor", "cursor_col", "cursor_row", "cursor_state", "compose_slicegraph", "show_view_info_box",
                "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth", "slicegraph_mode")
     fp_dict = {k: merged.get(k) for k in fp_keys}
     fp_dict["model_index"] = model_index
@@ -663,6 +663,10 @@ def _build_quantized_render_key(params: dict[str, Any], model_index: int) -> str
         "projectionMode": str(params.get("projectionMode", "orthographic")).lower(),
         "mode": str(params.get("mode", "single")).lower(),
         "compose_scrollbar": bool(params.get("compose_scrollbar", False)),
+        "compose_cursor": bool(params.get("compose_cursor", False)), # compose cursor parameters added to quantized key
+        "cursor_col": int(params.get("cursor_col", 0)),
+        "cursor_row": int(params.get("cursor_row", 0)),
+        "cursor_state": str(params.get("cursor_state", "none")).lower(),
         "compose_slicegraph": bool(params.get("compose_slicegraph", False)),
         "slicegraph_locked": bool(params.get("slicegraph_locked", False)),
         "slicegraph_view": str(params.get("slicegraph_view", "")).lower(),
@@ -703,6 +707,10 @@ def _build_preview_payload_cache_key(
         "camera_center",
         "world_camera_center",
         "compose_scrollbar",
+        "compose_cursor", # compose cursor parameters added to preview payload cache key
+        "cursor_col",
+        "cursor_row",
+        "cursor_state",
         "compose_slicegraph",
         "show_view_info_box",
         "slicegraph_locked",
@@ -787,6 +795,27 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     model_index = _normalize_model_index(params.get("current_model"))
     rendered, bbox, braille_payload = _render_and_send(params, source=source, model_index=model_index)
 
+    # If the request specifies a target pixel width/height, render a separate
+    # payload at that size for the preview image. Otherwise, use the main payload.
+    target_width = params.get("target_pixel_width")
+    target_height = params.get("target_pixel_height")
+
+    preview_payload = braille_payload
+
+    if target_width is not None and target_height is not None:
+        try:
+            target_width = int(target_width)
+            target_height = int(target_height)
+            if target_width > 0 and target_height > 0:
+                preview_payload = _get_braille_payload_at_size(
+                    params,
+                    model_index=model_index,
+                    pixel_width=target_width,
+                    pixel_height=target_height,
+                    use_cache=True,
+                )
+        except (TypeError, ValueError):
+            pass
     session_id = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE)) if has_request_context() else None
     db.record_render(
         session_id=session_id,
@@ -803,8 +832,8 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
 
     response: dict[str, Any] = {
         "status": "success",
-        "image_base64": _img_to_base64_png(braille_payload),
-        "image_shape": list(braille_payload.shape),
+        "image_base64": _img_to_base64_png(preview_payload),
+        "image_shape": list(preview_payload.shape),
         "model_list": MODEL_NAME_LIST,
     }
     debug_info = getattr(engine, "last_render_debug", None)
