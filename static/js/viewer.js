@@ -436,6 +436,7 @@ function cycleCursorState() {
     announce(`Cursor state changed to ${newState}`);
     pendingInputSource = 'dotpad';
     sendStateToServer();
+}
 function renderModeByKey(modeKey) {
     return renderModes.find(mode => mode.key === modeKey) || null;
 }
@@ -1328,6 +1329,8 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
 
 function getCurrentSliceDepth(){
     return currentSliceDepth;
+}
+
 /**
  * Check exactly the radio matching `currentValue`, and report when none does.
  *
@@ -2285,7 +2288,7 @@ document.addEventListener('keydown', function(e) {
     const repeatableShortcuts = new Set([
         'pageup', 'pagedown',
         'arrowup', 'arrowdown', '2', '3',
-        '4', '5'
+        '4', '5', 'n', 'm'
     ]);
     if (e.repeat && !repeatableShortcuts.has(normalizedKey)) {
         e.preventDefault();

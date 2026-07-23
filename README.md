@@ -103,8 +103,8 @@ The DotPad supports cursor controls and depth changes with the following inputs:
     - `none`: hides the cursor and disables cursor movement.
     - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
     - `guidelines`: shows horizontal and vertical guide lines through the cursor.
-    - `horizontal-line`: shows only the horizontal guide line; left and right movement are disabled.
-    - `vertical-line`: shows only the vertical guide line; up and down movement are disabled.
+    - `horizontal-line`: shows only the horizontal guide line; up and down movement are disabled.
+    - `vertical-line`: shows only the vertical guide line; left and right movement are disabled.
 - dot 3: move cursor or horizontal line left
 - dot 6: move cursor or horizontal line right
 - dot 2: move cursor or vertical line up
