@@ -501,3 +501,27 @@ async function sendHexToDotPad(renderParams) {
 
 // Hook into the main render cycle
 window._dotpadOnRender = sendHexToDotPad;
+
+
+// --- Send announcements to DotPad ---
+
+function encodeAnnouncementForDotPad(message, cellCount) {
+    let hex = '';
+    for (let i = 0; i < cellCount; i++) {
+        const ch   = i < message.length ? message[i] : ' ';
+        const code = ch.charCodeAt(0);
+        const b    = (code >= 0x20 && code <= 0x7E) ? NABCC[code - 0x20] : 0x00;
+        hex += b.toString(16).padStart(2, '0').toUpperCase();
+    }
+    return hex;
+}
+
+function sendAnnouncementToDotPad({message}) {
+    if (!connectedDevice) return;
+
+    const cellCount = connectedDevice.numberBrailleCellColumns || 20;
+    const textHex = encodeAnnouncementForDotPad(message, cellCount);
+    sdk.displayTextData(textHex, connectedDevice, DisplayMode.TextMode);
+}
+
+window.onTactileAnnouncement = sendAnnouncementToDotPad;
