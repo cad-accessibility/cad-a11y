@@ -48,7 +48,7 @@ from .braille_display import (
     _DOTPAD_COLS,
 )
 from .cad_comparison_lib import CADComparisonRenderer
-from src.converter.render_low_res import save_binary_array_as_vector_pdf
+from src.converter.render_low_res import dilate_mask, raised_ink_mask, save_binary_array_as_vector_pdf
 
 try:
     import serial  # type: ignore
@@ -412,49 +412,25 @@ def get_or_create_renderer(model_index: int | None = None) -> CADComparisonRende
         return renderers_by_model[index]
 
 
-def _max_contiguous_run(mask_1d: np.ndarray) -> int:
-    """Longest run of consecutive True values in a 1-D boolean array."""
-    if not mask_1d.any():
-        return 0
-    best = cur = 0
-    for value in mask_1d:
-        cur = cur + 1 if value else 0
-        best = max(best, cur)
-    return best
+def _ensure_minimum_feature_thickness(mask: np.ndarray) -> np.ndarray:
+    """Dilate raised content by one pixel if nothing in the render is two pixels
+    thick, so a degenerate view (e.g. a flat model seen edge-on) doesn't come out
+    as an all-but-invisible scattering of isolated pixels on the physical display.
 
-
-def _ensure_minimum_feature_thickness(mask: np.ndarray, min_thickness: int = 2) -> np.ndarray:
-    """Dilate raised content by one pixel if the whole render is thinner than
-    min_thickness everywhere, so a degenerate view (e.g. a flat model seen
-    edge-on) doesn't come out as an all-but-invisible scattering of isolated
-    pixels on the physical display.
-
-    This only fires when NO row or column anywhere in the mask reaches
-    min_thickness, i.e. the render as a whole is uniformly hairline-thin —
-    a normal render with well-defined 1px edges alongside thicker filled or
-    curved regions is left untouched, so this can't re-thicken the crisp
-    single-pixel lines _to_braille_payload's majority threshold produces.
+    Only fires when the render as a whole is uniformly hairline; a normal render
+    with crisp 1px edges alongside thicker filled or curved regions is left
+    untouched, so this cannot re-thicken the single-pixel lines the majority
+    threshold produces. Two pixels thick means two set pixels side by side, so
+    the test is a pair of shifted comparisons rather than a per-row/column scan.
     """
     if not mask.any():
         return mask
 
-    max_col_run = max(
-        (_max_contiguous_run(mask[:, c]) for c in range(mask.shape[1]) if mask[:, c].any()),
-        default=0,
-    )
-    max_row_run = max(
-        (_max_contiguous_run(mask[r, :]) for r in range(mask.shape[0]) if mask[r, :].any()),
-        default=0,
-    )
-    if max(max_col_run, max_row_run) >= min_thickness:
+    two_thick = (mask[1:, :] & mask[:-1, :]).any() or (mask[:, 1:] & mask[:, :-1]).any()
+    if two_thick:
         return mask
 
-    dilated = mask.copy()
-    dilated[1:, :] |= mask[:-1, :]
-    dilated[:-1, :] |= mask[1:, :]
-    dilated[:, 1:] |= mask[:, :-1]
-    dilated[:, :-1] |= mask[:, 1:]
-    return dilated
+    return dilate_mask(mask)
 
 
 def _to_braille_payload(rendered_rgba: np.ndarray) -> np.ndarray:
@@ -467,10 +443,14 @@ def _to_braille_payload(rendered_rgba: np.ndarray) -> np.ndarray:
     # whether it was touched at all. A thin line straddling a pixel boundary
     # therefore leaves BOTH neighboring pixels partially gray. Any-non-white
     # ("< 255") marks both of them raised regardless of how thin the source
-    # line is; a true majority rule ("< 128", i.e. >50% covered) raises only
-    # the one that a physical display pin's footprint would actually justify.
+    # line is; a true majority rule (more than half covered) raises only the one
+    # that a physical display pin's footprint would actually justify.
+    #
+    # Majority alone would drop sub-pixel features outright, so faint ink with no
+    # majority pixel beside it is kept too (see raised_ink_mask, which the
+    # outline detection shares so the two can't disagree on the model boundary).
     channel = rendered_rgba[:, :, 0].astype(np.uint8, copy=False)
-    raised = channel < 128
+    raised = raised_ink_mask(channel)
     raised = _ensure_minimum_feature_thickness(raised)
     return np.where(raised, 255, 0).astype(np.uint8)
 
