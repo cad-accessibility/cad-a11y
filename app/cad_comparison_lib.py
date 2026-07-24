@@ -69,6 +69,68 @@ def compute_imposed_zoom_limits(horizontal_dist, vertical_dist, center_x, center
     return x_lim, y_lim
 
 
+def _projected_view_axis_limits(shape, view_key):
+    """Fast replacement for reading axis limits off a full
+    get_single_view(..., cut_depth=1.0, "filled", ...) render.
+
+    _calculate_view_limits only needs the plotted data's bounding box (with
+    matplotlib's default 5% margin), not an actual rendered image. At
+    cut_depth=1.0 the depth-peeling cut plane sits exactly at the far edge of
+    the bbox, so the cut is a geometric no-op — but get_single_view still
+    pays for a full mesh-boolean cut plus a real matplotlib draw pass to
+    compute this, which scales with face count and dominates renderer
+    construction time for any even moderately complex mesh (seconds for a
+    100K+ face STL or a STEP model with curved surfaces). Projecting the raw
+    vertices directly and matching matplotlib's own auto-margin formula gives
+    the same bounds in O(vertices) instead of O(faces) rendering work.
+    """
+    vertices = shape.vertices
+    if view_key == "top":
+        coords = vertices[:, [0, 1]]
+    elif view_key == "front":
+        coords = vertices[:, [0, 2]]
+    elif view_key == "left":
+        coords = vertices[:, [1, 2]]
+    elif view_key == "bottom":
+        coords = vertices[:, [0, 1]] * np.array([-1.0, -1.0])
+    elif view_key == "back":
+        coords = vertices[:, [0, 2]] * np.array([-1.0, 1.0])
+    elif view_key == "right":
+        coords = vertices[:, [1, 2]] * np.array([-1.0, 1.0])
+    else:
+        raise ValueError(f"Unknown view_key: {view_key}")
+
+    x_min, y_min = coords.min(axis=0)
+    x_max, y_max = coords.max(axis=0)
+    x_margin = 0.05 * (x_max - x_min)
+    y_margin = 0.05 * (y_max - y_min)
+    return [[x_min - x_margin, x_max + x_margin], [y_min - y_margin, y_max + y_margin]]
+
+
+# The tactile grid is ~96x40 and the preview a few hundred pixels across, so
+# geometry finer than that is invisible on both while still costing render time
+# on every frame: the draw scales with face count, and one interaction pays for
+# several renders. A tessellation tolerance can cap this for STEP at load time,
+# but an STL arrives already tessellated, so cap it here for every source.
+MAX_RENDER_FACES = 40000
+
+
+def _decimate_for_display(mesh):
+    """Reduce face count to roughly what the display can resolve.
+
+    Best effort by design. Decimation needs an optional backend, and a model that
+    cannot be simplified should still load and render, just more slowly, so any
+    failure returns the mesh untouched rather than breaking the load.
+    """
+    if len(mesh.faces) <= MAX_RENDER_FACES:
+        return mesh
+    try:
+        simplified = mesh.simplify_quadric_decimation(face_count=MAX_RENDER_FACES)
+    except Exception:
+        return mesh
+    return simplified if len(simplified.faces) > 0 else mesh
+
+
 class CADComparisonRenderer:
     """
     Renderer for CAD model comparisons.
@@ -124,8 +186,16 @@ class CADComparisonRenderer:
                 mesh = Trimesh(mesh_dict["vertices"], mesh_dict["faces"], mesh_dict["face_normals"])
         else:
             # STEP/BREP and other mesh-like formats should go through trimesh's generic loader.
+            # For STEP, trimesh's default OpenCASCADE tessellation tolerance is far finer
+            # than a 96x40 tactile display (or even the ~800px high-fidelity preview) can
+            # resolve -- a modestly curved model like a mug can explode into 200K+ faces,
+            # taking 10-30+ seconds to load. tol_relative=True scales the tolerance to each
+            # model's own size instead of a fixed absolute unit, so it holds up across
+            # differently-scaled STEP files; 0.001 (0.1% of the bounding-box diagonal) was
+            # visually indistinguishable from the untessellated default in testing while
+            # cutting load time by 1-2 orders of magnitude. Ignored for non-STEP formats.
             try:
-                loaded = tm.load(model_file, force='mesh')
+                loaded = tm.load(model_file, force='mesh', tol_linear=0.001, tol_relative=True)
             except Exception as exc:
                 raise ValueError(f"Failed to load model file '{model_file}': {exc}") from exc
 
@@ -143,7 +213,7 @@ class CADComparisonRenderer:
         fix_inversion(mesh)
         fix_winding(mesh)
         #stitch(mesh)
-        return mesh
+        return _decimate_for_display(mesh)
 
     def _load_models(self):
         """Load mesh files and prepare shapes."""
@@ -198,17 +268,13 @@ class CADComparisonRenderer:
         shape_before, shape_after = self.shapes
         
         for i, view_key in enumerate(view_keys):
-            _, ax_limits_before = get_single_view(
-                shape_before, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
-            )
+            ax_limits_before = _projected_view_axis_limits(shape_before, view_key)
             if same_shapes:
                 # Identical shapes always produce identical limits, so the min/max
                 # below against a second render would be a no-op; skip it.
                 ax_limits_after = ax_limits_before
             else:
-                _, ax_limits_after = get_single_view(
-                    shape_after, self.bbox, 1.0, view_key, "filled", screen_size=self.screen_size
-                )
+                ax_limits_after = _projected_view_axis_limits(shape_after, view_key)
             view_limits[i][0][0] = min(ax_limits_before[0][0], ax_limits_after[0][0])
             view_limits[i][0][1] = max(ax_limits_before[0][1], ax_limits_after[0][1])
             view_limits[i][1][0] = min(ax_limits_before[1][0], ax_limits_after[1][0])

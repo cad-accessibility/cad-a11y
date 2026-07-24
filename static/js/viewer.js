@@ -77,6 +77,16 @@ let previewAbortController = null;
 let previewRequestSequence = 0;
 let previewRequestTimer = null;
 
+// A render the client walks away from still costs the server a full render:
+// aborting the fetch does not cancel work already queued behind the server's
+// render lock. Holding a key therefore queued one whole render per keypress and
+// the display lagged by the entire backlog. Keep at most one request in flight
+// plus one follow-up, so a burst collapses to the first frame and the settled
+// one. The follow-up reads the live state when it fires, so it sends the newest
+// values rather than a stale snapshot.
+let renderRequestInFlight = false;
+let renderResendPending = false;
+
 function scheduleHighFidelityPreview(state) {
     if (previewRequestTimer) {
         clearTimeout(previewRequestTimer);
@@ -192,6 +202,12 @@ async function sendStateToServer() {
             return;
         }
 
+        // Coalesce rather than stack up work the server cannot skip.
+        if (renderRequestInFlight) {
+            renderResendPending = true;
+            return;
+        }
+
         // Cancel any in-flight render request so stale responses don't overwrite newer state
         if (renderAbortController) {
             renderAbortController.abort();
@@ -250,6 +266,7 @@ async function sendStateToServer() {
         pendingInputSource = 'keyboard'; // reset to default after consuming
 
         // Send to server and process response
+        renderRequestInFlight = true;
         fetch(`${SERVER_URL}/render`, {
             method: 'POST',
             headers: {
@@ -320,9 +337,17 @@ async function sendStateToServer() {
                 announceAlert(`Processing failed for ${activeModelLoadTask.label}.`);
                 clearModelLoadTask(activeModelLoadTask);
             }
+        })
+        .finally(() => {
+            renderRequestInFlight = false;
+            if (renderResendPending) {
+                renderResendPending = false;
+                sendStateToServer();
+            }
         });
 
     } catch (error) {
+        renderRequestInFlight = false;
         console.warn('Error sending state:', error);
     }
 }

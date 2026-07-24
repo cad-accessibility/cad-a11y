@@ -220,6 +220,18 @@ def _collect_feature_edges(shape, view_key, projection_mode="orthographic", xray
     return np.array(segments)
 
 
+# The figure is drawn supersampled and area-averaged down to the target grid, so
+# a partly covered output pixel carries a real coverage fraction instead of a
+# yes/no. That is what lets the raised-ink rule decide by coverage on the tactile
+# grid, where the target is only ~96px across and the supersampled canvas is
+# still small. It stops paying for itself long before the ~800px preview, where a
+# fixed 8x factor means a 6400px canvas and a render cost that scales with its
+# area. Capping the canvas keeps the full factor for tactile-sized targets (their
+# output is unchanged) and falls back to a still-generous factor for large ones.
+SUPERSAMPLE = 8
+MAX_CANVAS_PX = 3200
+
+
 def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="filled", imposed_ax_limits=[], screen_size=[96,40]):
     print("get_single_view", rendering_mode)
 
@@ -231,9 +243,14 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
 
     # Target pixel resolution
     width_px, height_px = screen_size[0], screen_size[1]
-    dpi = 100 
+    dpi = 100
 
-    fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=800)
+    # figsize is width_px/dpi inches, so the drawn canvas is figsize * render_dpi
+    # pixels across. Solve for the dpi that lands on the capped canvas width.
+    canvas_px = min(width_px * SUPERSAMPLE, MAX_CANVAS_PX)
+    render_dpi = max(dpi, int(round(canvas_px * dpi / max(1, width_px))))
+
+    fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=render_dpi)
     ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
     ax.axis('off')
 
@@ -283,7 +300,7 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
         return img_np, ax_limits
     if rendering_mode == "x-ray":
         outlines_np, outline_mask = get_outlines(img_np)
-        fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=800)
+        fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=render_dpi)
         ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
         ax.axis('off')
 
