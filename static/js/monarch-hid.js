@@ -9,6 +9,16 @@
     const disconnectBtn = document.getElementById('monarch-hid-disconnect-btn');
     const statusEl = document.getElementById('monarch-hid-status');
 
+    const MONARCH_COMMANDS = {
+        '32:0,32,0': { type: 'move', dCol: -1, dRow: 0 },
+        '32:0,64,0': { type: 'move', dCol: 1, dRow: 0 },
+        '32:0,8,0': { type: 'move', dCol: 0, dRow: -1 },
+        '32:0,16,0': { type: 'move', dCol: 0, dRow: 1 },
+        '32:1,0,0': { type: 'depth', delta: -10 },
+        '32:8,0,0': { type: 'depth', delta: 10 },
+        '32:0,1,0': { type: 'cycle-cursor' },
+    };
+
     function setStatus(msg) {
         if (statusEl) statusEl.textContent = msg;
     }
@@ -42,11 +52,21 @@
             // connecting shouldn't override an explicit selection.
             if (typeof setMonarchHidConnected === 'function') setMonarchHidConnected(true);
             if (typeof window.announce === 'function') window.announce('Monarch connected via USB.');
+            // Deliberately not setting window.connectedTactileDisplay. The viewer reads
+            // that flag to ask the server for a payload at a specific pixel size, and the
+            // server then renders a second time to produce it. The Monarch render already
+            // happens at the default grid, and the viewer's own fallbacks for those
+            // dimensions are the same 96x40, so claiming it gains nothing and costs a
+            // full extra render on every interaction.
             // Send current model state immediately so the display shows the model on connect.
             if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
 
             monarchHidDevice.addEventListener('inputreport', (e) => {
-                console.log('[Monarch HID] Input report:', e.reportId, e.data);
+                const key = monarchReportKey(e.reportId, e.data);
+                const command = MONARCH_COMMANDS[key];
+
+                console.log('[Monarch HID] Input report:', key, command || 'unmapped');
+                handleMonarchCommand(command);
             });
         } catch (err) {
             setStatus('Error: ' + err.message);
@@ -73,6 +93,42 @@
             monarchCellsHex.match(/.{2}/g).map(b => parseInt(b, 16))
         );
         await monarchHidDevice.sendReport(MONARCH_REPORT_ID, cells);
+    }
+
+    function monarchReportKey(reportId, data) {
+        // A DataView can be a window onto a larger buffer, so honour its offset and
+        // length. Reading the whole buffer would key off the wrong bytes and every
+        // command would silently stop matching.
+        return `${reportId}:${Array.from(new Uint8Array(data.buffer, data.byteOffset, data.byteLength)).join(',')}`;
+    }
+
+    function handleMonarchCommand(command) {
+        if (!command) return;
+
+        if (command.type === 'cycle-cursor') {
+            window.cycleCursorState?.();
+            return;
+        }
+
+        if (command.type === 'depth') {
+            const previousDepth = window.getCurrentSliceDepth?.();
+            if (previousDepth == null) return;
+
+            const nextDepth = Math.max(0, Math.min(100, previousDepth + command.delta));
+            window.updateSliceDepth?.(nextDepth, false);
+            window.announceDepthValue?.(nextDepth, previousDepth);
+            return;
+        }
+
+        if (command.type === 'move') {
+            const cursorState = window.whichCursor?.() || 'none';
+            if (cursorState === 'none') return;
+
+            if (cursorState === 'horizontal-line' && command.dCol !== 0) return;
+            if (cursorState === 'vertical-line' && command.dRow !== 0) return;
+
+            window.moveCursor?.(command.dCol, command.dRow);
+        }
     }
 
     window._monarchHidOnRender = function (monarchCellsHex) {
