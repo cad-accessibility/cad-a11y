@@ -76,6 +76,26 @@ The viewer works without any hardware. Connect devices for full tactile and brai
 3. Turn it on.
 4. Navigate to **Braille Terminal**: press the up arrow twice, then press the rightmost braille key twice.
 
+#### Monarch controls
+
+The Monarch supports cursor controls and depth changes with the following inputs:
+
+- dot 1: change depth shallower by 10%.
+- dot 4: change depth deeper by 10%.
+- spacebar: cycles through these cursor modes
+    - `none`: hides the cursor and disables cursor movement.
+    - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
+    - `guidelines`: shows horizontal and vertical guide lines through the cursor.
+    - `horizontal-line`: shows only the horizontal guide line; up and down movement are disabled.
+    - `vertical-line`: shows only the vertical guide line; left and right movement are disabled.
+- right directional pad: controls cursor movement as expected and explained below
+    - left navigation button: move cursor or vertical line left
+    - right navigation button: move cursor or vertical line right
+    - up navigation button: move cursor or horizontal line up
+    - down navigation button: move cursor or horizontal line down
+
+NOTE: Cursor or guideline movements only work when the cursor or guidelines are active. Each Monarch button press moves one pixel. Hold and chord gestures are not currently enabled for Monarch controls.
+
 ### WitMotion IMU
 
 1. Plug the WitMotion into a USB port.
@@ -99,7 +119,7 @@ The DotPad supports cursor controls and depth changes with the following inputs:
 
 - dot 1: change depth shallower by 10%.
 - dot 4: change depth deeper by 10%.
-- letter `v` or dot chord 1 2 3 6: cycles through cursor modes
+- letter `v` or dot chord 1 2 3 6: cycles through these cursor modes
     - `none`: hides the cursor and disables cursor movement.
     - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
     - `guidelines`: shows horizontal and vertical guide lines through the cursor.
