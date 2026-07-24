@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Accessible 3D Model Viewer</title>
     <meta name="description" content="An accessible interface for viewing and interacting with 3D models, optimized for screen readers and keyboard navigation">
-    <link rel="stylesheet" href="/static/css/viewer.css?v=20260529-7">
+    <link rel="stylesheet" href="/static/css/viewer.css?v=20260723-1">
 </head>
 <body>
     <!-- Skip navigation link – WCAG 2.4.1 -->
@@ -228,7 +228,7 @@
                     aria-describedby="zoom-help"
                     aria-valuetext="zoom 0%"
                 >
-                <div id="zoom-help" class="help-text sr-only">0 is fully zoomed out. Enter a number or use the zoom buttons. Keys: 4 and 5 for 1%, 2 and 3 for 10%. Zoom cannot go below 0.</div>
+                <div id="zoom-help" class="help-text sr-only">0 is fully zoomed out. Enter a number or use the zoom buttons. Keys: 4 and 5 for 1%, 2 and 3 for 10%, F to fit the current slice to the tactile display. Zoom cannot go below 0.</div>
                 <div class="zoom-stepper-row" role="group" aria-label="Zoom adjustment controls">
                     <button type="button" id="zoom-out-btn">Zoom Out</button>
                     <button type="button" id="zoom-in-btn">Zoom In</button>
@@ -264,8 +264,9 @@
                 <div class="help-text" id="slice-graph-lock-status">Graph lock ON.</div>
             </section>
 
-            <!-- Output device: braille display routing. Its own section so it stays
-                 visible in the simplified /workshop viewer. -->
+            <!-- Output device: braille display routing. Its own section, hidden in the
+                 simplified /workshop viewer (the connected display already decides
+                 routing there); shown here in the full viewer. -->
             <section class="section" aria-labelledby="output-device-heading">
                 <h2 id="output-device-heading">Output device</h2>
                 <fieldset>
@@ -380,6 +381,7 @@
                     <li><kbd>5</kbd> Zoom in 1%</li>
                     <li><kbd>2</kbd> Zoom out 10%</li>
                     <li><kbd>3</kbd> Zoom in 10%</li>
+                    <li><kbd>F</kbd> Fit current slice to tactile display</li>
                     <li><kbd>U</kbd> Roll counterclockwise (90°)</li>
                     <li><kbd>O</kbd> Roll clockwise (90°)</li>
                     <li><kbd>I</kbd> Rotate up (pitch, 90°)</li>
@@ -562,7 +564,7 @@
         </form>
     </dialog>
 
-    <script src="/static/js/viewer.js?v=20260529-8"></script>
+    <script src="/static/js/viewer.js?v=20260723-1"></script>
 
     <!-- Monarch USB Browser HID integration (mirrors braille_display.py _send_to_monarch) -->
     <script src="/static/js/monarch-hid.js"></script>

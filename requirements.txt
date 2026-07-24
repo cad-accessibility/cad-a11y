@@ -25,6 +25,11 @@ bleak>=3.0.2
 # Utility / testing helpers
 requests>=2.34.2
 
+# Backend for trimesh's quadric decimation. Optional at runtime: without it the
+# renderer still loads every model, it just keeps detail the display cannot
+# resolve and pays for it on each render.
+fast_simplification>=0.1.7
+
 # NOTE:
 # pythonocc-core is required by the renderer but is typically installed via conda
 # (see environment.yml) rather than pip.

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-07-23
+
+#### Changed
+*   The simplified workshop viewer now offers the Zoom controls, so a participant can zoom in on part of a model and feel its detail on the braille display.
+*   The simplified workshop viewer no longer shows the output-device chooser. The braille display connected at the station already receives the model, so the choice was redundant and could be set wrong.
+*   The simplified workshop viewer now opens on the y+ view in X-Ray rendering mode, so a session starts from the orientation and rendering participants work with. The full viewer is unchanged and still opens on x+ in Filled.
+
 ### 2026-07-15
 
 #### Added

@@ -77,6 +77,16 @@ let previewAbortController = null;
 let previewRequestSequence = 0;
 let previewRequestTimer = null;
 
+// A render the client walks away from still costs the server a full render:
+// aborting the fetch does not cancel work already queued behind the server's
+// render lock. Holding a key therefore queued one whole render per keypress and
+// the display lagged by the entire backlog. Keep at most one request in flight
+// plus one follow-up, so a burst collapses to the first frame and the settled
+// one. The follow-up reads the live state when it fires, so it sends the newest
+// values rather than a stale snapshot.
+let renderRequestInFlight = false;
+let renderResendPending = false;
+
 function scheduleHighFidelityPreview(state) {
     if (previewRequestTimer) {
         clearTimeout(previewRequestTimer);
@@ -192,6 +202,12 @@ async function sendStateToServer() {
             return;
         }
 
+        // Coalesce rather than stack up work the server cannot skip.
+        if (renderRequestInFlight) {
+            renderResendPending = true;
+            return;
+        }
+
         // Cancel any in-flight render request so stale responses don't overwrite newer state
         if (renderAbortController) {
             renderAbortController.abort();
@@ -250,6 +266,7 @@ async function sendStateToServer() {
         pendingInputSource = 'keyboard'; // reset to default after consuming
 
         // Send to server and process response
+        renderRequestInFlight = true;
         fetch(`${SERVER_URL}/render`, {
             method: 'POST',
             headers: {
@@ -320,9 +337,17 @@ async function sendStateToServer() {
                 announceAlert(`Processing failed for ${activeModelLoadTask.label}.`);
                 clearModelLoadTask(activeModelLoadTask);
             }
+        })
+        .finally(() => {
+            renderRequestInFlight = false;
+            if (renderResendPending) {
+                renderResendPending = false;
+                sendStateToServer();
+            }
         });
 
     } catch (error) {
+        renderRequestInFlight = false;
         console.warn('Error sending state:', error);
     }
 }
@@ -1886,6 +1911,50 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
     return oldZoom !== currentZoom;
 }
 
+async function fitCurrentViewToDevice() {
+    const renderPipelineParams = getRenderPipelineParams(currentRenderMode);
+    const orientationPayload = getOrientationPayload();
+
+    const payload = {
+        view: currentView,
+        orientation: orientationPayload,
+        zoom: currentZoom,
+        depth: currentSliceDepth,
+        renderMode: renderPipelineParams.renderMode,
+        projectionMode: renderPipelineParams.projectionMode,
+        mode: getServerRepresentationMode(),
+        current_model: currentModel,
+        output_device: getEffectiveOutputDevice(),
+        compose_scrollbar: composeScrollbar,
+        compose_slicegraph: composeSliceGraph,
+        show_view_info_box: showViewInfoBox,
+    };
+
+    const response = await fetch(`${SERVER_URL}/render/fit-view`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+
+    const data = await response.json();
+    console.log('fit view response', data);
+
+    if (data.status !== 'success') {
+        announceAlert('Fit view failed');
+        return;
+    }
+
+    if (Array.isArray(data.camera_center) && data.camera_center.length === 2) {
+        const key = getCameraCenterStateKey(currentView, orientationPayload);
+        cameraCenterByViewOrientation.set(key, data.camera_center);
+    }
+
+    updateZoom(data.zoom, false, false);
+    sendStateToServer();
+    announce('View fitted to tactile display');
+
+}
+
 // Switch to a specific render mode
 function switchToRenderMode(targetMode, shouldAnnounce = true) {
     if (!renderModeByKey(targetMode)) {
@@ -2288,7 +2357,7 @@ document.addEventListener('keydown', function(e) {
         'u', 'i', 'o', 'j', 'k', 'l',
         '4', '5', '6', '7', '8', '9', '0', '-', '=',
         'r', 't', 'g', 'v', 'z',
-        'w', 'a', 's', 'd', '[', ']', 'h', 'p', '.', 'escape'
+        'w', 'a', 's', 'd', '[', ']', 'h', 'p', '.', 'escape', 'f'
     ]);
 
     if (!supportedShortcuts.has(normalizedKey)) {
@@ -2375,6 +2444,11 @@ document.addEventListener('keydown', function(e) {
             }
             break;
 
+        case 'f':
+            e.preventDefault();
+            fitCurrentViewToDevice();
+            break;
+            
         // View shortcuts
         case '7':
             e.preventDefault();
@@ -2625,11 +2699,18 @@ document.addEventListener('DOMContentLoaded', async function() {
     const workshopParams = new URLSearchParams(location.search);
     if (location.pathname.replace(/\/+$/, '') === '/workshop' || workshopParams.get('ui') === 'simple') {
         document.body.classList.add('simple-ui');
+        // The workshop viewer opens on the y+ face in X-Ray, the orientation and
+        // rendering a session starts from. The full viewer keeps x+ and Filled.
+        // Set directly rather than through updateView/switchToRenderMode so no
+        // extra render is sent before the requested model is resolved below.
+        currentView = 'y+';
+        setOrientationFromView(currentView);
+        currentRenderMode = 'xray';
     }
-    
+
     // Set initial values
     updateSliceDepth(50, false);
-    updateView('x+');
+    updateView(currentView);
     updateDisplayOptions();
     updateZoom(0, false);
     syncRadios();

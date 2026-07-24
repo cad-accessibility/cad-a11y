@@ -533,15 +533,22 @@ def _make_hifi_preview(
 
 
 def _render_and_send(
-    params: dict[str, Any], *, source: str, model_index: int
+    params: dict[str, Any], *, source: str, model_index: int,
+    render_size: tuple[int, int] | None = None,
 ) -> tuple[np.ndarray, list[float] | None, np.ndarray]:
     global current_render
 
     engine = get_or_create_renderer(model_index)
     out_guard, err_guard = _renderer_stdio_guard()
     with render_lock:
-        with out_guard, err_guard:
-            rendered = engine.render(params)
+        original_screen_size = list(engine.screen_size) if engine.screen_size else [96, 40]
+        if render_size is not None:
+            engine.screen_size = [max(1, int(render_size[0])), max(1, int(render_size[1]))]
+        try:
+            with out_guard, err_guard:
+                rendered = engine.render(params)
+        finally:
+            engine.screen_size = original_screen_size
     current_render = rendered
 
     braille_payload = _to_braille_payload(rendered)
@@ -864,16 +871,43 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     """Render, send to braille display, and build JSON response dict."""
     _refresh_model_list_if_stale()
     model_index = _normalize_model_index(params.get("current_model"))
-    rendered, bbox, braille_payload = _render_and_send(params, source=source, model_index=model_index)
-
-    # If the request specifies a target pixel width/height, render a separate
-    # payload at that size for the preview image. Otherwise, use the main payload.
+    # A client that names a target pixel size (i.e. one with a tactile display
+    # attached) used to cost two full renders per interaction: one at the default
+    # grid, whose payload only fed telemetry, and a second at the device size that
+    # actually reached the display. Render once at the size the client asked for
+    # and let it serve both. The Monarch path is excluded because its cell packing
+    # below assumes the default grid.
     target_width = params.get("target_pixel_width")
     target_height = params.get("target_pixel_height")
+    is_monarch = str(params.get("output_device", "")).strip().lower() == "monarch_hid"
+
+    render_size: tuple[int, int] | None = None
+    if not is_monarch and target_width is not None and target_height is not None:
+        try:
+            if int(target_width) > 0 and int(target_height) > 0:
+                render_size = (int(target_width), int(target_height))
+        except (TypeError, ValueError):
+            render_size = None
+
+    rendered, bbox, braille_payload = _render_and_send(
+        params, source=source, model_index=model_index, render_size=render_size
+    )
 
     preview_payload = braille_payload
 
-    if target_width is not None and target_height is not None:
+    if render_size is not None:
+        # Seed the shared cache so the follow-up /render/dotpad-hex request for
+        # the same size is a lookup rather than another render.
+        _set_preview_payload_cached(
+            _build_preview_payload_cache_key(
+                params,
+                model_index=model_index,
+                pixel_width=render_size[0],
+                pixel_height=render_size[1],
+            ),
+            braille_payload,
+        )
+    elif target_width is not None and target_height is not None:
         try:
             target_width = int(target_width)
             target_height = int(target_height)
@@ -1215,6 +1249,13 @@ def render_view():
         _log(f"Error rendering: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
 
+@app.route("/render/fit-view", methods=["POST"])
+def fit_render_view():
+    data = request.get_json(silent=True) or {}
+    merged_params, model_index, _, _ = _prepare_render_params(data)
+    engine = get_or_create_renderer(model_index)
+    fit = engine.compute_fit_view(merged_params)
+    return jsonify({"status": "success", **fit}), 200
 
 @app.route("/render/image", methods=["GET"])
 def get_render_image():
