@@ -16,15 +16,27 @@ def _compact(source: str) -> str:
     return re.sub(r"\s+", "", source)
 
 
-def test_monarch_sets_and_clears_tactile_display_dimensions():
-    source = _source()
+def test_monarch_does_not_claim_the_tactile_display_dimensions():
+    """Monarch must not set connectedTactileDisplay.
 
-    assert "window.connectedTactileDisplay = {" in source
-    assert "type: 'Monarch'" in source
-    assert "connection: 'hid'" in source
-    assert "pixelWidth: 96" in source
-    assert "pixelHeight: 40" in source
-    assert "window.connectedTactileDisplay = null;" in source
+    The viewer reads that flag to ask the server for a payload at a specific pixel
+    size, and the server then renders a second time to produce it. The Monarch
+    render already happens at the default grid, and the viewer's own fallbacks for
+    those dimensions are the same 96x40, so claiming it gains nothing and costs a
+    full extra render on every interaction. Clearing it on disconnect would also
+    wipe the entry belonging to a DotPad connected at the same time.
+    """
+    assert "connectedTactileDisplay=" not in _compact(_source())
+
+
+def test_monarch_report_key_honours_the_dataview_window():
+    """The report key must respect the DataView's offset and length.
+
+    Reading the whole underlying buffer would key off the wrong bytes whenever the
+    view is a window onto a larger one, and every mapped control would silently
+    stop matching.
+    """
+    assert "newUint8Array(data.buffer,data.byteOffset,data.byteLength)" in _compact(_source())
 
 
 def test_monarch_input_reports_dispatch_to_command_handler():

@@ -52,12 +52,12 @@
             // connecting shouldn't override an explicit selection.
             if (typeof setMonarchHidConnected === 'function') setMonarchHidConnected(true);
             if (typeof window.announce === 'function') window.announce('Monarch connected via USB.');
-            window.connectedTactileDisplay = {
-                type: 'Monarch',
-                connection: 'hid',
-                pixelWidth: 96,
-                pixelHeight: 40
-            }
+            // Deliberately not setting window.connectedTactileDisplay. The viewer reads
+            // that flag to ask the server for a payload at a specific pixel size, and the
+            // server then renders a second time to produce it. The Monarch render already
+            // happens at the default grid, and the viewer's own fallbacks for those
+            // dimensions are the same 96x40, so claiming it gains nothing and costs a
+            // full extra render on every interaction.
             // Send current model state immediately so the display shows the model on connect.
             if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
 
@@ -83,7 +83,6 @@
         setStatus('Not connected.');
         disconnectBtn.disabled = true;
         connectBtn.disabled = false;
-        window.connectedTactileDisplay = null;
         if (typeof setMonarchHidConnected === 'function') setMonarchHidConnected(false);
         if (typeof window.announce === 'function') window.announce('Monarch USB disconnected.');
     });
@@ -97,7 +96,10 @@
     }
 
     function monarchReportKey(reportId, data) {
-        return `${reportId}:${Array.from(new Uint8Array(data.buffer)).join(',')}`;
+        // A DataView can be a window onto a larger buffer, so honour its offset and
+        // length. Reading the whole buffer would key off the wrong bytes and every
+        // command would silently stop matching.
+        return `${reportId}:${Array.from(new Uint8Array(data.buffer, data.byteOffset, data.byteLength)).join(',')}`;
     }
 
     function handleMonarchCommand(command) {
