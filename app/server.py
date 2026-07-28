@@ -535,7 +535,14 @@ def _make_hifi_preview(
 def _render_and_send(
     params: dict[str, Any], *, source: str, model_index: int,
     render_size: tuple[int, int] | None = None,
-) -> tuple[np.ndarray, list[float] | None, np.ndarray]:
+) -> tuple[np.ndarray, list[float] | None, np.ndarray, tuple[int, int]]:
+    """Render, push to the braille display, and report the size actually used.
+
+    The size is returned rather than inferred by the caller because a caller that
+    guessed would have to read engine.screen_size outside the render lock, where
+    another request may be part-way through swapping it. It is captured here,
+    inside the lock, alongside the render it describes.
+    """
     global current_render
 
     engine = get_or_create_renderer(model_index)
@@ -544,6 +551,7 @@ def _render_and_send(
         original_screen_size = list(engine.screen_size) if engine.screen_size else [96, 40]
         if render_size is not None:
             engine.screen_size = [max(1, int(render_size[0])), max(1, int(render_size[1]))]
+        effective_size = (int(engine.screen_size[0]), int(engine.screen_size[1]))
         try:
             with out_guard, err_guard:
                 rendered = engine.render(params)
@@ -587,7 +595,7 @@ def _render_and_send(
     _write_braille_event(event)
 
     bbox = getattr(engine, "bbox", None)
-    return rendered, bbox, braille_payload
+    return rendered, bbox, braille_payload, effective_size
 
 
 def _save_print_if_requested(params: dict[str, Any], engine: CADComparisonRenderer, img_data: np.ndarray) -> None:
@@ -889,7 +897,7 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
         except (TypeError, ValueError):
             render_size = None
 
-    rendered, bbox, braille_payload = _render_and_send(
+    rendered, bbox, braille_payload, rendered_size = _render_and_send(
         params, source=source, model_index=model_index, render_size=render_size
     )
 
@@ -912,13 +920,35 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
             target_width = int(target_width)
             target_height = int(target_height)
             if target_width > 0 and target_height > 0:
-                preview_payload = _get_braille_payload_at_size(
-                    params,
-                    model_index=model_index,
-                    pixel_width=target_width,
-                    pixel_height=target_height,
-                    use_cache=True,
-                )
+                if (target_width, target_height) == rendered_size:
+                    # The render just done is already at the requested size, so a
+                    # second one would spend a full render producing identical
+                    # pixels. #114 hit exactly this: the Monarch reported the same
+                    # 96x40 the default grid already uses, and every interaction
+                    # paid twice. That was worked around on the client by not
+                    # reporting the size at all, which left the server free to do
+                    # it again for the next device that reports a matching one.
+                    _log(
+                        f"Reusing the {target_width}x{target_height} render for the "
+                        "payload; the requested size matches what was just rendered."
+                    )
+                    _set_preview_payload_cached(
+                        _build_preview_payload_cache_key(
+                            params,
+                            model_index=model_index,
+                            pixel_width=target_width,
+                            pixel_height=target_height,
+                        ),
+                        braille_payload,
+                    )
+                else:
+                    preview_payload = _get_braille_payload_at_size(
+                        params,
+                        model_index=model_index,
+                        pixel_width=target_width,
+                        pixel_height=target_height,
+                        use_cache=True,
+                    )
         except (TypeError, ValueError):
             pass
     session_id = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE)) if has_request_context() else None
@@ -957,7 +987,7 @@ def initialize_default_braille_render() -> None:
 
     try:
         merged_params, model_index, _is_pan_request, _fingerprint = _prepare_render_params(dict(DEFAULT_RENDER_PARAMS))
-        rendered, _, _ = _render_and_send(merged_params, source="startup", model_index=model_index)
+        rendered, _, _, _ = _render_and_send(merged_params, source="startup", model_index=model_index)
         _log(f"Initial render ready: shape={tuple(rendered.shape)}", force=True)
     except Exception as error:
         _log(f"Initial render failed: {error}", force=True)
