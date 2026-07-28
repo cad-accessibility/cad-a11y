@@ -207,7 +207,9 @@ def test_health_reports_the_storage_invariant(client):
     checks = response.get_json()["checks"]
 
     assert checks["storage_separated"] is True
-    assert checks["database"] == "ok"
+    # Either is fine here: a fresh checkout has no schema until the server's own
+    # startup creates it, and this test is about the storage layout.
+    assert checks["database"] in ("ok", "uninitialised")
     assert checks["builtin_models_shipped"] > 0
     assert checks["public_models"] >= checks["builtin_models_shipped"]
     assert all(checks["writable"].values())
@@ -244,17 +246,31 @@ def test_health_degrades_when_storage_collapses(client, monkeypatch):
     assert payload["checks"]["storage_separated"] is False
 
 
-def test_health_degrades_when_the_database_fails(client, monkeypatch):
+def test_health_degrades_when_the_database_cannot_be_opened(client, monkeypatch, tmp_path):
     """The 2026-07-22 outage was the app being unable to open its database."""
-    import app.server as server
+    import app.db as db_module
 
-    def boom(*_args, **_kwargs):
-        raise RuntimeError("cannot open database")
-
-    monkeypatch.setattr(server.db, "get_session", boom)
+    unopenable = tmp_path / "no-such-dir" / "usage.db"
+    monkeypatch.setattr(db_module, "DB_PATH", unopenable)
     response = client.get("/health")
     assert response.status_code == 503
     assert response.get_json()["checks"]["database"] == "error"
+
+
+def test_health_accepts_a_database_that_has_no_schema_yet(client, monkeypatch, tmp_path):
+    """A fresh database is openable but empty until the server's startup runs.
+
+    Treating that as a failure reported a perfectly good deployment as broken,
+    which is what this test exists to stop. Openability is the outage condition;
+    the schema is a separate fact and is reported separately.
+    """
+    import app.db as db_module
+
+    fresh = tmp_path / "fresh.db"
+    monkeypatch.setattr(db_module, "DB_PATH", fresh)
+    response = client.get("/health")
+    assert response.status_code == 200, "an openable but empty database is not a failure"
+    assert response.get_json()["checks"]["database"] == "uninitialised"
 
 
 # --- Cleanup script -------------------------------------------------------

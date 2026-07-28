@@ -22,6 +22,7 @@ import os
 import queue as _queue_module
 import re
 import shutil
+import sqlite3
 import sys
 import threading
 import time
@@ -1288,11 +1289,17 @@ def health():
         "logs": _is_writable_directory(STUDY_LOG_DIR),
     }
 
+    # Opening the file is the thing that failed in the 2026-07-22 outage, and it
+    # is a separate question from whether the schema has been created: init_db()
+    # runs from main(), so a database can be perfectly openable and still empty.
+    # Conflating the two reports a healthy deployment as broken.
     try:
-        # Any public read opens the connection and touches the schema; the
-        # lookup is expected to miss.
-        db.get_session("00000000-0000-0000-0000-000000000000")
-        database = "ok"
+        with contextlib.closing(sqlite3.connect(db.DB_PATH)) as conn:
+            conn.execute("SELECT 1").fetchone()
+            initialised = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'"
+            ).fetchone()
+        database = "ok" if initialised else "uninitialised"
     except Exception:
         database = "error"
 
@@ -1319,7 +1326,9 @@ def health():
     healthy = (
         storage_separated
         and all(writable.values())
-        and database == "ok"
+        # "uninitialised" still means the file opened, which is what the outage
+        # broke. The schema appears as soon as the server's own startup runs.
+        and database in ("ok", "uninitialised")
         and shipped > 0
         and public_models >= shipped
     )
