@@ -238,7 +238,7 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
     shape = copy(shape)
     normal_dir = views[view_key]["dir"]
     shape, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
-    if rendering_mode == "slice":
+    if rendering_mode == "cut":
         shape = faces_on_plane_fast(shape, plane_origin, normal_dir)
 
     # Target pixel resolution
@@ -296,7 +296,7 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
         plt.close(fig.number)
     plt.close()
 
-    if rendering_mode in ["filled", "slice"]:
+    if rendering_mode in ["filled", "cut"]:
         return img_np, ax_limits
     if rendering_mode == "x-ray":
         outlines_np, outline_mask = get_outlines(img_np)
@@ -361,5 +361,5 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
 
 if __name__ == '__main__':
     shape = trimesh.load_mesh("../../model/lego_2x3.stl")
-    get_single_view(shape, shape.bounds.flatten(), cut_depth=0.41, rendering_mode="slice", view_key="left")
+    get_single_view(shape, shape.bounds.flatten(), cut_depth=0.41, rendering_mode="cut", view_key="left")
     exit()
