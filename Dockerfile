@@ -42,6 +42,9 @@ COPY examples/ ./examples/
 # the directory wholesale would also bake a developer's local uploads into the
 # image. The server seeds data/models from this directory on every start.
 COPY builtin_models/ ./builtin_models/
+# Maintenance script an operator runs inside the container; the data directories
+# are Docker-managed volumes and are not conveniently reachable from the host.
+COPY scripts/cleanup_ingest_models.py ./scripts/
 
 # Runtime write directories are created here so the non-root user owns them.
 RUN mkdir -p data/models data/uploads data/renders data/logs data/db
