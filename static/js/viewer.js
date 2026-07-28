@@ -518,14 +518,10 @@ function formatZoomPercent(zoomValue) {
     return `${percent}%`;
 }
 
-// Remove "Back" from available views
-//const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
-const views = ['y-', 'x-', 'z+', 'z-', 'x+', 'y+'];
 const MIN_ZOOM = 0.0;
 const MAX_ZOOM = Number.POSITIVE_INFINITY;
 const ZOOM_STEP = 0.1;
 const FINE_ZOOM_STEP = 0.01;
-//const views = ['front', 'side', 'top'];
 
 const VIEW_FORWARD_VECTORS = {
     'x+': [1, 0, 0],
