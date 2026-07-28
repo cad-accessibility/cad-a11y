@@ -445,28 +445,43 @@ def _ensure_minimum_feature_thickness(mask: np.ndarray) -> np.ndarray:
 # That is what #49 reports.
 #
 # No standard fixes a line width. BANA and the Round Table both specify spacing
-# in detail and leave width to the producer, because it depends on the machine
-# and the paper. What the sources do establish:
+# in careful detail and leave width to the producer, because it depends on the
+# machine and the paper. https://www.brailleauthority.org/tg/web-manual/tgmanual.html
 #
-#   * Line width drives raised height on capsule paper; a thicker line rises
-#     higher. "Creating Tactile Graphics", High Tech Center Training Unit
-#     https://www.adcet.edu.au/resource/5131/file/1/Tactile_Graphics.pdf
-#   * Swell paper raises to roughly 0.5 mm, so a line thinner than that has
-#     little to rise with.
-#   * Capsule paper needs about 1/4 inch (6 mm) between components, more than
-#     the 1/8 inch minimum for other methods, so thickening must not be so
-#     aggressive that neighbouring features merge. "Keys to Readability",
-#     Tactile Graphics: A How To Guide
-#     https://www.tactilegraphics.org/readability.html
-#   * Where a width has been measured for touch rather than assumed, 0.8-1.2 mm
-#     is the band reported as comfortably discriminable.
+# Two separate constraints decide the number, and both have to be satisfied: what
+# the paper can reliably raise, and what a fingertip can reliably tell apart.
+#
+# What swell paper reproduces:
+#   * Expansion height depends on how much heat the printed area absorbs, so a
+#     larger, darker mark rises higher. Measured with a 3D measurement system
+#     across heat settings, positions and symbol areas by Watanabe et al.
+#     https://link.springer.com/chapter/10.1007/978-3-319-41267-2_10
+#   * The paper only rises about 0.5 mm at best, so a line has little margin and
+#     a thin one has little to rise with.
+#   * Both the machine's own guide and practitioners report the same failure:
+#     very thin lines are simply not picked up, and the fix is to draw them
+#     thicker. https://piaf-tactile.com/docs/PIAF_User_Guide_and_Workbook_EN.pdf
+#     https://oceaninsight.whoi.edu/how-to-make-accessible-graphics-using-a-piaf-machine/
+#
+# What a fingertip resolves:
+#   * Above 1 mm is recommended so lines do not merge under a moving finger.
+#     https://topostreets.com/creating-tactile-maps-for-the-blind-step-by-step/
+#   * Where width has been measured for touch rather than assumed, 0.8-1.2 mm is
+#     the band reported as comfortably discriminable.
 #     https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10181369/
 #
-# The default is 2.0 mm: above the measured band, chosen to err towards a line
-# that definitely rises rather than one that only just does. The cost is
-# separation, since a wider line leaves less gap before neighbouring features
-# merge, so it is a request parameter and worth lowering towards 1.0 mm for a
-# dense cross-section. See test_swell_paper_export for the merge measurements.
+# The bound from above is separation: capsule paper wants about 1/4 inch (6 mm)
+# between components, more than the 1/8 inch other methods need, so thickening
+# must not fuse neighbouring features. https://www.tactilegraphics.org/readability.html
+#
+# 2.0 mm clears both floors rather than sitting on either. It is roughly double
+# the discrimination band, so it does not depend on a reader with good acuity,
+# and it is a large enough mark to absorb heat and rise properly rather than
+# landing at the edge of what the paper can do. Measured against the ceiling it
+# only fuses features already closer than 1.8 mm, well inside the 6 mm that
+# capsule paper needs anyway. Both this and the sheet width are request
+# parameters, since the right answer depends on the fuser and paper in the room.
+# See test_swell_paper_export for the merge measurements.
 SWELL_TARGET_LINE_MM = 2.0
 # A4 landscape (297 mm) less a 20 mm margin each side. The tactile grid is 96x40,
 # so a sheet is used landscape.
