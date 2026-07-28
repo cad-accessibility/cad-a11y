@@ -435,6 +435,75 @@ def _ensure_minimum_feature_thickness(mask: np.ndarray) -> np.ndarray:
     return dilate_mask(mask)
 
 
+# --- Swell paper export -----------------------------------------------------
+#
+# Swell (capsule, microcapsule) paper raises where the sheet is black: carbon ink
+# absorbs heat in the fuser and the layer beneath it expands. How high a line
+# rises therefore depends on how wide it is drawn, and a hairline barely rises at
+# all. The tactile render is built for a 96x40 pin grid where a feature is one
+# pixel, so exporting it unchanged gives lines far too fine to read by touch.
+# That is what #49 reports.
+#
+# No standard fixes a line width. BANA and the Round Table both specify spacing
+# in detail and leave width to the producer, because it depends on the machine
+# and the paper. What the sources do establish:
+#
+#   * Line width drives raised height on capsule paper; a thicker line rises
+#     higher. "Creating Tactile Graphics", High Tech Center Training Unit
+#     https://www.adcet.edu.au/resource/5131/file/1/Tactile_Graphics.pdf
+#   * Swell paper raises to roughly 0.5 mm, so a line thinner than that has
+#     little to rise with.
+#   * Capsule paper needs about 1/4 inch (6 mm) between components, more than
+#     the 1/8 inch minimum for other methods, so thickening must not be so
+#     aggressive that neighbouring features merge. "Keys to Readability",
+#     Tactile Graphics: A How To Guide
+#     https://www.tactilegraphics.org/readability.html
+#   * Where a width has been measured for touch rather than assumed, 0.8-1.2 mm
+#     is the band reported as comfortably discriminable.
+#     https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10181369/
+#
+# The default is 2.0 mm: above the measured band, chosen to err towards a line
+# that definitely rises rather than one that only just does. The cost is
+# separation, since a wider line leaves less gap before neighbouring features
+# merge, so it is a request parameter and worth lowering towards 1.0 mm for a
+# dense cross-section. See test_swell_paper_export for the merge measurements.
+SWELL_TARGET_LINE_MM = 2.0
+# A4 landscape (297 mm) less a 20 mm margin each side. The tactile grid is 96x40,
+# so a sheet is used landscape.
+SWELL_PRINT_WIDTH_MM = 257.0
+MM_PER_INCH = 25.4
+
+
+def _thicken_for_swell_paper(
+    mask: np.ndarray, *, export_width_px: int, print_width_mm: float, target_line_mm: float
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Grow raised content so lines survive the fuser, and report what it did.
+
+    Returns the mask and the measurements behind it, so the caller can tell the
+    user the physical width actually achieved rather than the one requested. The
+    two differ because growing happens a whole pixel at a time.
+    """
+    pixels_per_mm = export_width_px / float(print_width_mm)
+    target_px = target_line_mm * pixels_per_mm
+    # Each pass grows a line by one pixel on each side, so a source hairline ends
+    # up 1 + 2*passes wide.
+    passes = max(0, int(round((target_px - 1.0) / 2.0)))
+
+    thickened = mask
+    for _ in range(passes):
+        thickened = dilate_mask(thickened)
+
+    achieved_px = 1 + 2 * passes
+    return thickened, {
+        "target_line_mm": round(target_line_mm, 3),
+        "achieved_line_mm": round(achieved_px / pixels_per_mm, 3),
+        "dilation_passes": passes,
+        "pixels_per_mm": round(pixels_per_mm, 3),
+        "print_width_mm": round(float(print_width_mm), 1),
+        "dpi": round(pixels_per_mm * MM_PER_INCH, 1),
+    }
+
+
 def _to_braille_payload(rendered_rgba: np.ndarray) -> np.ndarray:
     # Convert renderer output to braille payload using a single deterministic
     # rule for all modes: majority coverage is raised.
@@ -620,10 +689,14 @@ def _save_print_if_requested(params: dict[str, Any], engine: CADComparisonRender
         np.save(handle, img_data)
 
 
-def _img_to_base64_png(img_array: np.ndarray) -> str:
+def _img_to_base64_png(img_array: np.ndarray, *, dpi: float | None = None) -> str:
     image = Image.fromarray(img_array.astype("uint8"))
     buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
+    # A tactile export is meaningless without a physical scale: line widths are
+    # only correct if the sheet prints at the size they were computed for. The
+    # dots-per-inch header is what tells a print dialog that.
+    save_kwargs = {"dpi": (dpi, dpi)} if dpi else {}
+    image.save(buffer, format="PNG", **save_kwargs)
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
@@ -642,6 +715,16 @@ def _coerce_positive_int(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         return default
     if parsed <= 0:
+        return default
+    return parsed
+
+
+def _coerce_positive_float(value: Any, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed <= 0 or parsed != parsed:  # reject zero, negatives and NaN
         return default
     return parsed
 
@@ -1949,13 +2032,34 @@ def render_export_source():
                 engine.screen_size = original_screen_size
 
         tactile_payload = _to_braille_payload(rendered)
+
+        # Only the export is thickened. The on-screen preview is left exactly as
+        # it was, because it is judged by eye at screen scale, where a line grown
+        # for a fuser reads as a blob.
+        target_line_mm = _coerce_positive_float(
+            params.get("export_line_width_mm"), SWELL_TARGET_LINE_MM
+        )
+        print_width_mm = _coerce_positive_float(
+            params.get("export_print_width_mm"), SWELL_PRINT_WIDTH_MM
+        )
+        thickened, swell = _thicken_for_swell_paper(
+            tactile_payload > 0,
+            export_width_px=export_width,
+            print_width_mm=print_width_mm,
+            target_line_mm=target_line_mm,
+        )
+        tactile_payload = np.where(thickened, 255, 0).astype(np.uint8)
+
         response = {
             "status": "success",
             "message": "Export source render complete",
             "image_shape": list(tactile_payload.shape),
-            "image_base64": _img_to_base64_png(tactile_payload),
+            "image_base64": _img_to_base64_png(tactile_payload, dpi=swell["dpi"]),
             "export_width": export_width,
             "export_height": export_height,
+            # Reported so the sheet can be checked against the machine it is
+            # going into, rather than trusted.
+            "swell_paper": swell,
         }
         return jsonify(response), 200
     except Exception as error:
