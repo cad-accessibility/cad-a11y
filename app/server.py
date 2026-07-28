@@ -21,6 +21,7 @@ import logging
 import os
 import queue as _queue_module
 import re
+import shutil
 import sys
 import threading
 import time
@@ -81,6 +82,11 @@ else:
     # app/server.py lives one level below the project root.
     REPO_ROOT = Path(__file__).resolve().parent.parent
 MODEL_DIR = REPO_ROOT / "data" / "models"
+# Tracked built-in models ship here, outside any Docker volume mount, and are
+# copied into MODEL_DIR at startup by _seed_builtin_models(). Keeping the source
+# outside the mount is what lets built-ins added later reach a server whose
+# models volume already exists — Docker only seeds a named volume when empty.
+BUILTIN_SOURCE_DIR = REPO_ROOT / "builtin_models"
 RENDERS_DIR = REPO_ROOT / "data" / "renders"
 STUDY_LOG_DIR = REPO_ROOT / "data" / "logs"
 
@@ -113,15 +119,22 @@ def _is_writable_directory(path: Path) -> bool:
 
 
 def _resolve_upload_dir() -> Path:
+    """Resolve the directory uploads are written to.
+
+    MODEL_DIR is deliberately NOT a candidate. Built-in vs. uploaded is decided
+    by which directory a file sits in (see _is_builtin), so the two must never
+    be the same directory. MODEL_DIR used to be the first candidate, which meant
+    that merely making it writable — as the move to Docker named volumes did in
+    #96 — silently collapsed the distinction and emptied the model dropdown (#102).
+    """
     env_dir = os.getenv("UPLOAD_MODEL_DIR", "").strip()
     candidates: list[Path] = []
     if env_dir:
         candidates.append(Path(env_dir))
     candidates.extend(
         [
-            MODEL_DIR,
             REPO_ROOT / "data" / "uploads",
-            Path("/tmp/cad-a11y/models"),
+            Path("/tmp/cad-a11y/uploads"),
         ]
     )
 
@@ -130,10 +143,55 @@ def _resolve_upload_dir() -> Path:
     for candidate in deduped_candidates:
         if _is_writable_directory(candidate):
             return candidate
-    return MODEL_DIR
+    raise RuntimeError(
+        "No writable upload directory found. Tried: "
+        + ", ".join(str(c) for c in deduped_candidates)
+        + ". Set UPLOAD_MODEL_DIR to a writable path."
+    )
 
 
 UPLOAD_DIR = _resolve_upload_dir()
+
+# Structural invariant, not a preference. If uploads ever shared a directory with
+# built-ins, every uploaded file would be classified public. Fail loudly at start
+# rather than silently reshaping who can see what.
+if UPLOAD_DIR.resolve() == MODEL_DIR.resolve():
+    raise RuntimeError(
+        f"UPLOAD_MODEL_DIR ({UPLOAD_DIR}) must not be the built-in model "
+        f"directory ({MODEL_DIR}); uploads would be served to every visitor."
+    )
+
+
+def _seed_builtin_models() -> int:
+    """Copy tracked built-ins into MODEL_DIR, skipping files already present.
+
+    Idempotent and safe on every boot. Docker seeds a named volume from the image
+    only while the volume is empty, so without this a built-in added to the image
+    later would never appear on an existing deployment (#124).
+    """
+    if not BUILTIN_SOURCE_DIR.is_dir():
+        return 0
+    try:
+        MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as error:
+        _log(f"Could not create model directory {MODEL_DIR}: {error}", force=True)
+        return 0
+
+    copied = 0
+    for source in sorted(BUILTIN_SOURCE_DIR.iterdir()):
+        if not source.is_file() or source.name.startswith("."):
+            continue
+        target = MODEL_DIR / source.name
+        if target.exists():
+            continue
+        try:
+            shutil.copy2(source, target)
+            copied += 1
+        except Exception as error:
+            _log(f"Could not seed built-in model {source.name}: {error}", force=True)
+    if copied:
+        _log(f"Seeded {copied} built-in model(s) into {MODEL_DIR}", force=True)
+    return copied
 
 
 def _resolve_braille_log_path() -> Path:
@@ -350,19 +408,49 @@ def _find_default_model() -> Path:
     raise FileNotFoundError(f"No .stl/.step model found in {MODEL_DIR}")
 
 
+# Seed before the first discovery so a fresh MODEL_DIR (or a Docker volume that
+# predates a newly added built-in) is populated before anything globs it.
+_seed_builtin_models()
+
 DEFAULT_MODEL = _find_default_model()
 AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
 MODEL_NAME_LIST = [model_path.stem for model_path in AVAILABLE_MODELS]
-# Stems of models that ship with the repository. When UPLOAD_DIR resolves to a
-# different directory than MODEL_DIR, files in MODEL_DIR are the built-ins. When
-# they're the same directory we can't distinguish built-ins from persisted uploads,
-# so we return [] — the client treats null/empty as "show all", avoiding a privacy
-# leak where uploaded files appear as built-ins visible to every session.
-BUILTIN_MODEL_STEMS: list[str] = (
-    [p.stem for p in AVAILABLE_MODELS if p.parent == MODEL_DIR]
-    if MODEL_DIR.resolve() != UPLOAD_DIR.resolve()
-    else []
-)
+
+_MODEL_DIR_RESOLVED = MODEL_DIR.resolve()
+
+
+def _is_builtin(model_path: Path) -> bool:
+    """True if this model ships with the app and is therefore public.
+
+    Classification is by directory: built-ins live in MODEL_DIR, uploads in
+    UPLOAD_DIR, and _resolve_upload_dir plus the startup guard above make it
+    impossible for those to be the same place. This replaces a module-level
+    BUILTIN_MODEL_STEMS that was computed once at import while the model list
+    itself kept refreshing, so a model added at runtime was never classifiable.
+    """
+    try:
+        return model_path.parent.resolve() == _MODEL_DIR_RESOLVED
+    except OSError:
+        return False
+
+
+def _builtin_model_stems() -> list[str]:
+    """Stems of the currently discovered built-in models."""
+    return [p.stem for p in AVAILABLE_MODELS if _is_builtin(p)]
+
+
+def _stem_is_taken(stem: str) -> bool:
+    """True if any model in either directory already uses this stem.
+
+    Built-ins and uploads live in different directories now, so two files can
+    share a stem without ever colliding on a path. Stems have to stay unique:
+    they are how a model is named to the client.
+    """
+    for directory in (MODEL_DIR, UPLOAD_DIR):
+        for suffix in (".stl", ".step", ".STEP"):
+            if (directory / f"{stem}{suffix}").exists():
+                return True
+    return False
 _model_list_last_refresh: float = 0.0
 _MODEL_LIST_REFRESH_INTERVAL = 2.0  # seconds
 
@@ -1514,6 +1602,7 @@ def _save_and_index_stl(
     *,
     session_id: str | None = None,
     original_name: str | None = None,
+    public: bool = False,
 ) -> tuple[str, Path, int]:
     """Persist an uploaded STL/STEP file and refresh the in-memory model list.
 
@@ -1521,6 +1610,12 @@ def _save_and_index_stl(
     or ``dest.write_bytes``). Shared by /upload and /ingest so both apply the
     identical sanitisation, collision-rename, DB registration and cache
     invalidation under the same locks.
+
+    ``public=True`` writes into MODEL_DIR instead of UPLOAD_DIR, making the file a
+    built-in visible to everyone. Only /ingest uses it: an ingested model has no
+    browser session to own it, so under the upload rules it would be visible to
+    nobody and the workshop flow would break. /ingest is slated for removal, and
+    this carve-out goes with it.
 
     Returns ``(filename, dest_path, new_index)``. Raises ``ValueError`` for a
     missing name or unsupported extension; save/registration errors propagate.
@@ -1534,13 +1629,20 @@ def _save_and_index_stl(
     if suffix not in _ALLOWED_EXTENSIONS:
         raise ValueError(f"Unsupported file type '{suffix}'. Use .stl or .step")
 
-    dest = UPLOAD_DIR / filename
-    if dest.exists():
+    target_dir = MODEL_DIR if public else UPLOAD_DIR
+    # Uniqueness is checked on the stem across BOTH directories, not just on
+    # whether the destination path is free. Models are addressed by stem on the
+    # wire, and the client tells built-ins apart from uploads by stem too, so an
+    # upload allowed to reuse a built-in's stem would both collide and be shown
+    # to every visitor. Before the storage split a plain dest.exists() sufficed,
+    # because everything lived in one directory.
+    dest = target_dir / filename
+    if dest.exists() or _stem_is_taken(Path(filename).stem):
         stem = Path(filename).stem
         filename = f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
-        dest = UPLOAD_DIR / filename
+        dest = target_dir / filename
 
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    target_dir.mkdir(parents=True, exist_ok=True)
     save_fn(dest)
 
     if session_id:
@@ -1667,6 +1769,8 @@ def ingest_model():
             requested_name,
             session_id=user_id,
             original_name=requested_name,
+            # Ingested models stay public; see the `public` note on the helper.
+            public=True,
         )
     except ValueError as err:
         return jsonify({"status": "error", "message": str(err)}), 400
@@ -1912,7 +2016,7 @@ def get_data():
             "slider_value": state.slider_value,
             "current_model": state.current_model_index,
             "model_list": MODEL_NAME_LIST,
-            "builtin_model_stems": BUILTIN_MODEL_STEMS,
+            "builtin_model_stems": _builtin_model_stems(),
         }
     return jsonify(payload), 200
 

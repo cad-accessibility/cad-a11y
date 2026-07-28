@@ -9,6 +9,10 @@ services:
         required: false
     environment:
       SERVER_VERBOSE: "${SERVER_VERBOSE:-0}"
+      # Set explicitly rather than left to the server's writability probing.
+      # Uploads must never land in data/models: that directory is the built-in
+      # set and everything in it is public to every visitor (#102).
+      UPLOAD_MODEL_DIR: /project/data/uploads
     volumes:
       # Docker-managed named volumes (not host bind mounts). On first mount,
       # Docker seeds each volume from the image's /project/data/<name>, which
@@ -16,6 +20,7 @@ services:
       # so the app can write immediately without relying on host/NFS
       # permissions being configured for UID 48.
       - models:/project/data/models
+      - uploads:/project/data/uploads
       - renders:/project/data/renders
       - logs:/project/data/logs
       - db:/project/data/db
@@ -28,6 +33,7 @@ services:
 
 volumes:
   models:
+  uploads:
   renders:
   logs:
   db:

@@ -37,10 +37,14 @@ COPY static/ ./static/
 COPY accessible-3d-viewer.html ./
 COPY workshop-entry.html ./
 COPY examples/ ./examples/
-COPY src/models/brep/ ./data/models/
+# Built-ins ship here, deliberately NOT into data/models. data/models is a mounted
+# volume, so anything copied there is shadowed on a real deployment, and copying
+# the directory wholesale would also bake a developer's local uploads into the
+# image. The server seeds data/models from this directory on every start.
+COPY builtin_models/ ./builtin_models/
 
 # Runtime write directories are created here so the non-root user owns them.
-RUN mkdir -p data/renders data/logs data/db
+RUN mkdir -p data/models data/uploads data/renders data/logs data/db
 
 # --- Non-root user ---
 # UID 48 matches the apache user the hosting NFS server grants write access to.

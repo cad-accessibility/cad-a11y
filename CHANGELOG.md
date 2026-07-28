@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-07-28
+
+#### Fixed
+*   The model list no longer empties itself. It appeared fully populated, then collapsed to "No models found" and became unselectable a moment after the page settled, leaving no way to choose a model. It now stays populated and usable.
+*   The models that ship with the app are the ones you actually get. A Docker deployment was serving a different set from the one in the project, so familiar models such as the mug, cane tip, rocking chair and lego bricks were missing.
+*   A model you add to the project now reaches a server that has been running for a while. Previously new models only ever appeared on a freshly created deployment.
+
+#### Changed
+*   Models you upload are now kept separately from the ones that ship with the app, which is what makes it possible to show them only to you. Uploads previously shared a directory with the built-in models, so the app could not tell the two apart.
+*   An upload named after a built-in model is stored under a slightly different name instead of shadowing it, so both stay reachable.
+*   Added a maintenance script that reports, and on request removes, files left in the built-in model directory by earlier versions. See the README section on where models are stored.
+
 ### 2026-07-23
 
 #### Changed
