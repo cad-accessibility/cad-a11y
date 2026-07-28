@@ -244,7 +244,7 @@ class CADComparisonRenderer:
         """Calculate axis limits for all views for both shapes."""
         #view_keys = ["top", "front", "side"]
         view_keys = ["top", "front", "left", "bottom", "back", "right"]
-        rendering_modes = ["outline", "filled", "slice"]
+        rendering_modes = ["outline", "filled", "cut"]
         
         xmin, ymin, zmin, xmax, ymax, zmax = self.bbox
         
@@ -600,14 +600,20 @@ class CADComparisonRenderer:
         return view_mapping.get(view_name.lower(), "top")
     
     def _map_render_mode(self, render_mode):
-        """Map render mode from JSON format to internal format."""
+        """Map render mode from JSON format to internal format.
+
+        The mode the interface calls Cut was named "slice" internally, which read
+        as the unrelated slice depth and slice-graph features (#66). The internal
+        name is "cut" throughout now. Both older wire names are still accepted, so
+        a stored request or an external caller does not break.
+        """
         mode_mapping = {
             "outline": "outline",
             "x-ray": "x-ray",
             "filled": "filled",
             "shaded": "filled",
-            "slice": "slice",
-            "cut": "slice",
+            "slice": "cut",
+            "cut": "cut",
         }
         return mode_mapping.get(render_mode.lower(), "outline")
     
