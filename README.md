@@ -86,8 +86,8 @@ The Monarch supports cursor controls and depth changes with the following inputs
     - `none`: hides the cursor and disables cursor movement.
     - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
     - `guidelines`: shows horizontal and vertical guide lines through the cursor.
-    - `horizontal-line`: shows only the horizontal guide line; up and down movement are disabled.
-    - `vertical-line`: shows only the vertical guide line; left and right movement are disabled.
+    - `horizontal-line`: shows only the horizontal guide line; left and right movement are disabled, since the line spans the full width and is repositioned by moving it up and down.
+    - `vertical-line`: shows only the vertical guide line; up and down movement are disabled, since the line spans the full height and is repositioned by moving it left and right.
 - right directional pad: controls cursor movement as expected and explained below
     - left navigation button: move cursor or vertical line left
     - right navigation button: move cursor or vertical line right
@@ -123,12 +123,12 @@ The DotPad supports cursor controls and depth changes with the following inputs:
     - `none`: hides the cursor and disables cursor movement.
     - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
     - `guidelines`: shows horizontal and vertical guide lines through the cursor.
-    - `horizontal-line`: shows only the horizontal guide line; up and down movement are disabled.
-    - `vertical-line`: shows only the vertical guide line; left and right movement are disabled.
-- dot 3: move cursor or horizontal line left
-- dot 6: move cursor or horizontal line right
-- dot 2: move cursor or vertical line up
-- dot 5: move cursor or vertical line down
+    - `horizontal-line`: shows only the horizontal guide line; left and right movement are disabled, since the line spans the full width and is repositioned by moving it up and down.
+    - `vertical-line`: shows only the vertical guide line; up and down movement are disabled, since the line spans the full height and is repositioned by moving it left and right.
+- dot 3: move cursor or vertical line left
+- dot 6: move cursor or vertical line right
+- dot 2: move cursor or horizontal line up
+- dot 5: move cursor or horizontal line down
 
 NOTE: Cursor or guideline movements will only work when the cursor or guidelines are active. A single button press will move one pixel. A double or triple button press will move the line five or twelve pixels respectively.
 
