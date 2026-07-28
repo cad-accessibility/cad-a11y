@@ -63,7 +63,10 @@ class CADComparisonRenderer:
         self._precompute_lock = threading.Lock()
         self._precompute_done = threading.Event()
         self._precompute_done.set()
-        self.cache_version = 2
+        # Bumped to 3 when slice_pixel_counts joined the payload: a version-2 file
+        # has no counts, so a future load path reading it would leave Slice Area
+        # empty. Invalidating is cheaper than making every reader handle the gap.
+        self.cache_version = 3
         self.cache_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "renders",
@@ -251,9 +254,16 @@ class CADComparisonRenderer:
                 diff_mat /= max_diff
             self.view_diff_mats[view_key] = diff_mat
             self.view_cut_polygons[view_key] = cut_faces_list
-            self.view_slice_pixel_counts[view_key] = [
-                self._count_raised_pixels(poly, view_key) for poly in cut_faces_list
-            ]
+            # Same yielding discipline as the two loops above: this is 101 more
+            # rasterizations per view, each a PIL polygon fill plus a numpy count,
+            # so run as a plain loop rather than a comprehension in order to give
+            # Flask's request threads a chance to run.
+            pixel_counts = []
+            for slice_index, poly in enumerate(cut_faces_list, start=1):
+                pixel_counts.append(self._count_raised_pixels(poly, view_key))
+                if slice_index % self._PRECOMPUTE_YIELD_EVERY == 0:
+                    time.sleep(self._PRECOMPUTE_YIELD_SECONDS)
+            self.view_slice_pixel_counts[view_key] = pixel_counts
 
     def start_background_slice_precompute(self):
         """Kick off slice-graph precompute without blocking first render."""
@@ -290,6 +300,14 @@ class CADComparisonRenderer:
             key: np.asarray(value, dtype=float).tolist()
             for key, value in self.view_diff_mats.items()
         }
+        # Persisted alongside the diff matrices because the Slice Area graph reads
+        # these and nothing else. Leaving them out would mean that once a load path
+        # exists, a cache-warm start would restore the Difference graph while Slice
+        # Area stayed silently empty.
+        slice_pixel_counts = {
+            key: [int(count) for count in value]
+            for key, value in self.view_slice_pixel_counts.items()
+        }
 
         cache_payload = {
             "cache_version": self.cache_version,
@@ -297,6 +315,7 @@ class CADComparisonRenderer:
             "orthographic_view_limits": orthographic_view_limits.tolist(),
             "orthographic_view_centers": orthographic_centers.tolist(),
             "slice_diff_mats": slice_diff_mats,
+            "slice_pixel_counts": slice_pixel_counts,
         }
 
         with open(self.cache_path, "w", encoding="utf-8") as fp:
@@ -371,6 +390,14 @@ class CADComparisonRenderer:
         on the display. Independent of the current slice and of zoom. Uses only
         PIL/numpy (no matplotlib), so it is safe in the background precompute
         thread.
+
+        This reimplements get_single_view's pixel placement rather than sharing
+        it, so the two have to move together. If get_single_view's aspect
+        handling, anchor, margins or figure padding change, the counts here stop
+        describing what is on the display and the Slice Area graph quietly starts
+        reporting something else. test_count_raised_pixels_matches_rendered_output
+        in tests/test_slice_precompute.py pins the equivalence; keep it passing
+        rather than adjusting it to whatever the new numbers happen to be.
         """
         if poly is None or poly.is_empty:
             return 0
@@ -833,7 +860,6 @@ class CADComparisonRenderer:
             #        [self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0]),
             #         self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][1])]
             #)
-            print("params", params)
             img_array, _ = get_single_view(
                 self.shapes[shape_index],
                 self.bbox,
