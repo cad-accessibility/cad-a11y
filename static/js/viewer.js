@@ -518,14 +518,10 @@ function formatZoomPercent(zoomValue) {
     return `${percent}%`;
 }
 
-// Remove "Back" from available views
-//const views = ['front', 'left', 'top', 'bottom', 'right', 'back'];
-const views = ['y-', 'x-', 'z+', 'z-', 'x+', 'y+'];
 const MIN_ZOOM = 0.0;
 const MAX_ZOOM = Number.POSITIVE_INFINITY;
 const ZOOM_STEP = 0.1;
 const FINE_ZOOM_STEP = 0.01;
-//const views = ['front', 'side', 'top'];
 
 const VIEW_FORWARD_VECTORS = {
     'x+': [1, 0, 0],
@@ -1772,9 +1768,17 @@ document.getElementById('upload-model-input').addEventListener('change', async f
 let lastSliderRaw = null; // null = never received a server-side slider value yet
 function applyServerState(data) {
     if (data.cube_value !== undefined && data.cube_value !== lastPolledView) {
+        const isFirstReading = (lastPolledView === null);
         lastPolledView = data.cube_value;
-        pendingInputSource = 'cube';
-        updateView(data.cube_value);
+        // First reading — record but skip, for the same reason as the slider
+        // below: cube_value is reserved for the WitMotion IMU, so before the
+        // hardware has reported it still holds the server's placeholder. Acting
+        // on it would drag the viewer off its own starting view on page load,
+        // even when no cube is connected.
+        if (!isFirstReading) {
+            pendingInputSource = 'cube';
+            updateView(data.cube_value);
+        }
     }
     if (data.slider_value !== undefined) {
         const rawValue = data.slider_value;
