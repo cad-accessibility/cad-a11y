@@ -29,11 +29,10 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import quote
 import uuid
 
 import numpy as np
-from flask import Flask, Response, has_request_context, jsonify, redirect, request, send_file, stream_with_context
+from flask import Flask, Response, has_request_context, jsonify, request, send_file, stream_with_context
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
@@ -62,7 +61,7 @@ logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 app = Flask(__name__)
 CORS(app)
-# Cap request bodies (uploads and /ingest); default 100 MB. Oversized requests
+# Cap request bodies (uploads); default 100 MB. Oversized requests
 # are rejected with 413 before the handler runs.
 app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_UPLOAD_MB", "100") or "100") * 1024 * 1024
 
@@ -206,38 +205,6 @@ def _attach_session_cookie(response: Response, session_id: str) -> Response:
         secure=is_https,
     )
     return response
-
-
-# ---------------------------------------------------------------------------
-# Workshop participants. The calling tool sends the participant's first name with the
-# STL; we key each participant on their (normalised) first name and give them a unique
-# user id so their models and in-app actions can be linked together for the research.
-# ---------------------------------------------------------------------------
-def _normalize_name(raw: Any) -> str | None:
-    """Normalise a participant first name into a stable, case- and spacing-insensitive
-    lookup key (e.g. '  Alex ' and 'alex' both match). Returns None if empty."""
-    if raw is None:
-        return None
-    key = " ".join(str(raw).strip().lower().split())
-    return key or None
-
-
-def _participant_for_name(first_name: str) -> str:
-    """Return the workshop participant id (a unique session id) for this normalised
-    first name, creating one the first time the name is seen and reusing it afterwards
-    so a participant's iterations attach to the same record. Workshop participants are
-    flagged so their in-app actions are recorded without the analytics consent dialog.
-
-    First names are not unique, so two people sharing one first name share one record;
-    the workshop mitigates that out of band (name tags, photos)."""
-    existing = db.get_session_id_for_identifier(first_name)
-    if existing:
-        db.upsert_session(existing)  # refresh last_seen_at
-        return existing
-    user_id = str(uuid.uuid4())
-    db.upsert_session(user_id)
-    db.save_session_identifier(user_id, first_name, consent_given=False, is_workshop=True)
-    return user_id
 
 
 DEFAULT_RENDER_PARAMS: dict[str, Any] = {
@@ -402,8 +369,8 @@ def get_or_create_renderer(model_index: int | None = None) -> CADComparisonRende
             _log(f"Initializing CAD renderer with: {model_path}")
             out_guard, err_guard = _renderer_stdio_guard()
             with out_guard, err_guard:
-                # Slice-graph precompute is expensive and only feeds a mode the
-                # simplified workshop viewer can't reach, so it's kicked off lazily
+                # Slice-graph precompute is expensive and only feeds one mode,
+                # so it's kicked off lazily
                 # (CADComparisonRenderer._get_zoom_filtered_slice_profile) on first
                 # actual use instead of unconditionally here.
                 renderer = CADComparisonRenderer(
@@ -1087,64 +1054,6 @@ def serve_viewer():
     return send_file(REPO_ROOT / "accessible-3d-viewer.html")
 
 
-def _render_workshop_entry(notice: bool = False) -> Response:
-    """Serve the accessible first-name entry page. No JS required; screen-reader/braille
-    friendly. The participant types their first name and we normalise it on submit."""
-    notice_html = (
-        '<p class="workshop-notice" role="alert">We could not find a model for that '
-        "name yet. Please check your first name and try again.</p>"
-        if notice
-        else ""
-    )
-    html = (REPO_ROOT / "workshop-entry.html").read_text(encoding="utf-8")
-    return Response(html.replace("<!--NOTICE-->", notice_html), mimetype="text/html")
-
-
-@app.route("/workshop", methods=["GET"])
-def workshop():
-    """Simplified workshop entry point.
-
-    ``?model=<stem>``  serve the viewer (viewer.js renders it in simplified mode).
-    ``?name=<first>``  resolve the participant's first name to their latest model and
-                       redirect into the pre-loaded viewer, attaching their cookie.
-    (no params)        the accessible first-name entry page.
-    """
-    if request.args.get("model"):
-        return send_file(REPO_ROOT / "accessible-3d-viewer.html")
-
-    name_param = request.args.get("name")
-    raw_name = (name_param or "").strip()
-    if not raw_name:
-        # A name that is present but blank (e.g. only spaces) means the participant
-        # submitted something unusable, so tell them rather than silently re-rendering
-        # an empty form with no explanation for a screen reader to announce.
-        return _render_workshop_entry(notice=name_param is not None)
-
-    normalized_name = _normalize_name(raw_name)
-    if normalized_name:
-        filename = db.get_latest_model_for_identifier(normalized_name)
-        if filename:
-            _refresh_model_list_if_stale()
-            stem = Path(filename).stem
-            if stem in MODEL_NAME_LIST:
-                # Attach the participant's session cookie so their in-app actions
-                # (renders, key presses) log against them, then open their model.
-                resp = redirect(f"/workshop?model={quote(stem)}", code=302)
-                user_id = db.get_session_id_for_identifier(normalized_name)
-                if user_id:
-                    _attach_session_cookie(resp, user_id)
-                return resp
-    return _render_workshop_entry(notice=True)
-
-
-@app.route("/ingest-test", methods=["GET"])
-def ingest_test():
-    """Serve the static ingest test harness so it can be reached in a browser while the
-    app is running (e.g. in Docker): navigate here, enter a participant name, and send
-    the bundled sample STL to /ingest to exercise the whole workshop flow."""
-    return send_file(REPO_ROOT / "examples" / "ingest-test.html")
-
-
 @app.route("/", methods=["GET"])
 def home():
     return jsonify(
@@ -1161,9 +1070,6 @@ def home():
                 "/commands/stats": "GET - Command statistics",
                 "/models": "GET/POST - List or update active model index",
                 "/upload": "POST - Upload an STL or STEP model file",
-                "/ingest": "POST - Ingest an STL from an external tool; optional first_name, returns a workshop_url + user_id",
-                "/workshop": "GET - Simplified viewer; ?model= pre-loads, ?name= resolves a participant's first name",
-                "/ingest-test": "GET - Static harness to send the sample STL to /ingest from a browser",
                 "/get_data": "GET - Optional cube/slider state",
                 "/render/dotpad-hex": "POST - Get render as DotPad hex string for Web SDK",
                 "/viewer": "GET - Serve the HTML viewer (required for DotPad Web SDK)",
@@ -1518,9 +1424,8 @@ def _save_and_index_stl(
     """Persist an uploaded STL/STEP file and refresh the in-memory model list.
 
     ``save_fn(dest)`` writes the bytes to the chosen path (e.g. ``FileStorage.save``
-    or ``dest.write_bytes``). Shared by /upload and /ingest so both apply the
-    identical sanitisation, collision-rename, DB registration and cache
-    invalidation under the same locks.
+    or ``dest.write_bytes``). Applies sanitisation, collision-rename, DB
+    registration and cache invalidation under the same locks.
 
     Returns ``(filename, dest_path, new_index)``. Raises ``ValueError`` for a
     missing name or unsupported extension; save/registration errors propagate.
@@ -1611,114 +1516,6 @@ def upload_model():
         "filename": filename,
         "model_list": MODEL_NAME_LIST,
         "new_model_index": new_index,
-    }), 200
-
-
-@app.route("/ingest", methods=["POST"])
-def ingest_model():
-    """Receive an STL from an external tool, store it, and return a URL that opens it
-    in the simplified /workshop viewer.
-
-    Body: multipart form-data with a ``file`` field, or a raw STL body (name via
-    ``?filename=`` / ``X-Filename``). The participant's first name is sent by the
-    calling tool as ``first_name`` (form field, query parameter or ``X-First-Name``
-    header). It is optional: when given, the model is stored under a workshop
-    participant (a unique user id keyed on the first name) so it can be retrieved at a
-    braille station and the participant's actions are logged; without one the ingest is
-    anonymous and the returned workshop_url opens the model directly.
-    """
-    # Only touch request.files when the body actually is multipart: merely
-    # accessing it makes Werkzeug parse the whole body as form data whenever
-    # Content-Type looks like a form (multipart *or* x-www-form-urlencoded),
-    # which drains the input stream. A raw-body caller that doesn't set an
-    # explicit octet-stream content type (many HTTP clients default raw
-    # POSTs to x-www-form-urlencoded) would then hit request.get_data()
-    # below on an already-empty stream and get a bogus "No STL provided".
-    is_multipart = (request.content_type or "").startswith("multipart/form-data")
-    upload = request.files.get("file") if is_multipart else None
-    if upload and upload.filename:
-        save_fn = upload.save
-        requested_name = upload.filename
-    else:
-        raw = request.get_data(cache=False)
-        if not raw:
-            return jsonify({"status": "error", "message": "No STL provided"}), 400
-        requested_name = (
-            request.args.get("filename") or request.headers.get("X-Filename") or "model.stl"
-        )
-
-        def save_fn(dest: Path) -> None:
-            dest.write_bytes(raw)
-
-    # The calling tool sends the participant's first name; we key the participant on it
-    # and give them a unique user id. Without a name the ingest is anonymous (single
-    # station: the returned workshop_url opens the model directly).
-    first_name = (
-        request.form.get("first_name")
-        or request.args.get("first_name")
-        or request.headers.get("X-First-Name")
-    )
-    normalized_name = _normalize_name(first_name)
-    user_id = _participant_for_name(normalized_name) if normalized_name else None
-
-    try:
-        filename, dest, new_index = _save_and_index_stl(
-            save_fn,
-            requested_name,
-            session_id=user_id,
-            original_name=requested_name,
-        )
-    except ValueError as err:
-        return jsonify({"status": "error", "message": str(err)}), 400
-    except Exception as error:
-        return jsonify(
-            {"status": "error", "message": f"Could not save file in '{UPLOAD_DIR}': {error}"}
-        ), 500
-
-    stem = dest.stem
-    base = (os.getenv("PUBLIC_BASE_URL") or request.host_url).rstrip("/")
-    if normalized_name:
-        # Open via the participant so the viewer sets their session cookie and loads
-        # their latest model (this ingest); their in-app actions then log against them.
-        workshop_path = f"/workshop?name={quote(first_name.strip())}"
-    else:
-        workshop_path = f"/workshop?model={quote(stem)}"
-    workshop_url = f"{base}{workshop_path}"
-
-    # Single-station conveniences are opt-in so a shared braille station is never
-    # yanked away from the model it is currently showing. The host pop-up needs the
-    # client to ask (open=1) *and* the host to allow it (INGEST_OPEN_ON_HOST), so a
-    # remote caller cannot open windows on the server machine on its own.
-    if request.args.get("open") == "1" or request.args.get("open_here") == "1":
-        _push_sse({"load_model": stem})
-        if os.getenv("INGEST_OPEN_ON_HOST", "0") == "1":
-            try:
-                webbrowser.open(f"http://localhost:6969{workshop_path}", new=1)
-            except Exception as err:
-                _log(f"INGEST_OPEN_ON_HOST failed: {err}")
-
-    _log(
-        f"Model ingested: {filename} → index {new_index} "
-        f"(participant {normalized_name or 'anonymous'})",
-        force=True,
-    )
-
-    # A plain browser form navigation gets redirected straight into the pre-loaded
-    # viewer; fetch/XHR and other API clients get JSON.
-    accepts_html = "text/html" in request.headers.get("Accept", "")
-    is_xhr = request.headers.get("X-Requested-With") == "XMLHttpRequest"
-    if accepts_html and not is_xhr:
-        return redirect(workshop_url, code=302)
-
-    return jsonify({
-        "status": "success",
-        "filename": filename,
-        "model_stem": stem,
-        "new_model_index": new_index,
-        "first_name": first_name.strip() if first_name else None,
-        "user_id": user_id,
-        "workshop_url": workshop_url,
-        "workshop_entry_url": f"{base}/workshop",
     }), 200
 
 

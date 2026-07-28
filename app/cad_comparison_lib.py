@@ -220,9 +220,9 @@ class CADComparisonRenderer:
         same_file = os.path.abspath(self.before_model_path) == os.path.abspath(self.after_model_path)
 
         before_mesh = self._load_one_mesh(self.before_model_path)
-        # "before" and "after" are the same upload for every caller today (e.g. the
-        # /ingest workshop flow never does a real comparison), so skip loading and
-        # repairing the identical file a second time and just copy the result.
+        # "before" and "after" are the same upload for every caller today, since
+        # nothing does a real comparison, so skip loading and repairing the
+        # identical file a second time and just copy the result.
         after_mesh = before_mesh.copy() if same_file else self._load_one_mesh(self.after_model_path)
         shapes = [before_mesh, after_mesh]
 

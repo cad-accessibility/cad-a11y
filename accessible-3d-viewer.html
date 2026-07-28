@@ -264,9 +264,7 @@
                 <div class="help-text" id="slice-graph-lock-status">Graph lock ON.</div>
             </section>
 
-            <!-- Output device: braille display routing. Its own section, hidden in the
-                 simplified /workshop viewer (the connected display already decides
-                 routing there); shown here in the full viewer. -->
+            <!-- Output device: braille display routing. -->
             <section class="section" aria-labelledby="output-device-heading">
                 <h2 id="output-device-heading">Output device</h2>
                 <fieldset>
@@ -587,12 +585,6 @@
         // GET /session/me tells us whether the user has already seen the consent prompt.
         // ---------------------------------------------------------------------------
         async function initSession() {
-            // Skip the consent prompt in the simplified workshop viewer: it is a
-            // transient, no-login flow and we deliberately set no tracking cookie there.
-            const workshopSimple = location.pathname.replace(/\/+$/, '') === '/workshop'
-                || new URLSearchParams(location.search).get('ui') === 'simple';
-            if (workshopSimple) return;
-
             let sessionData = null;
             try {
                 const res = await fetch('/session/me');
