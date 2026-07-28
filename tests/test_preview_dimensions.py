@@ -153,13 +153,22 @@ def test_registering_a_display_triggers_a_render():
     assert "sendStateToServer" in block.group(0)
 
 
-def test_the_active_grid_follows_the_effective_output_device():
-    """Reading a device-agnostic global is what let the previews describe a
-    display that was not the one receiving output."""
+def test_the_active_grid_follows_the_display_that_receives_the_frame():
+    """The output-device setting is a preference, not a statement about what is
+    plugged in: it defaults to the Monarch whether or not one is attached, while a
+    connected DotPad is sent every frame regardless of it. Keying only on the
+    preference meant a DotPad plugged in under the default setting received frames
+    shaped for something else.
+    """
     source = _viewer_source()
     block = re.search(r"function activeTactileGrid\(\).*?\n\}", source, re.DOTALL)
     assert block, "activeTactileGrid not found"
-    assert "getEffectiveOutputDevice()" in block.group(0)
+    body = block.group(0)
+    assert "getEffectiveOutputDevice()" in body, "the selected device should win when connected"
+    # The fallback that makes a lone connected display count.
+    assert "length === 1" in body, (
+        "a single connected display must be used even when it is not the selected one"
+    )
 
 
 def test_both_previews_use_one_caption_formatter():
@@ -174,3 +183,77 @@ def test_both_previews_use_one_caption_formatter():
     # numpy reports [height, width]; the caption reads width x height.
     assert "shape[1]" in body and "shape[0]" in body
     assert body.index("shape[1]") < body.index("shape[0]"), "dimensions are the wrong way round"
+
+
+# --- The default grid, and when the caption may name it --------------------
+
+
+def test_default_grid_sits_between_the_two_displays():
+    """With nothing connected there is no right answer, so the default should not
+    favour either display. It also has to be a whole number of braille cells,
+    which are two pixels wide."""
+    source = _viewer_source()
+    block = re.search(r"const DEFAULT_TACTILE_GRID = Object\.freeze\(\{(.*?)\}\)", source, re.DOTALL)
+    assert block, "DEFAULT_TACTILE_GRID not found"
+    body = block.group(1)
+    width = int(re.search(r"pixelWidth:\s*(\d+)", body).group(1))
+    height = int(re.search(r"pixelHeight:\s*(\d+)", body).group(1))
+
+    monarch_w = _MONARCH_COLS * CELL_W
+    dotpad_w = DOTPAD_GRID[0]
+    assert dotpad_w < width < monarch_w, f"{width} does not sit between {dotpad_w} and {monarch_w}"
+    assert width % CELL_W == 0, f"{width} is not a whole number of braille cells"
+    assert height == 40
+
+
+def test_the_default_grid_drives_the_render_not_just_the_caption():
+    """If the caption said one size and the render used another, this whole change
+    would have reintroduced the mismatch it exists to remove."""
+    source = _viewer_source()
+    block = re.search(r"target_pixel_width:(.*?)target_pixel_height:(.*?)\n", source, re.DOTALL)
+    assert block, "the render request does not name a grid"
+    assert "activeTactileGrid()" in block.group(1)
+
+
+def test_the_caption_describes_the_render_on_screen_not_the_live_connection():
+    """Connecting a display updates the registry immediately, but the render it
+    describes arrives later. Naming the new display against the old dimensions is
+    what made the caption briefly self-contradictory."""
+    source = _viewer_source()
+    caption = re.search(r"function previewCaption\(shape\).*?\n\}", source, re.DOTALL).group(0)
+    assert "lastRenderedGrid" in caption, "caption reads live state instead of the applied render"
+    assert "activeTactileGrid()" not in caption
+
+    # And the applied render's grid is recorded as the response is applied.
+    assert "lastRenderedGrid = gridForSize(" in source
+
+
+# --- Caching must not serve a frame of the wrong size ----------------------
+
+
+def test_render_caches_distinguish_the_target_size():
+    """A request for 60x40 and one for 78x40 are different renders.
+
+    Both caches ignored the target size, so connecting a display returned the
+    previous size's frame and the preview then reported that stale size against
+    the new display's name. Harmless while the size rarely changed; not once it
+    drives the whole render.
+    """
+    base = _params(view="x+", depth=50)
+    small = dict(base, target_pixel_width=60, target_pixel_height=40)
+    large = dict(base, target_pixel_width=78, target_pixel_height=40)
+
+    _, _, _, fp_small = server._prepare_render_params(small)
+    _, _, _, fp_large = server._prepare_render_params(large)
+    assert fp_small != fp_large, "the exact-render cache would serve the wrong size"
+
+    key_small = server._build_quantized_render_key(small, model_index=0)
+    key_large = server._build_quantized_render_key(large, model_index=0)
+    assert key_small != key_large, "the coarse cache would serve the wrong size"
+
+
+def test_the_same_size_still_shares_a_cache_entry():
+    """The keys must distinguish sizes without defeating caching entirely."""
+    a = _params(view="x+", depth=50, target_pixel_width=60, target_pixel_height=40)
+    b = _params(view="x+", depth=50, target_pixel_width=60, target_pixel_height=40)
+    assert server._build_quantized_render_key(a, model_index=0) == server._build_quantized_render_key(b, model_index=0)

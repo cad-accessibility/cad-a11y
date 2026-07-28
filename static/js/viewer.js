@@ -301,6 +301,7 @@ async function sendStateToServer() {
             syncCameraCenterFromResponse(data, state);
             // Update tactile display preview
             if (data.image_base64) {
+                lastRenderedGrid = gridForSize(state.target_pixel_width, state.target_pixel_height);
                 updateTactilePreview(data.image_base64, data.image_shape);
                 if (isActiveModelLoadTask(activeModelLoadTask)) {
                     // One announcement per event: two calls in the same tick would
@@ -1415,11 +1416,29 @@ function setMonarchHidConnected(connected) {
 // connected" and "Monarch connected" therefore describe the same grid.
 window.tactileDisplays = window.tactileDisplays || {};
 
+// With nothing connected there is no right answer, so sit between the two
+// displays we support rather than favouring either: a Monarch is 96x40 and a
+// DotPad 60x40. 78 is the midpoint and still a whole number of braille cells,
+// which are two pixels wide. This drives the render as well as the caption, so
+// what the preview reports is what was actually drawn.
 const DEFAULT_TACTILE_GRID = Object.freeze({
-    pixelWidth: 96,
+    pixelWidth: 78,
     pixelHeight: 40,
     label: 'default grid',
 });
+
+// The grid the render currently on screen was made at. Captions describe that
+// payload rather than whatever is connected at this instant, so connecting a
+// display cannot pair its new label with the previous render's dimensions.
+let lastRenderedGrid = DEFAULT_TACTILE_GRID;
+
+/** The display using this grid, or the default if none does. */
+function gridForSize(width, height) {
+    for (const entry of Object.values(window.tactileDisplays)) {
+        if (entry.pixelWidth === width && entry.pixelHeight === height) return entry;
+    }
+    return DEFAULT_TACTILE_GRID;
+}
 
 /** Register (or with `null`, clear) one device without touching the others. */
 function setTactileDisplay(deviceKey, info) {
@@ -1435,9 +1454,26 @@ function setTactileDisplay(deviceKey, info) {
     if (typeof sendStateToServer === 'function') sendStateToServer();
 }
 
-/** The grid the display actually receiving output uses, or the default. */
+/** The grid to render at: the display that will actually receive this frame.
+ *
+ * Not simply the selected output device. That setting is a preference and
+ * defaults to the Monarch whether or not one is attached, while a connected
+ * DotPad is sent every frame regardless of it. Keying only on the preference
+ * meant plugging in a DotPad while the setting said Monarch left the render at
+ * the default size, so the display received a frame shaped for something else.
+ *
+ * So: the selected device if it is actually connected; failing that, the only
+ * display that is, since with one attached there is no ambiguity; failing that,
+ * the default.
+ */
 function activeTactileGrid() {
-    return window.tactileDisplays[getEffectiveOutputDevice()] || DEFAULT_TACTILE_GRID;
+    const selected = window.tactileDisplays[getEffectiveOutputDevice()];
+    if (selected) return selected;
+
+    const connected = Object.values(window.tactileDisplays);
+    if (connected.length === 1) return connected[0];
+
+    return DEFAULT_TACTILE_GRID;
 }
 
 window.setTactileDisplay = setTactileDisplay;
@@ -1544,7 +1580,7 @@ function previewCaption(shape) {
     if (shape && shape.length > 1) {
         parts.push(`${shape[1]}\u00d7${shape[0]}px`);
     }
-    parts.push(activeTactileGrid().label);
+    parts.push(lastRenderedGrid.label);
     return parts.join(' \u00b7 ');
 }
 

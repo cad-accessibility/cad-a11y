@@ -746,7 +746,12 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
                "camera_center",
                "world_camera_center",
                "compose_scrollbar", "compose_cursor", "cursor_col", "cursor_row", "cursor_state", "compose_slicegraph", "show_view_info_box",
-               "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth", "slicegraph_mode")
+               "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth", "slicegraph_mode",
+               # The frame is drawn at this size, so two requests that differ only
+               # here are different renders. Omitting it meant connecting a display
+               # returned the previous size's frame from cache, and the preview then
+               # reported that stale size against the new display's name.
+               "target_pixel_width", "target_pixel_height")
     fp_dict = {k: merged.get(k) for k in fp_keys}
     fp_dict["model_index"] = model_index
     fingerprint = hashlib.sha256(json.dumps(fp_dict, sort_keys=True).encode()).hexdigest()
@@ -777,6 +782,8 @@ def _build_quantized_render_key(params: dict[str, Any], model_index: int) -> str
         "slicegraph_view": str(params.get("slicegraph_view", "")).lower(),
         "slicegraph_depth": round(float(params.get("slicegraph_depth", 0)), 0),
         "slicegraph_mode": str(params.get("slicegraph_mode", "difference")).lower(),
+        # Same reason as the exact fingerprint: this decides the size drawn.
+        "target_grid": _target_grid(params),
     }
     return hashlib.sha256(json.dumps(quantized, sort_keys=True).encode()).hexdigest()
 
