@@ -23,13 +23,18 @@ from PIL import Image
 
 from app.server import (
     MM_PER_INCH,
+    SWELL_EXPORT_WIDTH_PX,
     SWELL_PRINT_WIDTH_MM,
     SWELL_TARGET_LINE_MM,
     _img_to_base64_png,
     _thicken_for_swell_paper,
 )
 
-EXPORT_WIDTH = 1000
+EXPORT_WIDTH = SWELL_EXPORT_WIDTH_PX
+
+# US Letter, landscape.
+LETTER_LONG_MM = 279.4
+LETTER_SHORT_MM = 215.9
 
 
 def _thicken(mask, line_mm=SWELL_TARGET_LINE_MM, width_px=EXPORT_WIDTH):
@@ -197,3 +202,69 @@ def test_png_carries_the_dpi_so_it_prints_at_the_right_size():
 def test_png_without_dpi_still_saves():
     encoded = _img_to_base64_png(np.zeros((10, 10), dtype=np.uint8))
     assert Image.open(io.BytesIO(base64.b64decode(encoded))).size == (10, 10)
+
+
+# --- Which way round the ink goes -----------------------------------------
+
+
+def test_raised_areas_are_black_on_white():
+    """Swell paper expands where the sheet is black, so the model must be the
+    black part. The payload uses the opposite convention, 255 for a raised pin,
+    which is right for a display and exactly wrong on paper: written straight out
+    it would raise the whole background and leave the model flat.
+    """
+    from app.server import _render_export_sheet
+
+    mask = np.zeros((40, EXPORT_WIDTH), dtype=bool)
+    mask[20, 100:200] = True
+    sheet = _render_export_sheet(mask)
+
+    assert sheet[20, 150] == 0, "the model should be black so it rises"
+    assert sheet[0, 0] == 255, "the background should be white so it stays flat"
+    assert (sheet == 255).sum() > (sheet == 0).sum(), (
+        "most of a sheet is background; if black dominates, the polarity is inverted "
+        "and the whole page would swell"
+    )
+
+
+def test_export_matches_the_preview_convention():
+    """The preview already draws raised content black on white. The exported sheet
+    should look like what was on screen, not its negative."""
+    from app.server import _render_export_sheet
+
+    payload = np.zeros((20, 40), dtype=np.uint8)
+    payload[10, 10:20] = 255  # payload convention: 255 is raised
+
+    preview = np.where(payload > 0, 0, 255).astype(np.uint8)  # as the preview builds it
+    exported = _render_export_sheet(payload > 0)
+
+    assert np.array_equal(exported, preview)
+
+
+# --- Fitting a sheet of paper ---------------------------------------------
+
+
+def test_sheet_fits_a_letter_page():
+    _, info = _thicken(_hairline())
+    width_mm = info["print_width_mm"]
+    height_mm = width_mm * (40 / 96)  # the tactile aspect
+
+    assert width_mm <= LETTER_LONG_MM, "wider than a Letter sheet in landscape"
+    assert height_mm <= LETTER_SHORT_MM, "taller than a Letter sheet in landscape"
+    margin = LETTER_LONG_MM - width_mm
+    assert margin >= 20, f"only {margin:.0f}mm of margin across the whole sheet"
+
+
+def test_export_resolution_extracts_what_the_renderer_draws():
+    """The renderer draws onto a capped canvas and downsamples. Exporting below
+    that cap throws away detail already paid for; above it invents none."""
+    from src.converter.single_view_stl import MAX_CANVAS_PX
+
+    assert SWELL_EXPORT_WIDTH_PX == MAX_CANVAS_PX, (
+        "the export size should track the canvas cap it is extracting from"
+    )
+
+
+def test_export_resolution_is_a_sensible_print_dpi():
+    dpi = SWELL_EXPORT_WIDTH_PX / SWELL_PRINT_WIDTH_MM * MM_PER_INCH
+    assert 300 <= dpi <= 400, f"{dpi:.0f} dpi is outside the range worth printing at"

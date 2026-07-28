@@ -483,10 +483,20 @@ def _ensure_minimum_feature_thickness(mask: np.ndarray) -> np.ndarray:
 # parameters, since the right answer depends on the fuser and paper in the room.
 # See test_swell_paper_export for the merge measurements.
 SWELL_TARGET_LINE_MM = 2.0
-# A4 landscape (297 mm) less a 20 mm margin each side. The tactile grid is 96x40,
-# so a sheet is used landscape.
-SWELL_PRINT_WIDTH_MM = 257.0
+# US Letter landscape (279.4 mm) less a half-inch margin each side. Swell paper is
+# sold in this size, and the tactile grid is 96x40 so a sheet is used landscape:
+# at that aspect the image is 254 x 106 mm, well inside the 216 mm page height.
+SWELL_PRINT_WIDTH_MM = 254.0
 MM_PER_INCH = 25.4
+
+# The renderer draws onto a canvas capped at MAX_CANVAS_PX and downsamples to the
+# requested size, so asking for fewer pixels than that cap discards detail it has
+# already paid to compute, and asking for more gains nothing real. Exporting at
+# the cap extracts exactly what was drawn. Over a Letter sheet that lands at about
+# 320 dpi, comfortably past the 300 dpi convention for print artwork and far past
+# what a fuser can resolve. It is also no slower than the smaller default it
+# replaces, because at 1:1 there is no downsampling pass to run.
+SWELL_EXPORT_WIDTH_PX = 3200
 
 
 def _thicken_for_swell_paper(
@@ -517,6 +527,17 @@ def _thicken_for_swell_paper(
         "print_width_mm": round(float(print_width_mm), 1),
         "dpi": round(pixels_per_mm * MM_PER_INCH, 1),
     }
+
+
+def _render_export_sheet(raised: np.ndarray) -> np.ndarray:
+    """Turn a raised mask into a printable sheet: black where it should rise.
+
+    The payload convention is the opposite, 255 for a raised pin, which is right
+    for a display and exactly wrong on paper. Swell paper expands where the sheet
+    is black, so writing the payload straight out would raise the whole background
+    and leave the model flat. This matches what the preview already shows.
+    """
+    return np.where(raised, 0, 255).astype(np.uint8)
 
 
 def _to_braille_payload(rendered_rgba: np.ndarray) -> np.ndarray:
@@ -2028,7 +2049,9 @@ def render_export_source():
         merged_params["view"] = str(merged_params.get("view", "")).lower()
         merged_params["print_view"] = False
 
-        export_width = _coerce_positive_int(params.get("export_width", 1000), 1000)
+        export_width = _coerce_positive_int(
+            params.get("export_width"), SWELL_EXPORT_WIDTH_PX
+        )
 
         engine = get_or_create_renderer()
 
@@ -2063,7 +2086,7 @@ def render_export_source():
             print_width_mm=print_width_mm,
             target_line_mm=target_line_mm,
         )
-        tactile_payload = np.where(thickened, 255, 0).astype(np.uint8)
+        tactile_payload = _render_export_sheet(thickened)
 
         response = {
             "status": "success",

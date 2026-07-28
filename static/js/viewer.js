@@ -1243,7 +1243,8 @@ function fetchExportSourceState() {
         slicegraph_view: requestedGraphView,
         slicegraph_depth: requestedGraphDepth,
         slicegraph_mode: sliceGraphMode,
-        export_width: 1000,
+        // Left to the server, which exports at the resolution the renderer
+        // actually draws at.
     };
 }
 
