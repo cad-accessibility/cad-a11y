@@ -508,16 +508,43 @@ def _next_braille_send_sequence() -> int:
         return braille_send_sequence
 
 
+def _target_grid(params: dict[str, Any]) -> tuple[int, int] | None:
+    """The display grid the client named, or None if it named none.
+
+    One reader for `target_pixel_width`/`target_pixel_height`, so the render, the
+    payload sent to the display and both previews cannot disagree about the size
+    they are describing.
+    """
+    width = params.get("target_pixel_width")
+    height = params.get("target_pixel_height")
+    if width is None or height is None:
+        return None
+    try:
+        width, height = int(width), int(height)
+    except (TypeError, ValueError):
+        return None
+    return (width, height) if width > 0 and height > 0 else None
+
+
 def _make_hifi_preview(
     params: dict[str, Any], model_index: int, preview_width: int = 800, *, use_cache: bool = True
 ) -> tuple[str, list[int]]:
     """Render at high resolution and return (base64_png, [height, width]).
 
     Return strict binary black-on-white preview (no grayscale).
+
+    The shape follows the grid the client named, so this preview describes the
+    same display as the tactile one beside it. It used to take its aspect from
+    the renderer's default screen size, which meant that with a DotPad attached
+    the tactile preview reported the device while this one silently kept showing
+    the 96x40 default (#52).
     """
     engine = get_or_create_renderer(model_index)
-    orig = list(engine.screen_size) if engine.screen_size else [96, 40]
-    w0, h0 = max(1, orig[0]), max(1, orig[1] if len(orig) > 1 else orig[0])
+    grid = _target_grid(params)
+    if grid is None:
+        orig = list(engine.screen_size) if engine.screen_size else [96, 40]
+        grid = (max(1, orig[0]), max(1, orig[1] if len(orig) > 1 else orig[0]))
+    w0, h0 = grid
     hifi_h = max(1, int(round(preview_width * h0 / w0)))
 
     payload = _get_braille_payload_at_size(
@@ -871,28 +898,25 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     """Render, send to braille display, and build JSON response dict."""
     _refresh_model_list_if_stale()
     model_index = _normalize_model_index(params.get("current_model"))
-    # A client that names a target pixel size (i.e. one with a tactile display
-    # attached) used to cost two full renders per interaction: one at the default
-    # grid, whose payload only fed telemetry, and a second at the device size that
-    # actually reached the display. Render once at the size the client asked for
-    # and let it serve both. The Monarch path is excluded because its cell packing
-    # below assumes the default grid.
-    target_width = params.get("target_pixel_width")
-    target_height = params.get("target_pixel_height")
-    is_monarch = str(params.get("output_device", "")).strip().lower() == "monarch_hid"
-
-    render_size: tuple[int, int] | None = None
-    if not is_monarch and target_width is not None and target_height is not None:
-        try:
-            if int(target_width) > 0 and int(target_height) > 0:
-                render_size = (int(target_width), int(target_height))
-        except (TypeError, ValueError):
-            render_size = None
+    # A client that names a target pixel size used to cost two full renders per
+    # interaction: one at the default grid, whose payload only fed telemetry, and
+    # a second at the device size that actually reached the display. Render once
+    # at the size the client asked for and let it serve both.
+    #
+    # The Monarch used to be excluded here, on the grounds that its cell packing
+    # assumes the default grid. It does, and it still gets it: a Monarch is 48
+    # cells by 10 lines and a braille cell is 2x4 pixels, so its size *is* 96x40.
+    # Excluding it was also counterproductive, because leaving render_size unset
+    # is precisely what sent it down the second-render path it was meant to avoid.
+    render_size = _target_grid(params)
 
     rendered, bbox, braille_payload = _render_and_send(
         params, source=source, model_index=model_index, render_size=render_size
     )
 
+    # What the previews show is the payload that reaches the display, so the two
+    # cannot describe different things. There is no second render to reconcile:
+    # the frame was drawn at the requested size in the first place.
     preview_payload = braille_payload
 
     if render_size is not None:
@@ -907,20 +931,6 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
             ),
             braille_payload,
         )
-    elif target_width is not None and target_height is not None:
-        try:
-            target_width = int(target_width)
-            target_height = int(target_height)
-            if target_width > 0 and target_height > 0:
-                preview_payload = _get_braille_payload_at_size(
-                    params,
-                    model_index=model_index,
-                    pixel_width=target_width,
-                    pixel_height=target_height,
-                    use_cache=True,
-                )
-        except (TypeError, ValueError):
-            pass
     session_id = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE)) if has_request_context() else None
     db.record_render(
         session_id=session_id,

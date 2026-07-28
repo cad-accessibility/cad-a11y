@@ -16,17 +16,24 @@ def _compact(source: str) -> str:
     return re.sub(r"\s+", "", source)
 
 
-def test_monarch_does_not_claim_the_tactile_display_dimensions():
-    """Monarch must not set connectedTactileDisplay.
+def test_monarch_registers_its_grid_under_its_own_key():
+    """Monarch reports its dimensions, into a registry keyed per device.
 
-    The viewer reads that flag to ask the server for a payload at a specific pixel
-    size, and the server then renders a second time to produce it. The Monarch
-    render already happens at the default grid, and the viewer's own fallbacks for
-    those dimensions are the same 96x40, so claiming it gains nothing and costs a
-    full extra render on every interaction. Clearing it on disconnect would also
-    wipe the entry belonging to a DotPad connected at the same time.
+    It used to withhold them, for two reasons that no longer hold. Claiming them
+    was said to cost an extra render, but the opposite is true: naming a size is
+    what routes the request down the single-render path. And clearing them on
+    disconnect would wipe a co-connected DotPad's entry, which was a consequence
+    of one shared global rather than of the Monarch reporting anything.
+
+    A Monarch is 48 cells by 10 lines and a braille cell is 2x4 pixels, so the
+    grid it reports is exactly the 96x40 default.
     """
-    assert "connectedTactileDisplay=" not in _compact(_source())
+    compact = _compact(_source())
+    assert "setTactileDisplay?.('monarch_hid'" in compact
+    assert "pixelWidth:96" in compact
+    assert "pixelHeight:40" in compact
+    # The single shared slot is what coupled the two devices together.
+    assert "connectedTactileDisplay" not in compact
 
 
 def test_monarch_report_key_honours_the_dataview_window():

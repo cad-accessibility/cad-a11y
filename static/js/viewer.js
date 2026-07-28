@@ -248,8 +248,10 @@ async function sendStateToServer() {
             slicegraph_depth: requestedGraphDepth,
             slicegraph_mode: sliceGraphMode,
             input_source: pendingInputSource,
-            target_pixel_width: window.connectedTactileDisplay?.pixelWidth || null,
-            target_pixel_height: window.connectedTactileDisplay?.pixelHeight || null,
+            // The grid of the display actually receiving output, so the render,
+            // the payload sent to it and both previews all describe one thing.
+            target_pixel_width: activeTactileGrid().pixelWidth,
+            target_pixel_height: activeTactileGrid().pixelHeight,
         };
         if (sbPanCmd) {
             sbPanCmd.textContent = String(moveCamera || 'none');
@@ -431,8 +433,9 @@ function moveCursor(dCol, dRow, stepSize = cursorStep) {
         console.error('Cursor movement values must be integers.');
         return;
     }
-    const displayWidth = window.connectedTactileDisplay?.pixelWidth || 96;
-    const displayHeight = window.connectedTactileDisplay?.pixelHeight || 40;
+    const activeGrid = activeTactileGrid();
+    const displayWidth = activeGrid.pixelWidth;
+    const displayHeight = activeGrid.pixelHeight;
 
     const usableWidth = composeScrollbar? Math.max(1, displayWidth - 2) : displayWidth;
     const usableHeight = composeScrollbar? Math.max(1, displayHeight - 2) : displayHeight;
@@ -1271,9 +1274,7 @@ function updateHighFidelityPreview(data) {
     highFidelityPreviewImg.src = 'data:image/png;base64,' + previewBase64;
     highFidelityPreviewImg.alt = `Render preview: ${currentView} view, ${currentSliceDepth}% depth, ${renderModeLabel()}`;
 
-    const width = shape && shape.length > 1 ? shape[1] : '--';
-    const height = shape && shape.length > 0 ? shape[0] : '--';
-    highFidelityPreviewMeta.textContent = `${currentView} · ${currentSliceDepth}% · ${renderModeLabel()} · ${height}×${width}px`;
+    highFidelityPreviewMeta.textContent = previewCaption(shape);
 }
 
 async function exportCurrentSliceAsPng() {
@@ -1401,6 +1402,47 @@ function setMonarchHidConnected(connected) {
     monarchHidConnected = Boolean(connected);
 }
 
+// --- Connected tactile displays -------------------------------------------
+//
+// One entry per device, keyed by the names getEffectiveOutputDevice() returns.
+// This used to be a single global slot, which meant a Monarch disconnecting
+// cleared the entry belonging to a DotPad connected at the same time. That is
+// why the Monarch deliberately never reported its dimensions at all, and why the
+// two devices took different routes through the render path.
+//
+// A Monarch is 48 cells x 10 lines and a braille cell is 2x4 pixels, so it is
+// exactly the 96x40 default. Only the DotPad differs, at 60x40. "Nothing
+// connected" and "Monarch connected" therefore describe the same grid.
+window.tactileDisplays = window.tactileDisplays || {};
+
+const DEFAULT_TACTILE_GRID = Object.freeze({
+    pixelWidth: 96,
+    pixelHeight: 40,
+    label: 'default grid',
+});
+
+/** Register (or with `null`, clear) one device without touching the others. */
+function setTactileDisplay(deviceKey, info) {
+    if (!deviceKey) return;
+    if (info) {
+        window.tactileDisplays[deviceKey] = info;
+    } else {
+        delete window.tactileDisplays[deviceKey];
+    }
+    // The size only reached the server on the next render, so connecting a
+    // display left the previews describing the previous one until the user
+    // happened to do something else.
+    if (typeof sendStateToServer === 'function') sendStateToServer();
+}
+
+/** The grid the display actually receiving output uses, or the default. */
+function activeTactileGrid() {
+    return window.tactileDisplays[getEffectiveOutputDevice()] || DEFAULT_TACTILE_GRID;
+}
+
+window.setTactileDisplay = setTactileDisplay;
+window.activeTactileGrid = activeTactileGrid;
+
 function switchOutputDevice(targetDevice) {
     if (currentOutputDevice === targetDevice) {
         announce(`already using ${targetDevice}`);
@@ -1494,17 +1536,25 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
     return oldView !== currentView;
 }
 
+/** Caption for either preview. Both go through this so they cannot disagree
+ * about the order of the dimensions, or about which display they describe.
+ * `shape` is [height, width], as numpy reports it. */
+function previewCaption(shape) {
+    const parts = [currentView, `${currentSliceDepth}%`, renderModeLabel()];
+    if (shape && shape.length > 1) {
+        parts.push(`${shape[1]}\u00d7${shape[0]}px`);
+    }
+    parts.push(activeTactileGrid().label);
+    return parts.join(' \u00b7 ');
+}
+
 // Update the tactile display preview image
 function updateTactilePreview(base64, shape) {
     const img = document.getElementById('tactile-display-img');
     const meta = document.getElementById('tactile-preview-meta');
     img.src = 'data:image/png;base64,' + base64;
     img.alt = `Tactile display: ${currentView} view, ${currentSliceDepth}% depth, ${renderModeLabel()}`;
-    if (shape) {
-        meta.textContent = `${currentView} \u00b7 ${currentSliceDepth}% \u00b7 ${renderModeLabel()} \u00b7 ${shape[1]}\u00d7${shape[0]}px`;
-    } else {
-        meta.textContent = `${currentView} \u00b7 ${currentSliceDepth}% \u00b7 ${renderModeLabel()}`;
-    }
+    meta.textContent = previewCaption(shape);
 }
 
 // Update bounding box display
