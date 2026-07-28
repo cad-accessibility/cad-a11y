@@ -50,6 +50,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     id            TEXT PRIMARY KEY,
     identifier    TEXT,
     consent_given INTEGER,
+    -- Retained for the historical record only. The workshop flow that set it has
+    -- been removed, so nothing writes it any more, and analytics now require
+    -- consent outright rather than accepting this as a substitute. Kept so past
+    -- workshop sessions stay identifiable in existing databases.
     is_workshop   INTEGER DEFAULT 0,
     created_at    DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     last_seen_at  DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
@@ -190,33 +194,16 @@ def get_session(session_id: str) -> dict[str, Any] | None:
 
 
 def save_session_identifier(
-    session_id: str, email: str | None, consent_given: bool, is_workshop: bool = False
+    session_id: str, email: str | None, consent_given: bool
 ) -> None:
     conn = _get_conn()
     conn.execute(
-        "UPDATE sessions SET identifier = ?, consent_given = ?, is_workshop = ? WHERE id = ?",
-        (email, 1 if consent_given else 0, 1 if is_workshop else 0, session_id),
+        "UPDATE sessions SET identifier = ?, consent_given = ? WHERE id = ?",
+        (email, 1 if consent_given else 0, session_id),
     )
     conn.commit()
 
 
-def get_session_id_for_identifier(identifier: str) -> str | None:
-    """Return the most recent session id bound to this identifier, or None.
-
-    Used to reuse a session across workshop uploads sharing the same word code,
-    and as the collision check when assigning a new code.
-    """
-    conn = _get_conn()
-    row = conn.execute(
-        "SELECT id FROM sessions WHERE identifier = ? ORDER BY last_seen_at DESC LIMIT 1",
-        (identifier,),
-    ).fetchone()
-    return row["id"] if row else None
-
-
-# ---------------------------------------------------------------------------
-# Uploaded model tracking (§3 extensibility hooks)
-# ---------------------------------------------------------------------------
 
 def get_session_models(session_id: str) -> list[dict[str, Any]]:
     """Return non-deleted uploaded_models rows for this session.
@@ -246,21 +233,6 @@ def get_session_models(session_id: str) -> list[dict[str, Any]]:
         ).fetchall()
     return [dict(row) for row in rows]
 
-
-def get_latest_model_for_identifier(identifier: str) -> str | None:
-    """Return the filename of the most recently uploaded, non-deleted model for
-    any session bound to this identifier, or None. Backs /workshop code lookup."""
-    conn = _get_conn()
-    row = conn.execute(
-        """SELECT um.filename
-           FROM uploaded_models um
-           JOIN sessions s ON um.session_id = s.id
-           WHERE s.identifier = ? AND um.deleted_at IS NULL
-           ORDER BY um.uploaded_at DESC, um.id DESC
-           LIMIT 1""",
-        (identifier,),
-    ).fetchone()
-    return row["filename"] if row else None
 
 
 def register_model(
@@ -346,7 +318,7 @@ def record_render(
         if not session_id:
             return
         session = get_session(session_id)
-        if not session or (session.get("consent_given") != 1 and session.get("is_workshop") != 1):
+        if not session or session.get("consent_given") != 1:
             return
         conn = _get_conn()
         conn.execute(
@@ -370,7 +342,7 @@ def record_page_event(
         if not session_id:
             return
         session = get_session(session_id)
-        if not session or (session.get("consent_given") != 1 and session.get("is_workshop") != 1):
+        if not session or session.get("consent_given") != 1:
             return
         conn = _get_conn()
         conn.execute(

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-07-28
+
+#### Removed
+*   The workshop flow has been retired: the endpoint that let another tool send a model in, the simplified viewer at `/workshop`, and the page where a participant typed their first name to open their model. These worked only as a set, so they are removed together rather than leaving a viewer that can no longer receive anything.
+*   The settings that only supported that flow are gone. The upload size limit is unchanged and still applies to ordinary uploads.
+
+#### Changed
+*   Usage analytics now require consent in every case. Workshop participants had been recorded without answering the consent dialog, on the basis that a session run in person was covered by the workshop's own consent. With the workshop flow gone, that exception has no meaning and has been removed.
+*   Uploading a model, and opening one with a link, are unaffected. Models already saved stay where they are.
+
 ### 2026-07-23
 
 #### Changed

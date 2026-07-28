@@ -35,7 +35,6 @@ COPY app/ ./app/
 COPY src/ ./src/
 COPY static/ ./static/
 COPY accessible-3d-viewer.html ./
-COPY workshop-entry.html ./
 COPY examples/ ./examples/
 COPY src/models/brep/ ./data/models/
 
