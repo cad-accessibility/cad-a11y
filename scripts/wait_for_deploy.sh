@@ -50,15 +50,25 @@ while :; do
 done
 
 if [ -n "$PUBLIC_URL" ]; then
-    echo "Probing $PUBLIC_URL ..."
+    # /health, not the root: the root answers even when storage is misconfigured
+    # or the database will not open, so probing it proves only that something is
+    # listening. /health returns 503 in exactly those cases.
+    probe="${PUBLIC_URL%/}/health"
+    echo "Probing $probe ..."
     deadline=$(( SECONDS + 60 ))
     while :; do
-        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$PUBLIC_URL" || echo 000)"
+        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$probe" || echo 000)"
         if [ "$code" = "200" ]; then
-            echo "$PUBLIC_URL returned 200."
+            echo "$probe returned 200."
             break
         fi
-        (( SECONDS < deadline )) || fail "$PUBLIC_URL returned $code, expected 200"
+        # A deployment older than the self-check has no /health; fall back to the
+        # root rather than failing a deploy for a missing endpoint.
+        if [ "$code" = "404" ]; then
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$PUBLIC_URL" || echo 000)"
+            [ "$code" = "200" ] && { echo "No /health on this build; root returned 200."; break; }
+        fi
+        (( SECONDS < deadline )) || fail "$probe returned $code, expected 200"
         sleep 5
     done
 fi

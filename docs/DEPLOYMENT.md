@@ -163,6 +163,49 @@ Both jobs then run `scripts/wait_for_deploy.sh`, which fails the job if the depl
 
 Do not edit `.gitlab-ci.yml` without understanding these implications.
 
+## Verifying a deployment
+
+After a deploy, or any time the site is behaving oddly, run this on the server from the directory holding `docker-compose.yml`:
+
+```bash
+bash scripts/verify_deploy_state.sh
+```
+
+It is read-only and checks the things that have actually broken here before: the container is running and healthy, all five volumes exist, every data directory is writable by the container user, the app can open its database, and uploads are being stored separately from the models that ship with the app. It prints OK or FAIL per check and exits non-zero if any failed.
+
+If it reports more files in the model directory than the image ships, those are left over from before uploads were separated and are visible to every visitor. See the README section on where models are stored.
+
+## Compose configuration reference
+
+After the 2026-07-22 outage, CSE recommended moving off container-local directories to Docker named volumes and sent an amended `docker-compose.yml`.
+
+**That file has now been compared against ours and there is nothing to adopt.** Normalised through `docker compose config`, their file and what we already run resolve to identical configuration. The only textual differences are line endings, the indentation of the volume keys, and a comment.
+
+One thing not to copy back. Their file still carries the pre-existing comment saying the four subdirectories "must exist on the host and be writable by UID 48 (apache)". With named volumes that is no longer true, and it is precisely the requirement the change was made to remove. Following it would mean creating and chowning host directories to no effect. Our comment describes the current behaviour instead.
+
+To repeat the comparison against any future file they send:
+
+```bash
+docker compose -f their-file.yml config > /tmp/theirs.yml
+docker compose -f docker-compose.yml config > /tmp/ours.yml
+diff -u /tmp/theirs.yml /tmp/ours.yml
+```
+
+For reference, what we run and why:
+
+| Concern | What we run | Why |
+| --- | --- | --- |
+| Volume type | Docker-managed named volumes | Their recommendation. Avoids depending on the NFS share granting UID 48 write access |
+| Volume names | `models`, `uploads`, `renders`, `logs`, `db` | `uploads` is newer than their advice; it keeps participant uploads separate from the shipped models |
+| Ownership | `chown -R apache /project` in the Dockerfile before `USER apache` | Runs as root at build time so the volumes inherit UID 48 on first mount |
+| Runtime user | UID 48 (`apache`) | Matches the user the hosting NFS share grants write access to |
+| Restart policy | `unless-stopped` | Survives a host reboot without restarting a container an operator stopped deliberately |
+| Port mapping | `${HOST_PORT:-8635}:6969` | Apache proxies to the host port |
+| Healthcheck | `curl -f` against the app root, 30s interval, 60s start period | The deploy jobs gate on this |
+| Host-specific config | `.env`, optional | Nothing host-specific is committed |
+
+The `uploads` volume and `UPLOAD_MODEL_DIR` are newer than their advice. They keep participant uploads out of the directory holding the models that ship with the app, which is what stops every upload being served to every visitor.
+
 ## Where data lives
 
 All persistent data is in Docker-managed named volumes, not on the host filesystem. There are five:

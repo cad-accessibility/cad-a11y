@@ -1260,8 +1260,71 @@ def home():
                 "/session/models": "GET - List uploaded models for current session",
                 "/models/<filename>": "DELETE - Delete an uploaded model",
                 "/events/track": "POST - Record a client-side interaction event",
+                "/health": "GET - Deployment self-check: storage layout, writability, database",
             },
         }
+    )
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    """Report whether this deployment is configured and working correctly.
+
+    Exists so the servers can be checked without shell access to them, which we
+    do not have. Everything here is something that has actually broken in
+    production: the database the app could not open during the 2026-07-22
+    outage, and the storage layout that made uploads public and emptied the
+    model list (#102).
+
+    Deliberately reports counts and booleans only, never paths, filenames or
+    model names, so it is safe to expose on a public deployment.
+    """
+    _refresh_model_list_if_stale()
+
+    writable = {
+        "models": _is_writable_directory(MODEL_DIR),
+        "uploads": _is_writable_directory(UPLOAD_DIR),
+        "renders": _is_writable_directory(RENDERS_DIR),
+        "logs": _is_writable_directory(STUDY_LOG_DIR),
+    }
+
+    try:
+        # Any public read opens the connection and touches the schema; the
+        # lookup is expected to miss.
+        db.get_session("00000000-0000-0000-0000-000000000000")
+        database = "ok"
+    except Exception:
+        database = "error"
+
+    shipped = 0
+    if BUILTIN_SOURCE_DIR.is_dir():
+        shipped = sum(
+            1 for p in BUILTIN_SOURCE_DIR.iterdir() if p.is_file() and not p.name.startswith(".")
+        )
+    public_models = len(_builtin_model_stems())
+
+    storage_separated = UPLOAD_DIR.resolve() != MODEL_DIR.resolve()
+    checks = {
+        # The invariant the built-in/upload distinction rests on (#102).
+        "storage_separated": storage_separated,
+        "builtin_models_shipped": shipped,
+        "public_models": public_models,
+        # Files public despite not shipping with the app: left over from before
+        # uploads were separated. Not an error, but they are visible to everyone.
+        "unexpected_public_models": max(0, public_models - shipped),
+        "writable": writable,
+        "database": database,
+    }
+
+    healthy = (
+        storage_separated
+        and all(writable.values())
+        and database == "ok"
+        and shipped > 0
+        and public_models >= shipped
+    )
+    return jsonify({"status": "ok" if healthy else "degraded", "checks": checks}), (
+        200 if healthy else 503
     )
 
 

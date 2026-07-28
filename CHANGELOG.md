@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 *   Added a maintenance script that reports, and on request removes, files left in the built-in model directory by earlier versions. See the README section on where models are stored.
 *   A deploy that does not come up now fails instead of reporting success. The pipeline finished as soon as the container was created, so a site returning an error looked like a healthy release and was found by a person rather than by the deploy.
 *   The deployment guide now covers where data is stored, how to back it up and restore it, and what to check when the site is unreachable.
+*   Added a script that checks a running server against the problems that have actually caused outages here, so the state of a deployment can be confirmed rather than assumed.
 
 ### 2026-07-23
 

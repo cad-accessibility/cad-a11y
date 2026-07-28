@@ -25,7 +25,10 @@ services:
       - logs:/project/data/logs
       - db:/project/data/db
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6969/"]
+      # /health rather than / — the root answers even when storage is
+      # misconfigured or the database cannot be opened, which is how a broken
+      # deploy previously looked healthy. /health returns 503 in those cases.
+      test: ["CMD", "curl", "-f", "http://localhost:6969/health"]
       interval: 30s
       timeout: 10s
       retries: 3

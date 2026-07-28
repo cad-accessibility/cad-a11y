@@ -9,8 +9,9 @@ two directories together and emptied the model dropdown.
 
 from __future__ import annotations
 
-import importlib
 import io
+import os
+import subprocess
 import sys
 
 import pytest
@@ -24,6 +25,7 @@ from app.server import (
     _is_builtin,
     _seed_builtin_models,
 )
+from scripts.cleanup_ingest_models import REPO_ROOT as ROOT
 from scripts.cleanup_ingest_models import find_stale_models
 
 
@@ -55,18 +57,22 @@ def test_model_dir_is_not_an_upload_candidate(monkeypatch):
     assert resolved.resolve() != MODEL_DIR.resolve()
 
 
-def test_equal_dirs_fail_at_import(monkeypatch):
-    """Pointing UPLOAD_MODEL_DIR at the built-ins must fail loudly, not silently."""
-    monkeypatch.setenv("UPLOAD_MODEL_DIR", str(MODEL_DIR))
-    for name in [m for m in sys.modules if m.startswith("app.server")]:
-        sys.modules.pop(name, None)
-    with pytest.raises(RuntimeError, match="must not be the built-in model"):
-        importlib.import_module("app.server")
-    # Restore a clean module for any test that runs after this one.
-    monkeypatch.delenv("UPLOAD_MODEL_DIR", raising=False)
-    for name in [m for m in sys.modules if m.startswith("app.server")]:
-        sys.modules.pop(name, None)
-    importlib.import_module("app.server")
+def test_equal_dirs_fail_at_import():
+    """Pointing UPLOAD_MODEL_DIR at the built-ins must fail loudly, not silently.
+
+    Run in a subprocess: reimporting app.server in-process would replace the
+    module object every later test holds a reference to, so they would then
+    monkeypatch a different module than the app actually routes through.
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", "import app.server"],
+        cwd=ROOT,
+        env={**os.environ, "UPLOAD_MODEL_DIR": str(MODEL_DIR)},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0, "server started with uploads pointed at the built-ins"
+    assert "must not be the built-in model" in result.stderr
 
 
 # --- Classification -------------------------------------------------------
@@ -188,6 +194,67 @@ def test_get_data_reports_builtin_stems(client):
     stems = payload["builtin_model_stems"]
     assert stems, "an empty list is what disabled the dropdown in #102"
     assert "mug" in stems
+
+
+# --- Deployment self-check ------------------------------------------------
+
+
+def test_health_reports_the_storage_invariant(client):
+    """We have no shell access to the servers, so the app has to report its own
+    state. These are the facts #124 asks someone to confirm on the box."""
+    response = client.get("/health")
+    assert response.status_code == 200, "a correct local run must report healthy"
+    checks = response.get_json()["checks"]
+
+    assert checks["storage_separated"] is True
+    assert checks["database"] == "ok"
+    assert checks["builtin_models_shipped"] > 0
+    assert checks["public_models"] >= checks["builtin_models_shipped"]
+    assert all(checks["writable"].values())
+
+
+def test_health_leaks_no_paths_or_model_names():
+    """It is served on a public deployment, so it must carry no filesystem
+    detail: counts and booleans only."""
+    import json
+
+    from app.server import app as flask_app
+
+    flask_app.config["TESTING"] = True
+    body = json.dumps(flask_app.test_client().get("/health").get_json())
+
+    assert "/" not in body.replace("\\/", ""), "no paths may appear in the payload"
+    for leaky in ("mug", "cane_tip", str(MODEL_DIR), str(UPLOAD_DIR)):
+        assert leaky not in body, f"{leaky!r} must not be exposed"
+
+
+def test_health_degrades_when_storage_collapses(client, monkeypatch):
+    """The whole point: a deployment where uploads became public must not pass.
+
+    Reported as 503 so the container healthcheck and the deploy gate both fail,
+    rather than the root page answering and the deploy looking fine.
+    """
+    import app.server as server
+
+    monkeypatch.setattr(server, "UPLOAD_DIR", MODEL_DIR)
+    response = client.get("/health")
+    assert response.status_code == 503
+    payload = response.get_json()
+    assert payload["status"] == "degraded"
+    assert payload["checks"]["storage_separated"] is False
+
+
+def test_health_degrades_when_the_database_fails(client, monkeypatch):
+    """The 2026-07-22 outage was the app being unable to open its database."""
+    import app.server as server
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("cannot open database")
+
+    monkeypatch.setattr(server.db, "get_session", boom)
+    response = client.get("/health")
+    assert response.status_code == 503
+    assert response.get_json()["checks"]["database"] == "error"
 
 
 # --- Cleanup script -------------------------------------------------------
