@@ -97,36 +97,26 @@
                  1. CONTROLS — the things braille users change constantly
                  ============================================================ -->
 
-            <!-- 1a. View axis — most frequently changed -->
-            <section class="section" aria-labelledby="view-select-heading">
-                <h2 id="view-select-heading">View</h2>
-                <fieldset aria-labelledby="view-select-heading">
-                    <legend class="sr-only">View axis</legend>
-                    <label>
-                        <input type="radio" name="view-select" id="view-x-plus" value="x+" checked>
-                        x+
-                    </label>
-                    <label>
-                        <input type="radio" name="view-select" id="view-y-plus" value="y+">
-                        y+
-                    </label>
-                    <label>
-                        <input type="radio" name="view-select" id="view-z-plus" value="z+">
-                        z+
-                    </label>
-                    <label>
-                        <input type="radio" name="view-select" id="view-x-minus" value="x-">
-                        x-
-                    </label>
-                    <label>
-                        <input type="radio" name="view-select" id="view-y-minus" value="y-">
-                        y-
-                    </label>
-                    <label>
-                        <input type="radio" name="view-select" id="view-z-minus" value="z-">
-                        z-
-                    </label>
-                </fieldset>
+            <!-- 1a. Orientation — most frequently changed -->
+            <section class="section" aria-labelledby="orientation-heading">
+                <h2 id="orientation-heading">Orientation</h2>
+                <div id="orientation-help" class="help-text">
+                    Each turns the model a quarter turn. Left and right, up and down,
+                    and clockwise are as they are on the display, whichever way the
+                    model is currently facing.
+                </div>
+                <div class="button-group" aria-describedby="orientation-help">
+                    <button type="button" id="pitch-up-btn">Pitch up</button>
+                    <button type="button" id="pitch-down-btn">Pitch down</button>
+                </div>
+                <div class="button-group" style="margin-top: 8px;">
+                    <button type="button" id="yaw-left-btn">Yaw left</button>
+                    <button type="button" id="yaw-right-btn">Yaw right</button>
+                </div>
+                <div class="button-group" style="margin-top: 8px;">
+                    <button type="button" id="roll-ccw-btn">Roll counterclockwise</button>
+                    <button type="button" id="roll-cw-btn">Roll clockwise</button>
+                </div>
             </section>
 
             <!-- Slice Depth Section -->
@@ -384,16 +374,10 @@
                     <li><kbd>F</kbd> Fit current slice to tactile display</li>
                     <li><kbd>U</kbd> Roll counterclockwise (90°)</li>
                     <li><kbd>O</kbd> Roll clockwise (90°)</li>
-                    <li><kbd>I</kbd> Rotate up (pitch, 90°)</li>
-                    <li><kbd>K</kbd> Rotate down (pitch, 90°)</li>
-                    <li><kbd>J</kbd> Rotate left (yaw, 90°)</li>
-                    <li><kbd>L</kbd> Rotate right (yaw, 90°)</li>
-                    <li><kbd>7</kbd> View x-</li>
-                    <li><kbd>8</kbd> View x+</li>
-                    <li><kbd>9</kbd> View z+</li>
-                    <li><kbd>0</kbd> View z-</li>
-                    <li><kbd>-</kbd> View y-</li>
-                    <li><kbd>=</kbd> View y+</li>
+                    <li><kbd>I</kbd> Pitch up (90°)</li>
+                    <li><kbd>K</kbd> Pitch down (90°)</li>
+                    <li><kbd>J</kbd> Yaw left (90°)</li>
+                    <li><kbd>L</kbd> Yaw right (90°)</li>
                     <li><kbd>R</kbd> Cycle render mode</li>
                     <li><kbd>T</kbd> Cycle view mode</li>
                     <li><kbd>G</kbd> Refresh slice graph</li>
