@@ -119,6 +119,32 @@ def _is_writable_directory(path: Path) -> bool:
         return False
 
 
+# A writability probe touches the disk twice, and /health checks four directories
+# on an endpoint that is unauthenticated by design and polled every 30 seconds by
+# the container healthcheck. Cache briefly so traffic cannot turn a health check
+# into disk load, while staying short enough that a mount going read-only is
+# still reported within one healthcheck interval.
+_WRITABILITY_CACHE_TTL = 10.0  # seconds
+_writability_cache: dict[str, tuple[float, bool]] = {}
+_writability_cache_lock = threading.Lock()
+
+
+def _is_writable_directory_cached(path: Path) -> bool:
+    key = str(path)
+    now = time.monotonic()
+    with _writability_cache_lock:
+        cached = _writability_cache.get(key)
+        if cached is not None and now - cached[0] < _WRITABILITY_CACHE_TTL:
+            return cached[1]
+
+    # Probed outside the lock: a hung filesystem should not block every other
+    # caller, and a duplicated probe is harmless.
+    writable = _is_writable_directory(path)
+    with _writability_cache_lock:
+        _writability_cache[key] = (now, writable)
+    return writable
+
+
 def _resolve_upload_dir() -> Path:
     """Resolve the directory uploads are written to.
 
@@ -391,6 +417,13 @@ def _renderer_stdio_guard():
     return contextlib.nullcontext(), contextlib.nullcontext()
 
 
+# The extensions a model file can carry, compared case-insensitively. Discovery
+# below still globs a fixed set of spellings, so a file named .STL is not indexed
+# and cannot be opened; _stem_is_taken uses this set anyway, so such a file still
+# reserves its name and cannot be shadowed by an upload.
+MODEL_SUFFIXES = frozenset({".stl", ".step"})
+
+
 def _discover_models() -> list[Path]:
     patterns = ("*.stl", "*.step", "*.STEP")
     models: list[Path] = []
@@ -448,8 +481,8 @@ def _stem_is_taken(stem: str) -> bool:
     they are how a model is named to the client.
     """
     for directory in (MODEL_DIR, UPLOAD_DIR):
-        for suffix in (".stl", ".step", ".STEP"):
-            if (directory / f"{stem}{suffix}").exists():
+        for existing in directory.glob(f"{stem}.*"):
+            if existing.suffix.lower() in MODEL_SUFFIXES:
                 return True
     return False
 _model_list_last_refresh: float = 0.0
@@ -1282,11 +1315,13 @@ def health():
     """
     _refresh_model_list_if_stale()
 
+    # Cached: this endpoint is unauthenticated by design and polled every 30s by
+    # the container healthcheck, and each probe writes and unlinks a file.
     writable = {
-        "models": _is_writable_directory(MODEL_DIR),
-        "uploads": _is_writable_directory(UPLOAD_DIR),
-        "renders": _is_writable_directory(RENDERS_DIR),
-        "logs": _is_writable_directory(STUDY_LOG_DIR),
+        "models": _is_writable_directory_cached(MODEL_DIR),
+        "uploads": _is_writable_directory_cached(UPLOAD_DIR),
+        "renders": _is_writable_directory_cached(RENDERS_DIR),
+        "logs": _is_writable_directory_cached(STUDY_LOG_DIR),
     }
 
     # Opening the file is the thing that failed in the 2026-07-22 outage, and it

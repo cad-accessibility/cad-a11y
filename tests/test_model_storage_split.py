@@ -292,3 +292,96 @@ def test_cleanup_spares_builtins_and_finds_strays(tmp_path):
     assert names == {"participant_part.stl"}, (
         "must spare shipped built-ins and ignore non-model files"
     )
+
+
+# --- Review follow-ups ----------------------------------------------------
+
+
+def test_stem_is_taken_ignores_extension_case():
+    """A stem is how a model is named to the client, so it has to be unique
+    whatever spelling the file on disk happens to use. The check listed
+    ".stl", ".step" and ".STEP", so an upload could take the name of an
+    existing .STL on a case-sensitive filesystem."""
+    import app.server as server
+
+    shouty = UPLOAD_DIR / "SHOUTY_EXTENSION.STL"
+    shouty.parent.mkdir(parents=True, exist_ok=True)
+    shouty.write_bytes(b"solid x\nendsolid x\n")
+    try:
+        assert server._stem_is_taken("SHOUTY_EXTENSION")
+    finally:
+        shouty.unlink(missing_ok=True)
+
+
+def test_stem_is_taken_ignores_files_that_are_not_models():
+    """Globbing the stem could otherwise let a stray note or render reserve a
+    name no model actually uses."""
+    import app.server as server
+
+    note = UPLOAD_DIR / "just_a_note.txt"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_bytes(b"not a model")
+    try:
+        assert not server._stem_is_taken("just_a_note")
+    finally:
+        note.unlink(missing_ok=True)
+
+
+def test_the_writability_probe_is_cached(monkeypatch, tmp_path):
+    """/health is unauthenticated by design and polled every 30s, and each probe
+    writes and unlinks a file. Repeated calls must not repeatedly touch disk."""
+    import app.server as server
+
+    calls = []
+    monkeypatch.setattr(server, "_writability_cache", {})
+    monkeypatch.setattr(server, "_is_writable_directory",
+                        lambda path: (calls.append(path), True)[1])
+
+    for _ in range(5):
+        assert server._is_writable_directory_cached(tmp_path) is True
+    assert len(calls) == 1, f"probed the disk {len(calls)} times for 5 calls"
+
+
+def test_the_cache_expires_so_a_broken_mount_is_still_reported(monkeypatch, tmp_path):
+    """Caching must not hide a mount going read-only for longer than one
+    healthcheck interval."""
+    import app.server as server
+
+    answers = iter([True, False])
+    monkeypatch.setattr(server, "_writability_cache", {})
+    monkeypatch.setattr(server, "_is_writable_directory", lambda _p: next(answers))
+
+    clock = [1000.0]
+    monkeypatch.setattr(server.time, "monotonic", lambda: clock[0])
+
+    assert server._is_writable_directory_cached(tmp_path) is True
+    clock[0] += server._WRITABILITY_CACHE_TTL + 0.1
+    assert server._is_writable_directory_cached(tmp_path) is False
+
+    assert server._WRITABILITY_CACHE_TTL < 30, (
+        "the cache must expire within one healthcheck interval"
+    )
+
+
+def test_each_directory_is_cached_separately(monkeypatch, tmp_path):
+    """One shared entry would report every directory with the first one's answer."""
+    import app.server as server
+
+    monkeypatch.setattr(server, "_writability_cache", {})
+    monkeypatch.setattr(server, "_is_writable_directory",
+                        lambda path: path.name != "readonly")
+
+    assert server._is_writable_directory_cached(tmp_path / "writable") is True
+    assert server._is_writable_directory_cached(tmp_path / "readonly") is False
+
+
+def test_the_image_healthcheck_uses_the_same_endpoint_as_compose():
+    """Compose overrides the image's HEALTHCHECK, so this is what anyone running
+    the image directly gets. Pointing it at the root reinstates exactly the
+    failure this PR fixes: the root answers even when storage is broken."""
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    healthcheck = [line for line in dockerfile.splitlines() if "curl" in line and "6969" in line]
+
+    assert healthcheck, "no HEALTHCHECK curl found in the Dockerfile"
+    for line in healthcheck:
+        assert "/health" in line, f"image healthcheck does not use /health: {line.strip()}"
