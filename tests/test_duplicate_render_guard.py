@@ -41,7 +41,6 @@ def engine(monkeypatch):
     monkeypatch.setattr(server, "_normalize_model_index", lambda *_a, **_k: 0)
     monkeypatch.setattr(server, "_refresh_model_list_if_stale", lambda: None)
     monkeypatch.setattr(server, "_save_print_if_requested", lambda *_a, **_k: None)
-    monkeypatch.setattr(server, "_send_to_braille_display", lambda *_a, **_k: None, raising=False)
     monkeypatch.setattr(server.db, "record_render", lambda **_k: None)
     # Each test starts from an empty cache so a hit cannot be mistaken for the guard.
     with server.preview_payload_cache_lock:
