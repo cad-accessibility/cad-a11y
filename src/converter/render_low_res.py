@@ -1,6 +1,8 @@
+import io
+
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.patches import Rectangle, Circle
+from matplotlib.patches import Rectangle
 
 # A downsampled render stores per-pixel ink coverage: 0 is fully covered, 255 is
 # untouched. A pixel counts as raised when it is more than half covered. The
@@ -60,30 +62,68 @@ def raised_ink_mask(gray):
     return strong | (orphan & heaviest)
 
 
-def save_binary_array_as_vector_pdf(array, filename="low_res.pdf"):
+# A raised pin is drawn one millimetre across by default. The file is vector, so
+# this only decides the size it opens at; rescaling in a drawing program is the
+# point of exporting vector in the first place.
+DEFAULT_PIN_PITCH_MM = 1.0
+
+
+def render_payload_as_vector(payload, target=None, *, fmt="svg", pin_pitch_mm=DEFAULT_PIN_PITCH_MM):
+    """Trace a braille payload into a vector drawing, one square per raised pin.
+
+    ``payload`` is the 2-D array the tactile display receives, where 255 means
+    raised. Passing the RGBA render instead is the mistake that silently broke
+    the print path: it is 3-D, so unpacking two dimensions raised and the route's
+    catch-all swallowed it. The guard below turns that into a clear error.
+
+    Squares rather than dots: adjacent raised pins share an edge and read as one
+    solid region under a finger, where circles would read as texture. A lone pin
+    is still a single mark.
+
+    Nothing is thickened. One raised pin becomes one square, so the drawing is
+    exactly what the display raises, and any line weight for a particular fuser
+    or paper is a decision for whoever prints it.
+
+    ``target`` is a path or file-like object; omitted, the drawing is returned as
+    a string (or bytes for a binary format).
+    """
+    array = np.asarray(payload)
+    if array.ndim != 2:
+        raise ValueError(
+            f"expected the 2-D braille payload, got an array with shape {array.shape}. "
+            "An RGBA render needs converting to a payload first."
+        )
+
     height, width = array.shape
-    fig = plt.figure(figsize=(width / 100, height / 100), dpi=100)
+    fig = plt.figure(figsize=(width * pin_pitch_mm / 25.4, height * pin_pitch_mm / 25.4))
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, width)
     ax.set_ylim(0, height)
-    ax.axis('off')
+    ax.axis("off")
 
-    # Draw white background
-    ax.add_patch(Rectangle((0, 0), width, height, color='white'))
+    ax.add_patch(Rectangle((0, 0), width, height, facecolor="white", edgecolor="none"))
 
-    # Draw black pixels only
-    for y in range(height):
-        for x in range(width):
-            if array[y, x] == 255:
-                #ax.add_patch(Rectangle((x, height - y - 1), 1, 1, facecolor='black'))
-                #if y == height-1:
-                #    ax.add_patch(Circle((x, height - y), 0.3, facecolor='black'))
-                #else:
-                ax.add_patch(Circle((x, height - y - 1), 0.3, facecolor='black'))
+    # Row 0 of the payload is the top of the display, but y grows upward here.
+    for y, x in zip(*np.nonzero(array == 255)):
+        ax.add_patch(
+            Rectangle((x, height - y - 1), 1, 1, facecolor="black", edgecolor="none")
+        )
 
-    fig.savefig(filename, format='pdf', bbox_inches='tight', pad_inches=0)
-    #fig.savefig(filename, format='pdf')
-    plt.close(fig)
+    try:
+        if target is None:
+            buffer = io.BytesIO()
+            fig.savefig(buffer, format=fmt, pad_inches=0)
+            data = buffer.getvalue()
+            return data.decode("utf-8") if fmt == "svg" else data
+        fig.savefig(target, format=fmt, pad_inches=0)
+        return None
+    finally:
+        plt.close(fig)
+
+
+def save_binary_array_as_vector_pdf(array, filename="low_res.pdf"):
+    """Backwards-compatible wrapper for the PDF the P key writes."""
+    render_payload_as_vector(array, filename, fmt="pdf")
 
 # vectorized version
 def get_outlines(img_np):

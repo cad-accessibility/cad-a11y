@@ -1277,10 +1277,10 @@ function updateHighFidelityPreview(data) {
     highFidelityPreviewMeta.textContent = `${currentView} · ${currentSliceDepth}% · ${renderModeLabel()} · ${height}×${width}px`;
 }
 
-async function exportCurrentSliceAsPng() {
+async function exportCurrentSliceAsSvg() {
     try {
         exportSliceSvgBtn.disabled = true;
-        announce('rendering high-fidelity export');
+        announce('preparing vector export');
 
         const response = await fetch(`${SERVER_URL}/render/export-source`, {
             method: 'POST',
@@ -1296,13 +1296,17 @@ async function exportCurrentSliceAsPng() {
         }
 
         const data = await response.json();
-        if (!data.image_base64) {
-            throw new Error('Export render response missing image data');
+        if (!data.svg) {
+            throw new Error('Export render response missing drawing data');
         }
 
-        const downloadUrl = 'data:image/png;base64,' + data.image_base64;
+        // A Blob rather than a data: URL. An SVG is text and can be far larger
+        // than the base64 image this replaced, and data: URLs have length limits
+        // that vary by browser, so a big drawing could silently fail to download.
+        const blob = new Blob([data.svg], {type: 'image/svg+xml'});
+        const downloadUrl = URL.createObjectURL(blob);
         const sanitizedView = String(currentView).replace(/[^a-zA-Z0-9+-]/g, '_');
-        const filename = `slice_${sanitizedView}_${currentSliceDepth}_${currentRenderMode}.png`;
+        const filename = `slice_${sanitizedView}_${currentSliceDepth}_${currentRenderMode}.svg`;
 
         const link = document.createElement('a');
         link.href = downloadUrl;
@@ -1310,11 +1314,12 @@ async function exportCurrentSliceAsPng() {
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        URL.revokeObjectURL(downloadUrl);
 
-        announce('slice exported as png');
+        announce('view exported as a vector drawing');
     } catch (error) {
-        console.warn('Failed to export slice as PNG:', error);
-        announceAlert('High-fidelity export failed');
+        console.warn('Failed to export view as SVG:', error);
+        announceAlert('Export failed');
     } finally {
         exportSliceSvgBtn.disabled = false;
     }
@@ -2304,7 +2309,7 @@ if (resetPositionBtn) {
 }
 
 exportSliceSvgBtn.addEventListener('click', function() {
-    exportCurrentSliceAsPng();
+    exportCurrentSliceAsSvg();
 });
 
 if (debugPipelineToggleBtn) {
