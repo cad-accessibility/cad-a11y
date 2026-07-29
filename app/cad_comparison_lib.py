@@ -742,6 +742,11 @@ class CADComparisonRenderer:
             }
             img_array = renderer.render(params)
         """
+        # Cleared every render. Only the single-mode path can capture one, so
+        # without this a later render in another mode would hand back the
+        # drawing from an earlier one.
+        self.last_render_svg = None
+
         # Extract and map parameters
         view_name = self._map_view_name(params.get("view", "Top"))
         depth_percent = params.get("depth", 0)
@@ -971,7 +976,9 @@ class CADComparisonRenderer:
             #        [self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0]),
             #         self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][1])]
             #)
-            print("params", params)
+            # Opt-in, because capturing costs a second serialisation of the
+            # figure and only the export asks for it.
+            svg_sink = [] if params.get("capture_svg") else None
             img_array, _ = get_single_view(
                 self.shapes[shape_index],
                 self.bbox,
@@ -980,7 +987,9 @@ class CADComparisonRenderer:
                 render_mode,
                 imposed_ax_limits=imposed_zoom_ax_limits,
                 screen_size=render_screen_size,
+                svg_sink=svg_sink,
             )
+            self.last_render_svg = svg_sink[0] if svg_sink else None
             self.current_cut_depth = 1.0-cut_depth
             self.view_current_axis = view_name
             self.current_render_mode = render_mode

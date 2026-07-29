@@ -49,10 +49,12 @@ from .braille_display import (
 )
 from .cad_comparison_lib import CADComparisonRenderer
 from src.converter.render_low_res import (
+    DEFAULT_PIN_PITCH_MM,
     dilate_mask,
     raised_ink_mask,
     render_payload_as_vector,
     save_binary_array_as_vector_pdf,
+    set_svg_physical_size,
 )
 
 try:
@@ -1930,17 +1932,18 @@ def get_data():
 
 @app.route("/render/export-source", methods=["POST"])
 def render_export_source():
-    """Trace the current render into a vector drawing for download.
+    """Hand the current view back as a vector drawing for download.
 
     Vector rather than a raster sheet: what a line has to measure to rise in a
     fuser depends on the machine and the paper, so the useful thing to hand over
     is a drawing that can be rescaled and restyled in the user's own tools rather
     than one already committed to a particular sheet.
 
-    The trace is of the tactile payload, so what downloads is exactly what the
-    display raises, in every render mode. Emitting from the source figure would
-    give truer geometry but only for filled and cut: outline mode has no figure
-    at all, and the overlays are composited into the raster.
+    Two kinds, because they answer different questions. "geometry" is the
+    render's own artwork, captured from the figure before it is rasterised, so
+    it carries the full detail the screen preview shows. "tactile" traces the
+    braille payload instead, one square per raised pin, so it is exactly what the
+    display raises and nothing more.
 
     Sends nothing to braille hardware.
     """
@@ -1951,24 +1954,45 @@ def render_export_source():
         merged_params["view"] = str(merged_params.get("view", "")).lower()
         merged_params["print_view"] = False
 
+        # "geometry" is the render's own vector artwork: real polygons for a
+        # filled or cut view, real strokes for an x-ray, at full detail and
+        # restylable. "tactile" traces the payload instead, one square per raised
+        # pin, which is coarser but is exactly what the display raises.
+        wanted = str(params.get("export_kind", "geometry")).strip().lower()
+        if wanted not in ("geometry", "tactile"):
+            wanted = "geometry"
+        merged_params["capture_svg"] = wanted == "geometry"
+
         engine = get_or_create_renderer()
 
-        # Rendered at the display's own grid. Tracing a finer render would put
-        # detail in the file that the display cannot show, which defeats the
-        # point of exporting what the reader actually feels.
         with render_lock:
             out_guard, err_guard = _renderer_stdio_guard()
             with out_guard, err_guard:
                 rendered = engine.render(merged_params)
             grid = list(engine.screen_size) if engine.screen_size else [96, 40]
+            geometry_svg = getattr(engine, "last_render_svg", None)
 
         tactile_payload = _to_braille_payload(rendered)
-        svg = render_payload_as_vector(tactile_payload, fmt="svg")
+
+        # Outline mode is derived from the raster silhouette, so it has no vector
+        # artwork to hand back. Fall back rather than fail, and say so, because
+        # silently returning a coarser file than asked for is worse than either.
+        kind = wanted
+        if wanted == "geometry" and geometry_svg:
+            # The captured figure is sized from the render canvas, so it opens
+            # about an inch wide. Restate it on the same footprint as the tactile
+            # trace, so the two downloads sit on top of each other.
+            svg = set_svg_physical_size(geometry_svg, grid[0] * DEFAULT_PIN_PITCH_MM)
+        else:
+            svg = render_payload_as_vector(tactile_payload, fmt="svg")
+            kind = "tactile"
 
         response = {
             "status": "success",
             "message": "Export source render complete",
             "format": "svg",
+            "export_kind": kind,
+            "requested_kind": wanted,
             "image_shape": list(tactile_payload.shape),
             "svg": svg,
             "grid": grid,

@@ -1,4 +1,6 @@
 import matplotlib
+import io
+
 from skimage.transform import resize_local_mean
 from PIL import Image
 from copy import copy
@@ -228,11 +230,33 @@ def _collect_feature_edges(shape, view_key, projection_mode="orthographic", xray
 # fixed 8x factor means a 6400px canvas and a render cost that scales with its
 # area. Capping the canvas keeps the full factor for tactile-sized targets (their
 # output is unchanged) and falls back to a still-generous factor for large ones.
+def _capture_svg(fig, svg_sink):
+    """Stash the figure as SVG before it is rasterised, if anyone asked for it.
+
+    Everything up to fig.canvas.draw() is vector: the triangles of a filled or
+    cut view, the line segments of an x-ray. After it there are only pixels, and
+    the supersample-and-downsample step that follows is what turns coverage into
+    raised pins. So a caller wanting real geometry has to be handed it here.
+
+    Best effort: an export failing must never break the render the display is
+    waiting on.
+    """
+    if svg_sink is None:
+        return
+    try:
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format="svg")
+        svg_sink.append(buffer.getvalue().decode("utf-8"))
+    except Exception:
+        pass
+
+
 SUPERSAMPLE = 8
 MAX_CANVAS_PX = 3200
 
 
-def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="filled", imposed_ax_limits=[], screen_size=[96,40]):
+def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="filled",
+                    imposed_ax_limits=[], screen_size=[96,40], svg_sink=None):
     print("get_single_view", rendering_mode)
 
     shape = copy(shape)
@@ -285,6 +309,7 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
         ax.set_ylim(imposed_ax_limits[1])
     ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
 
+    _capture_svg(fig, svg_sink)
     fig.canvas.draw()
 
     img = np.asarray(fig.canvas.buffer_rgba())
@@ -343,6 +368,11 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
         line_collection = LineCollection(segments_2d, colors="black", linewidths=0.65)
         ax.add_collection(line_collection)
 
+        # The x-ray line work replaces the filled base captured above: strokes
+        # are what this mode is, and a stroke stays restylable in an SVG.
+        if svg_sink is not None:
+            svg_sink.clear()
+        _capture_svg(fig, svg_sink)
         fig.canvas.draw()
 
         img = np.asarray(fig.canvas.buffer_rgba())
@@ -357,6 +387,11 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
 
     if rendering_mode == "outline":
         outlines_np, outline_mask = get_outlines(img_np)
+        # An outline is derived from the raster silhouette; there is no figure
+        # that draws it. The base capture above is the filled body, a different
+        # picture, so discard it rather than hand back something mislabelled.
+        if svg_sink is not None:
+            svg_sink.clear()
         return outlines_np, ax_limits
 
 if __name__ == '__main__':

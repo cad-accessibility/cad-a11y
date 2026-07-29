@@ -1,12 +1,16 @@
-"""The export is a vector trace of what the tactile display raises.
+"""The view downloads as SVG, in two kinds.
 
-Vector rather than a raster sheet because what a line has to measure to rise in a
+Vector rather than a raster sheet because what a line must measure to rise in a
 fuser depends on the machine and the paper, so the useful thing to hand over is a
 drawing that can be rescaled and restyled downstream.
 
-The trace is of the braille payload rather than the source figure. That is what
-makes it behave identically in every render mode: outline mode has no matplotlib
-figure at all, and the overlays are composited into the raster.
+"geometry" is the render's own vector artwork, captured from the figure before it
+is rasterised: real polygons for a filled or cut view, real strokes for an x-ray,
+at full detail. "tactile" traces the braille payload instead, one square per
+raised pin, which is coarser but is exactly what the display raises.
+
+Outline mode is derived from the raster silhouette and has no figure that draws
+it, so a request for geometry falls back to the trace and says which it gave.
 
 These also cover the print path, which had been failing silently. It was handing
 the writer the RGBA render instead of the payload, so unpacking two dimensions
@@ -27,6 +31,7 @@ from src.converter.render_low_res import (
     DEFAULT_PIN_PITCH_MM,
     render_payload_as_vector,
     save_binary_array_as_vector_pdf,
+    set_svg_physical_size,
 )
 
 MM_PER_INCH = 25.4
@@ -46,9 +51,13 @@ def _shape_count(svg):
 
 
 def _root_size_mm(svg):
-    match = re.search(r'<svg[^>]*width="([\d.]+)pt"[^>]*height="([\d.]+)pt"', svg)
+    """The size the file opens at, whatever unit it states it in."""
+    match = re.search(
+        r'<svg[^>]*\bwidth="([\d.]+)(pt|mm)"[^>]*\bheight="([\d.]+)(pt|mm)"', svg)
     assert match, "no physical size on the svg root"
-    return tuple(float(v) / PT_PER_INCH * MM_PER_INCH for v in match.groups())
+    width, width_unit, height, height_unit = match.groups()
+    to_mm = {"mm": 1.0, "pt": MM_PER_INCH / PT_PER_INCH}
+    return float(width) * to_mm[width_unit], float(height) * to_mm[height_unit]
 
 
 # --- One square per raised pin --------------------------------------------
@@ -216,3 +225,136 @@ def test_export_endpoint_returns_a_drawing(monkeypatch):
     ET.fromstring(body["svg"])
     assert body["raised_pins"] == 2
     assert _shape_count(body["svg"]) == 2, "the drawing should match the payload"
+
+
+# --- Full-detail geometry, and the fallback -------------------------------
+
+
+def _fake_engine(svg=None, grid=(96, 40)):
+    return type("E", (), {
+        "screen_size": list(grid),
+        "last_render_svg": svg,
+        "render": lambda _self, _p: np.zeros((grid[1], grid[0], 4), dtype=np.uint8),
+    })()
+
+
+def _post(monkeypatch, engine, payload, **body):
+    monkeypatch.setattr(server, "_to_braille_payload", lambda _r: payload)
+    monkeypatch.setattr(server, "get_or_create_renderer", lambda *_a, **_k: engine)
+    server.app.config["TESTING"] = True
+    with server.app.test_client() as client:
+        return client.post("/render/export-source", json={"view": "x+", **body})
+
+
+def test_geometry_export_returns_the_renders_own_artwork(monkeypatch):
+    """Full detail means the vector the renderer drew, not a trace of the grid."""
+    artwork = '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>'
+    body = _post(monkeypatch, _fake_engine(svg=artwork), _payload(40, 96, [(1, 1)])).get_json()
+
+    assert body["export_kind"] == "geometry"
+    assert body["svg"] == artwork
+
+
+def test_geometry_falls_back_when_the_view_has_no_artwork(monkeypatch):
+    """Outline is derived from the raster silhouette, so there is no figure that
+    draws it. Falling back is right; doing it silently is not."""
+    body = _post(monkeypatch, _fake_engine(svg=None), _payload(40, 96, [(1, 1), (2, 2)])).get_json()
+
+    assert body["requested_kind"] == "geometry"
+    assert body["export_kind"] == "tactile", "should fall back rather than fail"
+    assert _shape_count(body["svg"]) == 2, "the fallback should be the tactile trace"
+
+
+def test_asking_for_the_tactile_trace_gets_it_even_when_artwork_exists(monkeypatch):
+    artwork = '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>'
+    body = _post(
+        monkeypatch, _fake_engine(svg=artwork), _payload(40, 96, [(1, 1)]),
+        export_kind="tactile",
+    ).get_json()
+
+    assert body["export_kind"] == "tactile"
+    assert body["svg"] != artwork
+    assert _shape_count(body["svg"]) == 1
+
+
+def test_an_unknown_kind_falls_back_to_full_detail(monkeypatch):
+    artwork = '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>'
+    body = _post(
+        monkeypatch, _fake_engine(svg=artwork), _payload(40, 96), export_kind="nonsense",
+    ).get_json()
+    assert body["export_kind"] == "geometry"
+
+
+def test_capture_is_opt_in(monkeypatch):
+    """Capturing costs a second serialisation of the figure, so an ordinary
+    render must not pay for it."""
+    seen = {}
+
+    class Engine:
+        screen_size = [96, 40]
+        last_render_svg = None
+
+        def render(self, params):
+            seen["capture"] = params.get("capture_svg")
+            return np.zeros((40, 96, 4), dtype=np.uint8)
+
+    _post(monkeypatch, Engine(), _payload(40, 96), export_kind="tactile")
+    assert seen["capture"] is False, "the tactile trace does not need the figure captured"
+
+    _post(monkeypatch, Engine(), _payload(40, 96))
+    assert seen["capture"] is True
+
+
+# --- Both kinds open at the same size -------------------------------------
+
+FIGURE_SVG = (
+    '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" '
+    'width="69.12pt" height="28.8pt" viewBox="0 0 69.12 28.8"><path d="M0 0"/></svg>'
+)
+
+
+def test_a_captured_figure_is_resized_to_a_real_footprint():
+    """Matplotlib sizes the captured figure from the render canvas, so it opens
+    about an inch wide. On paper that is useless."""
+    assert _root_size_mm(FIGURE_SVG)[0] == pytest.approx(24.4, abs=0.5), "premise"
+
+    resized = set_svg_physical_size(FIGURE_SVG, 96 * DEFAULT_PIN_PITCH_MM)
+    assert _root_size_mm(resized)[0] == pytest.approx(96.0, abs=0.5)
+
+
+def test_resizing_preserves_the_aspect_ratio():
+    """Height is derived, never passed, so the drawing cannot be squashed."""
+    resized = set_svg_physical_size(FIGURE_SVG, 96.0)
+    width = float(re.search(r'width="([\d.]+)mm"', resized).group(1))
+    height = float(re.search(r'height="([\d.]+)mm"', resized).group(1))
+    assert width == pytest.approx(96.0)
+    assert width / height == pytest.approx(69.12 / 28.8, rel=1e-6)
+
+
+def test_resizing_leaves_the_artwork_alone():
+    """Only the root's declared size changes. The viewBox and every path stay
+    exactly as drawn, which is what keeps this from being a transform."""
+    resized = set_svg_physical_size(FIGURE_SVG, 96.0)
+    assert 'viewBox="0 0 69.12 28.8"' in resized
+    assert '<path d="M0 0"/>' in resized
+    ET.fromstring(resized)
+
+
+def test_an_svg_without_a_viewbox_is_left_alone():
+    """Nothing to preserve the geometry against, so a wrong size beats a
+    distorted drawing."""
+    no_box = '<svg xmlns="http://www.w3.org/2000/svg" width="10pt" height="5pt"/>'
+    assert set_svg_physical_size(no_box, 96.0) == no_box
+
+
+def test_both_kinds_come_back_on_the_same_footprint(monkeypatch):
+    """The point of resizing: one download can be laid over the other."""
+    engine = _fake_engine(svg=FIGURE_SVG)
+    geometry = _post(monkeypatch, engine, _payload(40, 96, [(1, 1)])).get_json()["svg"]
+    tactile = _post(
+        monkeypatch, engine, _payload(40, 96, [(1, 1)]), export_kind="tactile"
+    ).get_json()["svg"]
+
+    assert _root_size_mm(geometry)[0] == pytest.approx(
+        _root_size_mm(tactile)[0], abs=0.5
+    ), "the two exports should open at the same width"

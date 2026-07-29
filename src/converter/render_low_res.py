@@ -1,4 +1,5 @@
 import io
+import re
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -119,6 +120,37 @@ def render_payload_as_vector(payload, target=None, *, fmt="svg", pin_pitch_mm=DE
         return None
     finally:
         plt.close(fig)
+
+
+def set_svg_physical_size(svg, width_mm):
+    """Restate an SVG's real-world size without disturbing its artwork.
+
+    A figure captured mid-render is sized from the render canvas, which is about
+    a hundred pixels across, so the file opens roughly an inch wide. The viewBox
+    already carries the drawing's coordinate system, so overwriting width and
+    height in millimetres just rescales the whole thing.
+
+    Height comes from the viewBox aspect ratio rather than being passed in, so
+    this can never squash the drawing. It also puts both export kinds on the same
+    footprint, which is what makes one usable as a tracing guide for the other.
+
+    An SVG without a viewBox is left alone: there would be nothing to preserve
+    the geometry against, and a wrong size beats a distorted drawing.
+    """
+    box = re.search(r'viewBox="([\d.eE+-]+)\s+([\d.eE+-]+)\s+([\d.eE+-]+)\s+([\d.eE+-]+)"', svg)
+    if not box:
+        return svg
+
+    box_width, box_height = float(box.group(3)), float(box.group(4))
+    if box_width <= 0 or box_height <= 0:
+        return svg
+    height_mm = width_mm * box_height / box_width
+
+    root_end = svg.index(">", svg.index("<svg"))
+    root = svg[:root_end]
+    root = re.sub(r'\bwidth="[\d.eE+-]+(?:pt|px|mm|in|cm)?"', f'width="{width_mm:g}mm"', root, count=1)
+    root = re.sub(r'\bheight="[\d.eE+-]+(?:pt|px|mm|in|cm)?"', f'height="{height_mm:g}mm"', root, count=1)
+    return root + svg[root_end:]
 
 
 def save_binary_array_as_vector_pdf(array, filename="low_res.pdf"):
