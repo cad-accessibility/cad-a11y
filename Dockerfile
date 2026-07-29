@@ -37,10 +37,17 @@ COPY static/ ./static/
 COPY accessible-3d-viewer.html ./
 COPY workshop-entry.html ./
 COPY examples/ ./examples/
-COPY src/models/brep/ ./data/models/
+# Built-ins ship here, deliberately NOT into data/models. data/models is a mounted
+# volume, so anything copied there is shadowed on a real deployment, and copying
+# the directory wholesale would also bake a developer's local uploads into the
+# image. The server seeds data/models from this directory on every start.
+COPY builtin_models/ ./builtin_models/
+# Maintenance script an operator runs inside the container; the data directories
+# are Docker-managed volumes and are not conveniently reachable from the host.
+COPY scripts/cleanup_ingest_models.py ./scripts/
 
 # Runtime write directories are created here so the non-root user owns them.
-RUN mkdir -p data/renders data/logs data/db
+RUN mkdir -p data/models data/uploads data/renders data/logs data/db
 
 # --- Non-root user ---
 # UID 48 matches the apache user the hosting NFS server grants write access to.
@@ -54,8 +61,12 @@ USER apache
 
 EXPOSE 6969
 
+# /health rather than / — the root answers even when storage is misconfigured or
+# the database cannot be opened, which is how a broken deploy looked healthy.
+# Compose overrides this, so the deploy gate already uses /health either way;
+# baking it in here is what anyone running the image directly gets.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:6969/ || exit 1
+    CMD curl -f http://localhost:6969/health || exit 1
 
 # Exec-form ENTRYPOINT for correct signal handling (SIGTERM reaches the process).
 ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "cad-a11y", "python", "-m", "app.server"]

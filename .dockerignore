@@ -28,7 +28,13 @@ study_logs/
 renders/
 
 # Dev-only files
-scripts/
+# scripts/* rather than scripts/ so the exception below is still considered:
+# excluding the directory itself prunes the whole subtree and the ! never applies.
+scripts/*
+# Maintenance scripts an operator has to run inside the container. The data
+# directories are Docker-managed volumes, so they are not conveniently reachable
+# from the host and this cannot be run from outside.
+!scripts/cleanup_ingest_models.py
 tests/
 server_cube_slider.py
 requirements-dev.txt
