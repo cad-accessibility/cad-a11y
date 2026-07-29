@@ -1974,8 +1974,9 @@ def render_export_source():
 
         tactile_payload = _to_braille_payload(rendered)
 
-        # Outline mode is derived from the raster silhouette, so it has no vector
-        # artwork to hand back. Fall back rather than fail, and say so, because
+        # Every mode draws a figure now, so this should hold. It is a safety net
+        # for a degenerate mesh or a capture that failed, not a routine path.
+        # Fall back rather than fail, and say which one was given, because
         # silently returning a coarser file than asked for is worse than either.
         kind = wanted
         if wanted == "geometry" and geometry_svg:

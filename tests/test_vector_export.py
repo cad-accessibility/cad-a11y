@@ -9,8 +9,9 @@ is rasterised: real polygons for a filled or cut view, real strokes for an x-ray
 at full detail. "tactile" traces the braille payload instead, one square per
 raised pin, which is coarser but is exactly what the display raises.
 
-Outline mode is derived from the raster silhouette and has no figure that draws
-it, so a request for geometry falls back to the trace and says which it gave.
+Every mode draws a figure, outline included: its boundary is the union of the
+projected triangles, computed only when someone is downloading. If a capture ever
+comes back empty the request falls back to the trace and says which it gave.
 
 These also cover the print path, which had been failing silently. It was handing
 the writer the RGBA render instead of the payload, so unpacking two dimensions
@@ -256,8 +257,8 @@ def test_geometry_export_returns_the_renders_own_artwork(monkeypatch):
 
 
 def test_geometry_falls_back_when_the_view_has_no_artwork(monkeypatch):
-    """Outline is derived from the raster silhouette, so there is no figure that
-    draws it. Falling back is right; doing it silently is not."""
+    """A degenerate mesh, or a capture that failed, leaves nothing to hand back.
+    Falling back is right; doing it silently is not."""
     body = _post(monkeypatch, _fake_engine(svg=None), _payload(40, 96, [(1, 1), (2, 2)])).get_json()
 
     assert body["requested_kind"] == "geometry"
@@ -358,3 +359,73 @@ def test_both_kinds_come_back_on_the_same_footprint(monkeypatch):
     assert _root_size_mm(geometry)[0] == pytest.approx(
         _root_size_mm(tactile)[0], abs=0.5
     ), "the two exports should open at the same width"
+
+
+# --- Outline draws a figure too -------------------------------------------
+
+
+def _box(width=2.0, height=1.0, depth=1.0):
+    import trimesh
+    return trimesh.creation.box(extents=(width, height, depth))
+
+
+def _tube(inner=0.5, outer=1.0, height=1.0):
+    """A shape with a genuine hole in its top-down projection."""
+    import trimesh
+    return trimesh.creation.annulus(r_min=inner, r_max=outer, height=height, sections=64)
+
+
+def test_the_outline_is_the_boundary_of_the_projection():
+    """Not the mesh's silhouette edges. Those include the far wall and the inside
+    of any cavity, which on a hollow model is most of the model."""
+    from src.converter.single_view_stl import _silhouette_rings
+
+    rings = _silhouette_rings(_box(), "top")
+    assert len(rings) == 1, f"a box projects to one ring, got {len(rings)}"
+    # A rectangle: four corners, with the ring closed back onto the first.
+    assert len(rings[0]) == 5, f"expected a closed quad, got {len(rings[0])} points"
+
+
+def test_a_hole_in_the_projection_becomes_its_own_ring():
+    from src.converter.single_view_stl import _silhouette_rings
+
+    rings = _silhouette_rings(_tube(), "top")
+    assert len(rings) == 2, f"a tube seen end-on is two rings, got {len(rings)}"
+
+
+def test_every_ring_is_closed():
+    """An open ring would stroke as an arc with a gap where it should meet."""
+    from src.converter.single_view_stl import _silhouette_rings
+
+    for ring in _silhouette_rings(_tube(), "top"):
+        assert np.allclose(ring[0], ring[-1]), "ring does not close"
+
+
+def test_outline_hands_back_vector_artwork():
+    """The regression this fixes: outline used to be the one mode with nothing to
+    export, so asking for full detail there gave back a trace of the pin grid."""
+    from src.converter.single_view_stl import get_single_view
+
+    shape = _box()
+    sink = []
+    get_single_view(shape, shape.bounds.flatten(), view_key="top",
+                    rendering_mode="outline", screen_size=[96, 40], svg_sink=sink)
+
+    assert sink, "outline captured nothing"
+    ET.fromstring(sink[0])
+    assert "<path" in sink[0]
+
+
+def test_capturing_does_not_change_what_the_display_gets():
+    """The capture is a second read of the same figure. If it ever altered the
+    render, exporting would quietly change what the pins do."""
+    from src.converter.single_view_stl import get_single_view
+
+    shape = _box()
+    bounds = shape.bounds.flatten()
+    for mode in ("filled", "cut", "outline", "x-ray"):
+        plain, _ = get_single_view(shape, bounds, view_key="top", rendering_mode=mode,
+                                   screen_size=[96, 40])
+        captured, _ = get_single_view(shape, bounds, view_key="top", rendering_mode=mode,
+                                      screen_size=[96, 40], svg_sink=[])
+        assert np.array_equal(plain, captured), f"{mode}: capture changed the render"
