@@ -47,7 +47,7 @@ from .braille_display import (
     _DOTPAD_LINES,
     _DOTPAD_COLS,
 )
-from .cad_comparison_lib import CADComparisonRenderer
+from .cad_comparison_lib import DEFAULT_SCREEN_SIZE, CADComparisonRenderer
 from src.converter.render_low_res import dilate_mask, raised_ink_mask, save_binary_array_as_vector_pdf
 
 try:
@@ -514,6 +514,16 @@ def _target_grid(params: dict[str, Any]) -> tuple[int, int] | None:
     One reader for `target_pixel_width`/`target_pixel_height`, so the render, the
     payload sent to the display and both previews cannot disagree about the size
     they are describing.
+
+    Always a (width, height) tuple or None, never a list: it is a fixed pair that
+    nothing should append to, and it ends up inside a cache key. A tuple and a
+    list of the same numbers serialise identically through json.dumps, so mixing
+    them could not split the cache, but a single stated convention beats relying
+    on that.
+
+    None means the caller named no size and should use the renderer's own grid,
+    DEFAULT_SCREEN_SIZE. Every consumer guards for it rather than substituting a
+    size the caller did not ask for.
     """
     width = params.get("target_pixel_width")
     height = params.get("target_pixel_height")
@@ -542,7 +552,7 @@ def _make_hifi_preview(
     engine = get_or_create_renderer(model_index)
     grid = _target_grid(params)
     if grid is None:
-        orig = list(engine.screen_size) if engine.screen_size else [96, 40]
+        orig = list(engine.screen_size) if engine.screen_size else list(DEFAULT_SCREEN_SIZE)
         grid = (max(1, orig[0]), max(1, orig[1] if len(orig) > 1 else orig[0]))
     w0, h0 = grid
     hifi_h = max(1, int(round(preview_width * h0 / w0)))
@@ -568,7 +578,7 @@ def _render_and_send(
     engine = get_or_create_renderer(model_index)
     out_guard, err_guard = _renderer_stdio_guard()
     with render_lock:
-        original_screen_size = list(engine.screen_size) if engine.screen_size else [96, 40]
+        original_screen_size = list(engine.screen_size) if engine.screen_size else list(DEFAULT_SCREEN_SIZE)
         if render_size is not None:
             engine.screen_size = [max(1, int(render_size[0])), max(1, int(render_size[1]))]
         try:
@@ -860,7 +870,7 @@ def _render_braille_payload_at_size(
     engine = get_or_create_renderer(model_index)
     out_guard, err_guard = _renderer_stdio_guard()
     with render_lock:
-        original_screen_size = list(engine.screen_size) if engine.screen_size else [96, 40]
+        original_screen_size = list(engine.screen_size) if engine.screen_size else list(DEFAULT_SCREEN_SIZE)
         engine.screen_size = [max(1, int(pixel_width)), max(1, int(pixel_height))]
         try:
             with out_guard, err_guard:
@@ -1954,7 +1964,7 @@ def render_export_source():
         with render_lock:
             original_screen_size = list(engine.screen_size)
             if not original_screen_size or original_screen_size[0] <= 0:
-                original_screen_size = [96, 40]
+                original_screen_size = list(DEFAULT_SCREEN_SIZE)
             aspect_ratio = float(original_screen_size[1]) / float(original_screen_size[0])
             export_height = max(1, int(round(export_width * aspect_ratio)))
             engine.screen_size = [export_width, export_height]

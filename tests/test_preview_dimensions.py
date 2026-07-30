@@ -20,6 +20,7 @@ import pytest
 
 import app.server as server
 from app.braille_display import _MONARCH_COLS, _MONARCH_LINES
+from app.cad_comparison_lib import DEFAULT_SCREEN_SIZE
 
 ROOT = Path(__file__).resolve().parents[1]
 VIEWER_JS = ROOT / "static" / "js" / "viewer.js"
@@ -44,7 +45,40 @@ def _params(**overrides):
 
 def test_monarch_grid_is_the_default_grid():
     """The whole reason excluding the Monarch was pointless."""
-    assert (_MONARCH_COLS * CELL_W, _MONARCH_LINES * CELL_H) == (96, 40)
+    assert (_MONARCH_COLS * CELL_W, _MONARCH_LINES * CELL_H) == DEFAULT_SCREEN_SIZE
+
+
+def test_the_named_default_is_what_a_renderer_actually_starts_at():
+    """The server falls back to DEFAULT_SCREEN_SIZE whenever an engine reports no
+    size of its own, so the two have to agree. They were four separate copies of
+    the same literal, across two files, with nothing tying them together."""
+    assert tuple(DEFAULT_SCREEN_SIZE) == (96, 40), (
+        "changing this changes what every caller that names no size renders at"
+    )
+
+    lib = (Path(__file__).resolve().parents[1] / "app" / "cad_comparison_lib.py").read_text()
+    assert "self.screen_size = list(DEFAULT_SCREEN_SIZE)" in lib, (
+        "the renderer sets its own default from a literal again"
+    )
+    assert "self.screen_size = [96,40]" not in lib
+    assert "self.screen_size = [96, 40]" not in lib
+
+
+def test_the_server_keeps_no_copy_of_the_default_grid():
+    """A second literal is how the fallback and the renderer drift apart."""
+    source = (Path(__file__).resolve().parents[1] / "app" / "server.py").read_text()
+    assert "[96, 40]" not in source, "server.py still hardcodes the default grid"
+    assert "DEFAULT_SCREEN_SIZE" in source
+
+
+def test_the_clients_no_device_default_is_a_different_thing():
+    """78x40 is the client's answer to 'nothing is connected'. It deliberately
+    differs from the renderer's own default, so the two must not be merged."""
+    viewer = (Path(__file__).resolve().parents[1] / "static" / "js" / "viewer.js").read_text()
+    block = re.search(r"const DEFAULT_TACTILE_GRID = Object\.freeze\(\{(.*?)\}\)", viewer, re.S)
+    assert block, "DEFAULT_TACTILE_GRID not found"
+    assert "pixelWidth: 78" in block.group(1)
+    assert tuple(DEFAULT_SCREEN_SIZE) != (78, 40)
 
 
 @pytest.mark.parametrize(
