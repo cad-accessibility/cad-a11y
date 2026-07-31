@@ -114,6 +114,17 @@ def _projected_view_axis_limits(shape, view_key):
 # but an STL arrives already tessellated, so cap it here for every source.
 MAX_RENDER_FACES = 40000
 
+# The grid a renderer draws at until something tells it otherwise. A Monarch is
+# 48 cells by 10 lines and a braille cell is 2x4 pixels, so this is exactly a
+# Monarch, and it is what every caller that does not name a size gets. Named
+# here, beside the assignment it describes, so the server's fallbacks cannot
+# quietly disagree with what a renderer actually starts at.
+#
+# Not to be confused with the viewer's DEFAULT_TACTILE_GRID, which is 78x40: that
+# is the client's answer to "no display is connected, so pick something between
+# the two we support", and the client always names it explicitly.
+DEFAULT_SCREEN_SIZE = (96, 40)
+
 
 def _decimate_for_display(mesh):
     """Reduce face count to roughly what the display can resolve.
@@ -153,7 +164,7 @@ class CADComparisonRenderer:
         self.view_current_axis = -1
         self.view_current_view_limits = -1
         self.current_render_mode = None
-        self.screen_size = [96,40]
+        self.screen_size = list(DEFAULT_SCREEN_SIZE)
         self.view_diff_mats = {}
         self.view_cut_polygons = {}
         self.current_render = None
@@ -1177,7 +1188,7 @@ class CADComparisonRenderer:
         if device is None:
             return
         if device.kind == "monarch":
-            self.screen_size = [96, 40]
+            self.screen_size = list(DEFAULT_SCREEN_SIZE)
         if device.kind == "dotpad":
             self.screen_size = [60, 40]
 

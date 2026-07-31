@@ -52,6 +52,28 @@ def _code_only(source: str) -> str:
     return re.sub(r"'[^'\n]*'|\"[^\"\n]*\"", "''", source)
 
 
+def test_monarch_registers_its_grid_under_its_own_key():
+    """Monarch reports its dimensions, into a registry keyed per device.
+
+    It used to withhold them, for two reasons that no longer hold. Claiming them
+    was said to cost an extra render, but the opposite is true: naming a size is
+    what routes the request down the single-render path. And clearing them on
+    disconnect would wipe a co-connected DotPad's entry, which was a consequence
+    of one shared global rather than of the Monarch reporting anything.
+
+    A Monarch is 48 cells by 10 lines and a braille cell is 2x4 pixels, so the
+    grid it reports is exactly the 96x40 default.
+    """
+    compact = _compact(_source())
+    assert "setTactileDisplay?.('monarch_hid'" in compact
+    assert "pixelWidth:96" in compact
+    assert "pixelHeight:40" in compact
+    # The single shared slot is what coupled the two devices together. Checked
+    # against code with comments stripped, so a mention in prose cannot keep
+    # this passing after the slot itself is gone.
+    assert "connectedTactileDisplay" not in _compact(_code_only(_source()))
+
+
 def _command_map() -> dict[str, dict]:
     """Parse MONARCH_COMMANDS into {report_key: {field: value}}."""
     source = _source()
