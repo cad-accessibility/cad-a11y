@@ -1,4 +1,6 @@
 import matplotlib
+import io
+
 from skimage.transform import resize_local_mean
 from PIL import Image
 from copy import copy
@@ -10,6 +12,9 @@ from PIL import Image
 import os, json
 import matplotlib.pyplot as plt
 import trimesh
+from shapely.geometry import Polygon
+from shapely.ops import unary_union
+
 from .render_low_res import get_outlines
 from .plane_intersection_utils import depth_peeling_single_depth_with_bbox, faces_on_plane_fast
 
@@ -166,8 +171,15 @@ def project_vertices(vertices, view_key, projection_mode="orthographic", orienta
 
     return np.column_stack((x, y))
 
-def _collect_feature_edges(shape, view_key, projection_mode="orthographic", xray_degrees=22.5, orientation_basis=None):
-    """Return projected line segments for silhouette + xray edges."""
+def _collect_feature_edges(shape, view_key, projection_mode="orthographic", xray_degrees=22.5,
+                           orientation_basis=None):
+    """Return projected line segments for silhouette + xray edges.
+
+    Note these are the mesh's silhouette edges, every edge where facing flips.
+    On a hollow model that includes the far wall and the inside of the cavity,
+    which is what x-ray wants and is emphatically not an outline. The visible
+    outline is _silhouette_rings above.
+    """
     if shape is None or len(shape.faces) == 0:
         return []
 
@@ -228,11 +240,144 @@ def _collect_feature_edges(shape, view_key, projection_mode="orthographic", xray
 # fixed 8x factor means a 6400px canvas and a render cost that scales with its
 # area. Capping the canvas keeps the full factor for tactile-sized targets (their
 # output is unchanged) and falls back to a still-generous factor for large ones.
+def _capture_svg(fig, svg_sink):
+    """Stash the figure as SVG before it is rasterised, if anyone asked for it.
+
+    Everything up to fig.canvas.draw() is vector: the triangles of a filled or
+    cut view, the line segments of an x-ray. After it there are only pixels, and
+    the supersample-and-downsample step that follows is what turns coverage into
+    raised pins. So a caller wanting real geometry has to be handed it here.
+
+    Best effort: an export failing must never break the render the display is
+    waiting on.
+    """
+    if svg_sink is None:
+        return
+    try:
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format="svg")
+        svg_sink.append(buffer.getvalue().decode("utf-8"))
+    except Exception:
+        pass
+
+
 SUPERSAMPLE = 8
 MAX_CANVAS_PX = 3200
 
+# With _to_braille_payload's majority (>50%) threshold, a line that straddles an
+# output-pixel boundary splits its coverage as (a, W-a) between the two
+# neighbors: too thin and both sides can land under 50% (a gap, neither pixel
+# raised); too thick and both can reach 50%+ (a doubled line). 8x oversampling at
+# 800dpi puts the boundary exactly at 1 output-pixel = 0.72pt, but matplotlib's
+# own line antialiasing spreads coverage further than the nominal width, so the
+# real crossover was found empirically by sweeping a line across a pixel boundary
+# and counting raised pixels at each sub-pixel offset: 0.65pt gave exactly 1
+# raised pixel at all 41 positions tested, with zero gaps and zero doubles
+# (0.72pt still doubled at ~15% of offsets; 0.6pt gapped at ~15-27%).
+TACTILE_LINE_PT = 0.65
 
-def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="filled", imposed_ax_limits=[], screen_size=[96,40]):
+
+def _silhouette_rings(shape, view_key):
+    """The visible outline of the projected shape, as closed rings.
+
+    Rings rather than loose segments so the drawing comes out as a handful of
+    connected paths: joins meet properly, and anyone restyling the file
+    downstream gets a shape to select rather than a few hundred separate lines.
+
+    Not the same thing as the mesh's silhouette edges. Those include every edge
+    where facing flips, which on a hollow model means the far wall and the inside
+    of the cavity as well: the pencil holder yields 1032 of them where its
+    outline is one ring. What is actually wanted is the boundary of the union of
+    the projected triangles, holes included, so that is what this computes.
+
+    The union is the expensive step, around half a second on a 19k-face mesh, but
+    it collapses to very little: that same mesh comes out as four rings of 210
+    points in total.
+    """
+    faces = np.asarray(shape.faces)
+    if len(faces) == 0:
+        return []
+
+    triangles = _project_points(shape.vertices[faces], view_key).reshape(-1, 3, 2)
+
+    polygons = [Polygon(t) for t in triangles]
+    merged = unary_union([p for p in polygons if p.is_valid and not p.is_empty])
+    if merged.is_empty:
+        return []
+
+    rings = []
+    parts = merged.geoms if hasattr(merged, "geoms") else [merged]
+    for part in parts:
+        if not isinstance(part, Polygon):
+            continue
+        for ring in [part.exterior, *part.interiors]:
+            points = np.asarray(ring.coords)
+            if len(points) >= 2:
+                rings.append(points)
+    return rings
+
+
+def _project_points(points, view_key):
+    """Drop 3-D points onto the 2-D plane of a named view."""
+    points = np.asarray(points, dtype=float).reshape(-1, 3)
+    if view_key == "top":
+        flat = points[:, [0, 1]]
+    elif view_key == "front":
+        flat = points[:, [0, 2]]
+    elif view_key == "left":
+        flat = points[:, [1, 2]]
+    elif view_key == "bottom":
+        flat = points[:, [0, 1]] * [-1, -1]
+    elif view_key == "back":
+        flat = points[:, [0, 2]] * [-1, 1]
+    elif view_key == "right":
+        flat = points[:, [1, 2]] * [-1, 1]
+    else:
+        flat = points[:, [0, 1]]
+    return flat
+
+
+def _project_segments(segments, view_key):
+    """Flatten 3-D edge segments into the 2-D plane of a named view."""
+    return _project_points(segments, view_key).reshape(-1, 2, 2)
+
+
+def _render_line_work(segments_2d, ax_limits, width_px, height_px, dpi, render_dpi, svg_sink):
+    """Draw projected line work, capture it as vector, then rasterise it.
+
+    Outline and x-ray both come through here, so both get the same stroke width,
+    the same capture point and the same downsample. The pins and the exported
+    drawing are then two readings of one figure rather than two computations that
+    have to be kept in step by hand.
+    """
+    fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=render_dpi)
+    ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
+    ax.axis('off')
+    ax.set_aspect('equal')
+    ax.set_xlim(ax_limits[0])
+    ax.set_ylim(ax_limits[1])
+
+    if len(segments_2d):
+        ax.add_collection(LineCollection(segments_2d, colors="black", linewidths=TACTILE_LINE_PT))
+
+    # The line work replaces whatever base figure was captured before it: strokes
+    # are what these modes are, and a stroke stays restylable in an SVG.
+    if svg_sink is not None:
+        svg_sink.clear()
+    _capture_svg(fig, svg_sink)
+    fig.canvas.draw()
+
+    img = np.asarray(fig.canvas.buffer_rgba())
+    if plt.fignum_exists(fig.number):
+        plt.close(fig.number)
+    plt.close()
+
+    img_np = resize_local_mean(img, (height_px, width_px))
+    return (img_np * 255).astype(np.uint8)
+
+
+def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="filled",
+                    imposed_ax_limits=[], screen_size=[96,40], svg_sink=None):
     print("get_single_view", rendering_mode)
 
     shape = copy(shape)
@@ -285,6 +430,7 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
         ax.set_ylim(imposed_ax_limits[1])
     ax_limits = np.array([ax.get_xlim(), ax.get_ylim()])
 
+    _capture_svg(fig, svg_sink)
     fig.canvas.draw()
 
     img = np.asarray(fig.canvas.buffer_rgba())
@@ -299,64 +445,29 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
     if rendering_mode in ["filled", "cut"]:
         return img_np, ax_limits
     if rendering_mode == "x-ray":
-        outlines_np, outline_mask = get_outlines(img_np)
-        fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=render_dpi)
-        ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure
-        ax.axis('off')
-
-        ax.set_aspect('equal')
-        ax.set_xlim(ax_limits[0])
-        ax.set_ylim(ax_limits[1])
-
-        segments = _collect_feature_edges(shape, view_key)
-        segments_2d = []
-        segments = segments.reshape(-1,3)
-        if view_key == "top":
-            segments_2d = segments[:,[0,1]]
-        if view_key == "front":
-            segments_2d = segments[:,[0,2]]
-        if view_key == "left":
-            segments_2d = segments[:,[1,2]]
-        if view_key == "bottom":
-            segments_2d = segments[:,[0,1]]
-            segments_2d[:,0] *= -1
-            segments_2d[:,1] *= -1
-        if view_key == "back":
-            segments_2d = segments[:,[0,2]]
-            segments_2d[:,0] *= -1
-        if view_key == "right":
-            segments_2d = segments[:,[1,2]]
-            segments_2d[:,0] *= -1
-        segments_2d = segments_2d.reshape(-1,2,2)
-        # With _to_braille_payload's majority (>50%) threshold, a line that
-        # straddles an output-pixel boundary splits its coverage as (a, W-a)
-        # between the two neighbors: too thin and both sides can land under
-        # 50% (a gap, neither pixel raised); too thick and both can reach
-        # 50%+ (a doubled line). 8x oversampling at 800dpi puts the boundary
-        # exactly at 1 output-pixel = 0.72pt, but matplotlib's own line
-        # antialiasing spreads coverage further than the nominal width, so
-        # the real crossover was found empirically by sweeping a line across
-        # a pixel boundary and counting raised pixels at each sub-pixel
-        # offset: 0.65pt gave exactly 1 raised pixel at all 41 positions
-        # tested, with zero gaps and zero doubles (0.72pt still doubled at
-        # ~15% of offsets; 0.6pt gapped at ~15-27%).
-        line_collection = LineCollection(segments_2d, colors="black", linewidths=0.65)
-        ax.add_collection(line_collection)
-
-        fig.canvas.draw()
-
-        img = np.asarray(fig.canvas.buffer_rgba())
-        if plt.fignum_exists(fig.number):
-            plt.close(fig.number)
-        plt.close()
-
-        img_np = resize_local_mean(img, (height_px, width_px))
-        img_np = (img_np * 255).astype(np.uint8)
-        img_np[outline_mask] = [0,0,0,255]
+        outline_mask = get_outlines(img_np)[1]
+        segments_2d = _project_segments(_collect_feature_edges(shape, view_key), view_key)
+        img_np = _render_line_work(segments_2d, ax_limits,
+                                   width_px, height_px, dpi, render_dpi, svg_sink)
+        img_np[outline_mask] = [0, 0, 0, 255]
         return img_np, ax_limits
 
     if rendering_mode == "outline":
-        outlines_np, outline_mask = get_outlines(img_np)
+        outlines_np, _ = get_outlines(img_np)
+
+        # The pins keep coming from the raster mask, which is closed by
+        # construction. Stroking the boundary instead leaves gaps: at the width a
+        # single pin needs, a run that straddles a pixel boundary can fall under
+        # the coverage the majority rule wants, and the mug's rim came out
+        # dashed. X-ray only gets away with strokes because it unions this same
+        # mask back in.
+        #
+        # The export still gets real geometry rather than a trace of the grid.
+        # It costs a union of the projected triangles, around half a second on a
+        # 19k-face mesh, so it is only paid when someone is actually downloading.
+        if svg_sink is not None:
+            _render_line_work(_silhouette_rings(shape, view_key), ax_limits,
+                              width_px, height_px, dpi, render_dpi, svg_sink)
         return outlines_np, ax_limits
 
 if __name__ == '__main__':

@@ -666,6 +666,7 @@ const resetPositionBtn = document.getElementById('reset-position-btn');
 const sliceGraphLockStatus = document.getElementById('slice-graph-lock-status');
 const showViewInfoBoxCheckbox = document.getElementById('show-view-info-box');
 const exportSliceSvgBtn = document.getElementById('export-slice-svg-btn');
+const exportTactileSvgBtn = document.getElementById('export-tactile-svg-btn');
 const highFidelityPreviewImg = document.getElementById('high-fidelity-preview-img');
 const highFidelityPreviewMeta = document.getElementById('high-fidelity-preview-meta');
 const debugPipelineToggleBtn = document.getElementById('debug-pipeline-toggle-btn');
@@ -1243,7 +1244,8 @@ function fetchExportSourceState() {
         slicegraph_view: requestedGraphView,
         slicegraph_depth: requestedGraphDepth,
         slicegraph_mode: sliceGraphMode,
-        export_width: 1000,
+        // Left to the server, which exports at the resolution the renderer
+        // actually draws at.
     };
 }
 
@@ -1276,17 +1278,26 @@ function updateHighFidelityPreview(data) {
     highFidelityPreviewMeta.textContent = `${currentView} · ${currentSliceDepth}% · ${renderModeLabel()} · ${height}×${width}px`;
 }
 
-async function exportCurrentSliceAsPng() {
+/** Download the current view as SVG.
+ *
+ * `kind` is 'geometry' for the render's own vector artwork, full detail and
+ * restylable, or 'tactile' for a trace of what the display actually raises.
+ * Outline mode has no vector artwork, so the server falls back to the trace and
+ * says so; the announcement reflects what actually arrived rather than what was
+ * asked for.
+ */
+async function exportCurrentSliceAsSvg(kind = 'geometry') {
+    const button = kind === 'tactile' ? exportTactileSvgBtn : exportSliceSvgBtn;
     try {
-        exportSliceSvgBtn.disabled = true;
-        announce('rendering high-fidelity export');
+        button.disabled = true;
+        announce('preparing vector export');
 
         const response = await fetch(`${SERVER_URL}/render/export-source`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify(fetchExportSourceState()),
+            body: JSON.stringify({...fetchExportSourceState(), export_kind: kind}),
             mode: 'cors'
         });
 
@@ -1295,13 +1306,18 @@ async function exportCurrentSliceAsPng() {
         }
 
         const data = await response.json();
-        if (!data.image_base64) {
-            throw new Error('Export render response missing image data');
+        if (!data.svg) {
+            throw new Error('Export render response missing drawing data');
         }
 
-        const downloadUrl = 'data:image/png;base64,' + data.image_base64;
+        // A Blob rather than a data: URL. An SVG is text and can be far larger
+        // than the base64 image this replaced, and data: URLs have length limits
+        // that vary by browser, so a big drawing could silently fail to download.
+        const blob = new Blob([data.svg], {type: 'image/svg+xml'});
+        const downloadUrl = URL.createObjectURL(blob);
         const sanitizedView = String(currentView).replace(/[^a-zA-Z0-9+-]/g, '_');
-        const filename = `slice_${sanitizedView}_${currentSliceDepth}_${currentRenderMode}.png`;
+        const suffix = data.export_kind === 'tactile' ? '_tactile' : '';
+        const filename = `slice_${sanitizedView}_${currentSliceDepth}_${currentRenderMode}${suffix}.svg`;
 
         const link = document.createElement('a');
         link.href = downloadUrl;
@@ -1309,13 +1325,20 @@ async function exportCurrentSliceAsPng() {
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        URL.revokeObjectURL(downloadUrl);
 
-        announce('slice exported as png');
+        if (data.requested_kind === 'geometry' && data.export_kind === 'tactile') {
+            announce('exported what the display shows; this view has no full-detail drawing');
+        } else if (data.export_kind === 'tactile') {
+            announce('exported what the display shows');
+        } else {
+            announce('exported at full detail');
+        }
     } catch (error) {
-        console.warn('Failed to export slice as PNG:', error);
-        announceAlert('High-fidelity export failed');
+        console.warn('Failed to export view as SVG:', error);
+        announceAlert('Export failed');
     } finally {
-        exportSliceSvgBtn.disabled = false;
+        button.disabled = false;
     }
 }
 
@@ -2303,8 +2326,14 @@ if (resetPositionBtn) {
 }
 
 exportSliceSvgBtn.addEventListener('click', function() {
-    exportCurrentSliceAsPng();
+    exportCurrentSliceAsSvg('geometry');
 });
+
+if (exportTactileSvgBtn) {
+    exportTactileSvgBtn.addEventListener('click', function() {
+        exportCurrentSliceAsSvg('tactile');
+    });
+}
 
 if (debugPipelineToggleBtn) {
     debugPipelineToggleBtn.addEventListener('click', function() {

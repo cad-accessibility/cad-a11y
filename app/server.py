@@ -50,7 +50,14 @@ from .braille_display import (
     _DOTPAD_COLS,
 )
 from .cad_comparison_lib import CADComparisonRenderer
-from src.converter.render_low_res import dilate_mask, raised_ink_mask, save_binary_array_as_vector_pdf
+from src.converter.render_low_res import (
+    DEFAULT_PIN_PITCH_MM,
+    dilate_mask,
+    raised_ink_mask,
+    render_payload_as_vector,
+    save_binary_array_as_vector_pdf,
+    set_svg_physical_size,
+)
 
 try:
     import serial  # type: ignore
@@ -737,9 +744,14 @@ def _save_print_if_requested(params: dict[str, Any], engine: CADComparisonRender
     )
     pdf_path = RENDERS_DIR / f"{stem}.pdf"
     npy_path = RENDERS_DIR / f"{stem}.npy"
-    save_binary_array_as_vector_pdf(img_data, str(pdf_path))
+    # The writer traces the braille payload, not the render. This was passing the
+    # RGBA render, which is 3-D, so unpacking two dimensions raised and the
+    # route's catch-all swallowed it: pressing P returned a 400 and wrote neither
+    # file. Nothing tested it, which is why it went unnoticed.
+    payload = _to_braille_payload(img_data)
+    save_binary_array_as_vector_pdf(payload, str(pdf_path))
     with npy_path.open("wb") as handle:
-        np.save(handle, img_data)
+        np.save(handle, payload)
 
 
 def _img_to_base64_png(img_array: np.ndarray) -> str:
@@ -766,6 +778,7 @@ def _coerce_positive_int(value: Any, default: int) -> int:
     if parsed <= 0:
         return default
     return parsed
+
 
 
 def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any], int, bool, str]:
@@ -2130,9 +2143,20 @@ def get_data():
 
 @app.route("/render/export-source", methods=["POST"])
 def render_export_source():
-    """Render a high-fidelity tactile source image for export workflows.
+    """Hand the current view back as a vector drawing for download.
 
-    This endpoint intentionally avoids sending anything to braille hardware.
+    Vector rather than a raster sheet: what a line has to measure to rise in a
+    fuser depends on the machine and the paper, so the useful thing to hand over
+    is a drawing that can be rescaled and restyled in the user's own tools rather
+    than one already committed to a particular sheet.
+
+    Two kinds, because they answer different questions. "geometry" is the
+    render's own artwork, captured from the figure before it is rasterised, so
+    it carries the full detail the screen preview shows. "tactile" traces the
+    braille payload instead, one square per raised pin, so it is exactly what the
+    display raises and nothing more.
+
+    Sends nothing to braille hardware.
     """
     try:
         params = request.get_json(silent=True) or {}
@@ -2141,32 +2165,50 @@ def render_export_source():
         merged_params["view"] = str(merged_params.get("view", "")).lower()
         merged_params["print_view"] = False
 
-        export_width = _coerce_positive_int(params.get("export_width", 1000), 1000)
+        # "geometry" is the render's own vector artwork: real polygons for a
+        # filled or cut view, real strokes for an x-ray, at full detail and
+        # restylable. "tactile" traces the payload instead, one square per raised
+        # pin, which is coarser but is exactly what the display raises.
+        wanted = str(params.get("export_kind", "geometry")).strip().lower()
+        if wanted not in ("geometry", "tactile"):
+            wanted = "geometry"
+        merged_params["capture_svg"] = wanted == "geometry"
 
         engine = get_or_create_renderer()
 
         with render_lock:
-            original_screen_size = list(engine.screen_size)
-            if not original_screen_size or original_screen_size[0] <= 0:
-                original_screen_size = [96, 40]
-            aspect_ratio = float(original_screen_size[1]) / float(original_screen_size[0])
-            export_height = max(1, int(round(export_width * aspect_ratio)))
-            engine.screen_size = [export_width, export_height]
-            try:
-                out_guard, err_guard = _renderer_stdio_guard()
-                with out_guard, err_guard:
-                    rendered = engine.render(merged_params)
-            finally:
-                engine.screen_size = original_screen_size
+            out_guard, err_guard = _renderer_stdio_guard()
+            with out_guard, err_guard:
+                rendered = engine.render(merged_params)
+            grid = list(engine.screen_size) if engine.screen_size else [96, 40]
+            geometry_svg = getattr(engine, "last_render_svg", None)
 
         tactile_payload = _to_braille_payload(rendered)
+
+        # Every mode draws a figure now, so this should hold. It is a safety net
+        # for a degenerate mesh or a capture that failed, not a routine path.
+        # Fall back rather than fail, and say which one was given, because
+        # silently returning a coarser file than asked for is worse than either.
+        kind = wanted
+        if wanted == "geometry" and geometry_svg:
+            # The captured figure is sized from the render canvas, so it opens
+            # about an inch wide. Restate it on the same footprint as the tactile
+            # trace, so the two downloads sit on top of each other.
+            svg = set_svg_physical_size(geometry_svg, grid[0] * DEFAULT_PIN_PITCH_MM)
+        else:
+            svg = render_payload_as_vector(tactile_payload, fmt="svg")
+            kind = "tactile"
+
         response = {
             "status": "success",
             "message": "Export source render complete",
+            "format": "svg",
+            "export_kind": kind,
+            "requested_kind": wanted,
             "image_shape": list(tactile_payload.shape),
-            "image_base64": _img_to_base64_png(tactile_payload),
-            "export_width": export_width,
-            "export_height": export_height,
+            "svg": svg,
+            "grid": grid,
+            "raised_pins": int(np.count_nonzero(tactile_payload)),
         }
         return jsonify(response), 200
     except Exception as error:
