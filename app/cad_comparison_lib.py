@@ -27,7 +27,7 @@ from shapely.plotting import plot_polygon
 from shapely import symmetric_difference
 import matplotlib.pyplot as plt
 import io, PIL, json
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 def compute_imposed_zoom_limits(horizontal_dist, vertical_dist, center_x, center_y, zoom_level, screen_w, screen_h):
@@ -156,6 +156,7 @@ class CADComparisonRenderer:
         self.screen_size = [96,40]
         self.view_diff_mats = {}
         self.view_cut_polygons = {}
+        self.view_slice_pixel_counts = {}
         self.current_render = None
         self.current_ax_limits = []
         self.current_zoom_level = None
@@ -164,7 +165,10 @@ class CADComparisonRenderer:
         self._precompute_lock = threading.Lock()
         self._precompute_done = threading.Event()
         self._precompute_done.set()
-        self.cache_version = 2
+        # Bumped to 3 when slice_pixel_counts joined the payload: a version-2 file
+        # has no counts, so a future load path reading it would leave Slice Area
+        # empty. Invalidating is cheaper than making every reader handle the gap.
+        self.cache_version = 3
         self.cache_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "renders",
@@ -356,6 +360,16 @@ class CADComparisonRenderer:
                 diff_mat /= max_diff
             self.view_diff_mats[view_key] = diff_mat
             self.view_cut_polygons[view_key] = cut_faces_list
+            # Same yielding discipline as the two loops above: this is 101 more
+            # rasterizations per view, each a PIL polygon fill plus a numpy count,
+            # so run as a plain loop rather than a comprehension in order to give
+            # Flask's request threads a chance to run.
+            pixel_counts = []
+            for slice_index, poly in enumerate(cut_faces_list, start=1):
+                pixel_counts.append(self._count_raised_pixels(poly, view_key))
+                if slice_index % self._PRECOMPUTE_YIELD_EVERY == 0:
+                    time.sleep(self._PRECOMPUTE_YIELD_SECONDS)
+            self.view_slice_pixel_counts[view_key] = pixel_counts
 
     def start_background_slice_precompute(self):
         """Kick off slice-graph precompute without blocking first render."""
@@ -392,6 +406,14 @@ class CADComparisonRenderer:
             key: np.asarray(value, dtype=float).tolist()
             for key, value in self.view_diff_mats.items()
         }
+        # Persisted alongside the diff matrices because the Slice Area graph reads
+        # these and nothing else. Leaving them out would mean that once a load path
+        # exists, a cache-warm start would restore the Difference graph while Slice
+        # Area stayed silently empty.
+        slice_pixel_counts = {
+            key: [int(count) for count in value]
+            for key, value in self.view_slice_pixel_counts.items()
+        }
 
         cache_payload = {
             "cache_version": self.cache_version,
@@ -399,6 +421,7 @@ class CADComparisonRenderer:
             "orthographic_view_limits": orthographic_view_limits.tolist(),
             "orthographic_view_centers": orthographic_centers.tolist(),
             "slice_diff_mats": slice_diff_mats,
+            "slice_pixel_counts": slice_pixel_counts,
         }
 
         with open(self.cache_path, "w", encoding="utf-8") as fp:
@@ -571,6 +594,83 @@ class CADComparisonRenderer:
         
 
     
+    def _count_raised_pixels(self, poly, view_key):
+        """Count raised (on) tactile pixels for a single cross-section polygon.
+
+        Rasterizes the cross-section onto a screen_size grid using the view's
+        full axis window, aspect-corrected the same way get_single_view renders
+        (ax.set_aspect('equal')), so the count reflects the dots actually shown
+        on the display. Independent of the current slice and of zoom. Uses only
+        PIL/numpy (no matplotlib), so it is safe in the background precompute
+        thread.
+
+        This reimplements get_single_view's pixel placement rather than sharing
+        it, so the two have to move together. If get_single_view's aspect
+        handling, anchor, margins or figure padding change, the counts here stop
+        describing what is on the display and the Slice Area graph quietly starts
+        reporting something else. test_count_raised_pixels_matches_rendered_output
+        in tests/test_slice_precompute.py pins the equivalence; keep it passing
+        rather than adjusting it to whatever the new numbers happen to be.
+        """
+        if poly is None or poly.is_empty:
+            return 0
+        if isinstance(poly, Polygon):
+            parts = [poly]
+        elif isinstance(poly, MultiPolygon):
+            parts = list(poly.geoms)
+        else:
+            # Degenerate geometry (e.g. lines from a razor-thin slice): keep polygons only.
+            parts = [g for g in getattr(poly, "geoms", []) if isinstance(g, Polygon)]
+        if not parts:
+            return 0
+
+        width_px, height_px = int(self.screen_size[0]), int(self.screen_size[1])
+        (xmin, xmax), (ymin, ymax) = self.view_limits[self._get_view_index(view_key)]
+        xmin, xmax = float(min(xmin, xmax)), float(max(xmin, xmax))
+        ymin, ymax = float(min(ymin, ymax)), float(max(ymin, ymax))
+        dx, dy = xmax - xmin, ymax - ymin
+        if dx <= 0 or dy <= 0:
+            return 0
+
+        # Match get_single_view's set_aspect('equal'): grow the shorter axis so the
+        # data aspect equals the grid aspect, keeping the window centered.
+        cx, cy = (xmin + xmax) / 2.0, (ymin + ymax) / 2.0
+        grid_aspect = width_px / height_px
+        if dx / dy < grid_aspect:
+            dx = dy * grid_aspect
+        else:
+            dy = dx / grid_aspect
+        xmin, ymin = cx - dx / 2.0, cy - dy / 2.0
+
+        def to_px(coords):
+            return [((pt[0] - xmin) / dx * width_px, (pt[1] - ymin) / dy * height_px) for pt in coords]
+
+        mask = Image.new("L", (width_px, height_px), 0)
+        drawer = ImageDraw.Draw(mask)
+        for part in parts:
+            if part.is_empty or part.exterior is None:
+                continue
+            drawer.polygon(to_px(part.exterior.coords), fill=255)
+            for interior in part.interiors:
+                drawer.polygon(to_px(interior.coords), fill=0)
+        return int(np.count_nonzero(np.asarray(mask)))
+
+    def _get_slice_pixel_count_profile(self, view_key):
+        """Slice Area mode: absolute per-slice raised-pixel counts normalized to
+        [0, 1]. Anchor- and zoom-independent, unlike the difference profile."""
+        # Slice Area is a slice-graph consumer too, so it must also kick off the
+        # (now lazy) precompute; without this it would stay a flat profile until
+        # the Difference graph happened to trigger it. No-op once started.
+        self.start_background_slice_precompute()
+
+        counts = np.asarray(self.view_slice_pixel_counts.get(view_key, []), dtype=float)
+        if counts.size == 0:
+            return np.zeros(101, dtype=float)
+        max_count = counts.max()
+        if max_count > 0:
+            counts = counts / max_count
+        return counts
+
     def _map_view_name(self, view_name):
         """Map view name from JSON format to internal format."""
         view_mapping = {
@@ -971,7 +1071,6 @@ class CADComparisonRenderer:
             #        [self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0]),
             #         self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][1])]
             #)
-            print("params", params)
             img_array, _ = get_single_view(
                 self.shapes[shape_index],
                 self.bbox,
@@ -1097,11 +1196,17 @@ class CADComparisonRenderer:
             if graph_view_name != view_name:
                 graph_view_index = self._get_view_index(graph_view_name)
                 graph_zoom_ax_limits = self.view_limits[graph_view_index]
-            view_diff_mat = self._get_zoom_filtered_slice_profile(
-                graph_view_name,
-                cut_position_int,
-                graph_zoom_ax_limits,
-            )
+            slicegraph_mode = str(params.get("slicegraph_mode", "difference")).lower()
+            if slicegraph_mode == "column-count":
+                # Slice Area: absolute raised-pixel count per slice, independent
+                # of the currently selected slice (issue #48).
+                view_diff_mat = self._get_slice_pixel_count_profile(graph_view_name)
+            else:
+                view_diff_mat = self._get_zoom_filtered_slice_profile(
+                    graph_view_name,
+                    cut_position_int,
+                    graph_zoom_ax_limits,
+                )
 
             # The marker always reflects the current (live) slice position,
             # even when the graph data is locked to an anchor depth.
