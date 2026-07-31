@@ -1433,9 +1433,28 @@ const DEFAULT_TACTILE_GRID = Object.freeze({
 let lastRenderedGrid = DEFAULT_TACTILE_GRID;
 
 /** The display using this grid, or the default if none does. */
+/** The registry key for a device.
+ *
+ * The two integrations in this repo pass lowercase literals that already match
+ * what getEffectiveOutputDevice() returns, so this changes nothing today. It is
+ * here so that a third integration registering "DotPad" cannot end up filed
+ * under a key nothing ever looks up. Applied on both writing and reading, since
+ * normalising only one side would create exactly the mismatch it guards against.
+ */
+function displayKey(deviceKey) {
+    return String(deviceKey).toLowerCase();
+}
+
 function gridForSize(width, height) {
+    // Compared as numbers: a device reporting "60" rather than 60 would other-
+    // wise match nothing and read as no device connected at all, which looks
+    // like a hardware fault rather than a type confusion.
+    width = Number(width);
+    height = Number(height);
     for (const entry of Object.values(window.tactileDisplays)) {
-        if (entry.pixelWidth === width && entry.pixelHeight === height) return entry;
+        if (Number(entry.pixelWidth) === width && Number(entry.pixelHeight) === height) {
+            return entry;
+        }
     }
     return DEFAULT_TACTILE_GRID;
 }
@@ -1443,10 +1462,11 @@ function gridForSize(width, height) {
 /** Register (or with `null`, clear) one device without touching the others. */
 function setTactileDisplay(deviceKey, info) {
     if (!deviceKey) return;
+    const key = displayKey(deviceKey);
     if (info) {
-        window.tactileDisplays[deviceKey] = info;
+        window.tactileDisplays[key] = info;
     } else {
-        delete window.tactileDisplays[deviceKey];
+        delete window.tactileDisplays[key];
     }
     // The size only reached the server on the next render, so connecting a
     // display left the previews describing the previous one until the user
@@ -1467,7 +1487,7 @@ function setTactileDisplay(deviceKey, info) {
  * the default.
  */
 function activeTactileGrid() {
-    const selected = window.tactileDisplays[getEffectiveOutputDevice()];
+    const selected = window.tactileDisplays[displayKey(getEffectiveOutputDevice())];
     if (selected) return selected;
 
     const connected = Object.values(window.tactileDisplays);
@@ -1580,7 +1600,13 @@ function previewCaption(shape) {
     if (shape && shape.length > 1) {
         parts.push(`${shape[1]}\u00d7${shape[0]}px`);
     }
-    parts.push(lastRenderedGrid.label);
+    // Labelled by the grid that produced this render rather than by whatever is
+    // connected now, so connecting a display cannot pair its name with the
+    // previous render's size. lastRenderedGrid always holds a grid, but a device
+    // may register without a label, and "undefined" in the caption would be
+    // worse than saying the size plainly.
+    parts.push(lastRenderedGrid.label
+        || `${lastRenderedGrid.pixelWidth}\u00d7${lastRenderedGrid.pixelHeight} grid`);
     return parts.join(' \u00b7 ');
 }
 

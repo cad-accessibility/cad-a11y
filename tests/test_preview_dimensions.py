@@ -291,3 +291,57 @@ def test_the_same_size_still_shares_a_cache_entry():
     a = _params(view="x+", depth=50, target_pixel_width=60, target_pixel_height=40)
     b = _params(view="x+", depth=50, target_pixel_width=60, target_pixel_height=40)
     assert server._build_quantized_render_key(a, model_index=0) == server._build_quantized_render_key(b, model_index=0)
+
+
+# --- Robustness of the display registry -----------------------------------
+
+
+def _viewer_source() -> str:
+    return (Path(__file__).resolve().parents[1] / "static" / "js" / "viewer.js").read_text()
+
+
+def test_the_registry_is_keyed_the_same_way_it_is_read():
+    """Normalising only where entries are written would file a device under a key
+    nothing looks up, which is the mismatch this is meant to prevent."""
+    source = _viewer_source()
+
+    write = re.search(r"function setTactileDisplay\(deviceKey, info\) \{(.*?)\n\}", source, re.S)
+    assert write and "displayKey(deviceKey)" in write.group(1), (
+        "setTactileDisplay does not normalise the key it stores under"
+    )
+
+    read = re.search(r"function activeTactileGrid\(\) \{(.*?)\n\}", source, re.S)
+    assert read and "displayKey(getEffectiveOutputDevice())" in read.group(1), (
+        "activeTactileGrid looks up a key it did not normalise"
+    )
+
+
+def test_the_two_integrations_register_under_keys_the_lookup_can_find():
+    """The keys are internal literals, so this is the check that they still line
+    up with what getEffectiveOutputDevice returns."""
+    root = Path(__file__).resolve().parents[1] / "static" / "js"
+    registered = set()
+    for name in ("dotpad-integration.js", "monarch-hid.js"):
+        registered |= set(re.findall(r"setTactileDisplay\?\.\('([^']+)'", (root / name).read_text()))
+
+    assert registered == {"dotpad", "monarch_hid"}, registered
+    for key in registered:
+        assert key == key.lower(), f"{key} would only be found after normalisation"
+
+
+def test_sizes_are_matched_as_numbers():
+    """A device reporting "60" instead of 60 would match nothing and read as no
+    display connected, which looks like a hardware fault."""
+    body = re.search(r"function gridForSize\(width, height\) \{(.*?)\n\}", _viewer_source(), re.S)
+    assert body, "gridForSize not found"
+    assert "Number(entry.pixelWidth)" in body.group(1)
+    assert "Number(entry.pixelHeight)" in body.group(1)
+
+
+def test_the_caption_never_prints_undefined_for_a_missing_label():
+    """Entries come from integrations that all set a label, but the registry is
+    exported on window and takes whatever it is given."""
+    body = re.search(r"function previewCaption\(shape\) \{(.*?)\n\}", _viewer_source(), re.S)
+    assert body, "previewCaption not found"
+    assert "lastRenderedGrid.label" in body.group(1)
+    assert "||" in body.group(1), "no fallback when a device registers without a label"
