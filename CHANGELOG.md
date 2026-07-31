@@ -7,12 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-07-28
+
+#### Fixed
+*   The model list no longer empties itself. It appeared fully populated, then collapsed to "No models found" and became unselectable a moment after the page settled, leaving no way to choose a model. It now stays populated and usable.
+*   The models that ship with the app are the ones you actually get. A Docker deployment was serving a different set from the one in the project, so familiar models such as the mug, cane tip, rocking chair and lego bricks were missing.
+*   A model you add to the project now reaches a server that has been running for a while. Previously new models only ever appeared on a freshly created deployment.
+
+#### Changed
+*   Models you upload are now kept separately from the ones that ship with the app, which is what makes it possible to show them only to you. Uploads previously shared a directory with the built-in models, so the app could not tell the two apart.
+*   An upload named after a built-in model is stored under a slightly different name instead of shadowing it, so both stay reachable.
+*   Added a maintenance script that reports, and on request removes, files left in the built-in model directory by earlier versions. See the README section on where models are stored.
+*   A deploy that does not come up now fails instead of reporting success. The pipeline finished as soon as the container was created, so a site returning an error looked like a healthy release and was found by a person rather than by the deploy.
+*   The deployment guide now covers where data is stored, how to back it up and restore it, and what to check when the site is unreachable.
+*   Added a script that checks a running server against the problems that have actually caused outages here, so the state of a deployment can be confirmed rather than assumed.
+
 ### 2026-07-23
 
 #### Changed
 *   The simplified workshop viewer now offers the Zoom controls, so a participant can zoom in on part of a model and feel its detail on the braille display.
 *   The simplified workshop viewer no longer shows the output-device chooser. The braille display connected at the station already receives the model, so the choice was redundant and could be set wrong.
 *   The simplified workshop viewer now opens on the y+ view in X-Ray rendering mode, so a session starts from the orientation and rendering participants work with. The full viewer is unchanged and still opens on x+ in Filled.
+
+### 2026-07-22
+
+#### Changed
+*   Uploaded models, the usage database, and render and log output are now stored in Docker-managed volumes rather than in a folder on the server. This makes deployments work without depending on file permissions being configured just so on the university file share, which is what had been breaking them.
+*   Because of that move, this data is no longer in its old location on the server and is not covered by whatever backs that location up. `docker compose down -v` now erases uploaded models and the usage database. The deployment guide explains how to back them up and restore them.
 
 ### 2026-07-15
 

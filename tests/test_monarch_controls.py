@@ -1,8 +1,32 @@
+"""Tests for the Monarch control handler.
+
+These used to assert that particular literals appeared in `monarch-hid.js`, which
+had three problems (#116). Reformatting broke them without any behaviour change.
+A genuinely wrong mapping still passed, because each assertion was copied from
+the same literal it was checking, so the obvious response to a failure was to
+update the literal. And a negative assertion matched an identifier appearing in a
+comment rather than in code.
+
+There is no JS runtime in the repo, so instead of executing the handler these
+parse its command map and check properties of the parsed data: that the movement
+commands form the four unit directions, that depth commands are equal and
+opposite, that no report key is defined twice. Those hold regardless of
+formatting, and a structural mistake cannot be papered over by editing a string
+in the test.
+
+The limit is worth stating: which physical key produces which report id can only
+be confirmed against the hardware or its documentation. Nothing in this
+repository can tell you that a given report id really is the left button, so
+these do not claim to.
+"""
+
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 MONARCH_JS = ROOT / "static" / "js" / "monarch-hid.js"
@@ -14,6 +38,18 @@ def _source() -> str:
 
 def _compact(source: str) -> str:
     return re.sub(r"\s+", "", source)
+
+
+def _code_only(source: str) -> str:
+    """Source with comments and string literals removed.
+
+    A negative assertion over raw source matches an identifier that appears only
+    in an explanatory comment, which is how removing a line in #114 failed a test
+    it should have passed.
+    """
+    source = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+    source = re.sub(r"(?m)//.*$", "", source)
+    return re.sub(r"'[^'\n]*'|\"[^\"\n]*\"", "''", source)
 
 
 def test_monarch_registers_its_grid_under_its_own_key():
@@ -32,54 +68,151 @@ def test_monarch_registers_its_grid_under_its_own_key():
     assert "setTactileDisplay?.('monarch_hid'" in compact
     assert "pixelWidth:96" in compact
     assert "pixelHeight:40" in compact
-    # The single shared slot is what coupled the two devices together.
-    assert "connectedTactileDisplay" not in compact
+    # The single shared slot is what coupled the two devices together. Checked
+    # against code with comments stripped, so a mention in prose cannot keep
+    # this passing after the slot itself is gone.
+    assert "connectedTactileDisplay" not in _compact(_code_only(_source()))
 
 
-def test_monarch_report_key_honours_the_dataview_window():
-    """The report key must respect the DataView's offset and length.
+def _command_map() -> dict[str, dict]:
+    """Parse MONARCH_COMMANDS into {report_key: {field: value}}."""
+    source = _source()
+    block = re.search(r"MONARCH_COMMANDS\s*=\s*\{(.*?)\n\s*\};", source, re.DOTALL)
+    assert block, "MONARCH_COMMANDS not found"
 
-    Reading the whole underlying buffer would key off the wrong bytes whenever the
-    view is a window onto a larger one, and every mapped control would silently
-    stop matching.
+    commands: dict[str, dict] = {}
+    for raw_key, body in re.findall(r"'([^']+)'\s*:\s*\{([^}]*)\}", block.group(1)):
+        entry: dict = {}
+        for field, value in re.findall(r"(\w+)\s*:\s*('[^']*'|-?\d+)", body):
+            entry[field] = ast.literal_eval(value) if value.startswith("'") else int(value)
+        assert raw_key not in commands, f"report key {raw_key} is defined twice"
+        commands[raw_key] = entry
+
+    assert commands, "no commands parsed"
+    return commands
+
+
+def _by_type(command_type: str) -> list[dict]:
+    return [c for c in _command_map().values() if c.get("type") == command_type]
+
+
+# --- Structure ------------------------------------------------------------
+
+
+def test_every_command_has_a_known_type():
+    known = {"move", "depth", "cycle-cursor"}
+    for key, command in _command_map().items():
+        assert command.get("type") in known, f"{key} has unknown type {command.get('type')!r}"
+
+
+def test_report_keys_are_well_formed():
+    """`reportId:byte,byte,byte`. A malformed key silently never matches."""
+    for key in _command_map():
+        assert re.fullmatch(r"\d+:\d+,\d+,\d+", key), f"malformed report key {key!r}"
+
+
+# --- Movement -------------------------------------------------------------
+
+
+def test_movement_commands_are_the_four_unit_directions():
+    """Exactly one command per direction, each a unit step along one axis.
+
+    Catches what a literal comparison could not: a duplicated vector, a diagonal,
+    or a step of the wrong size.
     """
+    vectors = sorted((c["dCol"], c["dRow"]) for c in _by_type("move"))
+    assert vectors == [(-1, 0), (0, -1), (0, 1), (1, 0)], (
+        f"movement commands are not the four unit directions: {vectors}"
+    )
+
+
+def test_movement_directions_come_in_opposing_pairs():
+    vectors = {(c["dCol"], c["dRow"]) for c in _by_type("move")}
+    for col, row in vectors:
+        assert (-col, -row) in vectors, (
+            f"({col}, {row}) has no opposite; one direction is unreachable"
+        )
+
+
+def test_no_movement_command_is_a_no_op():
+    for command in _by_type("move"):
+        assert (command["dCol"], command["dRow"]) != (0, 0), "a key mapped to no movement at all"
+
+
+# --- Depth ----------------------------------------------------------------
+
+
+def test_depth_commands_are_equal_and_opposite():
+    deltas = sorted(c["delta"] for c in _by_type("depth"))
+    assert len(deltas) == 2, f"expected one shallower and one deeper, got {deltas}"
+    assert deltas[0] == -deltas[1], f"depth steps are not symmetric: {deltas}"
+    assert deltas[1] > 0
+
+
+# --- Cursor ---------------------------------------------------------------
+
+
+def test_exactly_one_cursor_cycle_command():
+    assert len(_by_type("cycle-cursor")) == 1
+
+
+# --- Wiring ---------------------------------------------------------------
+#
+# These stay source-based. They are about whether one function is called from
+# another, which cannot be observed by parsing data, and asserting on a call site
+# is not the failure mode #116 describes.
+
+
+def test_input_reports_dispatch_to_the_command_handler():
+    source = _source()
+    assert "addEventListener('inputreport'" in source
+    assert "monarchReportKey(" in source
+    assert "MONARCH_COMMANDS[" in source
+    assert "handleMonarchCommand(" in source
+
+
+def test_report_key_honours_the_dataview_window():
+    """Reading the whole underlying buffer would key off the wrong bytes whenever
+    the view is a window onto a larger one, and every control would stop matching."""
     assert "newUint8Array(data.buffer,data.byteOffset,data.byteLength)" in _compact(_source())
 
 
-def test_monarch_input_reports_dispatch_to_command_handler():
+def test_monarch_does_not_claim_the_tactile_display_dimensions():
+    """Claiming them costs a full extra render per interaction and would wipe the
+    entry belonging to a DotPad connected at the same time."""
+    assert "connectedTactileDisplay=" not in _compact(_source())
+
+
+def test_depth_and_cursor_go_through_the_viewer_helpers():
     source = _source()
-
-    assert "addEventListener('inputreport'" in source
-    assert "const key = monarchReportKey(e.reportId, e.data);" in source
-    assert "const command = MONARCH_COMMANDS[key];" in source
-    assert "handleMonarchCommand(command);" in source
-
-
-def test_monarch_command_map_contains_workshop_controls():
-    source = _source()
-
-    assert "'32:0,32,0': { type: 'move', dCol: -1, dRow: 0 }" in source
-    assert "'32:0,64,0': { type: 'move', dCol: 1, dRow: 0 }" in source
-    assert "'32:0,8,0': { type: 'move', dCol: 0, dRow: -1 }" in source
-    assert "'32:0,16,0': { type: 'move', dCol: 0, dRow: 1 }" in source
-    assert "'32:1,0,0': { type: 'depth', delta: -10 }" in source
-    assert "'32:8,0,0': { type: 'depth', delta: 10 }" in source
-    assert "'32:0,1,0': { type: 'cycle-cursor' }" in source
+    for helper in (
+        "window.getCurrentSliceDepth?.()",
+        "window.updateSliceDepth?.(",
+        "window.announceDepthValue?.(",
+        "window.whichCursor?.()",
+        "window.moveCursor?.(",
+        "window.cycleCursorState?.(",
+    ):
+        assert helper in source, f"{helper} is not called"
 
 
-def test_monarch_depth_uses_viewer_helpers_not_private_state():
-    source = _source()
-    compact = _compact(source)
-
-    assert "window.getCurrentSliceDepth?.()" in source
-    assert "window.updateSliceDepth?.(nextDepth,false);" in compact
-    assert "window.announceDepthValue?.(nextDepth,previousDepth);" in compact
-    assert "currentSliceDepth" not in source
+def test_handler_does_not_reach_into_viewer_private_state():
+    """Checked against code with comments and strings stripped, so naming the
+    variable in an explanatory comment does not fail the test."""
+    assert "currentSliceDepth" not in _code_only(_source())
 
 
-def test_monarch_cursor_uses_viewer_cursor_helpers():
-    source = _source()
+# --- The parsing these rely on --------------------------------------------
 
-    assert "window.whichCursor?.()" in source
-    assert "window.moveCursor?.(command.dCol, command.dRow);" in source
-    assert "window.cycleCursorState?.();" in source
+
+@pytest.mark.parametrize(
+    "snippet,expected",
+    [
+        ("// currentSliceDepth explained here\nlet x = 1;", False),
+        ("let y = currentSliceDepth;", True),
+        ("/* currentSliceDepth */\nlet z = 2;", False),
+    ],
+)
+def test_code_only_ignores_comments(snippet, expected):
+    """If the stripper is wrong, the negative assertions above prove nothing."""
+    assert ("currentSliceDepth" in _code_only(snippet)) is expected
