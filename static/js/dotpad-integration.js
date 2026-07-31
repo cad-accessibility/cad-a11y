@@ -337,13 +337,22 @@ function onKey(device, currKeyCode, keyMsg) {
         console.log('DotPad key pressed but cursor state is "none":', currKeyCode, keyMsg);
         return;
     }
-    if (cursorState === 'horizontal-line' && (currKeyCode === 'KeyFunction1' || currKeyCode === 'KeyFunction4')) {
-        console.log('DotPad key pressed but cursor state is "horizontal-line":', currKeyCode, keyMsg);
-        return;
-    }
-    if (cursorState === 'vertical-line' && (currKeyCode === 'PanningLeft' || currKeyCode === 'PanningRight')) {
-        console.log('DotPad key pressed but cursor state is "vertical-line":', currKeyCode, keyMsg);
-        return;
+    // Block the axis the line cannot travel along. A horizontal line spans the
+    // full width, so it is repositioned by moving up and down and left/right is
+    // what has no meaning; a vertical line is the mirror image. These two were
+    // the wrong way round, which also made the DotPad behave opposite to the
+    // Monarch. Guard on the movement axis rather than on key names so the two
+    // handlers cannot drift apart again if the key map changes.
+    if (cursorAction) {
+        const [dCol, dRow] = cursorAction;
+        if (cursorState === 'horizontal-line' && dCol !== 0) {
+            console.log('DotPad key pressed but cursor state is "horizontal-line":', currKeyCode, keyMsg);
+            return;
+        }
+        if (cursorState === 'vertical-line' && dRow !== 0) {
+            console.log('DotPad key pressed but cursor state is "vertical-line":', currKeyCode, keyMsg);
+            return;
+        }
     }
 
     if (!cursorAction) {
