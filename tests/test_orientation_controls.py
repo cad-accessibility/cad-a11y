@@ -473,10 +473,9 @@ def test_the_axis_pickers_are_gone():
 def test_the_number_keys_no_longer_name_views():
     """7 through = were one key per named view, with no key left for roll."""
     js = _js()
-    for shortcut in ("'7'", "'8'", "'9'", "'0'", "'='"):
+    for shortcut in ("'7'", "'8'", "'9'", "'0'", "'-'", "'='"):
         assert f"case {shortcut}:" not in js, f"{shortcut} still selects a view"
-    assert "Digit7" not in js, "the numpad alias for a removed shortcut is still there"
-
+    assert "Digit7" not in js and "Numpad7" not in js, "a removed shortcut alias is still there"
 
 def test_the_page_offers_all_six_turns():
     html = _html()
