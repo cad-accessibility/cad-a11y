@@ -619,8 +619,8 @@ function setOrientationFromView(viewToken) {
 // the model rotation the key names.
 const RELATIVE_ROTATIONS = {
     // Model turns counterclockwise about display Z, so the camera turns with +depth.
-    rollCounterclockwise: { axis: 'depth', turns: 1, speech: 'Roll counterclockwise' },
-    rollClockwise:        { axis: 'depth', turns: -1, speech: 'Roll clockwise' },
+    rollCounterclockwise: { axis: 'depth', turns: -1, speech: 'Roll counterclockwise' },
+    rollClockwise:        { axis: 'depth', turns: 1, speech: 'Roll clockwise' },
     pitchUp:              { axis: 'right', turns: 1, speech: 'Pitch up' },
     pitchDown:            { axis: 'right', turns: -1, speech: 'Pitch down' },
     yawLeft:              { axis: 'up', turns: 1, speech: 'Yaw left' },
