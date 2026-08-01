@@ -357,6 +357,12 @@ async function sendStateToServer() {
 
 // State management
 let currentSliceDepth = 50;
+// The slice plane's position along each model axis, as a 0-1 fraction from
+// that axis's minimum end. Kept independent of viewing direction so turning
+// the model doesn't relocate the physical plane -- rotating only changes
+// which of the three is currently the active (visible) one, and from which
+// side currentSliceDepth reads it. See activeSliceAxis/displayDepthFromPlanes.
+let slicePlanes = { x: 0.5, y: 0.5, z: 0.5 };
 let currentView = 'x+';
 let currentZoom = 0.0;
 let currentRenderMode = 'filled';
@@ -527,37 +533,28 @@ const MAX_ZOOM = Number.POSITIVE_INFINITY;
 const ZOOM_STEP = 0.1;
 const FINE_ZOOM_STEP = 0.01;
 
-const VIEW_FORWARD_VECTORS = {
-    'x+': [1, 0, 0],
-    'x-': [-1, 0, 0],
-    'y+': [0, 1, 0],
-    'y-': [0, -1, 0],
-    'z+': [0, 0, 1],
-    'z-': [0, 0, -1],
+// The camera basis for each named view, in model coordinates. These mirror
+// _get_view_basis in src/converter/single_view_stl.py exactly, so sending this
+// basis for a named view renders the same picture as naming the view does.
+//
+// All three axes are tracked rather than two plus a cross product, because the
+// six views are not consistently handed: y-, y+ and z- have right x up = -depth
+// where z+, x- and x+ have +depth. Deriving `right` mirrors half of them.
+const VIEW_BASIS = {
+    'z+': { right: [1, 0, 0],  up: [0, 1, 0],  depth: [0, 0, 1] },   // top
+    'y-': { right: [1, 0, 0],  up: [0, 0, 1],  depth: [0, 1, 0] },   // front
+    'x-': { right: [0, 1, 0],  up: [0, 0, 1],  depth: [1, 0, 0] },   // left
+    'x+': { right: [0, -1, 0], up: [0, 0, 1],  depth: [-1, 0, 0] },  // right
+    'y+': { right: [-1, 0, 0], up: [0, 0, 1],  depth: [0, -1, 0] },  // back
+    'z-': { right: [-1, 0, 0], up: [0, -1, 0], depth: [0, 0, -1] },  // bottom
 };
 
-const CANONICAL_UP_FOR_VIEW = {
-    'x+': [0, 0, 1],
-    'x-': [0, 0, 1],
-    'y+': [0, 0, 1],
-    'y-': [0, 0, 1],
-    'z+': [0, 1, 0],
-    'z-': [0, 1, 0],
-};
-
-let orientationForward = [...VIEW_FORWARD_VECTORS['x+']];
-let orientationUp = [...CANONICAL_UP_FOR_VIEW['x+']];
+let orientationRight = [...VIEW_BASIS['x+'].right];
+let orientationUp = [...VIEW_BASIS['x+'].up];
+let orientationDepth = [...VIEW_BASIS['x+'].depth];
 
 function dotVec3(a, b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}
-
-function crossVec3(a, b) {
-    return [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ];
 }
 
 function normalizeAxisVector(v) {
@@ -575,26 +572,13 @@ function normalizeAxisVector(v) {
     ];
 }
 
-function rotateVectorByAxis90(vector, axis, quarterTurns) {
-    const turns = ((quarterTurns % 4) + 4) % 4;
-    if (turns === 0) return [...vector];
-    let out = [...vector];
-    const k = normalizeAxisVector(axis);
-    for (let i = 0; i < turns; i += 1) {
-        const projection = dotVec3(k, out);
-        const cross = crossVec3(k, out);
-        out = [
-            k[0] * projection + cross[0],
-            k[1] * projection + cross[1],
-            k[2] * projection + cross[2],
-        ];
-    }
-    return normalizeAxisVector(out);
+function negateVec3(v) {
+    return [-v[0], -v[1], -v[2]];
 }
 
-function orientationViewFromForward(forwardVector) {
-    for (const [viewToken, vec] of Object.entries(VIEW_FORWARD_VECTORS)) {
-        if (dotVec3(vec, forwardVector) === 1) {
+function orientationViewFromDepth(depthVector) {
+    for (const [viewToken, basis] of Object.entries(VIEW_BASIS)) {
+        if (dotVec3(basis.depth, depthVector) === 1) {
             return viewToken;
         }
     }
@@ -602,41 +586,137 @@ function orientationViewFromForward(forwardVector) {
 }
 
 function setOrientationFromView(viewToken) {
-    orientationForward = [...(VIEW_FORWARD_VECTORS[viewToken] || VIEW_FORWARD_VECTORS['x+'])];
-    orientationUp = [...(CANONICAL_UP_FOR_VIEW[viewToken] || CANONICAL_UP_FOR_VIEW['x+'])];
+    const basis = VIEW_BASIS[viewToken] || VIEW_BASIS['x+'];
+    orientationRight = [...basis.right];
+    orientationUp = [...basis.up];
+    orientationDepth = [...basis.depth];
 }
 
-function applyRelativeRotation(kind, direction, announcementText) {
-    // direction: +1 or -1 indicates ±90 degree about the local axis.
-    let rotationAxis;
-    if (kind === 'yaw') {
-        rotationAxis = orientationUp;
-    } else if (kind === 'pitch') {
-        rotationAxis = normalizeAxisVector(crossVec3(orientationUp, orientationForward));
-    } else if (kind === 'roll') {
-        rotationAxis = orientationForward;
-    } else {
-        return;
+// Each of the six turns replaces two of the current (right, up, depth)
+// vectors with each other (negating one) and leaves the third untouched --
+// e.g. rollClockwise replaces right with up and up with -right. This has to
+// be defined directly in terms of the CURRENT basis, not as a +-90 turn about
+// a world-frame axis using the right-hand rule: the six named views are not
+// consistently handed (front/back/bottom are a mirror image of
+// top/left/right), so a fixed-sign world-frame turn looks clockwise from some
+// and counterclockwise from others, and pitches up on some and down on
+// others. The direct swap has no handedness to get backwards, so it means
+// the same physical turn from every orientation.
+const RELATIVE_ROTATIONS = {
+    rollCounterclockwise: { speech: 'Roll counterclockwise' },
+    rollClockwise:        { speech: 'Roll clockwise' },
+    pitchUp:              { speech: 'Pitch up' },
+    pitchDown:            { speech: 'Pitch down' },
+    yawLeft:              { speech: 'Yaw left' },
+    yawRight:             { speech: 'Yaw right' },
+};
+
+function applyRelativeRotation(rotationName) {
+    const rotation = RELATIVE_ROTATIONS[rotationName];
+    if (!rotation) return;
+
+    const right = orientationRight, up = orientationUp, depth = orientationDepth;
+    switch (rotationName) {
+        case 'rollClockwise':
+            orientationRight = up;
+            orientationUp = negateVec3(right);
+            break;
+        case 'rollCounterclockwise':
+            orientationRight = negateVec3(up);
+            orientationUp = right;
+            break;
+        case 'pitchUp':
+            orientationUp = negateVec3(depth);
+            orientationDepth = up;
+            break;
+        case 'pitchDown':
+            orientationUp = depth;
+            orientationDepth = negateVec3(up);
+            break;
+        case 'yawLeft':
+            orientationRight = depth;
+            orientationDepth = negateVec3(right);
+            break;
+        case 'yawRight':
+            orientationRight = negateVec3(depth);
+            orientationDepth = right;
+            break;
     }
 
-    orientationForward = rotateVectorByAxis90(orientationForward, rotationAxis, direction);
-    orientationUp = rotateVectorByAxis90(orientationUp, rotationAxis, direction);
+    // Pitch/yaw can switch which of the three persisted planes is now facing
+    // the viewer; roll never does (it doesn't touch orientationDepth), so this
+    // is a no-op there. Must run before updateView/sendStateToServer below so
+    // the request they send already carries the re-derived depth.
+    const depthChanged = syncSliceDepthFromPlanes();
 
-    const newView = orientationViewFromForward(orientationForward);
-    updateView(newView, false, { syncOrientation: false });
-    announce(announcementText);
+    const viewChanged = updateView(orientationViewFromDepth(orientationDepth), false,
+                                   { syncOrientation: false });
+    if (!viewChanged) {
+        // A roll leaves the same face toward the reader, so updateView sees no
+        // change and would not redraw. 
+        if (isSliceGraphRepresentationMode()) {
+            autoRefreshSliceGraph({ updateAnchor: true });
+        } else {
+            sendStateToServer();
+        }
+    }
+    announce(depthChanged ? `${rotation.speech}, depth ${currentSliceDepth}%` : rotation.speech);
 }
 
 function getOrientationPayload() {
-    const forward = normalizeAxisVector(orientationForward);
-    const up = normalizeAxisVector(orientationUp);
-    const right = normalizeAxisVector(crossVec3(up, forward));
     return {
         scheme: 'basis-v1',
-        forward,
-        up,
-        right,
+        forward: normalizeAxisVector(orientationDepth),
+        up: normalizeAxisVector(orientationUp),
+        right: normalizeAxisVector(orientationRight),
     };
+}
+
+// Which model axis the current view slices along, and from which side.
+// sign > 0 means depth points toward that axis's positive end (0% is the
+// negative end); sign < 0 means the reverse. This sign is what makes the same
+// physical plane read as (100 - x)% after a 180-degree turn around that axis.
+function activeSliceAxis() {
+    const d = orientationDepth;
+    if (d[0] !== 0) return { axis: 'x', sign: Math.sign(d[0]) };
+    if (d[1] !== 0) return { axis: 'y', sign: Math.sign(d[1]) };
+    return { axis: 'z', sign: Math.sign(d[2]) };
+}
+
+// Convert the persisted absolute plane position into the view-relative
+// percentage the slider/announcements show ("X% from where you're looking").
+function displayDepthFromPlanes() {
+    const { axis, sign } = activeSliceAxis();
+    const fraction = slicePlanes[axis];
+    return Math.round((sign > 0 ? fraction : 1 - fraction) * 100);
+}
+
+// The inverse: fold a view-relative percentage back into the persisted
+// absolute position of whichever axis is currently active.
+function writeDisplayDepthToPlanes(depthPercent) {
+    const { axis, sign } = activeSliceAxis();
+    const fraction = depthPercent / 100;
+    slicePlanes[axis] = sign > 0 ? fraction : 1 - fraction;
+}
+
+function resetSlicePlanes() {
+    slicePlanes = { x: 0.5, y: 0.5, z: 0.5 };
+}
+
+// Re-derive currentSliceDepth from the persisted planes after the active axis
+// may have changed (any pitch/yaw, or picking a different named view). Roll
+// never changes the active axis, so this is a harmless no-op there. Does not
+// write back to slicePlanes -- only updateSliceDepth (a user-initiated change)
+// does that.
+function syncSliceDepthFromPlanes() {
+    const oldDepth = currentSliceDepth;
+    currentSliceDepth = displayDepthFromPlanes();
+    if (sliceSlider) {
+        sliceSlider.value = currentSliceDepth;
+        sliceSlider.setAttribute('aria-valuenow', currentSliceDepth);
+    }
+    if (slicePercentage) slicePercentage.textContent = currentSliceDepth;
+    return oldDepth !== currentSliceDepth;
 }
 
 const axisInfo = {
@@ -681,7 +761,6 @@ const DEBUG_PIPELINE_VISIBILITY_KEY = 'debugPipelineVisible';
 // New radio group references
 const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
 const viewModeRadios = () => document.querySelectorAll('input[name="view-mode"]');
-const viewRadios = () => document.querySelectorAll('input[name="view-select"]');
 const outputDeviceRadios = () => document.querySelectorAll('input[name="output-device"]');
 
 function getRenderPipelineParams(uiRenderMode) {
@@ -1325,6 +1404,7 @@ async function exportCurrentSliceAsPng() {
 function updateSliceDepth(newDepth, shouldAnnounce = true) {
     const oldDepth = currentSliceDepth;
     currentSliceDepth = Math.max(0, Math.min(100, newDepth));
+    writeDisplayDepthToPlanes(currentSliceDepth);
     sliceSlider.value = currentSliceDepth;
     slicePercentage.textContent = currentSliceDepth;
     refreshViewInfoSummary();
@@ -1382,7 +1462,6 @@ function syncRadioGroup(radios, currentValue, groupLabel) {
 function syncRadios() {
     syncRadioGroup(renderModeRadios(), currentRenderMode, 'render-mode');
     syncRadioGroup(viewModeRadios(), currentRepresentationMode, 'view-mode');
-    syncRadioGroup(viewRadios(), currentView, 'view-select');
     syncRadioGroup(outputDeviceRadios(), currentOutputDevice, 'output-device');
 }
 
@@ -1570,6 +1649,7 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
     currentView = newView;
     if (syncOrientation && oldView !== currentView) {
         setOrientationFromView(currentView);
+        syncSliceDepthFromPlanes();
     }
     if (currentViewSpan) currentViewSpan.textContent = currentView;
     refreshViewInfoSummary();
@@ -1738,6 +1818,7 @@ document.getElementById("model-list-dropdown").addEventListener("change", functi
     const selectedItem = this.value;
     currentModel = selectedItem;
     clearCameraCenterState();
+    resetSlicePlanes();
     const selectedLabel = this.selectedIndex >= 0 ? this.options[this.selectedIndex].text : `model ${selectedItem}`;
     if (sbModel && this.selectedIndex >= 0) {
         sbModel.textContent = this.options[this.selectedIndex].text;
@@ -1851,6 +1932,7 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             dropdown.value = String(data.new_model_index);
             currentModel = String(data.new_model_index);
             clearCameraCenterState();
+            resetSlicePlanes();
             const selectedLabel = dropdown.selectedIndex >= 0 ? dropdown.options[dropdown.selectedIndex].text : data.filename;
             if (sbModel && dropdown.selectedIndex >= 0) {
                 sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
@@ -1905,7 +1987,7 @@ function applyServerState(data) {
             updateSliceDepth(newDepth, false);
         }
     }
-    if (data.builtin_model_stems && !builtinModelStems) {
+    if (Array.isArray(data.builtin_model_stems) && data.builtin_model_stems.length && !builtinModelStems) {
         builtinModelStems = data.builtin_model_stems;
         // Force a rebuild now that the filter is known.
         lastModelListSignature = null;
@@ -1927,6 +2009,7 @@ function applyServerState(data) {
         if (idx >= 0 && String(idx) !== currentModel) {
             currentModel = String(idx);
             clearCameraCenterState();
+            resetSlicePlanes();
             pendingInputSource = 'ingest';
             sendStateToServer();
         }
@@ -2310,16 +2393,6 @@ document.addEventListener('change', function(e) {
     }
 });
 
-// View selection radios
-document.addEventListener('change', function(e) {
-    if (e.target && e.target.matches('input[name="view-select"]')) {
-        if (e.target.checked) {
-            pendingInputSource = 'ui';
-            updateView(e.target.value);
-        }
-    }
-});
-
 // Output device radios (Monarch, DotPad, Auto)
 document.addEventListener('change', function(e) {
     if (e.target && e.target.matches('input[name="output-device"]')) {
@@ -2414,6 +2487,28 @@ if (resetPositionBtn) {
     });
 }
 
+// The same six turns the keys perform, for anyone not driving from the keyboard.
+// Buttons rather than a radio group per view: there is no fixed set of
+// orientations to choose from once roll is available, only turns to make from
+// wherever the model currently is.
+const ORIENTATION_BUTTONS = {
+    'pitch-up-btn': 'pitchUp',
+    'pitch-down-btn': 'pitchDown',
+    'yaw-left-btn': 'yawLeft',
+    'yaw-right-btn': 'yawRight',
+    'roll-ccw-btn': 'rollCounterclockwise',
+    'roll-cw-btn': 'rollClockwise',
+};
+
+for (const [buttonId, rotationName] of Object.entries(ORIENTATION_BUTTONS)) {
+    const button = document.getElementById(buttonId);
+    if (!button) continue;
+    button.addEventListener('click', function() {
+        pendingInputSource = 'ui';
+        applyRelativeRotation(rotationName);
+    });
+}
+
 exportSliceSvgBtn.addEventListener('click', function() {
     exportCurrentSliceAsPng();
 });
@@ -2463,15 +2558,13 @@ document.addEventListener('keydown', function(e) {
         code === 'Digit3' || code === 'Numpad3' ? '3' :
         code === 'Digit4' || code === 'Numpad4' ? '4' :
         code === 'Digit5' || code === 'Numpad5' ? '5' :
-        code === 'Digit6' || code === 'Numpad6' ? '6' :
-        code === 'Digit7' || code === 'Numpad7' ? '7' :
         key
     );
     const supportedShortcuts = new Set([
         'arrowup', 'arrowdown', 'pageup', 'pagedown',
          '2', '3', 'q', 'e',
         'u', 'i', 'o', 'j', 'k', 'l',
-        '4', '5', '6', '7', '8', '9', '0', '-', '=',
+        '4', '5',
         'r', 't', 'g', 'v', 'z',
         'w', 'a', 's', 'd', '[', ']', 'h', 'p', '.', 'escape', 'f'
     ]);
@@ -2566,55 +2659,6 @@ document.addEventListener('keydown', function(e) {
             break;
             
         // View shortcuts
-        case '7':
-            e.preventDefault();
-            if (updateView('x-', false)) {
-                announce('View changed: x-');
-            } else {
-                announce('View unchanged: x-');
-            }
-            break;
-        case '8':
-            e.preventDefault();
-            if (updateView('x+', false)) {
-                announce('View changed: x+');
-            } else {
-                announce('View unchanged: x+');
-            }
-            break;
-        case '9':
-            e.preventDefault();
-            if (updateView('z+', false)) {
-                announce('View changed: z+');
-            } else {
-                announce('View unchanged: z+');
-            }
-            break;
-        case '0':
-            e.preventDefault();
-            if (updateView('z-', false)) {
-                announce('View changed: z-');
-            } else {
-                announce('View unchanged: z-');
-            }
-            break;
-        case '-':
-            e.preventDefault();
-            if (updateView('y-', false)) {
-                announce('View changed: y-');
-            } else {
-                announce('View unchanged: y-');
-            }
-            break;
-        case '=':
-            e.preventDefault();
-            if (updateView('y+', false)) {
-                announce('View changed: y+');
-            } else {
-                announce('View unchanged: y+');
-            }
-            break;
-
         case 'r':
             e.preventDefault();
             {
@@ -2635,34 +2679,32 @@ document.addEventListener('keydown', function(e) {
 
         case 'u':
             e.preventDefault();
-            // Roll counterclockwise around current view direction.
-            applyRelativeRotation('roll', 1, 'Roll counterclockwise');
+            applyRelativeRotation('rollCounterclockwise');
             break;
 
         case 'o':
             e.preventDefault();
-            // Roll clockwise around current view direction.
-            applyRelativeRotation('roll', -1, 'Roll clockwise');
+            applyRelativeRotation('rollClockwise');
             break;
 
         case 'i':
             e.preventDefault();
-            applyRelativeRotation('pitch', -1, 'Rotate up');
+            applyRelativeRotation('pitchUp');
             break;
 
         case 'k':
             e.preventDefault();
-            applyRelativeRotation('pitch', 1, 'Rotate down');
+            applyRelativeRotation('pitchDown');
             break;
 
         case 'j':
             e.preventDefault();
-            applyRelativeRotation('yaw', -1, 'Rotate left');
+            applyRelativeRotation('yawLeft');
             break;
 
         case 'l':
             e.preventDefault();
-            applyRelativeRotation('yaw', 1, 'Rotate right');
+            applyRelativeRotation('yawRight');
             break;
 
         case '.':
@@ -2692,12 +2734,6 @@ document.addEventListener('keydown', function(e) {
             announce(`Slice graph lock ${sliceGraphLocked ? 'on' : 'off'}`);
             break;
 
-        //case '0':
-        //    // Jump to 0% depth (surface)
-        //    e.preventDefault();
-        //    updateSliceDepth(0, true);
-        //    break;
-        //
         case 'w':
             currentMoveCamera = "up";
             sendStateToServer();
