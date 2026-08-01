@@ -442,6 +442,35 @@ def test_a_partial_basis_still_resolves():
     assert np.allclose(resolved[2], [0, 1, 0])
 
 
+def test_a_skewed_basis_is_not_used_as_given():
+    """right and up here are the same vector -- not perpendicular, so using
+    them as given would silently skew the projection rather than just
+    mirroring it. Should fall back to deriving a valid perpendicular pair
+    instead of being accepted."""
+    depth = [0.0, 1.0, 0.0]
+    resolved = _resolve_orientation_basis(
+        {"right": [1.0, 0.0, 0.0], "up": [1.0, 0.0, 0.0], "forward": depth}
+    )
+    assert resolved is not None
+    right, up, resolved_depth = resolved
+    assert abs(np.dot(right, up)) < 1e-6, "right and up were not made perpendicular"
+    assert abs(np.dot(right, resolved_depth)) < 1e-6
+    assert abs(np.dot(up, resolved_depth)) < 1e-6
+    assert np.allclose(resolved_depth, depth), "depth should still be used as given"
+
+
+def test_a_nearly_orthogonal_basis_still_gets_corrected():
+    """Not just exact duplicates -- a basis a few degrees off perpendicular
+    should also be rejected as given, not accepted because it is close."""
+    resolved = _resolve_orientation_basis(
+        {"right": [1.0, 0.0, 0.05], "up": [0.0, 0.0, 1.0], "forward": [0.0, 1.0, 0.0]}
+    )
+    assert resolved is not None
+    right, up, depth = resolved
+    assert abs(np.dot(right, up)) < 1e-6
+    assert abs(np.dot(right, depth)) < 1e-6
+
+
 def test_nonsense_is_refused_rather_than_guessed_at():
     for payload in (None, {}, "front", {"up": [0, 0, 1]}, {"forward": [0, 0, 0]},
                     {"forward": [1, 2]}, {"forward": [float("nan"), 0, 0]}):
