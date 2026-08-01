@@ -553,14 +553,6 @@ function dotVec3(a, b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-function crossVec3(a, b) {
-    return [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ];
-}
-
 function normalizeAxisVector(v) {
     const rounded = [Math.round(v[0]), Math.round(v[1]), Math.round(v[2])];
     const mag = Math.abs(rounded[0]) + Math.abs(rounded[1]) + Math.abs(rounded[2]);
@@ -576,21 +568,8 @@ function normalizeAxisVector(v) {
     ];
 }
 
-function rotateVectorByAxis90(vector, axis, quarterTurns) {
-    const turns = ((quarterTurns % 4) + 4) % 4;
-    if (turns === 0) return [...vector];
-    let out = [...vector];
-    const k = normalizeAxisVector(axis);
-    for (let i = 0; i < turns; i += 1) {
-        const projection = dotVec3(k, out);
-        const cross = crossVec3(k, out);
-        out = [
-            k[0] * projection + cross[0],
-            k[1] * projection + cross[1],
-            k[2] * projection + cross[2],
-        ];
-    }
-    return normalizeAxisVector(out);
+function negateVec3(v) {
+    return [-v[0], -v[1], -v[2]];
 }
 
 function orientationViewFromDepth(depthVector) {
@@ -609,34 +588,56 @@ function setOrientationFromView(viewToken) {
     orientationDepth = [...basis.depth];
 }
 
-// Rotations are about the axes of the display, not of the model: X across the
-// screen, Y up it, Z out of it toward the reader. Those stay put while the model
-// turns under them, which is what makes the keys learnable without having to
-// know how the model happens to be oriented.
-//
-// The state here is the camera, so it turns the opposite way to the model. Each
-// entry is the turn to apply to the basis, about one of its own axes, to produce
-// the model rotation the key names.
+// Each of the six turns replaces two of the current (right, up, depth)
+// vectors with each other (negating one) and leaves the third untouched --
+// e.g. rollClockwise replaces right with up and up with -right. This has to
+// be defined directly in terms of the CURRENT basis, not as a +-90 turn about
+// a world-frame axis using the right-hand rule: the six named views are not
+// consistently handed (front/back/bottom are a mirror image of
+// top/left/right), so a fixed-sign world-frame turn looks clockwise from some
+// and counterclockwise from others, and pitches up on some and down on
+// others. The direct swap has no handedness to get backwards, so it means
+// the same physical turn from every orientation.
 const RELATIVE_ROTATIONS = {
-    // Model turns counterclockwise about display Z, so the camera turns with +depth.
-    rollCounterclockwise: { axis: 'depth', turns: -1, speech: 'Roll counterclockwise' },
-    rollClockwise:        { axis: 'depth', turns: 1, speech: 'Roll clockwise' },
-    pitchUp:              { axis: 'right', turns: 1, speech: 'Pitch up' },
-    pitchDown:            { axis: 'right', turns: -1, speech: 'Pitch down' },
-    yawLeft:              { axis: 'up', turns: 1, speech: 'Yaw left' },
-    yawRight:             { axis: 'up', turns: -1, speech: 'Yaw right' },
+    rollCounterclockwise: { speech: 'Roll counterclockwise' },
+    rollClockwise:        { speech: 'Roll clockwise' },
+    pitchUp:              { speech: 'Pitch up' },
+    pitchDown:            { speech: 'Pitch down' },
+    yawLeft:              { speech: 'Yaw left' },
+    yawRight:             { speech: 'Yaw right' },
 };
 
 function applyRelativeRotation(rotationName) {
     const rotation = RELATIVE_ROTATIONS[rotationName];
     if (!rotation) return;
 
-    const axes = { right: orientationRight, up: orientationUp, depth: orientationDepth };
-    const rotationAxis = axes[rotation.axis];
-
-    orientationRight = rotateVectorByAxis90(orientationRight, rotationAxis, rotation.turns);
-    orientationUp = rotateVectorByAxis90(orientationUp, rotationAxis, rotation.turns);
-    orientationDepth = rotateVectorByAxis90(orientationDepth, rotationAxis, rotation.turns);
+    const right = orientationRight, up = orientationUp, depth = orientationDepth;
+    switch (rotationName) {
+        case 'rollClockwise':
+            orientationRight = up;
+            orientationUp = negateVec3(right);
+            break;
+        case 'rollCounterclockwise':
+            orientationRight = negateVec3(up);
+            orientationUp = right;
+            break;
+        case 'pitchUp':
+            orientationUp = negateVec3(depth);
+            orientationDepth = up;
+            break;
+        case 'pitchDown':
+            orientationUp = depth;
+            orientationDepth = negateVec3(up);
+            break;
+        case 'yawLeft':
+            orientationRight = depth;
+            orientationDepth = negateVec3(right);
+            break;
+        case 'yawRight':
+            orientationRight = negateVec3(depth);
+            orientationDepth = right;
+            break;
+    }
 
     // Pitch/yaw can switch which of the three persisted planes is now facing
     // the viewer; roll never does (it doesn't touch orientationDepth), so this
@@ -648,8 +649,7 @@ function applyRelativeRotation(rotationName) {
                                    { syncOrientation: false });
     if (!viewChanged) {
         // A roll leaves the same face toward the reader, so updateView sees no
-        // change and would not redraw. The picture changed all the same, and
-        // this is why roll used to do nothing at all.
+        // change and would not redraw. 
         if (isSliceGraphRepresentationMode()) {
             autoRefreshSliceGraph({ updateAnchor: true });
         } else {
@@ -1875,7 +1875,7 @@ function applyServerState(data) {
             updateSliceDepth(newDepth, false);
         }
     }
-    if (data.builtin_model_stems && !builtinModelStems) {
+    if (Array.isArray(data.builtin_model_stems) && data.builtin_model_stems.length && !builtinModelStems) {
         builtinModelStems = data.builtin_model_stems;
         // Force a rebuild now that the filter is known.
         lastModelListSignature = null;

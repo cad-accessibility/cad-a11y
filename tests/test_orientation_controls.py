@@ -70,26 +70,41 @@ def _rotations() -> dict[str, dict]:
     block = re.search(r"const RELATIVE_ROTATIONS = \{(.*?)\n\};", _js(), re.S)
     assert block, "RELATIVE_ROTATIONS not found in viewer.js"
     return {
-        name: {"axis": axis, "turns": int(turns), "speech": speech}
-        for name, axis, turns, speech in re.findall(
-            r"(\w+):\s*\{\s*axis:\s*'(\w+)',\s*turns:\s*(-?\d+),\s*speech:\s*'([^']+)'",
+        name: {"speech": speech}
+        for name, speech in re.findall(
+            r"(\w+):\s*\{\s*speech:\s*'([^']+)'",
             block.group(1),
         )
     }
 
 
-def _quarter_turns(vector, axis, turns):
-    """Positive right-handed quarter turns, as rotateVectorByAxis90 does them."""
-    out, k = np.array(vector, dtype=float), np.array(axis, dtype=float)
-    for _ in range(turns % 4):
-        out = k * np.dot(k, out) + np.cross(k, out)
-    return np.rint(out).astype(int)
-
-
 def _press(basis, rotation_name):
-    rotation = _rotations()[rotation_name]
-    axis = basis[rotation["axis"]]
-    return {name: _quarter_turns(basis[name], axis, rotation["turns"]) for name in basis}
+    """Mirrors applyRelativeRotation's switch exactly: each turn replaces two
+    of the current (right, up, depth) vectors with each other (negating one)
+    and leaves the third untouched -- defined directly in terms of the
+    CURRENT basis rather than as a right-hand-rule turn about a world-frame
+    axis, so it is the same physical turn regardless of which of the six
+    named views (or any orientation reached from them) it starts from. See
+    the comment above RELATIVE_ROTATIONS in viewer.js for why that distinction
+    matters: a world-frame formula looked consistent only because it was only
+    ever checked from one view."""
+    right, up, depth = basis["right"], basis["up"], basis["depth"]
+    after = dict(basis)
+    if rotation_name == "rollClockwise":
+        after["right"], after["up"] = up, -right
+    elif rotation_name == "rollCounterclockwise":
+        after["right"], after["up"] = -up, right
+    elif rotation_name == "pitchUp":
+        after["up"], after["depth"] = -depth, up
+    elif rotation_name == "pitchDown":
+        after["up"], after["depth"] = depth, -up
+    elif rotation_name == "yawLeft":
+        after["right"], after["depth"] = depth, -right
+    elif rotation_name == "yawRight":
+        after["right"], after["depth"] = -depth, right
+    else:
+        raise ValueError(rotation_name)
+    return after
 
 
 def _front():
@@ -174,6 +189,61 @@ def test_pitch_and_yaw_are_reversible():
         )
 
 
+def _world_frame_formula(basis, rotation_name):
+    """The formula this feature shipped with and no longer uses: rotate by a
+    fixed +-90 about a world-frame axis (right for pitch, up for yaw, depth
+    for roll) using the right-hand rule. It agreed with the current swap-based
+    _press only at one sign of det(right, up, depth) -- see
+    test_the_fix_actually_changed_behaviour_where_it_needed_to for which sign,
+    and why it differs between pitch/yaw and roll. front/back/bottom (where
+    pitch and yaw were previously correct) was the only view anything had
+    ever been checked from, which is why the bug shipped. Kept here only so
+    the tests below can prove the fix actually changed behaviour where it
+    needed to, not just that the new formula is internally consistent with
+    itself."""
+    axis_name, turns = {
+        "pitchUp": ("right", 1), "pitchDown": ("right", -1),
+        "yawLeft": ("up", 1), "yawRight": ("up", -1),
+        "rollCounterclockwise": ("depth", -1), "rollClockwise": ("depth", 1),
+    }[rotation_name]
+    k = np.array(basis[axis_name], dtype=float)
+    out = {}
+    for name in ("right", "up", "depth"):
+        v = np.array(basis[name], dtype=float)
+        for _ in range(turns % 4):
+            v = k * np.dot(k, v) + np.cross(k, v)
+        out[name] = np.rint(v).astype(int)
+    return out
+
+
+@pytest.mark.parametrize("wire_token,view_key", sorted(TOKEN_TO_VIEW.items()))
+@pytest.mark.parametrize("rotation_name", [
+    "pitchUp", "pitchDown", "yawLeft", "yawRight", "rollCounterclockwise", "rollClockwise",
+])
+def test_the_fix_actually_changed_behaviour_where_it_needed_to(rotation_name, wire_token, view_key):
+    """Proves the swap-based formula is not just self-consistent but actually
+    different from the old, buggy one exactly where it needed to be. The two
+    formulas agree only at one sign of det(right, up, depth) -- which sign
+    depends on the rotation, since pitch/yaw rotate about the first/second
+    basis vector and roll about the third: pitch and yaw agreed with the old
+    formula at det=-1 (front/back/bottom, the only view ever checked, which is
+    why the bug shipped), roll agreed at det=+1 (top/left/right). A test that
+    only checked the new formula against itself could not tell a real fix
+    from a no-op change."""
+    base = _view_basis()[wire_token]
+    d = np.dot(np.cross(base["right"], base["up"]), base["depth"])
+    fixed = _press(base, rotation_name)
+    old = _world_frame_formula(base, rotation_name)
+    agrees = all(np.array_equal(fixed[k], old[k]) for k in base)
+    agrees_at_negative_d = rotation_name in (
+        "pitchUp", "pitchDown", "yawLeft", "yawRight",
+    )
+    expected = agrees_at_negative_d if d < 0 else not agrees_at_negative_d
+    assert agrees == expected, (
+        f"{rotation_name} at {view_key} (det={d:+.0f}): expected agreement={expected}, got {agrees}"
+    )
+
+
 @pytest.mark.parametrize("name", [
     "rollCounterclockwise", "rollClockwise", "pitchUp", "pitchDown", "yawLeft", "yawRight",
 ])
@@ -215,6 +285,25 @@ def _shape():
     nub = trimesh.creation.box(extents=(0.5, 0.5, 0.5))
     nub.apply_translation([1.25, 0.75, 0.5])
     return trimesh.util.concatenate([body, nub])
+
+
+def _chiral_shape():
+    """Like _shape, but with a nub poking past every face, not just one --
+    _shape's single nub sits inside the body's footprint when viewed from
+    directly above or below (it only pokes out along Z, which isn't part of
+    the top/bottom picture), so it can't tell a correct roll from a backwards
+    one at those two views. Centered on the origin so rotating the basis is a
+    pure rotation of the picture, not also a shift of it."""
+    body = trimesh.creation.box(extents=(3.0, 2.0, 1.0))
+    nub_x = trimesh.creation.box(extents=(0.5, 0.5, 0.5))
+    nub_x.apply_translation([1.75, 0.75, 0.25])
+    nub_y = trimesh.creation.box(extents=(0.5, 0.5, 0.5))
+    nub_y.apply_translation([0.75, 1.25, -0.25])
+    nub_z = trimesh.creation.box(extents=(0.5, 0.5, 0.5))
+    nub_z.apply_translation([-0.75, -0.25, 0.75])
+    shape = trimesh.util.concatenate([body, nub_x, nub_y, nub_z])
+    shape.apply_translation(-shape.bounds.mean(axis=0))
+    return shape
 
 
 def _render(view_key, basis=None, mode="filled", depth=0.9):
@@ -263,7 +352,11 @@ def test_rolling_counterclockwise_turns_the_picture_counterclockwise():
     """The strongest statement available: on a square frame with fixed limits, a
     roll is exactly a quarter turn of the rendered image, nothing added and
     nothing lost. It also pins the direction, since a counterclockwise turn is
-    the one that carries the top right corner to the top left."""
+    the one that carries the top right corner to the top left. Because the
+    swap in _press/applyRelativeRotation is defined directly on the current
+    basis rather than as a turn about a world-frame axis, this holds from
+    every one of the six named views, not just front (see
+    test_rolling_is_clockwise_or_counterclockwise_from_every_named_view)."""
     rolled = _press(_front(), "rollCounterclockwise")
     payload = {
         "scheme": "basis-v1",
@@ -280,6 +373,36 @@ def test_rolling_counterclockwise_turns_the_picture_counterclockwise():
                                 orientation_basis=payload, **square)
 
     assert np.array_equal(turned[..., 0] < 128, np.rot90(upright[..., 0] < 128, 1))
+
+
+@pytest.mark.parametrize("wire_token,view_key", sorted(TOKEN_TO_VIEW.items()))
+def test_rolling_clockwise_is_clockwise_from_every_named_view(wire_token, view_key):
+    """The regression test for the actual bug: the six named views are not
+    consistently handed (see the comment on RELATIVE_ROTATIONS), so a formula
+    that rotates by a fixed turns count about a world-frame axis looks
+    clockwise from some views and counterclockwise from others. It had only
+    ever been checked from front, which is why it shipped looking right and
+    wasn't. This checks all six directly against the renderer, not just the
+    vector algebra, so a regression here would have to fool both."""
+    base = _view_basis()[wire_token]
+    rolled = _press(base, "rollClockwise")
+    payload = {
+        "scheme": "basis-v1",
+        "forward": rolled["depth"].tolist(),
+        "up": rolled["up"].tolist(),
+        "right": rolled["right"].tolist(),
+    }
+    shape = _chiral_shape()
+    square = dict(cut_depth=1.0, view_key=view_key, rendering_mode="filled",
+                  imposed_ax_limits=[[-3, 3], [-3, 3]], screen_size=[64, 64])
+
+    upright, _ = get_single_view(shape, shape.bounds.flatten(), **square)
+    turned, _ = get_single_view(shape, shape.bounds.flatten(),
+                                orientation_basis=payload, **square)
+
+    assert np.array_equal(turned[..., 0] < 128, np.rot90(upright[..., 0] < 128, -1)), (
+        f"rollClockwise was not clockwise from {view_key}"
+    )
 
 
 def test_the_cut_follows_the_orientation():
