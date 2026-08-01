@@ -460,48 +460,31 @@ fieldset label {
     user-select: none;
 }
 
-/* ---- Announcement toast overlay ---- */
-#announcement-toast {
-    position: fixed;
-    top: 16px;
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(44, 62, 80, 0.94);
+/* ---- Persistent message window (#144) ---- */
+/* Never fades, never pops up — always shows the current announcement. */
+#announcement-window-wrap {
+    margin-bottom: 18px;
+}
+#announcement-window-label {
+    display: block;
+    font-size: 0.92em;
+    font-weight: 600;
+    color: #1f3343;
+    margin-bottom: 4px;
+}
+#announcement-window {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
+    background: #2c3e50;
     color: #fff;
-    padding: 10px 24px;
+    border: 1px solid #1f3343;
     border-radius: 8px;
-    font-size: 1.1em;
-    font-weight: 500;
-    z-index: 9999;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.18s ease;
-    max-width: 90vw;
-    text-align: center;
-}
-#announcement-toast.visible {
-    opacity: 1;
-}
-
-/* ---- Announcement duration control ---- */
-#announcement-duration-control {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 6px;
-}
-#announcement-duration-control label {
-    font-size: 0.92em;
-    color: #596871;
-}
-#announcement-duration-control input[type="range"] {
-    width: 120px;
-    height: 6px;
-}
-#announcement-duration-control .duration-value {
-    font-size: 0.92em;
-    font-variant-numeric: tabular-nums;
-    min-width: 32px;
+    padding: 10px 14px;
+    font-size: 1.05em;
+    font-family: inherit;
+    line-height: 1.4;
 }
 
 /* Focus indicators – visible only for keyboard (focus-visible) per WCAG 2.4.7 / 2.4.11 */
@@ -546,7 +529,7 @@ button:focus-visible {
         border: 2px solid #fff;
     }
 
-    #announcement-toast {
+    #announcement-window {
         border: 2px solid #fff;
     }
 
@@ -565,7 +548,7 @@ button:focus-visible {
         border: 2px solid ButtonText;
     }
 
-    #announcement-toast {
+    #announcement-window {
         border: 2px solid ButtonText;
         background: Canvas;
         color: CanvasText;
