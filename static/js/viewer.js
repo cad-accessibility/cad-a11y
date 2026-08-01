@@ -354,6 +354,12 @@ async function sendStateToServer() {
 
 // State management
 let currentSliceDepth = 50;
+// The slice plane's position along each model axis, as a 0-1 fraction from
+// that axis's minimum end. Kept independent of viewing direction so turning
+// the model doesn't relocate the physical plane -- rotating only changes
+// which of the three is currently the active (visible) one, and from which
+// side currentSliceDepth reads it. See activeSliceAxis/displayDepthFromPlanes.
+let slicePlanes = { x: 0.5, y: 0.5, z: 0.5 };
 let currentView = 'x+';
 let currentZoom = 0.0;
 let currentRenderMode = 'filled';
@@ -632,6 +638,12 @@ function applyRelativeRotation(rotationName) {
     orientationUp = rotateVectorByAxis90(orientationUp, rotationAxis, rotation.turns);
     orientationDepth = rotateVectorByAxis90(orientationDepth, rotationAxis, rotation.turns);
 
+    // Pitch/yaw can switch which of the three persisted planes is now facing
+    // the viewer; roll never does (it doesn't touch orientationDepth), so this
+    // is a no-op there. Must run before updateView/sendStateToServer below so
+    // the request they send already carries the re-derived depth.
+    const depthChanged = syncSliceDepthFromPlanes();
+
     const viewChanged = updateView(orientationViewFromDepth(orientationDepth), false,
                                    { syncOrientation: false });
     if (!viewChanged) {
@@ -644,7 +656,7 @@ function applyRelativeRotation(rotationName) {
             sendStateToServer();
         }
     }
-    announce(rotation.speech);
+    announce(depthChanged ? `${rotation.speech}, depth ${currentSliceDepth}%` : rotation.speech);
 }
 
 function getOrientationPayload() {
@@ -654,6 +666,53 @@ function getOrientationPayload() {
         up: normalizeAxisVector(orientationUp),
         right: normalizeAxisVector(orientationRight),
     };
+}
+
+// Which model axis the current view slices along, and from which side.
+// sign > 0 means depth points toward that axis's positive end (0% is the
+// negative end); sign < 0 means the reverse. This sign is what makes the same
+// physical plane read as (100 - x)% after a 180-degree turn around that axis.
+function activeSliceAxis() {
+    const d = orientationDepth;
+    if (d[0] !== 0) return { axis: 'x', sign: Math.sign(d[0]) };
+    if (d[1] !== 0) return { axis: 'y', sign: Math.sign(d[1]) };
+    return { axis: 'z', sign: Math.sign(d[2]) };
+}
+
+// Convert the persisted absolute plane position into the view-relative
+// percentage the slider/announcements show ("X% from where you're looking").
+function displayDepthFromPlanes() {
+    const { axis, sign } = activeSliceAxis();
+    const fraction = slicePlanes[axis];
+    return Math.round((sign > 0 ? fraction : 1 - fraction) * 100);
+}
+
+// The inverse: fold a view-relative percentage back into the persisted
+// absolute position of whichever axis is currently active.
+function writeDisplayDepthToPlanes(depthPercent) {
+    const { axis, sign } = activeSliceAxis();
+    const fraction = depthPercent / 100;
+    slicePlanes[axis] = sign > 0 ? fraction : 1 - fraction;
+}
+
+function resetSlicePlanes() {
+    slicePlanes = { x: 0.5, y: 0.5, z: 0.5 };
+}
+
+// Re-derive currentSliceDepth from the persisted planes after the active axis
+// may have changed (any pitch/yaw, or picking a different named view). Roll
+// never changes the active axis, so this is a harmless no-op there. Does not
+// write back to slicePlanes -- only updateSliceDepth (a user-initiated change)
+// does that.
+function syncSliceDepthFromPlanes() {
+    const oldDepth = currentSliceDepth;
+    currentSliceDepth = displayDepthFromPlanes();
+    if (sliceSlider) {
+        sliceSlider.value = currentSliceDepth;
+        sliceSlider.setAttribute('aria-valuenow', currentSliceDepth);
+    }
+    if (slicePercentage) slicePercentage.textContent = currentSliceDepth;
+    return oldDepth !== currentSliceDepth;
 }
 
 const axisInfo = {
@@ -1343,6 +1402,7 @@ async function exportCurrentSliceAsPng() {
 function updateSliceDepth(newDepth, shouldAnnounce = true) {
     const oldDepth = currentSliceDepth;
     currentSliceDepth = Math.max(0, Math.min(100, newDepth));
+    writeDisplayDepthToPlanes(currentSliceDepth);
     sliceSlider.value = currentSliceDepth;
     slicePercentage.textContent = currentSliceDepth;
     refreshViewInfoSummary();
@@ -1491,6 +1551,7 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
     currentView = newView;
     if (syncOrientation && oldView !== currentView) {
         setOrientationFromView(currentView);
+        syncSliceDepthFromPlanes();
     }
     if (currentViewSpan) currentViewSpan.textContent = currentView;
     refreshViewInfoSummary();
@@ -1645,6 +1706,7 @@ document.getElementById("model-list-dropdown").addEventListener("change", functi
     const selectedItem = this.value;
     currentModel = selectedItem;
     clearCameraCenterState();
+    resetSlicePlanes();
     const selectedLabel = this.selectedIndex >= 0 ? this.options[this.selectedIndex].text : `model ${selectedItem}`;
     if (sbModel && this.selectedIndex >= 0) {
         sbModel.textContent = this.options[this.selectedIndex].text;
@@ -1758,6 +1820,7 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             dropdown.value = String(data.new_model_index);
             currentModel = String(data.new_model_index);
             clearCameraCenterState();
+            resetSlicePlanes();
             const selectedLabel = dropdown.selectedIndex >= 0 ? dropdown.options[dropdown.selectedIndex].text : data.filename;
             if (sbModel && dropdown.selectedIndex >= 0) {
                 sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
@@ -1834,6 +1897,7 @@ function applyServerState(data) {
         if (idx >= 0 && String(idx) !== currentModel) {
             currentModel = String(idx);
             clearCameraCenterState();
+            resetSlicePlanes();
             pendingInputSource = 'ingest';
             sendStateToServer();
         }
