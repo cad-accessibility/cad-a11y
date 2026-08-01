@@ -67,14 +67,20 @@ def _resolve_orientation_basis(orientation_basis):
     - up: camera-up axis
     - right: camera-right axis
 
-    All three are used as given when all three are present. That matters because
-    the six named views below are not consistently handed: front, back and bottom
-    have right x up = -depth where top, left and right have +depth. Deriving one
-    axis from the other two therefore mirrors half the views, which is why the
-    caller sends a complete basis rather than a hint.
+    All three are used as given when all three are present and mutually
+    perpendicular (either handedness accepted). That matters because the six
+    named views below are not consistently handed: front, back and bottom
+    have right x up = -depth where top, left and right have +depth. Deriving
+    one axis from the other two therefore mirrors half the views, which is why
+    the caller sends a complete basis rather than a hint.
 
-    Deriving is kept only as a fallback for a partial basis, where a mirrored
-    image beats no image.
+    A complete but skewed basis (not mutually perpendicular) falls through to
+    the same derivation used for a partial one, rather than being used as
+    given -- projecting onto non-orthogonal axes would silently skew the
+    picture instead of just mirroring it.
+
+    Deriving is kept only as a fallback for a partial or skewed basis, where a
+    mirrored image beats no image.
     """
     if not isinstance(orientation_basis, dict):
         return None
@@ -87,7 +93,13 @@ def _resolve_orientation_basis(orientation_basis):
     up_axis = _safe_unit(orientation_basis.get("up"))
     right_axis = _safe_unit(orientation_basis.get("right"))
 
-    if right_axis is not None and up_axis is not None:
+    if (
+        right_axis is not None
+        and up_axis is not None
+        and abs(np.dot(right_axis, up_axis)) < 1e-6
+        and abs(np.dot(right_axis, depth_axis)) < 1e-6
+        and abs(np.dot(up_axis, depth_axis)) < 1e-6
+    ):
         return right_axis, up_axis, depth_axis
 
     if up_axis is not None:
