@@ -745,10 +745,6 @@ const currentRenderModeInfo = document.getElementById('current-render-mode-info'
 const currentZoomInfo = document.getElementById('current-zoom-info');
 const currentBBoxDimensionsInfo = document.getElementById('current-bbox-dimensions-info');
 const announcementHistory = document.getElementById('announcement-history');
-const clearAnnouncementsBtn = document.getElementById('clear-announcements-btn');
-const announcementHistoryToggleBtn = document.getElementById('announcement-history-toggle-btn');
-const announcementHistoryContent = document.getElementById('announcement-history-content');
-const ANNOUNCEMENT_HISTORY_VISIBILITY_KEY = 'announcementHistoryVisible';
 const deeperBtn = document.getElementById('deeper-btn');
 const shallowerBtn = document.getElementById('shallower-btn');
 const zoomInput = document.getElementById('zoom-input');
@@ -1057,39 +1053,6 @@ function initializeDebugPipelineVisibility() {
         // Keep default hidden if persistence is unavailable.
     }
     setDebugPipelineVisible(isVisible);
-}
-
-function setAnnouncementHistoryVisible(isVisible) {
-    if (!announcementHistoryContent || !announcementHistoryToggleBtn) {
-        return;
-    }
-    announcementHistoryContent.hidden = !isVisible;
-    announcementHistoryToggleBtn.textContent = isVisible ? 'Hide History' : 'Show History';
-    try {
-        window.localStorage.setItem(ANNOUNCEMENT_HISTORY_VISIBILITY_KEY, isVisible ? '1' : '0');
-    } catch (_) {
-        // Ignore localStorage failures (e.g., privacy mode).
-    }
-}
-
-function toggleAnnouncementHistoryVisibility() {
-    if (!announcementHistoryContent) {
-        return;
-    }
-    setAnnouncementHistoryVisible(announcementHistoryContent.hidden);
-}
-
-function initializeAnnouncementHistoryVisibility() {
-    // Hidden by default: the scrollable history is a debug/audit option, not part
-    // of the everyday UI (see #144). Only a saved, explicit choice to show it
-    // brings it back.
-    let isVisible = false;
-    try {
-        isVisible = window.localStorage.getItem(ANNOUNCEMENT_HISTORY_VISIBILITY_KEY) === '1';
-    } catch (_) {
-        // Keep default hidden if persistence is unavailable.
-    }
-    setAnnouncementHistoryVisible(isVisible);
 }
 
 function renderPipelineDebug(debugPipeline, debugInfo = null) {
@@ -2273,12 +2236,6 @@ window.getCurrentSliceDepth = getCurrentSliceDepth;
 window.updateSliceDepth = updateSliceDepth;
 window.announceDepthValue = announceDepthValue;
 
-if (clearAnnouncementsBtn && announcementHistory) {
-    clearAnnouncementsBtn.addEventListener('click', function() {
-        announcementHistory.innerHTML = '';
-    });
-}
-
 // Event listeners
 
 // Slice depth slider with enhanced feedback
@@ -2446,12 +2403,6 @@ exportSliceSvgBtn.addEventListener('click', function() {
 if (debugPipelineToggleBtn) {
     debugPipelineToggleBtn.addEventListener('click', function() {
         toggleDebugPipelineVisibility();
-    });
-}
-
-if (announcementHistoryToggleBtn) {
-    announcementHistoryToggleBtn.addEventListener('click', function() {
-        toggleAnnouncementHistoryVisibility();
     });
 }
 
@@ -2812,7 +2763,6 @@ document.addEventListener('DOMContentLoaded', async function() {
     // Expose globally so display-connect handlers can trigger a send.
     window.sendStateToServer = sendStateToServer;
     initializeDebugPipelineVisibility();
-    initializeAnnouncementHistoryVisibility();
 
     // Pre-select a model when opened via /workshop?model=<stem> or ?model=<stem>.
     // Resolve the stem to its server index before the first render so the viewer
