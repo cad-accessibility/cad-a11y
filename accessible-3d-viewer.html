@@ -86,14 +86,9 @@
             Polite (aria-live="polite"): background/system events not tied to an
             immediate action (server reconnected, a model finished loading).
             See announce().
-
-            Mouse/native-control interactions that the browser already gives its
-            own accessible feedback for (a checked radio, a slider's aria-valuetext)
-            update neither field — they go to the history log only.
         -->
         <div id="announcement-window" class="sr-only" role="alert" aria-atomic="true"></div> 
         <div id="announcement-window-polite" class="sr-only" role="status" aria-atomic="true"></div>
-        <ul id="announcement-history" class="sr-only" role="log" aria-label="Announcement history"></ul>
 
        <main id="main-content">
             <div class="layout">

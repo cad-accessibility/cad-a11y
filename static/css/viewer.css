@@ -379,28 +379,6 @@ fieldset label {
     font-size: 0.9em;
 }
 
-#announcement-history {
-    list-style: none;
-    margin: 12px 0 0;
-    padding: 0;
-    max-height: 260px;
-    overflow-y: auto;
-    border: 1px solid #d9e2ec;
-    border-radius: 6px;
-    background: #fff;
-}
-
-#announcement-history li {
-    padding: 8px 12px;
-    border-bottom: 1px solid #eef2f7;
-    font-size: 0.95em;
-}
-
-#announcement-history li:last-child {
-    border-bottom: none;
-}
-
-
 #current-view, #current-axis {
     color: #1a5e91;
     font-weight: 500;

@@ -66,17 +66,6 @@ def test_message_windows_are_plain_divs():
         )
 
 
-def test_history_is_an_sr_only_log():
-    """The history list  It carries no visible UI (no show/hide toggle, no clear button) — it exists
-    for AT users to receive repeat announcements that our toggle doesn't handle well
-    """
-    by_id = _by_id()
-    history = by_id.get("announcement-history")
-    assert history is not None, "expected #announcement-history"
-    assert history["role"] == "log"
-    assert "sr-only" in history["class"].split()
-
-
 def test_viewer_js_updates_the_message_window_on_every_announcement():
     js = VIEWER_JS.read_text(encoding="utf-8")
     assert "function updateMessageWindow(message" in js

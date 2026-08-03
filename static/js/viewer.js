@@ -839,12 +839,7 @@ function clampDepth(value) {
 
 // Every depth/zoom change is announced (or logged) immediately, with no debounce.
 // For the assertive keyboard/hardware channel (announceAlert) each new announcement
-// already interrupts and replaces whatever's currently being spoken, so there's
-// nothing to gain by batching a burst. For the mouse/UI channel (logAnnouncement)
-// it's a silent history entry, not speech, so there's no queue to protect either —
-// every distinct value just gets its own line. The render and the braille display
-// have never been debounced: those update on every press so tactile feedback
-// stays immediate.
+// already interrupts and replaces whatever's currently being spoken
 
 function announceDepthValue(depthValue, previousDepth = null, emit = announceAlert) {
     const to = clampDepth(depthValue);
@@ -2144,7 +2139,7 @@ function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
     updateSliceGraphModeUI();
     updateSideBySideAxisLabels();
     syncRadios();
-    if (shouldAnnounce) logAnnouncement(`${representationModeLabel(previousMode)} to ${representationModeLabel()}`);
+    if (shouldAnnounce) announce(`${representationModeLabel(previousMode)} to ${representationModeLabel()}`);
 
     // Send state to server
     sendStateToServer();
@@ -2157,23 +2152,8 @@ function cycleRepresentationMode(shouldAnnounce = true) {
     switchToRepresentationMode(representationModes[nextIndex].key, shouldAnnounce);
 }
 
-// Append one entry to the history log
-function appendAnnouncementToHistory(message) {
-    if (!announcementHistory) return;
-    const normalizedMessage = String(message);
-    const item = document.createElement('li');
-    const text = document.createElement('span');
-    text.textContent = normalizedMessage;
-    item.appendChild(text);
-    announcementHistory.appendChild(item);
-    if (announcementHistory.children.length > 1) {
-	announcementHistory.removeChild(announcementHistory.firstElementChild);
-    }
-    announcementHistory.scrollTop = announcementHistory.scrollHeight;
-}
-
 // Announce a change: updates the message window, speaks via the SR live region,
-// echoes to the tactile display, and adds to the history log.
+// echoes to the tactile display.
 function emitAnnouncement(message, politeness) {
     const normalizedMessage = String(message);
     // Any announcement ends the current zoom/depth run: the next such change
@@ -2198,8 +2178,6 @@ function emitAnnouncement(message, politeness) {
             console.warn('Tactile announcement failed:', err);
         }
     }
-
-    appendAnnouncementToHistory(normalizedMessage);
 }
 
 /**
@@ -2217,14 +2195,6 @@ function announce(message) {
  */
 function announceAlert(message) {
     emitAnnouncement(message, 'assertive');
-}
-
-/**
- * Record an announcement in the history log. This helps in cases where the
- * same thing is announced many times in a row. 
- */
-function logAnnouncement(message) {
-    appendAnnouncementToHistory(message);
 }
 
 // External API used by hardware integration modules.
@@ -2342,13 +2312,13 @@ if (sliceGraphLockCheckbox) {
         setSliceGraphLocked(this.checked);
         // The checkbox's own checked state already gives its own accessible
         // feedback; only log the change 
-        logAnnouncement(`Slice graph lock ${sliceGraphLocked ? 'on' : 'off'}`);
+        announce(`Slice graph lock ${sliceGraphLocked ? 'on' : 'off'}`);
     });
 }
 
 sliceGraphRefreshBtn.addEventListener('click', function() {
     if (!isSliceGraphRepresentationMode()) {
-        logAnnouncement('refresh only available in slice-graph mode');
+        announce('refresh only available in slice-graph mode');
         return;
     }
     captureSliceGraphAnchor(true);
@@ -2359,7 +2329,7 @@ sliceGraphRefreshBtn.addEventListener('click', function() {
 if (sliceGraphModeBtn) {
     sliceGraphModeBtn.addEventListener('click', function() {
         toggleSliceGraphMode();
-        logAnnouncement(`Slice graph mode ${sliceGraphMode === 'column-count' ? 'column count' : 'difference'}`);
+        announce(`Slice graph mode ${sliceGraphMode === 'column-count' ? 'column count' : 'difference'}`);
     });
 }
 
@@ -2369,7 +2339,7 @@ if (resetPositionBtn) {
         currentMoveCamera = "reset";
         sendStateToServer();
         currentMoveCamera = "none";
-        logAnnouncement('Position reset');
+        announce('Position reset');
     });
 }
 
@@ -2391,7 +2361,7 @@ for (const [buttonId, rotationName] of Object.entries(ORIENTATION_BUTTONS)) {
     if (!button) continue;
     button.addEventListener('click', function() {
         pendingInputSource = 'ui';
-        applyRelativeRotation(rotationName, logAnnouncement);
+        applyRelativeRotation(rotationName, announce);
     });
 }
 
