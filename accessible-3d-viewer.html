@@ -81,9 +81,7 @@
             the user just did directly (a keyboard shortcut, a hardware device
             button) or an error they need to act on. Interrupts, so a burst of
             fast presses is heard as the latest state, not queued one by one.
-            See announceNow/announceAlert in viewer.js. No separate aria-live
-            attribute alongside role="alert" — redundant and double-speaks on
-            some AT.
+            See announceAlert in viewer.js. 
 
             Polite (aria-live="polite"): background/system events not tied to an
             immediate action (server reconnected, a model finished loading).
@@ -91,8 +89,7 @@
 
             Mouse/native-control interactions that the browser already gives its
             own accessible feedback for (a checked radio, a slider's aria-valuetext)
-            update neither field — see logAnnouncement() in viewer.js — they go to
-            the history log only.
+            update neither field — they go to the history log only.
         -->
         <div id="announcement-window" class="sr-only" role="alert" aria-atomic="true"></div> 
         <div id="announcement-window-polite" class="sr-only" role="status" aria-atomic="true"></div>

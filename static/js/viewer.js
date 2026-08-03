@@ -849,14 +849,14 @@ function clampDepth(value) {
 function announceDepthValue(depthValue, previousDepth = null, emit = announceAlert) {
     const to = clampDepth(depthValue);
     if (to === null) return;
-    announceParameterValue("depth", `Depth ${to}%`, `${to}%`);
+    announceParameterValue("depth", `Depth ${to}%`, `${to}%`, emit);
 }
 
 function announceZoomValue(zoomValue, previousZoom = null, emit = announceAlert) {
     const to = Number(zoomValue);
     if (!Number.isFinite(to)) return;
     // ratioToPercent already appends "%" — don't add a second one.
-    announceParameterValue("zoom", `Zoom ${ratioToPercent(to)}`, `${ratioToPercent(to)}`);
+    announceParameterValue("zoom", `Zoom ${ratioToPercent(to)}`, `${ratioToPercent(to)}`, emit);
 }
 
 let toggle = false;
@@ -2157,8 +2157,7 @@ function cycleRepresentationMode(shouldAnnounce = true) {
     switchToRepresentationMode(representationModes[nextIndex].key, shouldAnnounce);
 }
 
-// Append one entry to the visible history log; alerts are weighted so the log
-// distinguishes an interrupting condition from routine state changes. 
+// Append one entry to the history log
 function appendAnnouncementToHistory(message) {
     if (!announcementHistory) return;
     const normalizedMessage = String(message);

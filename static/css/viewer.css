@@ -372,17 +372,6 @@ fieldset label {
     margin-right: 8px;
 }
 
-.announcements-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 10px;
-}
-
-.announcements-header h2 {
-    margin-bottom: 0;
-}
-
 #clear-announcements-btn {
     min-width: auto;
     padding: 8px 12px;
@@ -411,11 +400,6 @@ fieldset label {
     border-bottom: none;
 }
 
-#announcement-history .announcement-time {
-    color: #596871;
-    margin-right: 8px;
-    font-variant-numeric: tabular-nums;
-}
 
 #current-view, #current-axis {
     color: #1a5e91;
@@ -460,22 +444,6 @@ fieldset label {
     user-select: none;
 }
 
-/* ---- Persistent message windows (#144) ---- */
-/* Never fade, never pop up — always show the current announcement. Labels are
-   .sr-only (see accessible-3d-viewer.html) so there is nothing to style visually. */
-.sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-}
-
-
 /* Focus indicators – visible only for keyboard (focus-visible) per WCAG 2.4.7 / 2.4.11 */
 button:focus-visible,
 input:focus-visible,
@@ -518,10 +486,6 @@ button:focus-visible {
         border: 2px solid #fff;
     }
 
-    .announcement-window {
-        border: 2px solid #fff;
-    }
-
     #status-bar .status-label {
         color: #fff;
     }
@@ -535,12 +499,6 @@ button:focus-visible {
 @media (forced-colors: active) {
     #status-bar {
         border: 2px solid ButtonText;
-    }
-
-    .announcement-window {
-        border: 2px solid ButtonText;
-        background: Canvas;
-        color: CanvasText;
     }
 
     button:focus-visible,

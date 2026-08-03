@@ -1,7 +1,6 @@
-"""Guardrails for the persistent announcement message windows (#144).
+"""Guardrails for the persistent announcement message windows 
 
-Issue #144 asks that announcements never use a popup, and instead go to a
-persistent on-screen field. The two message windows (assertive/polite — see
+The two message windows (assertive/polite — see
 test_live_regions.py for their exact aria configuration) are standard native
 ARIA live-region <div>s updated via textContent, which is the pattern with the
 widest, most reliable support across screen readers.
@@ -68,11 +67,8 @@ def test_message_windows_are_plain_divs():
 
 
 def test_history_is_an_sr_only_log():
-    """The history list is a permanent, screen-reader-only audit trail (role="log").
-
-    It carries no visible UI (no show/hide toggle, no clear button) — it exists
-    for AT users and for debugging via the accessibility tree/announcements,
-    not as an on-screen panel.
+    """The history list  It carries no visible UI (no show/hide toggle, no clear button) — it exists
+    for AT users to receive repeat announcements that our toggle doesn't handle well
     """
     by_id = _by_id()
     history = by_id.get("announcement-history")
