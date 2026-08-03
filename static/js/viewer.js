@@ -457,7 +457,7 @@ function moveCursor(dCol, dRow, stepSize = cursorStep) {
 
     pendingInputSource = 'dotpad';
     console.debug(`Display cursor: col ${currentCursorCol}, row ${currentCursorRow}`);
-    announce(`Cursor column ${currentCursorCol}, row ${currentCursorRow}`);
+    announceAlert(`Column ${currentCursorCol}, row ${currentCursorRow}`);
     sendStateToServer();
 }
 
@@ -468,7 +468,7 @@ function whichCursor() {
 function cycleCursorState() {
     currentCursorStateIndex = (currentCursorStateIndex + 1) % cursorStates.length;
     const newState = whichCursor();
-    announce(`Cursor state changed to ${newState}`);
+    announceAlert(`${newState} cursor`);
     pendingInputSource = 'dotpad';
     sendStateToServer();
 }
@@ -510,7 +510,7 @@ function beginModelLoadAnnouncement(modelLabel, source = 'selection') {
         label,
         source,
     };
-    announce(`Starting processing for ${label}.`);
+    announce(`${label} processing started.`);
 }
 
 function isActiveModelLoadTask(task) {
@@ -523,7 +523,7 @@ function clearModelLoadTask(task) {
     }
 }
 
-function formatZoomPercent(zoomValue) {
+function ratioToPercent(zoomValue) {
     const percent = Math.round(Number(zoomValue) * 100);
     return `${percent}%`;
 }
@@ -603,15 +603,15 @@ function setOrientationFromView(viewToken) {
 // others. The direct swap has no handedness to get backwards, so it means
 // the same physical turn from every orientation.
 const RELATIVE_ROTATIONS = {
-    rollCounterclockwise: { speech: 'Roll counterclockwise' },
-    rollClockwise:        { speech: 'Roll clockwise' },
-    pitchUp:              { speech: 'Pitch up' },
-    pitchDown:            { speech: 'Pitch down' },
-    yawLeft:              { speech: 'Yaw left' },
-    yawRight:             { speech: 'Yaw right' },
+    rollCounterclockwise: { speech: 'roll counterclockwise' },
+    rollClockwise:        { speech: 'roll clockwise' },
+    pitchUp:              { speech: 'pitch up' },
+    pitchDown:            { speech: 'pitch down' },
+    yawLeft:              { speech: 'yaw left' },
+    yawRight:             { speech: 'yaw right' },
 };
 
-function applyRelativeRotation(rotationName) {
+function applyRelativeRotation(rotationName, emit = announceAlert) {
     const rotation = RELATIVE_ROTATIONS[rotationName];
     if (!rotation) return;
 
@@ -660,7 +660,7 @@ function applyRelativeRotation(rotationName) {
             sendStateToServer();
         }
     }
-    announce(depthChanged ? `${rotation.speech}, depth ${currentSliceDepth}%` : rotation.speech);
+    emit(depthChanged ? `${rotation.speech}, depth ${currentSliceDepth}%` : rotation.speech);
 }
 
 function getOrientationPayload() {
@@ -713,7 +713,6 @@ function syncSliceDepthFromPlanes() {
     currentSliceDepth = displayDepthFromPlanes();
     if (sliceSlider) {
         sliceSlider.value = currentSliceDepth;
-        sliceSlider.setAttribute('aria-valuenow', currentSliceDepth);
     }
     if (slicePercentage) slicePercentage.textContent = currentSliceDepth;
     return oldDepth !== currentSliceDepth;
@@ -736,14 +735,13 @@ const currentRenderModeInfo = document.getElementById('current-render-mode-info'
 const currentZoomInfo = document.getElementById('current-zoom-info');
 const currentBBoxDimensionsInfo = document.getElementById('current-bbox-dimensions-info');
 const announcementHistory = document.getElementById('announcement-history');
-const clearAnnouncementsBtn = document.getElementById('clear-announcements-btn');
 const deeperBtn = document.getElementById('deeper-btn');
 const shallowerBtn = document.getElementById('shallower-btn');
 const zoomInput = document.getElementById('zoom-input');
 const zoomLevelValue = document.getElementById('zoom-level-value');
 const zoomOutBtn = document.getElementById('zoom-out-btn');
 const zoomInBtn = document.getElementById('zoom-in-btn');
-const sliceGraphLockBtn = document.getElementById('slice-graph-lock-btn');
+const sliceGraphLockCheckbox = document.getElementById('slice-graph-lock-checkbox');
 const sliceGraphRefreshBtn = document.getElementById('slice-graph-refresh-btn');
 const sliceGraphModeBtn = document.getElementById('slice-graph-mode-btn');
 const resetPositionBtn = document.getElementById('reset-position-btn');
@@ -795,36 +793,12 @@ function formatCenter2(value) {
     return `${x.toFixed(3)},${y.toFixed(3)}`;
 }
 
-// Toast / live-region elements
-const announcementToast = document.getElementById('announcement-toast');
-// Two politeness tiers, each a two-slot swap. Toggling which element in a tier
-// receives text guarantees AT sees a fresh DOM mutation for every announcement,
-// including consecutive identical messages, without any clear+setTimeout race.
-const srLiveTiers = {
-    polite: [
-        document.getElementById('sr-live-polite-a'),
-        document.getElementById('sr-live-polite-b'),
-    ],
-    assertive: [
-        document.getElementById('sr-live-assertive-a'),
-        document.getElementById('sr-live-assertive-b'),
-    ],
-};
-const srLiveActiveSlot = { polite: 0, assertive: 0 };
-const toastDurationSlider = document.getElementById('toast-duration-slider');
-const toastDurationValue = document.getElementById('toast-duration-value');
-let toastDurationSec = 3;  // default 3 seconds; 0 = off
-let toastTimer = null;
-
-// Toast duration slider handler
-if (toastDurationSlider) {
-    toastDurationSlider.addEventListener('input', function() {
-        toastDurationSec = parseFloat(this.value);
-        if (toastDurationValue) toastDurationValue.textContent = toastDurationSec === 0 ? 'off' : toastDurationSec + 's';
-        this.setAttribute('aria-valuenow', toastDurationSec);
-        this.setAttribute('aria-valuetext', toastDurationSec === 0 ? 'off' : toastDurationSec + ' seconds');
-    });
-}
+// Message window elements: two persistent, always-visible native ARIA
+// live regions (see the markup for role="alert" vs aria-live="polite"). Assertive
+// for anything the user just did or an error to act on; polite for background/
+// system events.
+const announcementWindow = document.getElementById('announcement-window');
+const announcementWindowPolite = document.getElementById('announcement-window-polite');
 
 /** Update the top status bar to reflect current state. */
 function refreshStatusBar() {
@@ -835,28 +809,10 @@ function refreshStatusBar() {
     if (sbViewMode) sbViewMode.textContent = representationModeLabel();
 }
 
-/** Show a brief on-screen toast and push text to the SR live region for a tier. */
-function showToast(message, politeness = 'polite') {
-    // Two-slot swap within the chosen tier: write to the next slot and clear the
-    // previous one. AT always sees a genuine new-content mutation regardless of
-    // whether the message is identical to the last one, and there is no setTimeout
-    // race to lose when keys are pressed in rapid succession.
-    const tier = srLiveTiers[politeness] ? politeness : 'polite';
-    const slots = srLiveTiers[tier];
-    srLiveActiveSlot[tier] = 1 - srLiveActiveSlot[tier];
-    const activeEl = slots[srLiveActiveSlot[tier]];
-    const idleEl   = slots[1 - srLiveActiveSlot[tier]];
-    if (activeEl) activeEl.textContent = message;
-    if (idleEl)   idleEl.textContent   = '';
-
-    // Visual toast: respect user-chosen duration.
-    if (!announcementToast || toastDurationSec <= 0) return;
-    announcementToast.textContent = message;
-    announcementToast.classList.add('visible');
-    if (toastTimer) clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => {
-        announcementToast.classList.remove('visible');
-    }, toastDurationSec * 1000);
+/** Write the message into the message window for the given politeness tier. */
+function updateMessageWindow(message, politeness = 'polite') {
+    const field = politeness === 'assertive' ? announcementWindow : announcementWindowPolite;
+    if (field) field.textContent = message;
 }
 
 // A depth value as a single spoken token: the ends get words, the middle a percent.
@@ -871,88 +827,36 @@ function clampDepth(value) {
     return Number.isFinite(n) ? Math.round(n) : null;
 }
 
-// Zoom and depth changes are announced on a trailing debounce that accumulates:
-// the first press of a burst anchors `from`, later presses only move `to`, and
-// one announcement fires once the burst settles. Holding a key, and the 1%-step
-// zoom that would otherwise announce ten times across a range, collapse to a
-// single "from <start> to <final>". The render and the braille display are NOT
-// debounced — those update on every press so tactile feedback stays immediate;
-// only the spoken summary waits.
-const PARAMETER_SETTLE_MS = 150;
-const pendingParameterAnnouncements = {};
+// Every depth/zoom change is announced (or logged) immediately, with no debounce.
+// For the assertive keyboard/hardware channel (announceAlert) each new announcement
+// already interrupts and replaces whatever's currently being spoken
 
-function scheduleAccumulatedAnnouncement(key, from, to, emit) {
-    let pending = pendingParameterAnnouncements[key];
-    if (!pending) {
-        pending = pendingParameterAnnouncements[key] = { timer: null, from: null, to: null };
-    }
-    if (pending.timer === null) {
-        pending.from = from; // anchor once, at the start of the burst
-    } else {
-        clearTimeout(pending.timer);
-    }
-    pending.to = to;
-    pending.timer = setTimeout(() => {
-        pending.timer = null;
-        emit(pending.from, pending.to);
-    }, PARAMETER_SETTLE_MS);
-}
-
-// Build and speak a settled depth change. The first time depth is announced the
-// phrase carries its label; an immediately following depth change drops to just
-// the new value (see announceParameterValue). A burst that changed nothing still
-// speaks, since silence reads as a dropped key.
-function emitDepthAnnouncement(from, to) {
-    const toToken = depthToken(to);
-    if (from === null || from === to) {
-        // "surface"/"full depth" are self-identifying; a mid-range no-op keeps the label.
-        const text = to === 0 || to === 100 ? toToken : `depth ${toToken}`;
-        announceParameterValue('slice-depth', text, text);
-        return;
-    }
-    const arrow = `${depthToken(from)} to ${toToken}`;
-    announceParameterValue('slice-depth', `depth from ${arrow}`, toToken);
-}
-
-function announceDepthValue(depthValue, previousDepth = null) {
+function announceDepthValue(depthValue, previousDepth = null, emit = announceAlert) {
     const to = clampDepth(depthValue);
     if (to === null) return;
-    const from = previousDepth === null || previousDepth === undefined ? null : clampDepth(previousDepth);
-    scheduleAccumulatedAnnouncement('slice-depth', from, to, emitDepthAnnouncement);
+    announceParameterValue("depth", `Depth ${to}%`, `${to}%`, emit);
 }
 
-// Zoom, same pattern. Zoom has no upper limit, so the only boundary is minimum.
-function emitZoomAnnouncement(from, to) {
-    const toPercent = formatZoomPercent(to);
-    if (from === null || !Number.isFinite(from) || from === to) {
-        const text = to <= MIN_ZOOM ? 'minimum zoom' : `zoom ${toPercent}`;
-        announceParameterValue('zoom-level', text, text);
-        return;
-    }
-    const arrow = `${formatZoomPercent(from)} to ${toPercent}`;
-    announceParameterValue('zoom-level', `zooming from ${arrow}`, toPercent);
-}
-
-function announceZoomValue(zoomValue, previousZoom = null) {
+function announceZoomValue(zoomValue, previousZoom = null, emit = announceAlert) {
     const to = Number(zoomValue);
     if (!Number.isFinite(to)) return;
-    const from = previousZoom === null || previousZoom === undefined ? null : Number(previousZoom);
-    scheduleAccumulatedAnnouncement('zoom-level', from, to, emitZoomAnnouncement);
+    // ratioToPercent already appends "%" — don't add a second one.
+    announceParameterValue("zoom", `Zoom ${ratioToPercent(to)}`, `${ratioToPercent(to)}`, emit);
 }
 
-// Speak firstText the first time this parameter is announced, then repeatText on
-// an immediately following announcement of the SAME parameter. Any other
+// Speak firstText the first time this parameter is announced, then repeatText
+// on an immediately following announcement of the SAME parameter. Any other
 // announcement in between resets the run, so the fuller phrasing returns once the
 // context is no longer obvious. Only zoom and depth use this; everything else
-// calls announce() directly.
-function announceParameterValue(parameterKey, firstText, repeatText) {
+// calls announceAlert()/announce() directly.
+function announceParameterValue(parameterKey, firstText, repeatText, emit = announceAlert) {
     const normalizedKey = String(parameterKey || '').trim().toLowerCase();
     const useFirst = normalizedKey === '' || normalizedKey !== lastAnnouncedParameterKey;
     const message = useFirst ? String(firstText) : String(repeatText);
 
-    // announce() clears lastAnnouncedParameterKey; re-establish this parameter's
-    // key afterwards so a run of the SAME parameter still drops to the arrow.
-    announce(message);
+    // emit() clears lastAnnouncedParameterKey; re-establish this parameter's key
+    // afterwards so a run of the SAME parameter still drops to the arrow.
+    emit(message);
     if (normalizedKey) {
         lastAnnouncedParameterKey = normalizedKey;
     }
@@ -996,30 +900,27 @@ function getStatusBarAnnouncement() {
 // Update button labels with current state information
 function updateButtonLabels() {
     const depthText = `${currentSliceDepth}%`;
-    deeperBtn.textContent = `Deeper: Currently ${depthText}`;
-    deeperBtn.setAttribute('aria-label', `Go deeper. Current depth: ${depthText}. Will increase to ${Math.min(100, currentSliceDepth + 10)}%`);
-    shallowerBtn.textContent = `Shallower: Currently ${depthText}`;
-    shallowerBtn.setAttribute('aria-label', `Go shallower. Current depth: ${depthText}. Will decrease to ${Math.max(0, currentSliceDepth - 10)}%`);
+    deeperBtn.textContent = `Deeper 10%`;
+    shallowerBtn.textContent = `Shallower 10%`;
 }
 
 function updateSliceGraphLockUI() {
     const isSliceGraphMode = isSliceGraphRepresentationMode();
     sliceGraphRefreshBtn.disabled = !isSliceGraphMode;
+    if (sliceGraphLockCheckbox) {
+        sliceGraphLockCheckbox.checked = sliceGraphLocked;
+    }
     if (sliceGraphLocked) {
-        sliceGraphLockBtn.textContent = 'Slice Graph Lock: On';
-        sliceGraphLockBtn.setAttribute('aria-pressed', 'true');
         if (isSliceGraphMode) {
-            sliceGraphLockStatus.textContent = `Graph lock is ON. Frozen at view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%.`;
+            sliceGraphLockStatus.textContent = `Freeze graph`;
         } else {
-            sliceGraphLockStatus.textContent = 'Graph lock is ON (default). Switch to Slice Graph mode to refresh.';
+            sliceGraphLockStatus.textContent = 'Switch to Slice Graph mode to refresh.';
         }
     } else {
-        sliceGraphLockBtn.textContent = 'Slice Graph Lock: Off';
-        sliceGraphLockBtn.setAttribute('aria-pressed', 'false');
         if (isSliceGraphMode) {
-            sliceGraphLockStatus.textContent = 'Graph lock is OFF. Graph follows your current location.';
+            sliceGraphLockStatus.textContent = `view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`;
         } else {
-            sliceGraphLockStatus.textContent = 'Graph lock is OFF. Switch to Slice Graph mode to use refresh.';
+            sliceGraphLockStatus.textContent = 'Switch to Slice Graph mode to use refresh.';
         }
     }
 }
@@ -1032,7 +933,6 @@ function updateSliceGraphModeUI() {
     sliceGraphModeBtn.textContent = isColumnCountMode
         ? 'Graph Mode: Slice Area'
         : 'Graph Mode: Difference';
-    sliceGraphModeBtn.setAttribute('aria-pressed', isColumnCountMode ? 'true' : 'false');
 }
 
 function toggleSliceGraphMode() {
@@ -1062,14 +962,18 @@ function autoRefreshSliceGraph(options = {}) {
     sendStateToServer();
 }
 
-function toggleSliceGraphLock() {
-    sliceGraphLocked = !sliceGraphLocked;
+function setSliceGraphLocked(locked) {
+    sliceGraphLocked = locked;
     if (sliceGraphLocked) {
         // When turning lock back on, freeze at the current exploration point.
         captureSliceGraphAnchor(false);
     }
     updateSliceGraphLockUI();
     sendStateToServer();
+}
+
+function toggleSliceGraphLock() {
+    setSliceGraphLocked(!sliceGraphLocked);
 }
 
 function print_view(){
@@ -1103,7 +1007,6 @@ function setDebugPipelineVisible(isVisible) {
         return;
     }
     debugPipelineContent.hidden = !isVisible;
-    debugPipelineToggleBtn.setAttribute('aria-expanded', String(isVisible));
     debugPipelineToggleBtn.textContent = isVisible ? 'Hide Debug Pipeline' : 'Show Debug Pipeline';
     try {
         window.localStorage.setItem(DEBUG_PIPELINE_VISIBILITY_KEY, isVisible ? '1' : '0');
@@ -1409,19 +1312,16 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
     slicePercentage.textContent = currentSliceDepth;
     refreshViewInfoSummary();
 
-    // Only mutate ARIA attributes, button labels, and trigger a render when the
-    // value actually changed.
+    // Only mutate button labels and trigger a render when the value actually
+    // changed.
     if (oldDepth !== currentSliceDepth) {
-        sliceSlider.setAttribute('aria-valuenow', currentSliceDepth);
-        // aria-valuetext is announced by NVDA on every mutation of a range input
-        // regardless of focus. When shouldAnnounce=false the caller (a keyboard
-        // shortcut handler) will push the announcement through the assertive live
-        // region instead, so we must NOT mutate aria-valuetext here — doing so
-        // would cause a second, racing announcement on NVDA/JAWS.
-        // When shouldAnnounce=true (slider focused, hardware input) the mutation
-        // IS the correct announcement channel, so we set it as before.
+        // shouldAnnounce=false means the caller (a keyboard shortcut handler, or
+        // hardware acting through window.updateSliceDepth) announces its own
+        // settled value separately. shouldAnnounce=true (a mouse click on the
+        // slider or the +/- buttons) has no other feedback mechanism, so announce
+        // it here.
         if (shouldAnnounce) {
-            sliceSlider.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
+            announceDepthValue(currentSliceDepth, oldDepth, announceAlert);
         }
         updateButtonLabels();
         sendStateToServer();
@@ -1657,7 +1557,9 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
     updateSideBySideAxisLabels();
     syncRadios();
     if (oldView !== currentView && shouldAnnounce) {
-        announce(`${currentView.toLowerCase()} view`);
+        // Only real caller: the WitMotion orientation-cube hardware reporting a
+        // new face (applyRelativeRotation and page-load both call with false/no-op).
+        announceAlert(`${currentView.toLowerCase()} view`);
     }
 
     // Send state to server if changed
@@ -2089,12 +1991,14 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
     zoomInput.value = zoomText;
     zoomLevelValue.textContent = zoomText;
     refreshViewInfoSummary();
-    zoomInput.setAttribute('aria-valuetext', `zoom ${formatZoomPercent(currentZoom)}`);
-
     updateButtonLabels();
 
+    // shouldAnnounce=true here only ever comes from a mouse click (zoom +/- buttons,
+    // the zoom number field on change), which has no other feedback mechanism, so
+    // announce it. Keyboard callers pass shouldAnnounce=false and announce their
+    // own settled value.
     if (shouldAnnounce) {
-        announceZoomValue(currentZoom, oldZoom);
+        announceZoomValue(currentZoom, oldZoom, announceAlert);
     }
 
     console.log(oldZoom, currentZoom);
@@ -2150,7 +2054,8 @@ async function fitCurrentViewToDevice() {
 
     updateZoom(data.zoom, false, false);
     sendStateToServer();
-    announce('View fitted to tactile display');
+    // Only reachable via the 'f' keyboard shortcut — no on-screen button.
+    announceAlert(`View fitted to ${payload.output_device}`);
 
 }
 
@@ -2169,7 +2074,7 @@ function switchToRenderMode(targetMode, shouldAnnounce = true) {
     refreshViewInfoSummary();
     updateButtonLabels();
     syncRadios();
-    if (shouldAnnounce) announce(`${renderModeLabel(previousMode)} to ${renderModeLabel()}`);
+    if (shouldAnnounce) announce(`${renderModeLabel()}`);
 
     // Send state to server
     sendStateToServer();
@@ -2223,10 +2128,10 @@ function cycleRepresentationMode(shouldAnnounce = true) {
     switchToRepresentationMode(representationModes[nextIndex].key, shouldAnnounce);
 }
 
-// Announce a change: adds to visible history, shows toast, and speaks via SR live region.
-function emitAnnouncement(message, politeness, isAlert) {
+// Announce a change: updates the message window, speaks via the SR live region,
+// echoes to the tactile display.
+function emitAnnouncement(message, politeness) {
     const normalizedMessage = String(message);
-
     // Any announcement ends the current zoom/depth run: the next such change
     // re-includes its label, since the context is no longer obvious. A parameter
     // announcement re-establishes its own key immediately after this returns
@@ -2236,63 +2141,36 @@ function emitAnnouncement(message, politeness, isAlert) {
     // Always refresh the status bar so it reflects the latest state.
     refreshStatusBar();
 
-    // Show the toast + push to the screen-reader live region for this tier.
-    showToast(normalizedMessage, politeness);
+    updateMessageWindow(normalizedMessage, politeness);
 
     // Send announcement to tactile display
     if (typeof window.onTactileAnnouncement === 'function') {
         try {
             window.onTactileAnnouncement({
                 message: normalizedMessage,
-                politeness,
-                isAlert
+                politeness
             });
         } catch (err) {
             console.warn('Tactile announcement failed:', err);
         }
     }
-
-    // Append to visible history log; alerts are weighted so the log distinguishes
-    // an interrupting condition from routine state changes.
-    if (announcementHistory) {
-        if (normalizedMessage !== lastAnnouncementMessage) {
-            const item = document.createElement('li');
-            if (isAlert) item.style.fontWeight = '600';
-
-            const time = new Date();
-            const timestamp = document.createElement('span');
-            timestamp.className = 'announcement-time';
-            timestamp.textContent = `[${time.toLocaleTimeString()}]`;
-
-            const text = document.createElement('span');
-            text.textContent = message;
-
-            item.appendChild(timestamp);
-            item.appendChild(text);
-            announcementHistory.appendChild(item);
-            announcementHistory.scrollTop = announcementHistory.scrollHeight;
-        }
-    }
-
-    lastAnnouncementMessage = normalizedMessage;
 }
 
 /**
- * Announce a state change politely: it waits for the user to pause rather than
- * interrupting. This is the right default for anything the user just did, since
- * they already know it happened and only need the result.
+ * Announce a background/system event politely: it waits for the user to pause
+ * rather than interrupting. Reserve for things not tied to an immediate action —
+ * a server reconnecting, a model finishing a load that was kicked off moments
+ * ago — since the user may be doing something else entirely when it lands.
  */
 function announce(message) {
-    emitAnnouncement(message, 'polite', false);
+    emitAnnouncement(message, 'polite');
 }
 
 /**
  * Announce assertively, interrupting whatever the AT is currently speaking.
- * Reserve for conditions the user did not initiate and must act on: a lost
- * server or device, a failed render, upload, or export.
  */
 function announceAlert(message) {
-    emitAnnouncement(message, 'assertive', true);
+    emitAnnouncement(message, 'assertive');
 }
 
 // External API used by hardware integration modules.
@@ -2302,12 +2180,6 @@ window.whichCursor = whichCursor;
 window.getCurrentSliceDepth = getCurrentSliceDepth;
 window.updateSliceDepth = updateSliceDepth;
 window.announceDepthValue = announceDepthValue;
-
-if (clearAnnouncementsBtn && announcementHistory) {
-    clearAnnouncementsBtn.addEventListener('click', function() {
-        announcementHistory.innerHTML = '';
-    });
-}
 
 // Event listeners
 
@@ -2319,10 +2191,6 @@ sliceSlider.addEventListener('input', function() {
     currentSliceDepth = newValue;
     slicePercentage.textContent = currentSliceDepth;
 
-    // Update ARIA attributes immediately
-    this.setAttribute('aria-valuenow', currentSliceDepth);
-    this.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
-
     // Update button labels immediately
     updateButtonLabels();
 });
@@ -2331,46 +2199,6 @@ sliceSlider.addEventListener('change', function() {
     clearTimeout(sliderUpdateTimeout);
     pendingInputSource = 'ui';
     sendStateToServer();
-});
-
-// Sync aria-valuetext when the slider receives focus so it reflects any depth
-// changes made via keyboard shortcuts while focus was elsewhere.
-sliceSlider.addEventListener('focus', function() {
-    this.setAttribute('aria-valuenow', currentSliceDepth);
-    this.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
-});
-
-// Keyboard support for slider
-sliceSlider.addEventListener('keydown', function(e) {
-    let newValue = currentSliceDepth;
-
-    switch(e.key) {
-        case 'ArrowUp':
-        case 'ArrowRight':
-            newValue += 1;
-            break;
-        case 'ArrowDown':
-        case 'ArrowLeft':
-            newValue -= 1;
-            break;
-        case 'PageUp':
-            newValue += 10;
-            break;
-        case 'PageDown':
-            newValue -= 10;
-            break;
-        case 'Home':
-            newValue = 0;
-            break;
-        case 'End':
-            newValue = 100;
-            break;
-        default:
-            return; // Don't prevent default for other keys
-    }
-
-    e.preventDefault();
-    updateSliceDepth(newValue, true);
 });
 
 // Render mode radios
@@ -2421,7 +2249,6 @@ zoomInput.addEventListener('change', function() {
     clearTimeout(zoomDebounceTimer);
     if (!Number.isFinite(this.valueAsNumber)) {
         this.value = currentZoom.toFixed(1);
-        announce('zoom value unchanged');
         return;
     }
     pendingInputSource = 'ui';
@@ -2456,9 +2283,14 @@ shallowerBtn.addEventListener('click', function() {
     updateSliceDepth(currentSliceDepth - 10, true);
 });
 
-sliceGraphLockBtn.addEventListener('click', function() {
-    toggleSliceGraphLock();
-});
+if (sliceGraphLockCheckbox) {
+    sliceGraphLockCheckbox.addEventListener('change', function() {
+        setSliceGraphLocked(this.checked);
+        // The checkbox's own checked state already gives its own accessible
+        // feedback; only log the change 
+        announce(`Slice graph lock ${sliceGraphLocked ? 'on' : 'off'}`);
+    });
+}
 
 sliceGraphRefreshBtn.addEventListener('click', function() {
     if (!isSliceGraphRepresentationMode()) {
@@ -2505,7 +2337,7 @@ for (const [buttonId, rotationName] of Object.entries(ORIENTATION_BUTTONS)) {
     if (!button) continue;
     button.addEventListener('click', function() {
         pendingInputSource = 'ui';
-        applyRelativeRotation(rotationName);
+        applyRelativeRotation(rotationName, announce);
     });
 }
 
@@ -2664,7 +2496,7 @@ document.addEventListener('keydown', function(e) {
             {
                 const previousMode = currentRenderMode;
                 cycleRenderMode(false);
-                announce(`Render mode changed: ${renderModeLabel(previousMode)} to ${renderModeLabel()}`);
+                announceAlert(`${renderModeLabel()}`);
             }
             break;
 
@@ -2673,7 +2505,7 @@ document.addEventListener('keydown', function(e) {
             {
                 const previousViewMode = currentRepresentationMode;
                 cycleRepresentationMode(false);
-                announce(`Display mode changed: ${representationModeLabel(previousViewMode)} to ${representationModeLabel()}`);
+                announceAlert(`${representationModeLabel()}`);
             }
             break;
 
@@ -2710,64 +2542,64 @@ document.addEventListener('keydown', function(e) {
         case '.':
             // Read the full top-of-page status bar.
             e.preventDefault();
-            announce(getStatusBarAnnouncement());
+            announceAlert(getStatusBarAnnouncement());
             break;
 
         case 'g':
             e.preventDefault();
             if (!isSliceGraphRepresentationMode()) {
-                announce('Slice graph refresh: not in slice-graph mode');
+                announceAlert('not in slice-graph mode');
                 break;
             }
             captureSliceGraphAnchor(true);
             sendStateToServer();
-            announce(`Slice graph refreshed: view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
+            announceAlert(`view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
             break;
 
         case 'v':
             e.preventDefault();
             if (!isSliceGraphRepresentationMode()) {
-                announce('Slice graph lock: not in slice-graph mode');
+                announceAlert('not in slice-graph mode');
                 break;
             }
             toggleSliceGraphLock();
-            announce(`Slice graph lock ${sliceGraphLocked ? 'on' : 'off'}`);
+            announceAlert(`${sliceGraphLocked ? 'on' : 'off'}`);
             break;
 
         case 'w':
             currentMoveCamera = "up";
             sendStateToServer();
             currentMoveCamera = "none";
-            announce('Object panned up');
+            announceAlert('up');
             break;
         case 'd':
             currentMoveCamera = "right";
             sendStateToServer();
             currentMoveCamera = "none";
-            announce('Object panned right');
+            announceAlert('right');
             break;
         case 's':
             currentMoveCamera = "down";
             sendStateToServer();
             currentMoveCamera = "none";
-            announce('Object panned down');
+            announceAlert('down');
             break;
         case '[':
             composeScrollbar = !composeScrollbar;
             sendStateToServer();
-            announce(`Compose scrollbar ${composeScrollbar ? 'on' : 'off'}`);
+            announceAlert(`${composeScrollbar ? 'on' : 'off'}`);
             break;
         case ']':
             composeSliceGraph = !composeSliceGraph;
             sendStateToServer();
-            announce(`Compose slice graph ${composeSliceGraph ? 'on' : 'off'}`);
+            announceAlert(`${composeSliceGraph ? 'on' : 'off'}`);
             break;
 
         case 'a':
             currentMoveCamera = "left";
             sendStateToServer();
             currentMoveCamera = "none";
-            announce('Object panned left');
+            announceAlert('left');
             break;
 
         case '4':
@@ -2798,7 +2630,7 @@ document.addEventListener('keydown', function(e) {
         case 'escape':
             e.preventDefault();
             document.activeElement.blur();
-            announce('Focus cleared');
+            announceAlert('Focus cleared');
             break;
 
         case 'h':
@@ -2812,7 +2644,7 @@ document.addEventListener('keydown', function(e) {
             break;
 
         case 'p':
-            announce('Printing current render');
+            announceAlert('Printing current render');
             print_view();
             break;
 
@@ -2821,7 +2653,7 @@ document.addEventListener('keydown', function(e) {
             currentMoveCamera = "reset";
             sendStateToServer();
             currentMoveCamera = "none";
-            announce('Position reset');
+            announceAlert('Position reset');
             break;
 
         default:

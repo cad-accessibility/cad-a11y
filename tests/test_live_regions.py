@@ -1,12 +1,18 @@
 """Guardrails on the screen-reader live-region structure in the viewer markup.
 
-The announcement layer has two politeness tiers, each a pair of swap slots, and
-nothing else should be a live region. Two failure modes are worth locking down:
+The announcement layer has exactly two message windows, and nothing else
+should be a live region:
 
-  * a status panel left as role="status" aria-live="assertive" — self
-    contradictory (status implies polite) and an interruption source; this is
-    what made the hardware panels and debug dump re-read over live speech.
-  * the debug stage list regaining aria-live and flooding on every render.
+  * #announcement-window: role="alert" (implies aria-live="assertive"), with
+    no explicit aria-live attribute alongside it (redundant, and double-speaks
+    on some AT). Used for anything the user just did directly (a keyboard
+    shortcut, a hardware device button), or an error they need to act on.
+  * #announcement-window-polite: role="status" (implies aria-live="polite"),
+    same reasoning as above — no explicit aria-live alongside it. Background/
+    system events not tied to an immediate action.
+
+Also locks down a failure mode seen before: the debug stage list regaining
+aria-live and flooding on every render.
 
 Parsing is stdlib-only: no package.json, no JS runner, and bs4/lxml are not in
 requirements.txt.
@@ -19,16 +25,24 @@ from pathlib import Path
 
 VIEWER_HTML = Path(__file__).resolve().parent.parent / "accessible-3d-viewer.html"
 
-# The complete set of live regions the viewer is allowed to have, and the
-# politeness each must carry. Anything else with aria-live is a regression.
-EXPECTED_LIVE_REGIONS = {
-    "sr-live-polite-a": "polite",
-    "sr-live-polite-b": "polite",
-    "sr-live-assertive-a": "assertive",
-    "sr-live-assertive-b": "assertive",
+# Roles that imply their own live-region behavior per the ARIA spec, so an
+# element carrying one of these is a live region even without aria-live.
+IMPLICIT_LIVE_ROLES = {"alert", "status", "log", "alertdialog", "marquee", "timer"}
+
+# The complete set of elements the viewer is allowed to use as live regions,
+# and exactly how each announces. Anything else with aria-live (or one of the
+# IMPLICIT_LIVE_ROLES) is a regression.
+EXPECTED_LIVE_ELEMENTS = {
+    "announcement-window": {"aria-live": None, "role": "alert"},
+    "announcement-window-polite": {"aria-live": None, "role": "status"},
+    # Inline form-validation error in the session-consent dialog — unrelated to
+    # the announcement layer, hidden until the email field actually fails to
+    # validate.
+    "consent-email-error": {"aria-live": None, "role": "alert"},
 }
 
-# Divs demoted to plain visual text; each must stay free of aria-live.
+# Divs demoted to plain visual text; each must stay free of aria-live and of
+# the implicit live-region roles.
 DEMOTED_STATUS_IDS = [
     "slice-graph-lock-status",
     "upload-model-status",
@@ -70,32 +84,51 @@ def _by_id() -> dict[str, dict]:
     return {el["id"]: el for el in _elements() if el["id"]}
 
 
-def test_exactly_the_expected_live_regions_exist():
-    """The only aria-live elements are the four tier regions, with right politeness."""
+def _is_live(el: dict) -> bool:
+    return el["aria-live"] is not None or el["role"] in IMPLICIT_LIVE_ROLES
+
+
+def test_exactly_the_expected_live_elements_exist():
+    """The only live-region elements are the three expected ones, configured as declared."""
     live = {
-        el["id"]: el["aria-live"] for el in _elements() if el["aria-live"] is not None
+        el["id"]: {"aria-live": el["aria-live"], "role": el["role"]}
+        for el in _elements()
+        if el["id"] and _is_live(el)
     }
-    assert live == EXPECTED_LIVE_REGIONS, (
-        f"aria-live elements are {live}, expected exactly {EXPECTED_LIVE_REGIONS}. "
-        f"A new live region, or a changed politeness, will interrupt users."
+    assert live == EXPECTED_LIVE_ELEMENTS, (
+        f"live-region elements are {live}, expected exactly {EXPECTED_LIVE_ELEMENTS}. "
+        f"A new live region, or a changed politeness/role, will change how (or "
+        f"whether) users are interrupted."
     )
 
 
-def test_tier_regions_are_atomic_and_roleless():
-    """Each tier region reads as a whole and carries no role.
-
-    role="alert"/"status" alongside aria-live is redundant and double-speaks on
-    some AT; the polite tier cannot carry role="alert" at all.
-    """
+def test_alert_window_carries_no_explicit_aria_live():
+    """role=alert already implies assertive; pairing it with aria-live double-speaks on some AT."""
     by_id = _by_id()
-    for region_id in EXPECTED_LIVE_REGIONS:
-        el = by_id.get(region_id)
-        assert el is not None, f"missing live region {region_id!r}"
-        assert el["aria-atomic"] == "true", f"{region_id} must be aria-atomic"
-        assert el["role"] is None, f"{region_id} must not combine aria-live with a role"
+    el = by_id.get("announcement-window")
+    assert el is not None, "missing #announcement-window"
+    assert el["role"] == "alert"
+    assert el["aria-live"] is None, (
+        '#announcement-window combines role="alert" with an explicit aria-live '
+        "attribute; role already implies assertive, and the pairing double-speaks "
+        "on some AT."
+    )
 
 
-def test_no_element_combines_aria_live_with_status_or_alert_role():
+def test_polite_window_carries_no_explicit_aria_live():
+    """role=status already implies polite; pairing it with aria-live is redundant."""
+    by_id = _by_id()
+    el = by_id.get("announcement-window-polite")
+    assert el is not None, "missing #announcement-window-polite"
+    assert el["role"] == "status"
+    assert el["aria-atomic"] == "true"
+    assert el["aria-live"] is None, (
+        '#announcement-window-polite combines role="status" with an explicit '
+        "aria-live attribute; role already implies polite."
+    )
+
+
+def test_no_status_panel_combines_aria_live_with_status_or_alert_role():
     """role=status/alert plus an explicit aria-live is the self-contradiction we removed."""
     offenders = [
         el
@@ -108,13 +141,14 @@ def test_no_element_combines_aria_live_with_status_or_alert_role():
     )
 
 
-def test_demoted_status_panels_have_no_aria_live():
+def test_demoted_status_panels_have_no_live_region_behavior():
     """The visual status panels and the debug dump must not be live regions."""
     by_id = _by_id()
     for status_id in DEMOTED_STATUS_IDS:
         el = by_id.get(status_id)
         assert el is not None, f"expected element #{status_id} in the markup"
-        assert el["aria-live"] is None, (
-            f"#{status_id} has aria-live={el['aria-live']!r}; it must be plain visual "
-            f"text so it does not announce (or, for the debug dump, flood) on update."
+        assert not _is_live(el), (
+            f"#{status_id} is a live region (aria-live={el['aria-live']!r}, "
+            f"role={el['role']!r}); it must be plain visual text so it does not "
+            f"announce (or, for the debug dump, flood) on update."
         )

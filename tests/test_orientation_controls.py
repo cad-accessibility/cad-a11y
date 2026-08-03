@@ -123,12 +123,12 @@ def _facing_the_reader(basis):
 def test_every_key_is_wired_with_the_wording_the_issue_asks_for():
     """The speech is the only confirmation a reader gets that the key landed."""
     assert {name: r["speech"] for name, r in _rotations().items()} == {
-        "rollCounterclockwise": "Roll counterclockwise",
-        "rollClockwise": "Roll clockwise",
-        "pitchUp": "Pitch up",
-        "pitchDown": "Pitch down",
-        "yawLeft": "Yaw left",
-        "yawRight": "Yaw right",
+        "rollCounterclockwise": "roll counterclockwise",
+        "rollClockwise": "roll clockwise",
+        "pitchUp": "pitch up",
+        "pitchDown": "pitch down",
+        "yawLeft": "yaw left",
+        "yawRight": "yaw right",
     }
 
 

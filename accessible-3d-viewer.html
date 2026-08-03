@@ -71,24 +71,26 @@
             </span>
         </div>
 
-        <!-- SR live regions: two politeness tiers, each a two-slot swap.
-             Alternating which element in a tier receives text guarantees AT sees a
-             fresh DOM mutation for every announcement, including identical consecutive
-             messages, without any clear+setTimeout race. That matters here: a repeated
-             key at a limit must still speak, because silence reads as a dropped press.
-             Polite is the default; assertive interrupts and is reserved for conditions
-             the user did not cause and must act on (see announce/announceAlert in
-             viewer.js). No role="alert": it is redundant with aria-live and
-             double-speaks on some AT, and the polite tier could not carry it anyway. -->
-        <div id="sr-live-polite-a" aria-live="polite" aria-atomic="true" class="sr-only"></div>
-        <div id="sr-live-polite-b" aria-live="polite" aria-atomic="true" class="sr-only"></div>
-        <div id="sr-live-assertive-a" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
-        <div id="sr-live-assertive-b" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
+        <!--
+            Persistent message windows: two on-screen fields, standard
+            native ARIA live regions (the widest-supported pattern across
+            screen readers) updated via textContent — see updateMessageWindow()
+            in viewer.js. Never popups — neither ever fades, both stay put.
 
-        <!-- Visual toast for sighted users (hidden from SR – the live region above handles it) -->
-        <div id="announcement-toast" aria-hidden="true"></div>
+            Assertive (role="alert", which implies aria-live="assertive"): anything
+            the user just did directly (a keyboard shortcut, a hardware device
+            button) or an error they need to act on. Interrupts, so a burst of
+            fast presses is heard as the latest state, not queued one by one.
+            See announceAlert in viewer.js. 
 
-        <main id="main-content">
+            Polite (aria-live="polite"): background/system events not tied to an
+            immediate action (server reconnected, a model finished loading).
+            See announce().
+        -->
+        <div id="announcement-window" class="sr-only" role="alert" aria-atomic="true"></div> 
+        <div id="announcement-window-polite" class="sr-only" role="status" aria-atomic="true"></div>
+
+       <main id="main-content">
             <div class="layout">
                 <!-- LEFT COLUMN: controls (braille reading order: most-used first) -->
                 <div class="left-col" id="left-col">
@@ -240,10 +242,12 @@
                     View info box on display
                 </label>
 
+                <label class="checkbox-label" for="slice-graph-lock-checkbox">
+                    <input type="checkbox" id="slice-graph-lock-checkbox" checked>
+                    Lock slice graph
+                </label>
+
                 <div class="button-group" style="margin-top: 8px;">
-                    <button type="button" id="slice-graph-lock-btn" aria-pressed="true">
-                        Graph Lock: On
-                    </button>
                     <button type="button" id="slice-graph-refresh-btn">
                         Refresh Graph
                     </button>
@@ -428,22 +432,6 @@
                     <div>Y: <span id="bbox-y-min">--</span> to <span id="bbox-y-max">--</span> (h: <span id="bbox-y-height">--</span>)</div>
                     <div>Z: <span id="bbox-z-min">--</span> to <span id="bbox-z-max">--</span> (d: <span id="bbox-z-depth">--</span>)</div>
                 </div>
-            </section>
-
-            <!-- ============================================================
-                 9. ANNOUNCEMENTS LOG (command palette)
-                 ============================================================ -->
-            <section class="section" aria-labelledby="announcements-heading">
-                <h2 id="announcements-heading">Log</h2>
-                <div id="announcement-duration-control">
-                    <label for="toast-duration-slider">Toast time:</label>
-                    <input type="range" id="toast-duration-slider" min="0" max="10" value="3" step="0.5"
-                           aria-valuemin="0" aria-valuemax="10" aria-valuenow="3"
-                           aria-valuetext="3 seconds">
-                    <span class="duration-value" id="toast-duration-value">3s</span>
-                </div>
-                <button type="button" id="clear-announcements-btn" style="margin-top:6px;">Clear</button>
-                <ul id="announcement-history" aria-label="Announcement history"></ul>
             </section>
 
                 </div><!-- end left-col -->
