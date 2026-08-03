@@ -510,14 +510,7 @@ function beginModelLoadAnnouncement(modelLabel, source = 'selection') {
         label,
         source,
     };
-    // A dropdown selection already gets its own accessible feedback (the
-    // newly-selected option is read natively), so this only needs to be logged;
-    // an upload has no such native feedback and the kickoff is worth announcing.
-    if (source === 'selection') {
-        logAnnouncement(`${label} processing started.`);
-    } else {
-        announce(`${label} processing started.`);
-    }
+    announce(`${label} processing started.`);
 }
 
 function isActiveModelLoadTask(task) {
@@ -618,9 +611,6 @@ const RELATIVE_ROTATIONS = {
     yawRight:             { speech: 'yaw right' },
 };
 
-// `emit` picks the channel: announceAlert (default) for the keyboard shortcuts
-// (u/o/i/k/j/l); logAnnouncement for the six on-screen orientation buttons, which
-// are a plain mouse click with no keyboard-shortcut-style feedback of their own.
 function applyRelativeRotation(rotationName, emit = announceAlert) {
     const rotation = RELATIVE_ROTATIONS[rotationName];
     if (!rotation) return;
@@ -854,24 +844,19 @@ function announceZoomValue(zoomValue, previousZoom = null, emit = announceAlert)
     announceParameterValue("zoom", `Zoom ${ratioToPercent(to)}`, `${ratioToPercent(to)}`, emit);
 }
 
-let toggle = false;
-
-// Speak/log firstText the first time this parameter is announced, then repeatText
+// Speak firstText the first time this parameter is announced, then repeatText
 // on an immediately following announcement of the SAME parameter. Any other
 // announcement in between resets the run, so the fuller phrasing returns once the
 // context is no longer obvious. Only zoom and depth use this; everything else
-// calls announceAlert()/announce()/logAnnouncement() directly.
+// calls announceAlert()/announce() directly.
 function announceParameterValue(parameterKey, firstText, repeatText, emit = announceAlert) {
     const normalizedKey = String(parameterKey || '').trim().toLowerCase();
     const useFirst = normalizedKey === '' || normalizedKey !== lastAnnouncedParameterKey;
     const message = useFirst ? String(firstText) : String(repeatText);
-    const msg = message + (toggle ? " " : "");
-    toggle = !toggle;
-    
-    // announceAlert()/announce() clear lastAnnouncedParameterKey (logAnnouncement does
-    // not); re-establish this parameter's key afterwards so a run of the SAME
-    // parameter still drops to the arrow.
-    emit(msg);
+
+    // emit() clears lastAnnouncedParameterKey; re-establish this parameter's key
+    // afterwards so a run of the SAME parameter still drops to the arrow.
+    emit(message);
     if (normalizedKey) {
         lastAnnouncedParameterKey = normalizedKey;
     }
@@ -1493,17 +1478,15 @@ function activeTactileGrid() {
 window.setTactileDisplay = setTactileDisplay;
 window.activeTactileGrid = activeTactileGrid;
 
-// Only reachable via the output-device radio group — a checked radio already
-// gets its own accessible feedback, so this is logged rather than spoken (#144).
 function switchOutputDevice(targetDevice) {
     if (currentOutputDevice === targetDevice) {
-        logAnnouncement(`already using ${targetDevice}`);
+        announce(`already using ${targetDevice}`);
         return;
     }
 
     currentOutputDevice = targetDevice;
     syncRadios();
-    logAnnouncement(`output device ${targetDevice}`);
+    announce(`output device ${targetDevice}`);
     sendStateToServer();
     return true;
 }
@@ -2077,16 +2060,13 @@ async function fitCurrentViewToDevice() {
 }
 
 // Switch to a specific render mode
-// shouldAnnounce=true only happens via the render-mode radio group (a keyboard
-// 'r' press calls cycleRenderMode(false) and announces its own message instead)
-// — a checked radio already gets its own accessible feedback, so log it (#144).
 function switchToRenderMode(targetMode, shouldAnnounce = true) {
     if (!renderModeByKey(targetMode)) {
         console.error(`switchToRenderMode: unknown render mode ${targetMode}`);
         return;
     }
     if (currentRenderMode === targetMode) {
-        if (shouldAnnounce) logAnnouncement(`already ${renderModeLabel(targetMode)}`);
+        if (shouldAnnounce) announce(`already ${renderModeLabel(targetMode)}`);
         return;
     }
     const previousMode = currentRenderMode;
@@ -2094,7 +2074,7 @@ function switchToRenderMode(targetMode, shouldAnnounce = true) {
     refreshViewInfoSummary();
     updateButtonLabels();
     syncRadios();
-    if (shouldAnnounce) logAnnouncement(`${renderModeLabel(previousMode)} to ${renderModeLabel()}`);
+    if (shouldAnnounce) announce(`${renderModeLabel()}`);
 
     // Send state to server
     sendStateToServer();
@@ -2107,10 +2087,6 @@ function cycleRenderMode(shouldAnnounce = true) {
     switchToRenderMode(renderModes[nextIndex].key, shouldAnnounce);
 }
 
-// shouldAnnounce=true only happens via the view-mode radio group (a keyboard 't'
-// press calls cycleRepresentationMode(false) and announces its own message
-// instead) — a checked radio already gets its own accessible feedback, so log
-// it (#144).
 function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
     const mode = representationModeByKey(targetMode);
     if (!mode) {
@@ -2118,7 +2094,7 @@ function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
         return;
     }
     if (currentRepresentationMode === targetMode) {
-        if (shouldAnnounce) logAnnouncement(`already ${representationModeLabel(targetMode)}`);
+        if (shouldAnnounce) announce(`already ${representationModeLabel(targetMode)}`);
         return;
     }
     const previousMode = currentRepresentationMode;
