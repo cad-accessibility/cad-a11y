@@ -755,6 +755,10 @@ const debugPipelineContent = document.getElementById('debug-pipeline-content');
 const debugPipelineSummary = document.getElementById('debug-pipeline-summary');
 const debugStageList = document.getElementById('debug-stage-list');
 const DEBUG_PIPELINE_VISIBILITY_KEY = 'debugPipelineVisible';
+const shortcutsDialog = document.getElementById('shortcuts-dialog');
+const shortcutsCloseBtn = document.getElementById('shortcuts-close-btn');
+const shortcutsHeading = document.getElementById('shortcuts-heading');
+const mainContent = document.getElementById('main-content');
 
 // New radio group references
 const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
@@ -1033,6 +1037,57 @@ function initializeDebugPipelineVisibility() {
         // Keep default hidden if persistence is unavailable.
     }
     setDebugPipelineVisible(isVisible);
+}
+
+// Keyboard shortcuts dialog (#146). Native <dialog> + showModal() supplies focus
+// containment, background inertness, and Escape-to-close for free; the one thing
+// that isn't automatic is returning focus to whatever triggered the dialog once
+// it closes, which is what shortcutsDialogTrigger is for. See the ARIA APG
+// pattern: https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/examples/dialog/
+let shortcutsDialogTrigger = null;
+
+function openShortcutsDialog() {
+    if (!shortcutsDialog || !shortcutsDialog.showModal || shortcutsDialog.open) {
+        return;
+    }
+    shortcutsDialogTrigger = document.activeElement;
+    // Backs up the native modal inertness for older assistive tech, same as the
+    // session consent dialog.
+    if (mainContent) mainContent.setAttribute('aria-hidden', 'true');
+    shortcutsDialog.showModal();
+    // showModal() defaults to focusing the first focusable element, which here is
+    // the Close button at the very end of the content — reading forward from there
+    // reads nothing. Per the ARIA APG dialog pattern, a read-only dialog like this
+    // one should instead land on a static element at the top (the heading, made
+    // focusable via tabindex="-1"), so reading forward covers the whole dialog.
+    if (shortcutsHeading) shortcutsHeading.focus({ preventScroll: true });
+}
+
+function closeShortcutsDialog() {
+    if (!shortcutsDialog || !shortcutsDialog.open) {
+        return;
+    }
+    shortcutsDialog.close();
+}
+
+function restoreAfterShortcutsDialogClose() {
+    if (mainContent) mainContent.removeAttribute('aria-hidden');
+    // Return focus to whatever opened the dialog rather than stranding it at the
+    // top of the document (or on an element that's since been removed).
+    if (shortcutsDialogTrigger && document.contains(shortcutsDialogTrigger)) {
+        shortcutsDialogTrigger.focus();
+    }
+    shortcutsDialogTrigger = null;
+}
+
+if (shortcutsDialog) {
+    // close()/cancel (Escape) both need the same cleanup; close() covers the
+    // close button too since it just calls closeShortcutsDialog().
+    shortcutsDialog.addEventListener('close', restoreAfterShortcutsDialogClose);
+    shortcutsDialog.addEventListener('cancel', restoreAfterShortcutsDialogClose);
+}
+if (shortcutsCloseBtn) {
+    shortcutsCloseBtn.addEventListener('click', closeShortcutsDialog);
 }
 
 function renderPipelineDebug(debugPipeline, debugInfo = null) {
@@ -2377,6 +2432,13 @@ document.addEventListener('keydown', function(e) {
         return;
     }
 
+    // A modal dialog (shortcuts help, session consent) makes the rest of the page
+    // inert — Escape and Tab must stay scoped to it, not also fire a background
+    // shortcut underneath.
+    if (document.querySelector('dialog[open]')) {
+        return;
+    }
+
     // Leave browser/app shortcuts untouched (Cmd/Ctrl/Alt combos).
     if (e.metaKey || e.ctrlKey || e.altKey) {
         return;
@@ -2398,7 +2460,7 @@ document.addEventListener('keydown', function(e) {
         'u', 'i', 'o', 'j', 'k', 'l',
         '4', '5',
         'r', 't', 'g', 'v', 'z',
-        'w', 'a', 's', 'd', '[', ']', 'h', 'p', '.', 'escape', 'f'
+        'w', 'a', 's', 'd', '[', ']', 'h', '?', 'p', '.', 'escape', 'f'
     ]);
 
     if (!supportedShortcuts.has(normalizedKey)) {
@@ -2634,13 +2696,9 @@ document.addEventListener('keydown', function(e) {
             break;
 
         case 'h':
+        case '?':
             e.preventDefault();
-            {
-                const shortcutsHeading = document.getElementById('shortcuts-heading');
-                if (shortcutsHeading) {
-                    shortcutsHeading.focus();
-                }
-            }
+            openShortcutsDialog();
             break;
 
         case 'p':
