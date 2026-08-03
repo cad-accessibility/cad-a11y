@@ -1,7 +1,7 @@
 """Guardrails on the screen-reader live-region structure in the viewer markup.
 
-The announcement layer has exactly two message windows plus the (usually
-hidden) history log, and nothing else should be a live region:
+The announcement layer has exactly two message windows, and nothing else
+should be a live region:
 
   * #announcement-window: role="alert" (implies aria-live="assertive"), with
     no explicit aria-live attribute alongside it (redundant, and double-speaks
@@ -10,10 +10,6 @@ hidden) history log, and nothing else should be a live region:
   * #announcement-window-polite: role="status" (implies aria-live="polite"),
     same reasoning as above — no explicit aria-live alongside it. Background/
     system events not tied to an immediate action.
-  * #announcement-history: role="log" (implies aria-live="polite" and
-    aria-atomic="false" — only new entries are announced, not a re-read of
-    the whole list on every addition). The debug/audit history, hidden by
-    default.
 
 Also locks down a failure mode seen before: the debug stage list regaining
 aria-live and flooding on every render.
@@ -39,7 +35,6 @@ IMPLICIT_LIVE_ROLES = {"alert", "status", "log", "alertdialog", "marquee", "time
 EXPECTED_LIVE_ELEMENTS = {
     "announcement-window": {"aria-live": None, "role": "alert"},
     "announcement-window-polite": {"aria-live": None, "role": "status"},
-    "announcement-history": {"aria-live": None, "role": "log"},
     # Inline form-validation error in the session-consent dialog — unrelated to
     # the announcement layer, hidden until the email field actually fails to
     # validate.
