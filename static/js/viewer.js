@@ -2166,7 +2166,7 @@ function appendAnnouncementToHistory(message) {
     text.textContent = normalizedMessage;
     item.appendChild(text);
     announcementHistory.appendChild(item);
-    if (announcementHistory.children.length > 10) {
+    if (announcementHistory.children.length > 1) {
 	announcementHistory.removeChild(announcementHistory.firstElementChild);
     }
     announcementHistory.scrollTop = announcementHistory.scrollHeight;
