@@ -20,7 +20,7 @@ VIEWER_JS = Path(__file__).resolve().parent.parent / "static" / "js" / "viewer.j
 
 
 class _ElementCollector(HTMLParser):
-    """Collect every start tag's id / tag / hidden."""
+    """Collect every start tag's id / tag / class / role / hidden."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -32,6 +32,8 @@ class _ElementCollector(HTMLParser):
             {
                 "tag": tag,
                 "id": attrib.get("id"),
+                "class": attrib.get("class", ""),
+                "role": attrib.get("role"),
                 "hidden": "hidden" in attrib,
             }
         )
@@ -65,14 +67,18 @@ def test_message_windows_are_plain_divs():
         )
 
 
-def test_history_is_hidden_by_default_behind_a_toggle():
+def test_history_is_an_sr_only_log():
+    """The history list is a permanent, screen-reader-only audit trail (role="log").
+
+    It carries no visible UI (no show/hide toggle, no clear button) — it exists
+    for AT users and for debugging via the accessibility tree/announcements,
+    not as an on-screen panel.
+    """
     by_id = _by_id()
-    content = by_id.get("announcement-history-content")
-    toggle = by_id.get("announcement-history-toggle-btn")
-    assert content is not None and content["hidden"], (
-        "the scrollable history is a debug option and must start hidden"
-    )
-    assert toggle is not None, "expected a toggle button to show/hide the history"
+    history = by_id.get("announcement-history")
+    assert history is not None, "expected #announcement-history"
+    assert history["role"] == "log"
+    assert "sr-only" in history["class"].split()
 
 
 def test_viewer_js_updates_the_message_window_on_every_announcement():
