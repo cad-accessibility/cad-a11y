@@ -71,45 +71,34 @@
             </span>
         </div>
 
-        <!-- SR live regions: two politeness tiers, each a two-slot swap.
-             Alternating which element in a tier receives text guarantees AT sees a
-             fresh DOM mutation for every announcement, including identical consecutive
-             messages, without any clear+setTimeout race. That matters here: a repeated
-             key at a limit must still speak, because silence reads as a dropped press.
-             Assertive is used for anything the user just did directly — a keyboard
-             shortcut or a hardware device button — so a burst of fast presses is heard
-             as the latest state, not queued one-by-one. Polite is reserved for
-             background/system events not tied to an immediate action (server
-             reconnected, a model finished loading). See announceNow/announce/
-             announceAlert in viewer.js. No role="alert": it is redundant with
-             aria-live and double-speaks on some AT, and the polite tier could not
-             carry it anyway. -->
-        <div id="sr-live-polite-a" aria-live="polite" aria-atomic="true" class="sr-only"></div>
-        <div id="sr-live-polite-b" aria-live="polite" aria-atomic="true" class="sr-only"></div>
-        <div id="sr-live-assertive-a" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
-        <div id="sr-live-assertive-b" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
-
         <!--
-            Persistent message window (#144): the single on-screen field showing the
-            current announcement. Never a popup — it never fades, and it stays put.
-            It is NOT itself a live region (that's the sr-live-* pair above, which
-            speaks every announcement regardless of where focus is); this is a real
-            readonly textbox instead, specifically so that a screen reader user who
-            parks their cursor/focus here picks up every update automatically —
-            including on a refreshable braille display, which reliably mirrors a
-            focused control's value on change even where it does not reliably mirror
-            an aria-live region. That gap is the "braille display bug" this field
-            fixes. Mouse/native-control interactions that the browser already gives
-            its own accessible feedback for (a checked radio, a slider's
-            aria-valuetext) do not update this field — see logAnnouncement() in
-            viewer.js — they go to the history log only.
-        -->
-        <div id="announcement-window-wrap">
-            <label for="announcement-window" id="announcement-window-label">Current announcement</label>
-            <textarea id="announcement-window" readonly rows="2"></textarea>
-        </div>
+            Persistent message windows: two on-screen fields, standard
+            native ARIA live regions (the widest-supported pattern across
+            screen readers) updated via textContent — see updateMessageWindow()
+            in viewer.js. Never popups — neither ever fades, both stay put.
 
-        <main id="main-content">
+            Assertive (role="alert", which implies aria-live="assertive"): anything
+            the user just did directly (a keyboard shortcut, a hardware device
+            button) or an error they need to act on. Interrupts, so a burst of
+            fast presses is heard as the latest state, not queued one by one.
+            See announceNow/announceAlert in viewer.js. No separate aria-live
+            attribute alongside role="alert" — redundant and double-speaks on
+            some AT.
+
+            Polite (aria-live="polite"): background/system events not tied to an
+            immediate action (server reconnected, a model finished loading).
+            See announce().
+
+            Mouse/native-control interactions that the browser already gives its
+            own accessible feedback for (a checked radio, a slider's aria-valuetext)
+            update neither field — see logAnnouncement() in viewer.js — they go to
+            the history log only.
+        -->
+        <div id="announcement-window" class="sr-only" role="alert" aria-atomic="true"></div> 
+        <div id="announcement-window-polite" class="sr-only" role="status" aria-atomic="true"></div>
+        <ul id="announcement-history" class="sr-only" role="log" aria-label="Announcement history"></ul>
+
+       <main id="main-content">
             <div class="layout">
                 <!-- LEFT COLUMN: controls (braille reading order: most-used first) -->
                 <div class="left-col" id="left-col">
@@ -261,10 +250,12 @@
                     View info box on display
                 </label>
 
+                <label class="checkbox-label" for="slice-graph-lock-checkbox">
+                    <input type="checkbox" id="slice-graph-lock-checkbox" checked>
+                    Lock slice graph
+                </label>
+
                 <div class="button-group" style="margin-top: 8px;">
-                    <button type="button" id="slice-graph-lock-btn" aria-pressed="true">
-                        Graph Lock: On
-                    </button>
                     <button type="button" id="slice-graph-refresh-btn">
                         Refresh Graph
                     </button>
@@ -448,33 +439,6 @@
                     <div>X: <span id="bbox-x-min">--</span> to <span id="bbox-x-max">--</span> (w: <span id="bbox-x-width">--</span>)</div>
                     <div>Y: <span id="bbox-y-min">--</span> to <span id="bbox-y-max">--</span> (h: <span id="bbox-y-height">--</span>)</div>
                     <div>Z: <span id="bbox-z-min">--</span> to <span id="bbox-z-max">--</span> (d: <span id="bbox-z-depth">--</span>)</div>
-                </div>
-            </section>
-
-            <!-- ============================================================
-                 9. ANNOUNCEMENT HISTORY (debug option — hidden by default)
-                 ============================================================ -->
-            <section class="section debug-panel" aria-labelledby="announcements-heading">
-                <div class="debug-panel-header">
-                    <h2 id="announcements-heading">Announcement History</h2>
-                    <button
-                        id="announcement-history-toggle-btn"
-                        class="debug-panel-toggle"
-                        type="button"
-                        aria-expanded="false"
-                        aria-controls="announcement-history-content"
-                    >
-                        Show History
-                    </button>
-                </div>
-                <div id="announcement-history-content" class="debug-panel-content" hidden>
-                    <p class="help-text">
-                        Every announcement, including ones the current-announcement field
-                        above doesn't show because the control you used already gives its
-                        own accessible feedback (a checked radio, a slider's value).
-                    </p>
-                    <button type="button" id="clear-announcements-btn">Clear</button>
-                    <ul id="announcement-history" aria-label="Announcement history"></ul>
                 </div>
             </section>
 

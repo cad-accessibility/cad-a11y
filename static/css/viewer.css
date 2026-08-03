@@ -460,32 +460,21 @@ fieldset label {
     user-select: none;
 }
 
-/* ---- Persistent message window (#144) ---- */
-/* Never fades, never pops up — always shows the current announcement. */
-#announcement-window-wrap {
-    margin-bottom: 18px;
+/* ---- Persistent message windows (#144) ---- */
+/* Never fade, never pop up — always show the current announcement. Labels are
+   .sr-only (see accessible-3d-viewer.html) so there is nothing to style visually. */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
 }
-#announcement-window-label {
-    display: block;
-    font-size: 0.92em;
-    font-weight: 600;
-    color: #1f3343;
-    margin-bottom: 4px;
-}
-#announcement-window {
-    display: block;
-    width: 100%;
-    box-sizing: border-box;
-    resize: vertical;
-    background: #2c3e50;
-    color: #fff;
-    border: 1px solid #1f3343;
-    border-radius: 8px;
-    padding: 10px 14px;
-    font-size: 1.05em;
-    font-family: inherit;
-    line-height: 1.4;
-}
+
 
 /* Focus indicators – visible only for keyboard (focus-visible) per WCAG 2.4.7 / 2.4.11 */
 button:focus-visible,
@@ -529,7 +518,7 @@ button:focus-visible {
         border: 2px solid #fff;
     }
 
-    #announcement-window {
+    .announcement-window {
         border: 2px solid #fff;
     }
 
@@ -548,7 +537,7 @@ button:focus-visible {
         border: 2px solid ButtonText;
     }
 
-    #announcement-window {
+    .announcement-window {
         border: 2px solid ButtonText;
         background: Canvas;
         color: CanvasText;

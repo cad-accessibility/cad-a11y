@@ -1,14 +1,10 @@
-"""Guardrails for the persistent announcement message window (#144).
+"""Guardrails for the persistent announcement message windows (#144).
 
 Issue #144 asks that announcements never use a popup, and instead go to a
-persistent on-screen field that a screen reader/braille user can pick up
-automatically by parking focus on it. Two things are worth locking down:
-
-  * the old fading toast (#announcement-toast) does not come back.
-  * #announcement-window exists as a real (readonly) textbox, not a div, and is
-    NOT itself a live region — speech is handled entirely by the sr-live-* pair
-    covered in test_live_regions.py; this field's job is the visible/braille-
-    on-focus channel, and giving it aria-live too would double-speak.
+persistent on-screen field. The two message windows (assertive/polite — see
+test_live_regions.py for their exact aria configuration) are standard native
+ARIA live-region <div>s updated via textContent, which is the pattern with the
+widest, most reliable support across screen readers.
 
 Parsing is stdlib-only, matching test_live_regions.py: no package.json, no JS
 runner, and bs4/lxml are not in requirements.txt.
@@ -24,7 +20,7 @@ VIEWER_JS = Path(__file__).resolve().parent.parent / "static" / "js" / "viewer.j
 
 
 class _ElementCollector(HTMLParser):
-    """Collect every start tag's id / tag / aria-live / readonly."""
+    """Collect every start tag's id / tag / hidden."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -36,8 +32,6 @@ class _ElementCollector(HTMLParser):
             {
                 "tag": tag,
                 "id": attrib.get("id"),
-                "aria-live": attrib.get("aria-live"),
-                "readonly": "readonly" in attrib,
                 "hidden": "hidden" in attrib,
             }
         )
@@ -53,28 +47,22 @@ def test_toast_is_gone():
     html = VIEWER_HTML.read_text(encoding="utf-8")
     assert "announcement-toast" not in html, (
         "the fading toast should not exist — #144 asks that announcements never "
-        "use a popup, only the persistent message window"
+        "use a popup, only the persistent message windows"
     )
     js = VIEWER_JS.read_text(encoding="utf-8")
     assert "showToast" not in js
     assert "toastDurationSec" not in js
 
 
-def test_message_window_is_a_readonly_textbox_not_a_live_region():
+def test_message_windows_are_plain_divs():
     by_id = _by_id()
-    field = by_id.get("announcement-window")
-    assert field is not None, "expected a persistent #announcement-window field"
-    assert field["tag"] == "textarea", (
-        "must be a genuine form control, not a div — a focused control's value "
-        "change is what a braille display picks up on its own, independent of "
-        "aria-live (which browsers/AT do not reliably route to braille)"
-    )
-    assert field["readonly"], "must stay readonly: it mirrors state, it isn't user-editable"
-    assert field["aria-live"] is None, (
-        "must NOT carry aria-live — speech is already handled by the sr-live-* "
-        "pair (test_live_regions.py); adding it here would double-speak every "
-        "announcement"
-    )
+    for field_id in ("announcement-window", "announcement-window-polite"):
+        field = by_id.get(field_id)
+        assert field is not None, f"expected a persistent #{field_id} field"
+        assert field["tag"] == "div", (
+            f"#{field_id} must be a plain native live-region div updated via "
+            f"textContent — the standard, most widely supported ARIA pattern"
+        )
 
 
 def test_history_is_hidden_by_default_behind_a_toggle():
@@ -89,5 +77,6 @@ def test_history_is_hidden_by_default_behind_a_toggle():
 
 def test_viewer_js_updates_the_message_window_on_every_announcement():
     js = VIEWER_JS.read_text(encoding="utf-8")
-    assert "function updateMessageWindow(message)" in js
-    assert "updateMessageWindow(normalizedMessage);" in js
+    assert "function updateMessageWindow(message" in js
+    assert "field.textContent = message" in js
+    assert "updateMessageWindow(normalizedMessage, politeness);" in js
