@@ -819,6 +819,9 @@ class CADComparisonRenderer:
         comparison_mode = params.get("mode", "single").lower()
         superposition_mode = params.get("superpositionMode", "outline").lower()
 
+        zoom_level = float(params.get("zoom", 0.0))
+        zoom_level = max(0.0, min(10.0, zoom_level))
+
         if "compose_scrollbar" in params.keys():
             compose_scrollbar = params["compose_scrollbar"]
         else:
@@ -826,6 +829,11 @@ class CADComparisonRenderer:
 
         # Slice-graph mode should never show scrollbars.
         if comparison_mode == "slice-graph":
+            compose_scrollbar = False
+
+        # At zoom_level 0 the whole model extent is already visible, so a
+        # scrollbar would have nothing meaningful to show (#150).
+        if zoom_level == 0.0:
             compose_scrollbar = False
 
         # Define a per-view viewing window. When scrollbars are enabled we reserve
@@ -887,8 +895,6 @@ class CADComparisonRenderer:
         if comparison_mode == "side-by-side":
             view_index = self._get_view_index(view_name_cut)
 
-        zoom_level = float(params.get("zoom", 0.0))
-        zoom_level = max(0.0, min(10.0, zoom_level))
         # Linear zoom mapping: 0 -> full window, 1 -> half, 2 -> one-third, etc.
         zoom_scale = 1.0 / (zoom_level + 1.0)
         camera_move = params.get("move_camera_center", "none")
