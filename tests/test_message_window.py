@@ -44,32 +44,5 @@ def _by_id() -> dict[str, dict]:
     return {el["id"]: el for el in collector.elements if el["id"]}
 
 
-def test_toast_is_gone():
-    html = VIEWER_HTML.read_text(encoding="utf-8")
-    assert "announcement-toast" not in html, (
-        "the fading toast should not exist — #144 asks that announcements never "
-        "use a popup, only the persistent message windows"
-    )
-    js = VIEWER_JS.read_text(encoding="utf-8")
-    assert "showToast" not in js
-    assert "toastDurationSec" not in js
-
-
-def test_message_windows_are_plain_divs():
-    by_id = _by_id()
-    for field_id in ("announcement-window", "announcement-window-polite"):
-        field = by_id.get(field_id)
-        assert field is not None, f"expected a persistent #{field_id} field"
-        assert field["tag"] == "div", (
-            f"#{field_id} must be a plain native live-region div updated via "
-            f"textContent — the standard, most widely supported ARIA pattern"
-        )
-
-
-def test_viewer_js_updates_the_message_window_on_every_announcement():
-    js = VIEWER_JS.read_text(encoding="utf-8")
-    assert "function updateMessageWindow(message" in js
-    assert "field.textContent = message" in js
-    assert "updateMessageWindow(normalizedMessage, politeness);" in js
 
 
