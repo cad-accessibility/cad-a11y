@@ -719,8 +719,8 @@ button:focus-visible {
     max-width: 560px;
     width: calc(100% - 40px);
     max-height: calc(100% - 80px);
+    overflow-y: auto;
     padding: 32px;
-    font-family: inherit;
     color: #333;
 }
 
