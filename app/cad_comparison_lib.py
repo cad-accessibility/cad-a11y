@@ -181,12 +181,13 @@ class CADComparisonRenderer:
         self.view_current_axis = -1
         self.view_current_view_limits = -1
         self.current_render_mode = None
+        # Only written in the single-mode branch of render(), but read whenever a
+        # print is requested, so a print before any single-mode render used to
+        # raise AttributeError rather than name a file.
+        self.current_cut_depth = None
         self.screen_size = list(DEFAULT_SCREEN_SIZE)
         self.view_diff_mats = {}
         self.view_cut_polygons = {}
-        self.current_render = None
-        self.current_ax_limits = []
-        self.current_zoom_level = None
         self._slice_graphs_ready = False
         self._precompute_in_progress = False
         self._precompute_lock = threading.Lock()
@@ -1048,7 +1049,6 @@ class CADComparisonRenderer:
             #        [self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0]),
             #         self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][1])]
             #)
-            print("params", params)
             # The orientation the viewer is holding the model at. Without this the
             # renderer only ever saw the six named views, so the roll, pitch and
             # yaw keys could move the camera but never change the picture.
@@ -1066,8 +1066,6 @@ class CADComparisonRenderer:
             self.view_current_axis = view_name
             self.current_render_mode = render_mode
             self.view_current_view_limits = imposed_zoom_ax_limits
-        self.current_ax_limits = copy(imposed_zoom_ax_limits)
-        self.current_zoom_level = zoom_level
         #plt.imshow(img_array)
         #plt.savefig("payload_before.png")
         
@@ -1253,15 +1251,6 @@ class CADComparisonRenderer:
             self._overlay_view_info_box(img_array, axis_text)
 
         return img_array
-
-    def init_device(self, device):
-        if device is None:
-            return
-        if device.kind == "monarch":
-            self.screen_size = list(DEFAULT_SCREEN_SIZE)
-        if device.kind == "dotpad":
-            self.screen_size = [60, 40]
-
 
 # Convenience function for simple usage
 def render_cad_comparison(before_model_path, after_model_path, params):

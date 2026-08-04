@@ -363,8 +363,6 @@ def _orientation_to_view(roll_deg: float, pitch_deg: float, yaw_deg: float) -> s
 
 state = RuntimeState()
 renderers_by_model: dict[int, CADComparisonRenderer] = {}
-current_render: np.ndarray | None = None
-commands_log: list[dict[str, Any]] = []
 state_lock = threading.Lock()
 models_lock = threading.Lock()
 # Serialize all engine.render() calls — matplotlib is not thread-safe, and
@@ -372,7 +370,6 @@ models_lock = threading.Lock()
 # Concurrent renders corrupt that state, producing blank or wrong-view output.
 render_lock = threading.Lock()
 braille_log_lock = threading.Lock()
-commands_log_lock = threading.Lock()
 braille_send_sequence = 0
 last_render_fingerprint: str | None = None
 last_render_response: dict[str, Any] | None = None
@@ -695,8 +692,6 @@ def _render_and_send(
     params: dict[str, Any], *, source: str, model_index: int,
     render_size: tuple[int, int] | None = None,
 ) -> tuple[np.ndarray, list[float] | None, np.ndarray]:
-    global current_render
-
     engine = get_or_create_renderer(model_index)
     out_guard, err_guard = _renderer_stdio_guard()
     with render_lock:
@@ -708,7 +703,6 @@ def _render_and_send(
                 rendered = engine.render(params)
         finally:
             engine.screen_size = original_screen_size
-    current_render = rendered
 
     braille_payload = _to_braille_payload(rendered)
     sequence = _next_braille_send_sequence()
@@ -1090,9 +1084,6 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
         "image_shape": list(preview_payload.shape),
         "model_list": MODEL_NAME_LIST,
     }
-    debug_info = getattr(engine, "last_render_debug", None)
-    if isinstance(debug_info, dict) and debug_info:
-        response["debug"] = debug_info
     if bbox is not None:
         response["bbox"] = bbox
     if str(params.get("output_device", "")).strip().lower() == "monarch_hid":
@@ -1110,17 +1101,6 @@ def initialize_default_braille_render() -> None:
         _log(f"Initial render ready: shape={tuple(rendered.shape)}", force=True)
     except Exception as error:
         _log(f"Initial render failed: {error}", force=True)
-
-
-def _record_command(data: dict[str, Any]) -> int:
-    entry = {
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "request": _collect_request_context(),
-        "data": data,
-    }
-    with commands_log_lock:
-        commands_log.append(entry)
-        return len(commands_log)
 
 
 def open_viewer_in_browser() -> None:
@@ -1302,13 +1282,7 @@ def home():
             "message": "Accessible 3D Viewer server",
             "endpoints": {
                 "/render": "POST - Render CAD view with parameters",
-                "/render/image": "GET - Get last rendered image as PNG",
-                "/render/base64": "GET - Get last rendered image as base64",
-                "/command": "POST - Receive and log command; auto-render if render params exist",
-                "/commands": "GET - Retrieve logged commands",
-                "/commands/clear": "POST - Clear command log",
-                "/commands/stats": "GET - Command statistics",
-                "/models": "GET/POST - List or update active model index",
+                "/models": "GET - List available models",
                 "/upload": "POST - Upload an STL or STEP model file",
                 "/ingest": "POST - Ingest an STL from an external tool; optional first_name, returns a workshop_url + user_id",
                 "/workshop": "GET - Simplified viewer; ?model= pre-loads, ?name= resolves a participant's first name",
@@ -1479,173 +1453,30 @@ def fit_render_view():
     fit = engine.compute_fit_view(merged_params)
     return jsonify({"status": "success", **fit}), 200
 
-@app.route("/render/image", methods=["GET"])
-def get_render_image():
-    if current_render is None:
-        return jsonify({"status": "error", "message": "No image has been rendered yet"}), 404
-    try:
-        return send_file(_img_to_png_bytes(current_render), mimetype="image/png")
-    except Exception as error:
-        return jsonify({"status": "error", "message": str(error)}), 400
+@app.route("/models", methods=["GET"])
+def models_endpoint():
+    """List the models on disk.
 
+    Read only. Selecting a model is not a server-side action: a render names the
+    model it wants, so there is nothing here to set. The POST branch that used to
+    write a process-wide "current model" is gone, since one window choosing a
+    model would change what every other window rendered next.
+    """
+    global AVAILABLE_MODELS, MODEL_NAME_LIST
 
-@app.route("/render/base64", methods=["GET"])
-def get_render_base64():
-    if current_render is None:
-        return jsonify({"status": "error", "message": "No image has been rendered yet"}), 404
-    try:
-        return jsonify(
-            {
-                "status": "success",
-                "image_base64": _img_to_base64_png(current_render),
-                "image_shape": list(current_render.shape),
-            }
-        ), 200
-    except Exception as error:
-        return jsonify({"status": "error", "message": str(error)}), 400
-
-
-@app.route("/command", methods=["POST"])
-def receive_command():
-    global last_render_fingerprint, last_render_response
-    try:
-        data = request.get_json(silent=True) or {}
-        command_id = _record_command(data)
-
-        response_data: dict[str, Any] = {
-            "status": "success",
-            "message": "Command received",
-            "command_id": command_id,
-        }
-
-        render_keys = {"view", "renderMode", "depth", "zoom", "mode", "move_camera_center", "print_view", "current_model"}
-        if any(key in data for key in render_keys):
-            merged_params, model_index, is_pan_request, fingerprint = _prepare_render_params(data)
-            with state_lock:
-                state.current_model_index = model_index
-
-            render_result: dict[str, Any] | None = None
-            if not is_pan_request and merged_params.get("print_view") is not True:
-                with state_lock:
-                    if last_render_fingerprint == fingerprint and last_render_response is not None:
-                        render_result = copy.deepcopy(last_render_response)
-                        render_result["model_list"] = MODEL_NAME_LIST
-                if render_result is None:
-                    quantized_cache_key = _build_quantized_render_key(merged_params, model_index)
-                    render_result = _get_quantized_cached_response(quantized_cache_key)
-                    if render_result is not None:
-                        render_result["model_list"] = MODEL_NAME_LIST
-
-            if render_result is None:
-                render_result = _render_response(merged_params, source="command_auto_render")
-                if not is_pan_request and merged_params.get("print_view") is not True:
-                    quantized_cache_key = _build_quantized_render_key(merged_params, model_index)
-                    with state_lock:
-                        last_render_fingerprint = fingerprint
-                        last_render_response = render_result
-                    _set_quantized_cached_response(quantized_cache_key, render_result)
-            response_data["render"] = render_result
-
-        return jsonify(response_data), 200
-    except Exception as error:
-        _log(f"Error processing command: {error}", force=True)
-        return jsonify({"status": "error", "message": str(error)}), 400
-
-
-@app.route("/commands", methods=["GET"])
-def get_commands():
-    with commands_log_lock:
-        payload = {
-            "status": "success",
-            "total_commands": len(commands_log),
-            "commands": list(commands_log),
-        }
-    return jsonify(payload), 200
-
-
-@app.route("/commands/clear", methods=["POST"])
-def clear_commands():
-    with commands_log_lock:
-        count = len(commands_log)
-        commands_log.clear()
-    return jsonify({"status": "success", "message": f"Cleared {count} commands"}), 200
-
-
-@app.route("/commands/stats", methods=["GET"])
-def get_stats():
-    with commands_log_lock:
-        snapshot = list(commands_log)
-
-    if not snapshot:
-        return jsonify({"status": "success", "total_commands": 0, "stats": {}}), 200
-
-    type_counts: dict[str, int] = {}
-    action_counts: dict[str, int] = {}
-    for entry in snapshot:
-        data = entry.get("data", {})
-        if not isinstance(data, dict):
-            continue
-        cmd_type = str(data.get("type", "unknown"))
-        action = str(data.get("action", "unknown"))
-        type_counts[cmd_type] = type_counts.get(cmd_type, 0) + 1
-        action_counts[action] = action_counts.get(action, 0) + 1
-
+    with models_lock:
+        AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
+        MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
+    with state_lock:
+        current_index = state.current_model_index
     return jsonify(
         {
             "status": "success",
-            "total_commands": len(snapshot),
-            "stats": {
-                "by_type": type_counts,
-                "by_action": action_counts,
-                "first_command": snapshot[0].get("timestamp"),
-                "last_command": snapshot[-1].get("timestamp"),
-            },
+            "model_list": MODEL_NAME_LIST,
+            "model_paths": [str(model) for model in AVAILABLE_MODELS],
+            "current_model": current_index,
         }
     ), 200
-
-
-@app.route("/models", methods=["GET", "POST"])
-def models_endpoint():
-    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response
-
-    if request.method == "GET":
-        with models_lock:
-            AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
-            MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
-        with state_lock:
-            current_index = state.current_model_index
-        return jsonify(
-            {
-                "status": "success",
-                "model_list": MODEL_NAME_LIST,
-                "model_paths": [str(model) for model in AVAILABLE_MODELS],
-                "current_model": current_index,
-            }
-        ), 200
-
-    try:
-        data = request.get_json(silent=True) or {}
-        model_index = _normalize_model_index(data.get("current_model", data.get("model_index")))
-        with state_lock:
-            state.current_model_index = model_index
-            # Changing model invalidates response cache.
-            last_render_fingerprint = None
-            last_render_response = None
-        with quantized_render_cache_lock:
-            quantized_render_cache.clear()
-        with preview_payload_cache_lock:
-            preview_payload_cache.clear()
-        return jsonify(
-            {
-                "status": "success",
-                "message": "Current model updated",
-                "current_model": model_index,
-                "model_name": MODEL_NAME_LIST[model_index],
-                "model_path": str(AVAILABLE_MODELS[model_index]),
-            }
-        ), 200
-    except Exception as error:
-        return jsonify({"status": "error", "message": str(error)}), 400
 
 
 _ALLOWED_EXTENSIONS = {".stl", ".step"}
