@@ -276,6 +276,7 @@ def _read_binary_stl(file_path: str):
 
 
 
+# Note: change this function so it returns the written file and so that it does not require a file path.
 def _write_ascii_stl(file_path: str, solid_name: str, triangles: list):
 
     """Write triangles to an ASCII STL file."""
@@ -311,6 +312,7 @@ def _write_ascii_stl(file_path: str, solid_name: str, triangles: list):
 
 
 
+# Note: change this function so that if returns the file, not a log  Logs can be ValueErrors instead.
 def execute(file):
 
     """
@@ -397,15 +399,15 @@ def execute(file):
 
     except ValueError as e:
 
-        return f"Error reading binary STL: {e}"
+        # return f"Error reading binary STL: {e}"
 
     except struct.error as e:
 
-        return f"Error parsing binary STL data: {e}"
+        # return f"Error parsing binary STL data: {e}"
 
     except Exception as e:
 
-        return f"Error reading STL file: {e}"
+        # return f"Error reading STL file: {e}"
 
 
     # Generate output path
@@ -427,7 +429,7 @@ def execute(file):
 
     except Exception as e:
 
-        return f"Error writing ASCII STL: {e}"
+        # return f"Error writing ASCII STL: {e}"
 
 
     # register_file(out_path, 'stl', 'Converted ASCII STL file')

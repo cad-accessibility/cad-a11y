@@ -1826,7 +1826,7 @@ def upload_model():
     )
     cookie_sid = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE))
 
-execute(file)
+file = execute(file)
 
     try:
         filename, dest, new_index = _save_and_index_stl(
