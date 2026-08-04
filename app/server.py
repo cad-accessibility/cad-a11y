@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 import webbrowser
+from src.converter.binary_to_ascii_stl.py import execute
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -1824,6 +1825,8 @@ def upload_model():
         request.form.get("upload_session_id") or request.headers.get("X-Upload-Session")
     )
     cookie_sid = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE))
+
+execute(file)
 
     try:
         filename, dest, new_index = _save_and_index_stl(
