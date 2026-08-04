@@ -71,3 +71,5 @@ def test_viewer_js_updates_the_message_window_on_every_announcement():
     assert "function updateMessageWindow(message" in js
     assert "field.textContent = message" in js
     assert "updateMessageWindow(normalizedMessage, politeness);" in js
+
+
