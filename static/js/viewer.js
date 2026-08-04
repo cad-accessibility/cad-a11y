@@ -1081,10 +1081,9 @@ function restoreAfterShortcutsDialogClose() {
 }
 
 if (shortcutsDialog) {
-    // close()/cancel (Escape) both need the same cleanup; close() covers the
-    // close button too since it just calls closeShortcutsDialog().
+    // Cleanup after the dialog has actually closed. (Escape triggers `cancel`, whose
+    // default action closes the dialog and then fires `close`.)
     shortcutsDialog.addEventListener('close', restoreAfterShortcutsDialogClose);
-    shortcutsDialog.addEventListener('cancel', restoreAfterShortcutsDialogClose);
 }
 if (shortcutsCloseBtn) {
     shortcutsCloseBtn.addEventListener('click', closeShortcutsDialog);
