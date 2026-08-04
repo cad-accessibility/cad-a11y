@@ -6,6 +6,10 @@ It processes STEP files and returns rendered image arrays based on specified par
 """
 
 import numpy as np
+import contextlib
+import gzip
+import hashlib
+import re
 import threading
 import time
 import os
@@ -30,7 +34,7 @@ from shapely.geometry import Polygon, MultiPolygon, box
 from shapely.ops import unary_union
 from shapely import union_all
 from shapely.plotting import plot_polygon
-from shapely import symmetric_difference
+from shapely import symmetric_difference, from_wkb, to_wkb
 import matplotlib.pyplot as plt
 import io, PIL, json
 from PIL import Image
@@ -212,12 +216,12 @@ class CADComparisonRenderer:
         self._precompute_lock = threading.Lock()
         self._precompute_done = threading.Event()
         self._precompute_done.set()
-        self.cache_version = 2
-        self.cache_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "renders",
-            "cad_precompute_cache.json",
-        )
+        # Bumped from 2: the file is per model now, lives on the data volume
+        # rather than inside the image, and carries the cut polygons as well as
+        # the difference matrices. An older file is unreadable on all three
+        # counts, so it must not be mistaken for a warm start.
+        self.cache_version = 3
+        self.cache_path = self._precompute_cache_path()
         self._model_signature_value = None
         # The framing in force, so a turn reframes but a redraw does not.
         self._oriented_limits = {}
@@ -454,12 +458,24 @@ class CADComparisonRenderer:
             self.view_cut_polygons[view_key] = cut_faces_list
 
     def start_background_slice_precompute(self):
-        """Kick off slice-graph precompute without blocking first render."""
+        """Make the slice data available, computing it only if it is not on disk.
+
+        A previous run's result is loaded in the caller's thread rather than a
+        worker: it is a file read, and doing it here means a warm model is ready
+        the moment this returns instead of some milliseconds later.
+        """
         with self._precompute_lock:
             if self._slice_graphs_ready or self._precompute_in_progress:
                 return False
             self._precompute_in_progress = True
             self._precompute_done.clear()
+
+        if self.load_precompute_cache():
+            with self._precompute_lock:
+                self._slice_graphs_ready = True
+                self._precompute_in_progress = False
+                self._precompute_done.set()
+            return False
 
         worker = threading.Thread(
             target=self._finish_slice_graph_precompute,
@@ -479,26 +495,104 @@ class CADComparisonRenderer:
                 self._precompute_in_progress = False
                 self._precompute_done.set()
 
+    def _precompute_cache_path(self):
+        """Where this model's precomputed slice data lives.
+
+        One file per model, named from the model and a hash of its signature, so
+        a changed file simply misses rather than reading somebody else's data.
+        There used to be a single shared filename with no model in it, so every
+        renderer overwrote the same file and the last one to finish won.
+
+        Under data/ because that is the mounted volume. The old location was
+        inside the image, so anything written there vanished on the next build,
+        which would have made this cache worthless even once it was read.
+        """
+        signature = json.dumps(self._model_signature(), sort_keys=True)
+        digest = hashlib.sha256(signature.encode()).hexdigest()[:12]
+        stem = os.path.splitext(os.path.basename(self.after_model_path))[0]
+        safe_stem = re.sub(r"[^A-Za-z0-9._-]", "_", stem)[:80]
+        return os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "data", "renders", "precompute", f"{safe_stem}-{digest}.json.gz",
+        )
+
+    def load_precompute_cache(self):
+        """Restore a previous run's slice data, or return False.
+
+        Gzipped JSON: the difference matrices compress about thirty to one, so a
+        model costs roughly 16 KB on disk instead of half a megabyte. Polygons go
+        as WKB rather than pickle, so reading a cache file cannot execute
+        anything.
+
+        Anything unreadable, stale or the wrong shape is treated as a miss and
+        recomputed. A cache that lies is worse than no cache.
+        """
+        try:
+            with gzip.open(self.cache_path, "rt", encoding="utf-8") as fp:
+                payload = json.load(fp)
+        except (OSError, ValueError):
+            return False
+
+        if payload.get("cache_version") != self.cache_version:
+            return False
+        if payload.get("model_signature") != self._model_signature():
+            return False
+
+        try:
+            diff_mats = {
+                key: np.asarray(value, dtype=float)
+                for key, value in payload["slice_diff_mats"].items()
+            }
+            cut_polygons = {
+                key: [from_wkb(bytes.fromhex(blob)) for blob in blobs]
+                for key, blobs in payload["slice_cut_polygons"].items()
+            }
+        except (KeyError, TypeError, ValueError):
+            return False
+
+        if not diff_mats or set(diff_mats) != set(cut_polygons):
+            return False
+
+        self.view_diff_mats = diff_mats
+        self.view_cut_polygons = cut_polygons
+        return True
+
     def _save_precompute_cache(self, signature):
-        os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
+        """Persist what the precompute produced, so a restart does not redo it.
 
-        orthographic_view_limits = np.asarray(self.view_limits, dtype=float)
-        orthographic_centers = np.asarray(self.view_default_camera_center, dtype=float)
-        slice_diff_mats = {
-            key: np.asarray(value, dtype=float).tolist()
-            for key, value in self.view_diff_mats.items()
-        }
+        Both halves are needed: the difference matrices alone leave the slice
+        graph on its flat fallback, because the zoom-filtered profile is computed
+        from the cut polygons.
 
+        Best effort. A model that cannot be cached still works, just slowly, so a
+        read-only or full disk must not break rendering.
+        """
         cache_payload = {
             "cache_version": self.cache_version,
             "model_signature": signature,
-            "orthographic_view_limits": orthographic_view_limits.tolist(),
-            "orthographic_view_centers": orthographic_centers.tolist(),
-            "slice_diff_mats": slice_diff_mats,
+            "slice_diff_mats": {
+                key: np.asarray(value, dtype=float).tolist()
+                for key, value in self.view_diff_mats.items()
+            },
+            "slice_cut_polygons": {
+                key: [to_wkb(polygon).hex() for polygon in polygons]
+                for key, polygons in self.view_cut_polygons.items()
+            },
         }
 
-        with open(self.cache_path, "w", encoding="utf-8") as fp:
-            json.dump(cache_payload, fp)
+        temporary = f"{self.cache_path}.{os.getpid()}.tmp"
+        try:
+            os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
+            with gzip.open(temporary, "wt", encoding="utf-8") as fp:
+                json.dump(cache_payload, fp)
+            # Renamed into place so a reader never sees a half-written file.
+            os.replace(temporary, self.cache_path)
+        except Exception:
+            # Deliberately broad. This is a speed-up, and every way it can fail
+            # (read-only mount, full disk, a path the filesystem rejects) must
+            # cost the next start some seconds rather than cost this render.
+            with contextlib.suppress(Exception):
+                os.unlink(temporary)
 
     def _model_signature(self):
         """Build a lightweight signature that changes when source STL files change."""
