@@ -566,8 +566,98 @@ def _renderer_for_path(model_path: Path) -> CADComparisonRenderer:
 
 
 def _forget_renderer(model_path: Path) -> None:
-    """Drop one model's renderer. Caller holds models_lock."""
-    renderers_by_model.pop(str(model_path), None)
+    """Drop one model's renderer and its precomputed slice data.
+
+    Caller holds models_lock. The cache file goes too: it is keyed by the model's
+    signature, so a deleted upload would otherwise leave megabytes behind that
+    nothing can ever match again. A workshop's worth of uploads and deletions
+    would fill the volume with data for models that no longer exist.
+    """
+    engine = renderers_by_model.pop(str(model_path), None)
+    if engine is None:
+        return
+    with contextlib.suppress(Exception):
+        Path(engine.cache_path).unlink(missing_ok=True)
+
+
+# Models are processed up front rather than when someone first opens them, so
+# nobody pays the mesh load and the slice precompute by being the first to look.
+# One worker, one model at a time: the work is CPU-bound and a pool would simply
+# take the GIL away from request handling for longer.
+_warmup_queue: _queue_module.Queue = _queue_module.Queue()
+_warmup_state_lock = threading.Lock()
+_warmup_state: dict[str, Any] = {"total": 0, "processed": 0, "current": None, "started": False}
+
+
+def _warmup_snapshot() -> dict[str, Any]:
+    """What the warm-up has got through, for /health."""
+    with _warmup_state_lock:
+        state_copy = dict(_warmup_state)
+    state_copy["pending"] = max(0, state_copy["total"] - state_copy["processed"])
+    state_copy["complete"] = state_copy["started"] and state_copy["pending"] == 0
+    return state_copy
+
+
+def enqueue_model_for_warmup(model_path: Path) -> None:
+    """Process this model soon, in the background.
+
+    Called for every model at startup and for each new upload, so a model is
+    ready before anyone asks for it rather than at the cost of whoever asks
+    first.
+    """
+    with _warmup_state_lock:
+        _warmup_state["total"] += 1
+    _warmup_queue.put(Path(model_path))
+
+
+def _warm_one_model(model_path: Path) -> None:
+    """Load a model and make sure its slice data exists.
+
+    Skipped cheaply when a previous run already cached it: the renderer's own
+    loader checks the signature, so an unchanged model costs a file read.
+    """
+    with models_lock:
+        engine = _renderer_for_path(model_path)
+    engine.start_background_slice_precompute()
+    # Wait, so the queue really is one model at a time. Without this the worker
+    # would start every model's precompute thread at once, which is the pool this
+    # is meant not to be.
+    engine._precompute_done.wait()
+
+
+def _warmup_worker() -> None:
+    while True:
+        model_path = _warmup_queue.get()
+        try:
+            with _warmup_state_lock:
+                _warmup_state["current"] = model_path.stem
+            out_guard, err_guard = _renderer_stdio_guard()
+            with out_guard, err_guard:
+                _warm_one_model(model_path)
+        except Exception as error:
+            # One bad model must not stop the rest being processed, and must not
+            # stop the server: it will simply be built on demand like before.
+            _log(f"Warm-up failed for {model_path.name}: {error}", force=True)
+        finally:
+            with _warmup_state_lock:
+                _warmup_state["processed"] += 1
+                _warmup_state["current"] = None
+            _warmup_queue.task_done()
+
+
+def start_model_warmup() -> None:
+    """Start the worker and hand it every model currently on disk."""
+    with _warmup_state_lock:
+        if _warmup_state["started"]:
+            return
+        _warmup_state["started"] = True
+
+    threading.Thread(target=_warmup_worker, name="cad-model-warmup", daemon=True).start()
+    with models_lock:
+        models = list(AVAILABLE_MODELS)
+    for model_path in models:
+        enqueue_model_for_warmup(model_path)
+    _log(f"Warming {len(models)} model(s) in the background", force=True)
 
 
 def _ensure_minimum_feature_thickness(mask: np.ndarray) -> np.ndarray:
@@ -1408,6 +1498,10 @@ def health():
         "unexpected_public_models": max(0, public_models - shipped),
         "writable": writable,
         "database": database,
+        # Reported so a slow first start reads as work in progress rather than a
+        # hang. Deliberately not part of `healthy`: a server that is still
+        # warming answers renders perfectly well, just without the head start.
+        "warmup": _warmup_snapshot(),
     }
 
     healthy = (
@@ -1670,6 +1764,10 @@ def _save_and_index_stl(
         # rather than overwritten, so no cached renderer can be stale. Renderers
         # are keyed by path, so the list reordering underneath them is harmless.
         new_index = next((i for i, p in enumerate(AVAILABLE_MODELS) if p == dest), 0)
+
+    # Processed in the background, so whoever uploaded it is not also the one who
+    # waits for its first render.
+    enqueue_model_for_warmup(dest)
 
     with quantized_render_cache_lock:
         quantized_render_cache.clear()
@@ -2169,6 +2267,7 @@ def main() -> int:
 
     db.init_db()
     initialize_default_braille_render()
+    start_model_warmup()
     start_optional_hardware_watchers()
     open_viewer_in_browser()
 
