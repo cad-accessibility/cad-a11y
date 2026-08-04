@@ -11,10 +11,12 @@ window owns where it is looking, sends that every time, and gets it back.
 
 from __future__ import annotations
 
-import numpy as np
+import pathlib
+
 import pytest
 
 import app.cad_comparison_lib as cad_lib
+import app.server
 from app.server import app as flask_app
 
 
@@ -110,8 +112,7 @@ def test_the_centre_belongs_to_the_view_it_was_measured_in(client):
 def test_the_renderer_holds_no_camera_or_framing_state():
     """Named for what it is: a default to start from, never written per request.
     The mutable version was the direct cause of pans crossing windows."""
-    source = cad_lib.__file__
-    text = open(source, encoding="utf-8").read()
+    text = pathlib.Path(cad_lib.__file__).read_text(encoding="utf-8")
 
     assert "view_current_camera_center" not in text, "per-request camera state is back"
     assert "_orientation_frame_key" not in text, "the framing memo is back"
@@ -157,3 +158,47 @@ def test_a_pan_is_never_served_to_a_window_that_did_not_pan(client):
         "a pan leaked into the cache and was served to a window that did not pan"
     )
     assert _render(other)["camera_center"] == settled["camera_center"]
+
+
+# --- What the cache key has to carry ---------------------------------------
+
+
+def _quantized_key(**overrides):
+    from app.server import _build_quantized_render_key
+    return _build_quantized_render_key(_params(**overrides), 0)
+
+
+@pytest.mark.parametrize("field,a,b", [
+    # Drawn onto the image. This one is reachable from the viewer: the checkbox
+    # was ignored whenever the render came from cache, even in a single window.
+    ("show_view_info_box", False, True),
+    # Decides whether the response carries the cells a Monarch needs, so a cached
+    # answer made for another device arrived without them.
+    ("output_device", "dotpad", "monarch_hid"),
+    # Not reachable from the viewer today. Keyed so that stays true by design
+    # rather than by accident if a caller ever starts sending them.
+    ("shape", "after", "before"),
+    ("superpositionMode", "outline", "intersection"),
+])
+def test_anything_that_changes_the_answer_changes_the_key(field, a, b):
+    assert _quantized_key(**{field: a}) != _quantized_key(**{field: b}), (
+        f"{field} is missing from the key, so one window's render is served for another's"
+    )
+
+
+def test_the_info_box_checkbox_is_honoured_even_on_a_cache_hit(client):
+    """The live version of the gap above: render twice with the box off so the
+    second is a cache hit, then turn it on and check the image actually changes."""
+    off = _render(client, show_view_info_box=False)
+    assert _render(client, show_view_info_box=False)["image_base64"] == off["image_base64"]
+
+    on = _render(client, show_view_info_box=True)
+    assert on["image_base64"] != off["image_base64"], "the info box was ignored"
+
+
+def test_there_is_no_single_render_slot_left(client):
+    """One entry for the whole server: two windows in different states evicted
+    each other on every request, so neither ever hit it."""
+    text = pathlib.Path(app.server.__file__).read_text(encoding="utf-8")
+    assert "last_render_fingerprint" not in text
+    assert "last_render_response" not in text

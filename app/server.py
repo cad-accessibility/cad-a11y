@@ -376,9 +376,11 @@ models_lock = threading.Lock()
 render_lock = threading.Lock()
 braille_log_lock = threading.Lock()
 braille_send_sequence = 0
-last_render_fingerprint: str | None = None
-last_render_response: dict[str, Any] | None = None
-RENDER_QUANTIZED_CACHE_MAX = int(os.getenv("RENDER_QUANTIZED_CACHE_MAX", "128"))
+# Raised from 128 because this is now the only render cache, and because every
+# window keys separately on its own camera centre, so N windows exploring the
+# same model no longer share entries the way one window did. An entry is about
+# 16 KB, so this ceiling is roughly 8 MB.
+RENDER_QUANTIZED_CACHE_MAX = int(os.getenv("RENDER_QUANTIZED_CACHE_MAX", "512"))
 quantized_render_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
 quantized_render_cache_lock = threading.Lock()
 PREVIEW_PAYLOAD_CACHE_MAX = int(os.getenv("PREVIEW_PAYLOAD_CACHE_MAX", "128"))
@@ -875,6 +877,7 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
                "world_camera_center",
                "compose_scrollbar", "compose_cursor", "cursor_col", "cursor_row", "cursor_state", "compose_slicegraph", "show_view_info_box",
                "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth", "slicegraph_mode",
+               "shape", "superpositionMode",
                # The frame is drawn at this size, so two requests that differ only
                # here are different renders. Omitting it meant connecting a display
                # returned the previous size's frame from cache, and the preview then
@@ -912,6 +915,20 @@ def _build_quantized_render_key(params: dict[str, Any], model_index: int) -> str
         "slicegraph_mode": str(params.get("slicegraph_mode", "difference")).lower(),
         # Same reason as the exact fingerprint: this decides the size drawn.
         "target_grid": _target_grid(params),
+        # Drawn onto the image, so leaving it out meant the checkbox was ignored
+        # whenever the render came from cache, even within one window.
+        "show_view_info_box": bool(params.get("show_view_info_box", False)),
+        # Decides whether the response carries monarch_cells_hex, so a cached
+        # answer made for another device arrived without the cells the Monarch
+        # needs. Narrower than it looks, since target_grid usually differs too,
+        # but not reliably: nothing stops two devices sharing a grid.
+        "output_device": str(params.get("output_device", "")).strip().lower(),
+        # Neither of these is reachable from the viewer today, and "shape" cannot
+        # change the picture while a renderer is built from one file passed twice.
+        # Keyed anyway: a key that is right only because of how the caller happens
+        # to behave is a trap for whoever changes the caller.
+        "shape": str(params.get("shape", "after")).lower(),
+        "superpositionMode": str(params.get("superpositionMode", "outline")).lower(),
     }
     return hashlib.sha256(json.dumps(quantized, sort_keys=True).encode()).hexdigest()
 
@@ -957,6 +974,8 @@ def _build_preview_payload_cache_key(
         "slicegraph_view",
         "slicegraph_depth",
         "slicegraph_mode",
+        "shape",
+        "superpositionMode",
     )
     fp_dict = {k: params.get(k) for k in fp_keys}
     fp_dict["model_index"] = model_index
@@ -1377,33 +1396,11 @@ def health():
 
 @app.route("/render", methods=["POST"])
 def render_view():
-    global last_render_fingerprint, last_render_response
-
     try:
         t0 = time.perf_counter()
         _refresh_model_list_if_stale()
         merged_params, model_index, is_pan_request, fingerprint = _prepare_render_params(request.get_json(silent=True))
         quantized_cache_key = _build_quantized_render_key(merged_params, model_index)
-
-        with state_lock:
-            if (
-                not is_pan_request
-                and merged_params.get("print_view") is not True
-                and last_render_fingerprint == fingerprint
-                and last_render_response is not None
-            ):
-                last_render_response["model_list"] = MODEL_NAME_LIST
-                response = copy.deepcopy(last_render_response)
-                debug = dict(response.get("debug", {}))
-                debug.update(
-                    {
-                        "phase1_exact_cache_hit": True,
-                        "phase1_quantized_cache_hit": False,
-                        "phase1_total_ms": round((time.perf_counter() - t0) * 1000.0, 3),
-                    }
-                )
-                response["debug"] = debug
-                return jsonify(response), 200
 
         if not is_pan_request and merged_params.get("print_view") is not True:
             cached_response = _get_quantized_cached_response(quantized_cache_key)
@@ -1444,11 +1441,8 @@ def render_view():
         # under the unpanned key and the next window to ask got it. The request
         # after a pan carries the new centre explicitly and caches correctly.
         cacheable = not is_pan_request and merged_params.get("print_view") is not True
-        with state_lock:
-            if cacheable:
-                last_render_fingerprint = fingerprint
-                last_render_response = response
-                _set_quantized_cached_response(quantized_cache_key, response)
+        if cacheable:
+            _set_quantized_cached_response(quantized_cache_key, response)
         return jsonify(response), 200
     except Exception as error:
         _log(f"Error rendering: {error}", force=True)
@@ -1550,7 +1544,7 @@ def _cleanup_uploaded_models_for_session(session_id: str | None) -> dict[str, An
             errors.append(f"{model_path}: {exc}")
 
     # Refresh in-memory model list and invalidate caches after cleanup.
-    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response, renderers_by_model
+    global AVAILABLE_MODELS, MODEL_NAME_LIST, renderers_by_model
     with models_lock:
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
@@ -1559,8 +1553,6 @@ def _cleanup_uploaded_models_for_session(session_id: str | None) -> dict[str, An
     with state_lock:
         if state.current_model_index >= len(AVAILABLE_MODELS):
             state.current_model_index = 0
-        last_render_fingerprint = None
-        last_render_response = None
 
     with quantized_render_cache_lock:
         quantized_render_cache.clear()
@@ -1594,7 +1586,7 @@ def _save_and_index_stl(
     Returns ``(filename, dest_path, new_index)``. Raises ``ValueError`` for a
     missing name or unsupported extension; save/registration errors propagate.
     """
-    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response, renderers_by_model
+    global AVAILABLE_MODELS, MODEL_NAME_LIST, renderers_by_model
 
     filename = secure_filename(requested_name or "")
     if not filename:
@@ -1639,9 +1631,6 @@ def _save_and_index_stl(
         renderers_by_model.clear()
         new_index = next((i for i, p in enumerate(AVAILABLE_MODELS) if p == dest), 0)
 
-    with state_lock:
-        last_render_fingerprint = None
-        last_render_response = None
     with quantized_render_cache_lock:
         quantized_render_cache.clear()
     with preview_payload_cache_lock:
@@ -1885,7 +1874,7 @@ def delete_model(filename: str):
 
     db.mark_model_deleted(session_id, safe_name)
 
-    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response, renderers_by_model
+    global AVAILABLE_MODELS, MODEL_NAME_LIST, renderers_by_model
     with models_lock:
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
@@ -1893,8 +1882,6 @@ def delete_model(filename: str):
     with state_lock:
         if state.current_model_index >= len(AVAILABLE_MODELS):
             state.current_model_index = 0
-        last_render_fingerprint = None
-        last_render_response = None
     with quantized_render_cache_lock:
         quantized_render_cache.clear()
     with preview_payload_cache_lock:
