@@ -258,3 +258,61 @@ def test_the_registry_is_bounded():
     assert "popitem(last=False)" in pathlib.Path(server.__file__).read_text(encoding="utf-8"), (
         "no least-recently-used eviction, so the registry grows without limit"
     )
+
+
+# --- Models are named, not numbered ----------------------------------------
+
+
+def test_an_upload_does_not_renumber_a_model_under_an_open_window(client):
+    """The reported workshop symptom. A model used to be addressed by position in
+    a list rebuilt on every upload, so a window holding a number silently began
+    rendering somebody else's model."""
+    import io
+    import struct
+
+    import app.server as server
+
+    mine = _render(client, model="mug")
+
+    triangle = b"\0" * 80 + struct.pack("<I", 1) + struct.pack(
+        "<12fH", 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0)
+    uploaded = []
+    try:
+        # Names that sort before "mug" are exactly what used to shift its index.
+        for name in ("aaa_first.stl", "aab_second.stl"):
+            response = client.post("/upload", content_type="multipart/form-data",
+                                   data={"file": (io.BytesIO(triangle), name)})
+            assert response.status_code == 200
+            uploaded.append(response.get_json()["filename"])
+
+        assert _render(client, model="mug")["image_base64"] == mine["image_base64"]
+    finally:
+        for filename in uploaded:
+            (server.UPLOAD_DIR / filename).unlink(missing_ok=True)
+
+
+def test_an_unknown_model_falls_back_rather_than_borrowing_one(client):
+    """There is no process-wide "current model" to fall back to any more, which
+    is what used to hand over whatever another window had selected."""
+    assert _render(client, model="no_such_model_at_all")["status"] == "success"
+    assert _render(client, model=None)["status"] == "success"
+
+
+def test_a_numeric_model_still_resolves(client):
+    """A browser holding an older viewer.js keeps working until it reloads."""
+    assert _render(client, model=None, current_model=0)["status"] == "success"
+
+
+def test_the_server_keeps_no_current_model_for_everyone():
+    text = pathlib.Path(app.server.__file__).read_text(encoding="utf-8")
+    assert "current_model_index" not in text
+    assert "RuntimeState" not in text, "process-wide render state is back"
+
+
+def test_the_dropdown_selects_models_by_name():
+    """Its option values were server list positions, so the selection meant a
+    different model after anyone uploaded."""
+    viewer = pathlib.Path(app.server.__file__).parents[1] / "static" / "js" / "viewer.js"
+    source = viewer.read_text(encoding="utf-8")
+    assert "option.value = stem;" in source
+    assert "option.value = i;" not in source

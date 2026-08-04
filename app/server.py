@@ -63,11 +63,6 @@ CORS(app)
 app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_UPLOAD_MB", "100") or "100") * 1024 * 1024
 
 
-@dataclass
-class RuntimeState:
-    current_model_index: int = 0
-
-
 if getattr(sys, "frozen", False):
     # In bundled mode, runtime assets are expected next to the executable.
     REPO_ROOT = Path(sys.executable).resolve().parent
@@ -327,7 +322,6 @@ DEFAULT_RENDER_PARAMS: dict[str, Any] = {
     "print_view": False,
 }
 
-state = RuntimeState()
 # Keyed by model path, not by position in the discovered list. An upload or a
 # delete renumbers that list, so an index-keyed entry silently came to mean a
 # different model, which is why every one of them used to be thrown away on any
@@ -339,7 +333,6 @@ state = RuntimeState()
 # first; rebuilding one is a mesh load, not a correctness problem.
 RENDERER_CACHE_MAX = int(os.getenv("RENDERER_CACHE_MAX", "24"))
 renderers_by_model: OrderedDict[str, CADComparisonRenderer] = OrderedDict()
-state_lock = threading.Lock()
 models_lock = threading.Lock()
 # Serialize all engine.render() calls, because matplotlib is not thread-safe:
 # the converters below it drive the pyplot module globals and call a bare
@@ -483,24 +476,56 @@ def _refresh_model_list_if_stale() -> None:
         _model_list_last_refresh = time.monotonic()
 
 
-def _normalize_model_index(raw_index: Any) -> int:
-    if raw_index is None:
-        with state_lock:
-            return state.current_model_index
+def _resolve_model_stem(raw_value: Any) -> str:
+    """The model a request means, named rather than numbered.
+
+    A model used to be addressed by its position in the discovered list. That
+    list is rebuilt from disk on a timer and on every upload, so a number meant a
+    different file after anyone added one: a window sitting on index 18 silently
+    started rendering somebody else's model. This is the crossover the workshop
+    reported.
+
+    A name does not renumber. An unknown one falls back to the default model,
+    never to whatever another window happens to be looking at, which is what the
+    process-wide "current model" used to supply.
+
+    Numeric values are still accepted, so a browser holding an older viewer.js
+    keeps working until it reloads.
+    """
+    if raw_value is None:
+        return DEFAULT_MODEL.stem
+
+    text = str(raw_value).strip()
+    if not text:
+        return DEFAULT_MODEL.stem
+
+    known = {path.stem for path in AVAILABLE_MODELS}
+    if text in known:
+        return text
+
+    # Legacy: a position in the list. Ambiguous by nature, which is the whole
+    # problem, but resolving it once here is better than rejecting the request.
     try:
-        index = int(raw_index)
-    except (TypeError, ValueError):
-        return 0
-    if index < 0 or index >= len(AVAILABLE_MODELS):
-        return 0
-    return index
+        index = int(text)
+    except ValueError:
+        return DEFAULT_MODEL.stem
+    if 0 <= index < len(AVAILABLE_MODELS):
+        return AVAILABLE_MODELS[index].stem
+    return DEFAULT_MODEL.stem
 
 
-def get_or_create_renderer(model_index: int | None = None) -> CADComparisonRenderer:
-    index = _normalize_model_index(model_index)
+def _path_for_stem(model_stem: str) -> Path:
+    """The file behind a model name, or the default if it has gone."""
+    for path in AVAILABLE_MODELS:
+        if path.stem == model_stem:
+            return path
+    return DEFAULT_MODEL
+
+
+def get_or_create_renderer(model_stem: str | None = None) -> CADComparisonRenderer:
+    stem = _resolve_model_stem(model_stem)
     with models_lock:
-        model_path = AVAILABLE_MODELS[index]
-        return _renderer_for_path(model_path)
+        return _renderer_for_path(_path_for_stem(stem))
 
 
 def _renderer_for_path(model_path: Path) -> CADComparisonRenderer:
@@ -749,7 +774,7 @@ def _target_grid(params: dict[str, Any]) -> tuple[int, int] | None:
 
 
 def _make_hifi_preview(
-    params: dict[str, Any], model_index: int, preview_width: int = 800, *, use_cache: bool = True
+    params: dict[str, Any], model_stem: str, preview_width: int = 800, *, use_cache: bool = True
 ) -> tuple[str, list[int]]:
     """Render at high resolution and return (base64_png, [height, width]).
 
@@ -761,7 +786,7 @@ def _make_hifi_preview(
     the tactile preview reported the device while this one silently kept showing
     the 96x40 default (#52).
     """
-    engine = get_or_create_renderer(model_index)
+    engine = get_or_create_renderer(model_stem)
     grid = _target_grid(params)
     if grid is None:
         grid = DEFAULT_SCREEN_SIZE
@@ -770,7 +795,7 @@ def _make_hifi_preview(
 
     payload = _get_braille_payload_at_size(
         params,
-        model_index=model_index,
+        model_stem=model_stem,
         pixel_width=preview_width,
         pixel_height=hifi_h,
         use_cache=use_cache,
@@ -781,10 +806,10 @@ def _make_hifi_preview(
 
 
 def _render_and_send(
-    params: dict[str, Any], *, source: str, model_index: int,
+    params: dict[str, Any], *, source: str, model_stem: str,
     render_size: tuple[int, int] | None = None,
 ) -> tuple[np.ndarray, list[float] | None, np.ndarray, Any]:
-    engine = get_or_create_renderer(model_index)
+    engine = get_or_create_renderer(model_stem)
     out_guard, err_guard = _renderer_stdio_guard()
     grid = None
     if render_size is not None:
@@ -796,18 +821,14 @@ def _render_and_send(
 
     braille_payload = _to_braille_payload(rendered)
     sequence = _next_braille_send_sequence()
-    with state_lock:
-        state_snapshot = {
-            "current_model_index": state.current_model_index,
-        }
     event: dict[str, Any] = {
         "event": "braille_send",
         "sequence": sequence,
         "source": source,
         "input_source": params.get("input_source", "unknown"),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "model": str(AVAILABLE_MODELS[model_index]),
-        "model_index": model_index,
+        "model": str(_path_for_stem(model_stem)),
+        "model_stem": model_stem,
         "params": {
             "view": params.get("view"),
             "zoom": params.get("zoom"),
@@ -817,7 +838,6 @@ def _render_and_send(
             "move_camera_center": params.get("move_camera_center"),
             "print_view": params.get("print_view"),
         },
-        "state": state_snapshot,
         "render_shape": list(rendered.shape),
         "payload": _payload_stats(braille_payload),
         "request": _collect_request_context(),
@@ -888,7 +908,7 @@ def _coerce_positive_int(value: Any, default: int) -> int:
 
 
 def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any], int, bool, str]:
-    """Merge incoming request data with defaults and return (params, model_index, is_pan, fingerprint)."""
+    """Merge incoming request data with defaults and return (params, model_stem, is_pan, fingerprint)."""
     if data is None:
         data = {}
     merged = dict(DEFAULT_RENDER_PARAMS)
@@ -947,7 +967,7 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
     else:
         merged["world_camera_center"] = None
 
-    model_index = _normalize_model_index(data.get("current_model"))
+    model_stem = _resolve_model_stem(data.get("model", data.get("current_model")))
 
     # Camera moves are computed relative to the supplied camera_center, so they
     # must bypass cache lookup; otherwise a move request can hit a cached image
@@ -968,16 +988,16 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
                # reported that stale size against the new display's name.
                "target_pixel_width", "target_pixel_height")
     fp_dict = {k: merged.get(k) for k in fp_keys}
-    fp_dict["model_index"] = model_index
+    fp_dict["model_stem"] = model_stem
     fingerprint = hashlib.sha256(json.dumps(fp_dict, sort_keys=True).encode()).hexdigest()
 
-    return merged, model_index, is_pan_request, fingerprint
+    return merged, model_stem, is_pan_request, fingerprint
 
 
-def _build_quantized_render_key(params: dict[str, Any], model_index: int) -> str:
+def _build_quantized_render_key(params: dict[str, Any], model_stem: str) -> str:
     """Build a stable coarse key for near-identical interactive requests."""
     quantized = {
-        "model_index": model_index,
+        "model_stem": model_stem,
         "view": str(params.get("view", "")).lower(),
         "orientation": params.get("orientation"),
         "camera_center": params.get("camera_center"),
@@ -1035,7 +1055,7 @@ def _set_quantized_cached_response(cache_key: str, response: dict[str, Any]) -> 
 
 
 def _build_preview_payload_cache_key(
-    params: dict[str, Any], model_index: int, pixel_width: int, pixel_height: int
+    params: dict[str, Any], model_stem: str, pixel_width: int, pixel_height: int
 ) -> str:
     fp_keys = (
         "view",
@@ -1062,7 +1082,7 @@ def _build_preview_payload_cache_key(
         "superpositionMode",
     )
     fp_dict = {k: params.get(k) for k in fp_keys}
-    fp_dict["model_index"] = model_index
+    fp_dict["model_stem"] = model_stem
     fp_dict["pixel_width"] = int(pixel_width)
     fp_dict["pixel_height"] = int(pixel_height)
     return hashlib.sha256(json.dumps(fp_dict, sort_keys=True).encode()).hexdigest()
@@ -1086,9 +1106,9 @@ def _set_preview_payload_cached(cache_key: str, payload: np.ndarray) -> None:
 
 
 def _render_braille_payload_at_size(
-    params: dict[str, Any], *, model_index: int, pixel_width: int, pixel_height: int
+    params: dict[str, Any], *, model_stem: str, pixel_width: int, pixel_height: int
 ) -> np.ndarray:
-    engine = get_or_create_renderer(model_index)
+    engine = get_or_create_renderer(model_stem)
     out_guard, err_guard = _renderer_stdio_guard()
     with render_lock:
         with out_guard, err_guard:
@@ -1099,19 +1119,19 @@ def _render_braille_payload_at_size(
 
 
 def _get_braille_payload_at_size(
-    params: dict[str, Any], *, model_index: int, pixel_width: int, pixel_height: int, use_cache: bool = True
+    params: dict[str, Any], *, model_stem: str, pixel_width: int, pixel_height: int, use_cache: bool = True
 ) -> np.ndarray:
     if not use_cache:
         return _render_braille_payload_at_size(
             params,
-            model_index=model_index,
+            model_stem=model_stem,
             pixel_width=pixel_width,
             pixel_height=pixel_height,
         )
 
     cache_key = _build_preview_payload_cache_key(
         params,
-        model_index=model_index,
+        model_stem=model_stem,
         pixel_width=pixel_width,
         pixel_height=pixel_height,
     )
@@ -1121,7 +1141,7 @@ def _get_braille_payload_at_size(
 
     payload = _render_braille_payload_at_size(
         params,
-        model_index=model_index,
+        model_stem=model_stem,
         pixel_width=pixel_width,
         pixel_height=pixel_height,
     )
@@ -1132,7 +1152,7 @@ def _get_braille_payload_at_size(
 def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     """Render, send to braille display, and build JSON response dict."""
     _refresh_model_list_if_stale()
-    model_index = _normalize_model_index(params.get("current_model"))
+    model_stem = _resolve_model_stem(params.get("model", params.get("current_model")))
     # A client that names a target pixel size used to cost two full renders per
     # interaction: one at the default grid, whose payload only fed telemetry, and
     # a second at the device size that actually reached the display. Render once
@@ -1146,7 +1166,7 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     render_size = _target_grid(params)
 
     rendered, bbox, braille_payload, render_result = _render_and_send(
-        params, source=source, model_index=model_index, render_size=render_size
+        params, source=source, model_stem=model_stem, render_size=render_size
     )
 
     # What the previews show is the payload that reaches the display, so the two
@@ -1160,7 +1180,7 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
         _set_preview_payload_cached(
             _build_preview_payload_cache_key(
                 params,
-                model_index=model_index,
+                model_stem=model_stem,
                 pixel_width=render_size[0],
                 pixel_height=render_size[1],
             ),
@@ -1201,8 +1221,8 @@ def initialize_default_braille_render() -> None:
     _log("Preparing initial render...", force=True)
 
     try:
-        merged_params, model_index, _is_pan_request, _fingerprint = _prepare_render_params(dict(DEFAULT_RENDER_PARAMS))
-        rendered, _, _, _ = _render_and_send(merged_params, source="startup", model_index=model_index)
+        merged_params, model_stem, _is_pan_request, _fingerprint = _prepare_render_params(dict(DEFAULT_RENDER_PARAMS))
+        rendered, _, _, _ = _render_and_send(merged_params, source="startup", model_stem=model_stem)
         _log(f"Initial render ready: shape={tuple(rendered.shape)}", force=True)
     except Exception as error:
         _log(f"Initial render failed: {error}", force=True)
@@ -1393,8 +1413,8 @@ def render_view():
     try:
         t0 = time.perf_counter()
         _refresh_model_list_if_stale()
-        merged_params, model_index, is_pan_request, fingerprint = _prepare_render_params(request.get_json(silent=True))
-        quantized_cache_key = _build_quantized_render_key(merged_params, model_index)
+        merged_params, model_stem, is_pan_request, fingerprint = _prepare_render_params(request.get_json(silent=True))
+        quantized_cache_key = _build_quantized_render_key(merged_params, model_stem)
 
         if not is_pan_request and merged_params.get("print_view") is not True:
             cached_response = _get_quantized_cached_response(quantized_cache_key)
@@ -1410,9 +1430,6 @@ def render_view():
                 )
                 cached_response["debug"] = debug
                 return jsonify(cached_response), 200
-
-        with state_lock:
-            state.current_model_index = model_index
 
         response = _render_response(merged_params, source="http_render")
         debug = dict(response.get("debug", {}))
@@ -1442,8 +1459,8 @@ def render_view():
 @app.route("/render/fit-view", methods=["POST"])
 def fit_render_view():
     data = request.get_json(silent=True) or {}
-    merged_params, model_index, _, _ = _prepare_render_params(data)
-    engine = get_or_create_renderer(model_index)
+    merged_params, model_stem, _, _ = _prepare_render_params(data)
+    engine = get_or_create_renderer(model_stem)
     fit = engine.compute_fit_view(merged_params, screen_size=_target_grid(merged_params))
     return jsonify({"status": "success", **fit}), 200
 
@@ -1461,14 +1478,11 @@ def models_endpoint():
     with models_lock:
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
-    with state_lock:
-        current_index = state.current_model_index
     return jsonify(
         {
             "status": "success",
             "model_list": MODEL_NAME_LIST,
             "model_paths": [str(model) for model in AVAILABLE_MODELS],
-            "current_model": current_index,
         }
     ), 200
 
@@ -1544,9 +1558,6 @@ def _cleanup_uploaded_models_for_session(session_id: str | None) -> dict[str, An
         for removed in deleted:
             _forget_renderer(Path(removed))
 
-    with state_lock:
-        if state.current_model_index >= len(AVAILABLE_MODELS):
-            state.current_model_index = 0
 
     with quantized_render_cache_lock:
         quantized_render_cache.clear()
@@ -1675,11 +1686,15 @@ def upload_model():
 
     _register_uploaded_model(upload_session_id, dest)
 
-    _log(f"Model uploaded: {filename} → index {new_index}", force=True)
+    _log(f"Model uploaded: {filename}", force=True)
     return jsonify({
         "status": "success",
         "filename": filename,
         "model_list": MODEL_NAME_LIST,
+        # The name is how a model is addressed. new_model_index is kept for one
+        # release for anything still reading it; it is a position in a list that
+        # the next upload renumbers.
+        "model_stem": Path(filename).stem,
         "new_model_index": new_index,
     }), 200
 
@@ -1884,9 +1899,6 @@ def delete_model(filename: str):
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
         _forget_renderer(dest)
-    with state_lock:
-        if state.current_model_index >= len(AVAILABLE_MODELS):
-            state.current_model_index = 0
     with quantized_render_cache_lock:
         quantized_render_cache.clear()
     with preview_payload_cache_lock:
@@ -1945,7 +1957,7 @@ def sse_events():
             _sse_clients.append(client_queue)
         try:
             # Send current state immediately on connect so the client is in sync.
-            with state_lock:
+            with models_lock:
                 initial = {
                     "model_list": MODEL_NAME_LIST,
                 }
@@ -1974,10 +1986,9 @@ def sse_events():
 
 @app.route("/get_data", methods=["GET"])
 def get_data():
-    with state_lock:
+    with models_lock:
         payload = {
             "status": "success",
-            "current_model": state.current_model_index,
             "model_list": MODEL_NAME_LIST,
             "builtin_model_stems": _builtin_model_stems(),
         }
@@ -1996,10 +2007,16 @@ def render_export_source():
         merged_params.update(params)
         merged_params["view"] = str(merged_params.get("view", "")).lower()
         merged_params["print_view"] = False
+        # The client names the model on this request too. It used to be ignored,
+        # so an export handed back whatever model the server-wide value happened
+        # to hold: you could export somebody else's model.
+        export_stem = _resolve_model_stem(
+            merged_params.get("model", merged_params.get("current_model"))
+        )
 
         export_width = _coerce_positive_int(params.get("export_width", 1000), 1000)
 
-        engine = get_or_create_renderer()
+        engine = get_or_create_renderer(export_stem)
 
         aspect_ratio = float(DEFAULT_SCREEN_SIZE[1]) / float(DEFAULT_SCREEN_SIZE[0])
         export_height = max(1, int(round(export_width * aspect_ratio)))
@@ -2034,12 +2051,12 @@ def render_preview():
     """
     try:
         _refresh_model_list_if_stale()
-        merged_params, model_index, is_pan_request, _fingerprint = _prepare_render_params(request.get_json(silent=True))
+        merged_params, model_stem, is_pan_request, _fingerprint = _prepare_render_params(request.get_json(silent=True))
         preview_width = _coerce_positive_int(merged_params.get("preview_width", 800), 800)
         use_cache = not is_pan_request and merged_params.get("print_view") is not True
         preview_b64, preview_shape = _make_hifi_preview(
             merged_params,
-            model_index,
+            model_stem,
             preview_width=preview_width,
             use_cache=use_cache,
         )
@@ -2064,7 +2081,7 @@ def render_dotpad_hex():
     """
     try:
         params = request.get_json(silent=True) or {}
-        merged_params, model_index, is_pan_request, _fingerprint = _prepare_render_params(params)
+        merged_params, model_stem, is_pan_request, _fingerprint = _prepare_render_params(params)
 
         # Use device-reported cell grid if provided; fall back to DotPad 300A defaults.
         dotpad_cols = max(1, min(int(params.get("dotpad_cols", _DOTPAD_COLS)), 128))
@@ -2077,7 +2094,7 @@ def render_dotpad_hex():
         use_cache = not is_pan_request and merged_params.get("print_view") is not True
         braille_payload = _get_braille_payload_at_size(
             merged_params,
-            model_index=model_index,
+            model_stem=model_stem,
             pixel_width=pixel_width,
             pixel_height=pixel_height,
             use_cache=use_cache,

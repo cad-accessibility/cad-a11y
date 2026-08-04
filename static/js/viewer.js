@@ -250,6 +250,7 @@ async function sendStateToServer() {
             mode: getServerRepresentationMode(),
             move_camera_center: moveCamera,
             print_view: currentPrintView,
+            model: currentModel,
             current_model: currentModel,
             compose_cursor: true, // for now always true, maybe later make it configurable
             cursor_col: currentCursorCol,
@@ -413,7 +414,7 @@ const representationModes = [
     { key: 'slice-graph-difference', label: 'Slice Graph (Difference)', wire: 'slice-graph', sliceGraphMode: 'difference' },
     { key: 'slice-graph-column-count', label: 'Slice Graph (Slice Area)', wire: 'slice-graph', sliceGraphMode: 'column-count' },
 ];
-let currentModel = "none";
+let currentModel = null;   // the model this window is showing, by name
 let sessionOwnedModels = new Set(); // filenames (with extension) owned by the current cookie session
 let builtinModelStems = null;       // stems from MODEL_DIR; null = not yet received, show all
 let lastFullModelList = [];         // unfiltered server model_list for re-filtering on state change
@@ -1235,6 +1236,7 @@ function fetchExportSourceState() {
         mode: getServerRepresentationMode(),
         move_camera_center: 'none',
         print_view: false,
+        model: currentModel,
         current_model: currentModel,
         compose_scrollbar: composeScrollbar,
         compose_slicegraph: composeSliceGraph,
@@ -1661,10 +1663,7 @@ function updateModelList(model_list) {
     // (the ownership filter would otherwise drop an ingested model and reset to 0).
     // Just keep the status-bar label in sync with the URL-selected model.
     if (document.body.classList.contains('simple-ui')) {
-        const simpleIdx = Number(currentModel);
-        if (sbModel && lastFullModelList[simpleIdx] !== undefined) {
-            sbModel.textContent = lastFullModelList[simpleIdx];
-        }
+        if (sbModel && currentModel) sbModel.textContent = currentModel;
         return;
     }
 
@@ -1674,10 +1673,9 @@ function updateModelList(model_list) {
     const signature = entries.map(e => e.stem).join('||');
 
     if (signature === lastModelListSignature && dropdown.options.length > 0) {
-        // Same visible set — restore selection using original server index stored in option.value.
-        const currentModelIndex = Number(currentModel);
-        const hasCurrentOption = [...dropdown.options].some(o => o.value === String(currentModelIndex));
-        if (hasCurrentOption) dropdown.value = String(currentModelIndex);
+        // Same visible set — restore the selection by name.
+        const hasCurrentOption = [...dropdown.options].some(o => o.value === currentModel);
+        if (hasCurrentOption) dropdown.value = currentModel;
         if (sbModel && dropdown.selectedIndex >= 0) {
             sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
         }
@@ -1697,8 +1695,10 @@ function updateModelList(model_list) {
 
     entries.forEach(({ stem, i }) => {
         const option = document.createElement("option");
-        // option.value carries the ORIGINAL server index so currentModel round-trips correctly.
-        option.value = i;
+        // The model's name, not its position in the server's list. That list is
+        // rebuilt whenever anyone uploads, so a position meant a different model
+        // afterwards and this window would silently start showing it.
+        option.value = stem;
         const ownedFile = [...sessionOwnedModels].find(fn => fn.replace(/\.[^.]+$/, '') === stem);
         if (ownedFile) {
             option.text = stem + ' (your upload)';
@@ -1709,10 +1709,9 @@ function updateModelList(model_list) {
         dropdown.appendChild(option);
     });
 
-    const currentModelIndex = Number(currentModel);
-    const hasCurrentOption = [...dropdown.options].some(o => o.value === String(currentModelIndex));
+    const hasCurrentOption = [...dropdown.options].some(o => o.value === currentModel);
     if (hasCurrentOption) {
-        dropdown.value = String(currentModelIndex);
+        dropdown.value = currentModel;
         if (sbModel) sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
     } else {
         dropdown.selectedIndex = 0;
@@ -1846,8 +1845,10 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             updateModelList(data.model_list);
             // Select the newly uploaded model
             const dropdown = document.getElementById('model-list-dropdown');
-            dropdown.value = String(data.new_model_index);
-            currentModel = String(data.new_model_index);
+            const uploadedStem = data.model_stem
+                || (data.filename || '').replace(/\.[^.]+$/, '');
+            dropdown.value = uploadedStem;
+            currentModel = uploadedStem;
             clearCameraCenterState();
             resetSlicePlanes();
             const selectedLabel = dropdown.selectedIndex >= 0 ? dropdown.options[dropdown.selectedIndex].text : data.filename;
@@ -1903,9 +1904,8 @@ function applyServerState(data) {
     // viewer to a freshly-ingested model. Transient — /get_data never carries this,
     // and the index guard keeps it idempotent.
     if (data.load_model) {
-        const idx = lastFullModelList.indexOf(data.load_model);
-        if (idx >= 0 && String(idx) !== currentModel) {
-            currentModel = String(idx);
+        if (data.load_model !== currentModel) {
+            currentModel = data.load_model;
             clearCameraCenterState();
             resetSlicePlanes();
             pendingInputSource = 'ingest';
@@ -2022,6 +2022,7 @@ async function fitCurrentViewToDevice() {
         renderMode: renderPipelineParams.renderMode,
         projectionMode: renderPipelineParams.projectionMode,
         mode: getServerRepresentationMode(),
+        model: currentModel,
         current_model: currentModel,
         output_device: getEffectiveOutputDevice(),
         compose_scrollbar: composeScrollbar,
@@ -2706,19 +2707,13 @@ document.addEventListener('DOMContentLoaded', async function() {
     initializeDebugPipelineVisibility();
 
     // Pre-select a model when opened via /workshop?model=<stem> or ?model=<stem>.
-    // Resolve the stem to its server index before the first render so the viewer
-    // opens directly on that model instead of flashing model 0.
+    // The URL already carries the name a render wants, so there is nothing to
+    // look up: this used to fetch the whole model list on every start purely to
+    // turn that name back into a position.
     const wantedModel = workshopParams.get('model');
     if (wantedModel) {
-        const wantedStem = wantedModel.replace(/\.[^.]+$/, '');
-        try {
-            const gd = await (await fetch(`${SERVER_URL}/get_data`)).json();
-            const idx = (gd.model_list || []).indexOf(wantedStem);
-            if (idx >= 0) {
-                currentModel = String(idx);
-                if (sbModel) sbModel.textContent = wantedStem;
-            }
-        } catch (_) { /* fall back to the default model */ }
+        currentModel = wantedModel.replace(/\.[^.]+$/, '');
+        if (sbModel) sbModel.textContent = currentModel;
     }
 
     // Send initial state to server
