@@ -362,7 +362,17 @@ def _orientation_to_view(roll_deg: float, pitch_deg: float, yaw_deg: float) -> s
     return _FACE_NAMES[int(np.argmax(dots))]
 
 state = RuntimeState()
-renderers_by_model: dict[int, CADComparisonRenderer] = {}
+# Keyed by model path, not by position in the discovered list. An upload or a
+# delete renumbers that list, so an index-keyed entry silently came to mean a
+# different model, which is why every one of them used to be thrown away on any
+# change. Paths do not renumber, so only the model that actually changed is
+# evicted and everyone else keeps a renderer that is still correct.
+#
+# Bounded, because nothing clears it wholesale any more: a long workshop would
+# otherwise hold every mesh anyone had ever opened. Least recently used goes
+# first; rebuilding one is a mesh load, not a correctness problem.
+RENDERER_CACHE_MAX = int(os.getenv("RENDERER_CACHE_MAX", "24"))
+renderers_by_model: OrderedDict[str, CADComparisonRenderer] = OrderedDict()
 state_lock = threading.Lock()
 models_lock = threading.Lock()
 # Serialize all engine.render() calls, because matplotlib is not thread-safe:
@@ -523,21 +533,41 @@ def _normalize_model_index(raw_index: Any) -> int:
 def get_or_create_renderer(model_index: int | None = None) -> CADComparisonRenderer:
     index = _normalize_model_index(model_index)
     with models_lock:
-        if index not in renderers_by_model:
-            model_path = AVAILABLE_MODELS[index]
-            _log(f"Initializing CAD renderer with: {model_path}")
-            out_guard, err_guard = _renderer_stdio_guard()
-            with out_guard, err_guard:
-                # Slice-graph precompute is expensive and only feeds a mode the
-                # simplified workshop viewer can't reach, so it's kicked off lazily
-                # (CADComparisonRenderer._get_zoom_filtered_slice_profile) on first
-                # actual use instead of unconditionally here.
-                renderer = CADComparisonRenderer(
-                    str(model_path),
-                    str(model_path),
-                )
-                renderers_by_model[index] = renderer
-        return renderers_by_model[index]
+        model_path = AVAILABLE_MODELS[index]
+        return _renderer_for_path(model_path)
+
+
+def _renderer_for_path(model_path: Path) -> CADComparisonRenderer:
+    """The renderer for this file, building it if nobody has yet.
+
+    Caller holds models_lock. Construction happens inside it, which serialises a
+    mesh load against the model list, but the alternative is two threads building
+    the same renderer and one of them being discarded.
+    """
+    key = str(model_path)
+    existing = renderers_by_model.get(key)
+    if existing is not None:
+        renderers_by_model.move_to_end(key)
+        return existing
+
+    _log(f"Initializing CAD renderer with: {model_path}")
+    out_guard, err_guard = _renderer_stdio_guard()
+    with out_guard, err_guard:
+        # Slice-graph precompute is expensive and only feeds a mode the
+        # simplified workshop viewer can't reach, so it's kicked off lazily
+        # (CADComparisonRenderer._get_zoom_filtered_slice_profile) on first
+        # actual use instead of unconditionally here.
+        renderer = CADComparisonRenderer(str(model_path), str(model_path))
+
+    renderers_by_model[key] = renderer
+    while len(renderers_by_model) > max(1, RENDERER_CACHE_MAX):
+        renderers_by_model.popitem(last=False)
+    return renderer
+
+
+def _forget_renderer(model_path: Path) -> None:
+    """Drop one model's renderer. Caller holds models_lock."""
+    renderers_by_model.pop(str(model_path), None)
 
 
 def _ensure_minimum_feature_thickness(mask: np.ndarray) -> np.ndarray:
@@ -1544,11 +1574,14 @@ def _cleanup_uploaded_models_for_session(session_id: str | None) -> dict[str, An
             errors.append(f"{model_path}: {exc}")
 
     # Refresh in-memory model list and invalidate caches after cleanup.
-    global AVAILABLE_MODELS, MODEL_NAME_LIST, renderers_by_model
+    global AVAILABLE_MODELS, MODEL_NAME_LIST
     with models_lock:
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
-        renderers_by_model.clear()
+        # Only the files this tab actually removed. Dropping every renderer made
+        # one visitor closing a tab reload every mesh for everyone still working.
+        for removed in deleted:
+            _forget_renderer(Path(removed))
 
     with state_lock:
         if state.current_model_index >= len(AVAILABLE_MODELS):
@@ -1586,7 +1619,7 @@ def _save_and_index_stl(
     Returns ``(filename, dest_path, new_index)``. Raises ``ValueError`` for a
     missing name or unsupported extension; save/registration errors propagate.
     """
-    global AVAILABLE_MODELS, MODEL_NAME_LIST, renderers_by_model
+    global AVAILABLE_MODELS, MODEL_NAME_LIST
 
     filename = secure_filename(requested_name or "")
     if not filename:
@@ -1602,13 +1635,20 @@ def _save_and_index_stl(
     # upload allowed to reuse a built-in's stem would both collide and be shown
     # to every visitor. Before the storage split a plain dest.exists() sufficed,
     # because everything lived in one directory.
-    dest = target_dir / filename
-    if dest.exists() or _stem_is_taken(Path(filename).stem):
-        stem = Path(filename).stem
-        filename = f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
-        dest = target_dir / filename
-
+    # Claimed under models_lock, because the check and the write have to be one
+    # step. Two uploads of the same name could otherwise both look free, both
+    # rename to the same stem, and end up as two models claiming one name.
     target_dir.mkdir(parents=True, exist_ok=True)
+    with models_lock:
+        dest = target_dir / filename
+        if dest.exists() or _stem_is_taken(Path(filename).stem):
+            stem = Path(filename).stem
+            filename = f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
+            dest = target_dir / filename
+        # Reserve the name before releasing the lock, so a second upload arriving
+        # now sees it taken. The real bytes overwrite this immediately below.
+        dest.touch()
+
     save_fn(dest)
 
     if session_id:
@@ -1626,9 +1666,9 @@ def _save_and_index_stl(
     with models_lock:
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
-        # A new or renamed file reorders the discovered model list, so any
-        # renderer cached by index may now point at stale data.
-        renderers_by_model.clear()
+        # Nothing to evict: this path is new, and a name collision is renamed
+        # rather than overwritten, so no cached renderer can be stale. Renderers
+        # are keyed by path, so the list reordering underneath them is harmless.
         new_index = next((i for i, p in enumerate(AVAILABLE_MODELS) if p == dest), 0)
 
     with quantized_render_cache_lock:
@@ -1874,11 +1914,11 @@ def delete_model(filename: str):
 
     db.mark_model_deleted(session_id, safe_name)
 
-    global AVAILABLE_MODELS, MODEL_NAME_LIST, renderers_by_model
+    global AVAILABLE_MODELS, MODEL_NAME_LIST
     with models_lock:
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
-        renderers_by_model.clear()
+        _forget_renderer(dest)
     with state_lock:
         if state.current_model_index >= len(AVAILABLE_MODELS):
             state.current_model_index = 0

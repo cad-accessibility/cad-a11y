@@ -12,6 +12,7 @@ window owns where it is looking, sends that every time, and gets it back.
 from __future__ import annotations
 
 import pathlib
+from collections import OrderedDict
 
 import pytest
 
@@ -202,3 +203,58 @@ def test_there_is_no_single_render_slot_left(client):
     text = pathlib.Path(app.server.__file__).read_text(encoding="utf-8")
     assert "last_render_fingerprint" not in text
     assert "last_render_response" not in text
+
+
+# --- The renderer registry -------------------------------------------------
+
+
+def test_renderers_are_keyed_by_file_not_by_list_position():
+    """An upload or delete renumbers the discovered list. An index-keyed entry
+    then means a different model, which is why every entry used to be discarded
+    on any change, costing every window a full mesh reload."""
+    import app.server as server
+
+    assert isinstance(server.renderers_by_model, OrderedDict)
+    server.get_or_create_renderer(0)
+    assert all(isinstance(k, str) for k in server.renderers_by_model), (
+        "the registry is not keyed by path"
+    )
+    assert str(server.AVAILABLE_MODELS[0]) in server.renderers_by_model
+
+
+def test_one_upload_does_not_cost_every_window_its_renderer(client, tmp_path):
+    """The blanket clear meant one visitor uploading reloaded every mesh for
+    everyone still working."""
+    import io
+    import struct
+
+    import app.server as server
+
+    server.get_or_create_renderer(0)
+    warm = dict(server.renderers_by_model)
+    assert warm, "nothing was warmed, so this test would pass vacuously"
+
+    triangle = b"\0" * 80 + struct.pack("<I", 1) + struct.pack(
+        "<12fH", 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0)
+    response = client.post("/upload", content_type="multipart/form-data",
+                           data={"file": (io.BytesIO(triangle), "registry_probe.stl")})
+    assert response.status_code == 200, response.get_data(as_text=True)
+
+    try:
+        for key, renderer in warm.items():
+            assert server.renderers_by_model.get(key) is renderer, (
+                f"{key} was evicted by an unrelated upload"
+            )
+    finally:
+        (server.UPLOAD_DIR / response.get_json()["filename"]).unlink(missing_ok=True)
+
+
+def test_the_registry_is_bounded():
+    """Nothing clears it wholesale now, so a long session would otherwise hold
+    every mesh anyone had ever opened."""
+    import app.server as server
+
+    assert server.RENDERER_CACHE_MAX >= 1
+    assert "popitem(last=False)" in pathlib.Path(server.__file__).read_text(encoding="utf-8"), (
+        "no least-recently-used eviction, so the registry grows without limit"
+    )
