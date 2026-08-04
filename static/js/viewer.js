@@ -549,6 +549,21 @@ const VIEW_BASIS = {
     'z-': { right: [-1, 0, 0], up: [0, -1, 0], depth: [0, 0, -1] },  // bottom
 };
 
+// [1,0,0] -> "pos X", [-1,0,0] -> "neg X", [0,0,-1] -> "neg Z"
+// Words, not a +/- glyph: a sign glued to a letter ("-X") can get misread by a
+// screen reader (e.g. as "dash X") depending on context.
+// Kept short (pos/neg, not positive/negative) since this gets spoken often.
+function axisLabel(vec) {
+    const names = ['X', 'Y', 'Z'];
+    const i = vec.findIndex(v => v !== 0);
+    return `${vec[i] > 0 ? 'pos' : 'neg'} ${names[i]}`;
+}
+
+// Plain-English description of a { right, up, depth } basis.
+function describeBasis(basis) {
+    return `${axisLabel(basis.depth)} toward you, Right: ${axisLabel(basis.right)}, Up: ${axisLabel(basis.up)}`;
+}
+
 let orientationRight = [...VIEW_BASIS['x+'].right];
 let orientationUp = [...VIEW_BASIS['x+'].up];
 let orientationDepth = [...VIEW_BASIS['x+'].depth];
@@ -592,16 +607,6 @@ function setOrientationFromView(viewToken) {
     orientationDepth = [...basis.depth];
 }
 
-// Each of the six turns replaces two of the current (right, up, depth)
-// vectors with each other (negating one) and leaves the third untouched --
-// e.g. rollClockwise replaces right with up and up with -right. This has to
-// be defined directly in terms of the CURRENT basis, not as a +-90 turn about
-// a world-frame axis using the right-hand rule: the six named views are not
-// consistently handed (front/back/bottom are a mirror image of
-// top/left/right), so a fixed-sign world-frame turn looks clockwise from some
-// and counterclockwise from others, and pitches up on some and down on
-// others. The direct swap has no handedness to get backwards, so it means
-// the same physical turn from every orientation.
 const RELATIVE_ROTATIONS = {
     rollCounterclockwise: { speech: 'roll counterclockwise' },
     rollClockwise:        { speech: 'roll clockwise' },
@@ -611,10 +616,9 @@ const RELATIVE_ROTATIONS = {
     yawRight:             { speech: 'yaw right' },
 };
 
+
 function applyRelativeRotation(rotationName, emit = announceAlert) {
     const rotation = RELATIVE_ROTATIONS[rotationName];
-    if (!rotation) return;
-
     const right = orientationRight, up = orientationUp, depth = orientationDepth;
     switch (rotationName) {
         case 'rollClockwise':
@@ -641,6 +645,8 @@ function applyRelativeRotation(rotationName, emit = announceAlert) {
             orientationRight = negateVec3(depth);
             orientationDepth = right;
             break;
+        default:
+            return;
     }
 
     // Pitch/yaw can switch which of the three persisted planes is now facing
@@ -648,19 +654,26 @@ function applyRelativeRotation(rotationName, emit = announceAlert) {
     // is a no-op there. Must run before updateView/sendStateToServer below so
     // the request they send already carries the re-derived depth.
     const depthChanged = syncSliceDepthFromPlanes();
-
+    const depthMessage = depthChanged ? `depth ${currentSliceDepth}%` : "";
     const viewChanged = updateView(orientationViewFromDepth(orientationDepth), false,
                                    { syncOrientation: false });
+    const currentBasis = { right: orientationRight, up: orientationUp, depth: orientationDepth };
+    const orientationMessage = describeBasis(currentBasis);
+
     if (!viewChanged) {
         // A roll leaves the same face toward the reader, so updateView sees no
-        // change and would not redraw. 
+        // change and would not redraw.
         if (isSliceGraphRepresentationMode()) {
             autoRefreshSliceGraph({ updateAnchor: true });
         } else {
             sendStateToServer();
         }
+
     }
-    emit(depthChanged ? `${rotation.speech}, depth ${currentSliceDepth}%` : rotation.speech);
+
+    const message = `${rotation.speech}, ${orientationMessage}. ${depthMessage}`;
+    const messageShort = `${orientationMessage}. ${depthMessage}`;
+    announceParameterValue(rotationName, message, messageShort, emit);
 }
 
 function getOrientationPayload() {
@@ -718,14 +731,6 @@ function syncSliceDepthFromPlanes() {
     return oldDepth !== currentSliceDepth;
 }
 
-const axisInfo = {
-    'Front': 'X-axis: left-right, Y-axis: up-down, Z-axis: forward-back (viewing from front)',
-    'Left': 'Z-axis: left-right, Y-axis: up-down, X-axis: back-forward (viewing from left side)',
-    'Right': 'Z-axis: right-left, Y-axis: up-down, X-axis: forward-back (viewing from right side)',
-    'Top': 'X-axis: left-right, Z-axis: up-down, Y-axis: forward-back (viewing from above)',
-    'Bottom': 'X-axis: left-right, Z-axis: down-up, Y-axis: back-forward (viewing from below)'
-};
-
 // DOM elements
 const sliceSlider = document.getElementById('slice-depth-slider');
 const slicePercentage = document.getElementById('slice-percentage');
@@ -734,7 +739,6 @@ const currentSliceDepthInfo = document.getElementById('current-slice-depth-info'
 const currentRenderModeInfo = document.getElementById('current-render-mode-info');
 const currentZoomInfo = document.getElementById('current-zoom-info');
 const currentBBoxDimensionsInfo = document.getElementById('current-bbox-dimensions-info');
-const announcementHistory = document.getElementById('announcement-history');
 const deeperBtn = document.getElementById('deeper-btn');
 const shallowerBtn = document.getElementById('shallower-btn');
 const zoomInput = document.getElementById('zoom-input');
