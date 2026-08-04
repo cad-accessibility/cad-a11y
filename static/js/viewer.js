@@ -655,11 +655,8 @@ function applyRelativeRotation(rotationName, emit = announceAlert) {
     // the request they send already carries the re-derived depth.
     const depthChanged = syncSliceDepthFromPlanes();
     const depthMessage = depthChanged ? `depth ${currentSliceDepth}%` : "";
-
     const viewChanged = updateView(orientationViewFromDepth(orientationDepth), false,
                                    { syncOrientation: false });
-    const viewMessage = viewChanged ? currentView.toLowerCase() : "";
-    const orientation = getOrientationPayload();
     const currentBasis = { right: orientationRight, up: orientationUp, depth: orientationDepth };
     const orientationMessage = describeBasis(currentBasis);
 
@@ -674,8 +671,8 @@ function applyRelativeRotation(rotationName, emit = announceAlert) {
 
     }
 
-    const message = `${rotation.speech}, ${orientationMessage}, ${depthMessage}`;
-    const messageShort = `${orientationMessage}, ${depthMessage}`;
+    const message = `${rotation.speech}, ${orientationMessage}. ${depthMessage}`;
+    const messageShort = `${orientationMessage}. ${depthMessage}`;
     announceParameterValue(rotationName, message, messageShort, emit);
 }
 
