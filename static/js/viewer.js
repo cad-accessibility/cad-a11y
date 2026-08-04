@@ -435,7 +435,6 @@ let currentCursorStateIndex = 0;
 
 // Tracking variables
 let serverConnected = null;       // null = unknown, true = up, false = confirmed down
-let lastPolledView = null;        // last cube_value received from server
 let lastModelListSignature = '';  // prevents redundant dropdown rebuilds
 let currentBBoxDimensionsText = '';
 let lastAnnouncementMessage = '';
@@ -1876,35 +1875,16 @@ document.getElementById('upload-model-input').addEventListener('change', async f
     }
 });
 
-        // Apply a server state snapshot to local UI — shared by SSE and fallback poll.
-let lastSliderRaw = null; // null = never received a server-side slider value yet
+// Apply a server state snapshot to local UI — shared by SSE and fallback poll.
+//
+// The cube and the slider are deliberately absent. They are connected to a
+// browser, by this window, through witmotion-imu.js and trinkey-slider.js, and
+// they drive this window only. The server used to poll them over its own serial
+// ports and broadcast every reading to every connected browser, so one cube
+// turned at the server moved everybody's view. There was no way to address a
+// message to one window: the client registry is a list of queues with nothing
+// attached to say who is who.
 function applyServerState(data) {
-    if (data.cube_value !== undefined && data.cube_value !== lastPolledView) {
-        const isFirstReading = (lastPolledView === null);
-        lastPolledView = data.cube_value;
-        // First reading — record but skip, for the same reason as the slider
-        // below: cube_value is reserved for the WitMotion IMU, so before the
-        // hardware has reported it still holds the server's placeholder. Acting
-        // on it would drag the viewer off its own starting view on page load,
-        // even when no cube is connected.
-        if (!isFirstReading) {
-            pendingInputSource = 'cube';
-            updateView(data.cube_value);
-        }
-    }
-    if (data.slider_value !== undefined) {
-        const rawValue = data.slider_value;
-        if (lastSliderRaw === null) {
-            // First reading — record but skip to avoid jumping depth to the
-            // server default (0) before the slider hardware has been moved.
-            lastSliderRaw = rawValue;
-        } else if (rawValue !== lastSliderRaw) {
-            lastSliderRaw = rawValue;
-            const newDepth = Math.round(Math.max(0, Math.min(100, (rawValue / 65535) * 100)));
-            pendingInputSource = 'slider';
-            updateSliceDepth(newDepth, false);
-        }
-    }
     if (Array.isArray(data.builtin_model_stems) && data.builtin_model_stems.length && !builtinModelStems) {
         builtinModelStems = data.builtin_model_stems;
         // Force a rebuild now that the filter is known.

@@ -52,8 +52,8 @@ cad-a11y/
 │   └── js/
 │       ├── viewer.js             # Main viewer logic
 │       ├── monarch-hid.js        # Monarch braille display (WebHID)
-│       ├── trinkey-slider.js     # Adafruit Trinkey slider (WebHID)
-│       ├── witmotion-imu.js      # WitMotion IMU for orientation input (WebHID)
+│       ├── trinkey-slider.js     # Adafruit Trinkey slider (Web Serial)
+│       ├── witmotion-imu.js      # WitMotion IMU for orientation input (Web Bluetooth)
 │       └── dotpad-integration.js # DotPad haptic display
 ├── data/models/                  # Model files (bind-mounted into the container)
 ├── scripts/                      # Utility scripts (SCAD conversion, BREP generation)
@@ -98,12 +98,21 @@ NOTE: Cursor or guideline movements only work when the cursor or guidelines are 
 
 ### WitMotion IMU
 
-1. Plug the WitMotion into a USB port.
-2. The browser will request WebHID permission on first use.
+1. Power on the WitMotion.
+2. In the browser, go to the WitMotion IMU section and select **Connect BLE**.
+3. Pick the device in the browser's pairing prompt.
+
+Turning the cube changes the view in that browser window only. Needs a browser
+with Web Bluetooth, which today means a Chromium-based one.
 
 ### Adafruit Slider Trinkey
 
 1. Plug the Trinkey into a USB port (use the USB-A adapter for USB-C ports).
+2. In the browser, go to the Trinkey Slider section and select **Connect USB**.
+3. Pick the port in the browser's prompt.
+
+The slider sets the depth in that browser window only. Needs Web Serial, which
+today means a Chromium-based browser.
 
 ### DotPad display
 

@@ -4,9 +4,11 @@
 Features:
 - Receives render state from the viewer and renders with CADComparisonRenderer.
 - Sends rendered output to a connected braille display using braille_display.py.
-- Optionally reads WitMotion IMU orientation and Slider Trinkey position if hardware is present.
-- Supports command logging endpoints used by the legacy cube/slider server.
 - Opens accessible-3d-viewer.html in the default browser at startup.
+
+Input hardware is not handled here. The orientation cube, the slider, the Monarch
+and the DotPad are all connected by the browser, to the window using them, so one
+person's device moves that window and no other.
 """
 
 from __future__ import annotations
@@ -52,14 +54,6 @@ from .braille_display import (
 from .cad_comparison_lib import DEFAULT_SCREEN_SIZE, CADComparisonRenderer
 from src.converter.render_low_res import dilate_mask, raised_ink_mask, save_binary_array_as_vector_pdf
 
-try:
-    import serial  # type: ignore
-    from serial.tools import list_ports  # type: ignore
-except Exception:
-    serial = None
-    list_ports = None
-
-
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 app = Flask(__name__)
@@ -71,8 +65,6 @@ app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_UPLOAD_MB", "100") or "100
 
 @dataclass
 class RuntimeState:
-    cube_value: str = "z+"
-    slider_value: int = 0
     current_model_index: int = 0
 
 
@@ -334,32 +326,6 @@ DEFAULT_RENDER_PARAMS: dict[str, Any] = {
     "move_camera_center": "none",
     "print_view": False,
 }
-
-# WitMotion IMU orientation → view mapping
-_FACE_NORMALS = np.array([
-    [1, 0, 0],   # x+
-    [-1, 0, 0],  # x-
-    [0, 1, 0],   # y+
-    [0, -1, 0],  # y-
-    [0, 0, 1],   # z+
-    [0, 0, -1],  # z-
-], dtype=float)
-_FACE_NAMES = ["x+", "x-", "y+", "y-", "z+", "z-"]
-_WORLD_UP = np.array([0.0, 0.0, 1.0])
-
-
-def _euler_to_rotation_matrix(roll_deg: float, pitch_deg: float, yaw_deg: float) -> np.ndarray:
-    r, p, y = np.radians(roll_deg), np.radians(pitch_deg), np.radians(yaw_deg)
-    Rx = np.array([[1, 0, 0], [0, np.cos(r), -np.sin(r)], [0, np.sin(r), np.cos(r)]])
-    Ry = np.array([[np.cos(p), 0, np.sin(p)], [0, 1, 0], [-np.sin(p), 0, np.cos(p)]])
-    Rz = np.array([[np.cos(y), -np.sin(y), 0], [np.sin(y), np.cos(y), 0], [0, 0, 1]])
-    return Rz @ Ry @ Rx
-
-
-def _orientation_to_view(roll_deg: float, pitch_deg: float, yaw_deg: float) -> str:
-    R = _euler_to_rotation_matrix(roll_deg, pitch_deg, yaw_deg)
-    dots = (_FACE_NORMALS @ R.T) @ _WORLD_UP
-    return _FACE_NAMES[int(np.argmax(dots))]
 
 state = RuntimeState()
 # Keyed by model path, not by position in the discovered list. An upload or a
@@ -832,8 +798,6 @@ def _render_and_send(
     sequence = _next_braille_send_sequence()
     with state_lock:
         state_snapshot = {
-            "cube_value": state.cube_value,
-            "slider_value": state.slider_value,
             "current_model_index": state.current_model_index,
         }
     event: dict[str, Any] = {
@@ -1252,100 +1216,6 @@ def open_viewer_in_browser() -> None:
         _log(f"Could not open viewer in browser: {error}", force=True)
 
 
-def _slider_worker() -> None:
-    if serial is None or list_ports is None:
-        _log("Serial dependencies unavailable; slider input disabled.", force=True)
-        return
-
-    while True:
-        trinkey_port = None
-        for port in list_ports.comports(include_links=False):
-            if getattr(port, "pid", None) == 0x8102:
-                trinkey_port = port
-                break
-
-        if trinkey_port is None:
-            _log("Slider Trinkey not found; slider input disabled.", force=True)
-            return
-
-        _log(f"Slider Trinkey found at {trinkey_port.device}", force=True)
-        try:
-            with serial.Serial(trinkey_port.device, timeout=1) as trinkey:
-                # Average 10 consecutive readings to smooth jitter before reporting.
-                samples: list[int] = []
-                while True:
-                    line = trinkey.readline().decode("utf-8", errors="ignore").strip()
-                    if not line.startswith("Slider: "):
-                        continue
-                    try:
-                        samples.append(int(float(line.split(": ", maxsplit=1)[1])))
-                    except ValueError:
-                        continue
-                    if len(samples) < 10:
-                        continue
-                    value = int(sum(samples) / len(samples))
-                    samples.clear()
-                    with state_lock:
-                        state.slider_value = value
-                    _push_sse({"slider_value": value})
-        except Exception as error:
-            _log(f"Slider disconnected ({error}); retrying in 3s...", force=True)
-            time.sleep(3)
-
-
-def _witmotion_worker() -> None:
-    """Read WitMotion IMU euler angles via serial and push view updates.
-
-    Supports WT901 and similar devices in ASCII CSV output mode.
-    Expected line format: Time,ax,ay,az,wx,wy,wz,Roll(deg),Pitch(deg),Yaw(deg)[,...]
-    """
-    if serial is None or list_ports is None:
-        _log("Serial dependencies unavailable; WitMotion input disabled.", force=True)
-        return
-
-    # WitMotion WT901 uses CH340 (vid=0x1a86) or CP2102 (vid=0x10c4) USB-serial chips.
-    witmotion_port = None
-    for port in list_ports.comports(include_links=False):
-        if getattr(port, "vid", None) in {0x1A86, 0x10C4}:
-            witmotion_port = port
-            break
-
-    if witmotion_port is None:
-        _log("WitMotion sensor not found; IMU orientation input disabled.", force=True)
-        return
-
-    _log(f"WitMotion sensor found at {witmotion_port.device}", force=True)
-    last_view: str | None = None
-    try:
-        with serial.Serial(witmotion_port.device, baudrate=9600, timeout=1) as sensor:
-            while True:
-                line = sensor.readline().decode("utf-8", errors="ignore").strip()
-                parts = line.split(",")
-                if len(parts) < 10:
-                    continue
-                try:
-                    roll = float(parts[7])
-                    pitch = float(parts[8])
-                    yaw = float(parts[9])
-                except (ValueError, IndexError):
-                    continue
-                view = _orientation_to_view(roll, pitch, yaw)
-                if view == last_view:
-                    continue
-                last_view = view
-                with state_lock:
-                    state.cube_value = view
-                _push_sse({"cube_value": view})
-                _log(f"WitMotion orientation ({roll:.1f}, {pitch:.1f}, {yaw:.1f}) -> view {view}")
-    except Exception as error:
-        _log(f"WitMotion integration disabled after error: {error}", force=True)
-
-
-def start_optional_hardware_watchers() -> None:
-    threading.Thread(target=_slider_worker, daemon=True).start()
-    threading.Thread(target=_witmotion_worker, daemon=True).start()
-
-
 @app.route("/viewer", methods=["GET"])
 def serve_viewer():
     """Serve the main HTML viewer.
@@ -1541,9 +1411,6 @@ def render_view():
                 cached_response["debug"] = debug
                 return jsonify(cached_response), 200
 
-        # Do not copy browser-selected viewpoint into global hardware state.
-        # Global cube_value is reserved for hardware-originated updates (WitMotion IMU)
-        # so one browser's manual navigation does not move other connected clients.
         with state_lock:
             state.current_model_index = model_index
 
@@ -2080,7 +1947,6 @@ def sse_events():
             # Send current state immediately on connect so the client is in sync.
             with state_lock:
                 initial = {
-                    "cube_value": state.cube_value,
                     "model_list": MODEL_NAME_LIST,
                 }
             yield f"data: {json.dumps(initial)}\n\n"
@@ -2111,8 +1977,6 @@ def get_data():
     with state_lock:
         payload = {
             "status": "success",
-            "cube_value": state.cube_value,
-            "slider_value": state.slider_value,
             "current_model": state.current_model_index,
             "model_list": MODEL_NAME_LIST,
             "builtin_model_stems": _builtin_model_stems(),
@@ -2268,7 +2132,6 @@ def main() -> int:
     db.init_db()
     initialize_default_braille_render()
     start_model_warmup()
-    start_optional_hardware_watchers()
     open_viewer_in_browser()
 
     _log("Ready.", force=True)
