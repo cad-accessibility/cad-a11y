@@ -365,9 +365,14 @@ state = RuntimeState()
 renderers_by_model: dict[int, CADComparisonRenderer] = {}
 state_lock = threading.Lock()
 models_lock = threading.Lock()
-# Serialize all engine.render() calls — matplotlib is not thread-safe, and
-# engine.render() mutates view_current_camera_center (camera pan state).
-# Concurrent renders corrupt that state, producing blank or wrong-view output.
+# Serialize all engine.render() calls, because matplotlib is not thread-safe:
+# the converters below it drive the pyplot module globals and call a bare
+# plt.close(). That is the whole reason. It used to also stand in for the camera
+# pan state a render mutated on the shared renderer, which is gone: a render now
+# takes its camera centre and grid as arguments and returns what it resolved.
+# Do not put per-request state back on the renderer on the strength of this lock.
+# It orders renders; it does not isolate them, and it is a global bottleneck
+# rather than a concurrency mechanism.
 render_lock = threading.Lock()
 braille_log_lock = threading.Lock()
 braille_send_sequence = 0
@@ -671,8 +676,7 @@ def _make_hifi_preview(
     engine = get_or_create_renderer(model_index)
     grid = _target_grid(params)
     if grid is None:
-        orig = list(engine.screen_size) if engine.screen_size else list(DEFAULT_SCREEN_SIZE)
-        grid = (max(1, orig[0]), max(1, orig[1] if len(orig) > 1 else orig[0]))
+        grid = DEFAULT_SCREEN_SIZE
     w0, h0 = grid
     hifi_h = max(1, int(round(preview_width * h0 / w0)))
 
@@ -691,18 +695,16 @@ def _make_hifi_preview(
 def _render_and_send(
     params: dict[str, Any], *, source: str, model_index: int,
     render_size: tuple[int, int] | None = None,
-) -> tuple[np.ndarray, list[float] | None, np.ndarray]:
+) -> tuple[np.ndarray, list[float] | None, np.ndarray, Any]:
     engine = get_or_create_renderer(model_index)
     out_guard, err_guard = _renderer_stdio_guard()
+    grid = None
+    if render_size is not None:
+        grid = [max(1, int(render_size[0])), max(1, int(render_size[1]))]
     with render_lock:
-        original_screen_size = list(engine.screen_size) if engine.screen_size else list(DEFAULT_SCREEN_SIZE)
-        if render_size is not None:
-            engine.screen_size = [max(1, int(render_size[0])), max(1, int(render_size[1]))]
-        try:
-            with out_guard, err_guard:
-                rendered = engine.render(params)
-        finally:
-            engine.screen_size = original_screen_size
+        with out_guard, err_guard:
+            result = engine.render(params, screen_size=grid)
+    rendered = result.image
 
     braille_payload = _to_braille_payload(rendered)
     sequence = _next_braille_send_sequence()
@@ -740,10 +742,10 @@ def _render_and_send(
     _write_braille_event(event)
 
     bbox = getattr(engine, "bbox", None)
-    return rendered, bbox, braille_payload
+    return rendered, bbox, braille_payload, result
 
 
-def _save_print_if_requested(params: dict[str, Any], engine: CADComparisonRenderer, img_data: np.ndarray) -> None:
+def _save_print_if_requested(params: dict[str, Any], result: Any, img_data: np.ndarray) -> None:
     if not params.get("print_view"):
         return
 
@@ -761,10 +763,10 @@ def _save_print_if_requested(params: dict[str, Any], engine: CADComparisonRender
 
     stem = (
         f"print_{next_index}_"
-        f"{engine.current_render_mode}_"
-        f"{engine.current_cut_depth}_"
-        f"{engine.view_current_axis}_"
-        f"{np.array(engine.view_current_view_limits).tolist()}"
+        f"{result.render_mode}_"
+        f"{result.cut_depth}_"
+        f"{result.view_axis}_"
+        f"{np.array(result.axis_limits).tolist()}"
     )
     pdf_path = RENDERS_DIR / f"{stem}.pdf"
     npy_path = RENDERS_DIR / f"{stem}.npy"
@@ -986,14 +988,11 @@ def _render_braille_payload_at_size(
     engine = get_or_create_renderer(model_index)
     out_guard, err_guard = _renderer_stdio_guard()
     with render_lock:
-        original_screen_size = list(engine.screen_size) if engine.screen_size else list(DEFAULT_SCREEN_SIZE)
-        engine.screen_size = [max(1, int(pixel_width)), max(1, int(pixel_height))]
-        try:
-            with out_guard, err_guard:
-                rendered = engine.render(params)
-        finally:
-            engine.screen_size = original_screen_size
-    return _to_braille_payload(rendered)
+        with out_guard, err_guard:
+            result = engine.render(
+                params, screen_size=[max(1, int(pixel_width)), max(1, int(pixel_height))]
+            )
+    return _to_braille_payload(result.image)
 
 
 def _get_braille_payload_at_size(
@@ -1043,7 +1042,7 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     # is precisely what sent it down the second-render path it was meant to avoid.
     render_size = _target_grid(params)
 
-    rendered, bbox, braille_payload = _render_and_send(
+    rendered, bbox, braille_payload, render_result = _render_and_send(
         params, source=source, model_index=model_index, render_size=render_size
     )
 
@@ -1075,14 +1074,17 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
         input_source=source,
     )
 
-    engine = get_or_create_renderer(model_index)
-    _save_print_if_requested(params, engine, rendered)
+    _save_print_if_requested(params, render_result, rendered)
 
     response: dict[str, Any] = {
         "status": "success",
         "image_base64": _img_to_base64_png(preview_payload),
         "image_shape": list(preview_payload.shape),
         "model_list": MODEL_NAME_LIST,
+        # Where this render ended up looking, so the window that asked can send
+        # it back next time. This is what keeps a pan inside the window that
+        # made it: the renderer no longer remembers, and must not.
+        "camera_center": render_result.camera_center,
     }
     if bbox is not None:
         response["bbox"] = bbox
@@ -1097,7 +1099,7 @@ def initialize_default_braille_render() -> None:
 
     try:
         merged_params, model_index, _is_pan_request, _fingerprint = _prepare_render_params(dict(DEFAULT_RENDER_PARAMS))
-        rendered, _, _ = _render_and_send(merged_params, source="startup", model_index=model_index)
+        rendered, _, _, _ = _render_and_send(merged_params, source="startup", model_index=model_index)
         _log(f"Initial render ready: shape={tuple(rendered.shape)}", force=True)
     except Exception as error:
         _log(f"Initial render failed: {error}", force=True)
@@ -1435,8 +1437,15 @@ def render_view():
         )
         response["debug"] = debug
 
+        # A pan is not cacheable in either direction. "move left" means move from
+        # wherever this window already was, and neither key carries that starting
+        # point or the verb, so the same key describes two different pictures.
+        # Reads were already guarded; writes were not, so a pan stored its result
+        # under the unpanned key and the next window to ask got it. The request
+        # after a pan carries the new centre explicitly and caches correctly.
+        cacheable = not is_pan_request and merged_params.get("print_view") is not True
         with state_lock:
-            if merged_params.get("print_view") is not True:
+            if cacheable:
                 last_render_fingerprint = fingerprint
                 last_render_response = response
                 _set_quantized_cached_response(quantized_cache_key, response)
@@ -1450,7 +1459,7 @@ def fit_render_view():
     data = request.get_json(silent=True) or {}
     merged_params, model_index, _, _ = _prepare_render_params(data)
     engine = get_or_create_renderer(model_index)
-    fit = engine.compute_fit_view(merged_params)
+    fit = engine.compute_fit_view(merged_params, screen_size=_target_grid(merged_params))
     return jsonify({"status": "success", **fit}), 200
 
 @app.route("/models", methods=["GET"])
@@ -2003,21 +2012,16 @@ def render_export_source():
 
         engine = get_or_create_renderer()
 
+        aspect_ratio = float(DEFAULT_SCREEN_SIZE[1]) / float(DEFAULT_SCREEN_SIZE[0])
+        export_height = max(1, int(round(export_width * aspect_ratio)))
         with render_lock:
-            original_screen_size = list(engine.screen_size)
-            if not original_screen_size or original_screen_size[0] <= 0:
-                original_screen_size = list(DEFAULT_SCREEN_SIZE)
-            aspect_ratio = float(original_screen_size[1]) / float(original_screen_size[0])
-            export_height = max(1, int(round(export_width * aspect_ratio)))
-            engine.screen_size = [export_width, export_height]
-            try:
-                out_guard, err_guard = _renderer_stdio_guard()
-                with out_guard, err_guard:
-                    rendered = engine.render(merged_params)
-            finally:
-                engine.screen_size = original_screen_size
+            out_guard, err_guard = _renderer_stdio_guard()
+            with out_guard, err_guard:
+                result = engine.render(
+                    merged_params, screen_size=[export_width, export_height]
+                )
 
-        tactile_payload = _to_braille_payload(rendered)
+        tactile_payload = _to_braille_payload(result.image)
         response = {
             "status": "success",
             "message": "Export source render complete",

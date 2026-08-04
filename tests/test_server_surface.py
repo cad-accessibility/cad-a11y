@@ -73,8 +73,17 @@ def test_no_dead_debug_hook():
     assert "last_render_debug" not in SERVER_SOURCE
 
 
-def test_a_print_before_any_single_mode_render_can_name_its_file():
-    """current_cut_depth is only written in the single-mode branch but read
-    whenever a print is requested, so it has to start as something."""
+def test_a_print_names_its_file_from_the_render_that_made_it():
+    """These four values used to be left on the renderer for the print helper to
+    read afterwards. On an instance shared by every window that meant a print
+    could be named after somebody else's render, and a print before any
+    single-mode render raised AttributeError because nothing had set them."""
     lib = (ROOT / "app" / "cad_comparison_lib.py").read_text(encoding="utf-8")
-    assert "self.current_cut_depth = None" in lib, "no initial value, so printing can raise"
+    for attribute in ("current_cut_depth", "view_current_axis",
+                      "current_render_mode", "view_current_view_limits"):
+        assert f"self.{attribute}" not in lib, f"{attribute} is still renderer state"
+
+    helper = re.search(r"def _save_print_if_requested\(.*?\n\n\n", SERVER_SOURCE, re.S)
+    assert helper, "_save_print_if_requested not found"
+    assert "result." in helper.group(0), "the filename is not built from the render result"
+    assert "engine." not in helper.group(0), "still reading values off the shared engine"

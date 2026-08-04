@@ -157,31 +157,47 @@ function clearCameraCenterState() {
 }
 
 function syncCameraCenterFromResponse(responseData, requestState) {
-    const debug = responseData && typeof responseData === 'object' ? responseData.debug : null;
-    if (!debug || !Array.isArray(debug.camera_center) || debug.camera_center.length !== 2) {
+    // This window's own view position, remembered here and sent back on the next
+    // render. The server does not keep it: one renderer is shared by every window
+    // looking at a model, so a centre held there meant one person's pan moved
+    // everybody else's view.
+    //
+    // The server used to be expected to return this inside `debug`, and never
+    // did, so this function returned early every single time and the centre
+    // stayed null forever. It is a real field now; `debug` is read as a fallback
+    // for one release in case an older server is answering.
+    const body = responseData && typeof responseData === 'object' ? responseData : null;
+    const debug = body && typeof body.debug === 'object' ? body.debug : null;
+    const reported = (body && Array.isArray(body.camera_center)) ? body.camera_center
+        : (debug && Array.isArray(debug.camera_center)) ? debug.camera_center
+        : null;
+    if (!reported || reported.length !== 2) {
         return;
     }
 
-    const centerX = Number(debug.camera_center[0]);
-    const centerY = Number(debug.camera_center[1]);
+    const centerX = Number(reported[0]);
+    const centerY = Number(reported[1]);
     if (!Number.isFinite(centerX) || !Number.isFinite(centerY)) {
         return;
     }
 
-    const debugView = typeof debug.view === 'string' && debug.view.trim().length > 0
+    const answeredView = (debug && typeof debug.view === 'string' && debug.view.trim())
         ? debug.view
         : requestState.view;
-    const debugOrientation = debug.orientation && typeof debug.orientation === 'object'
+    const answeredOrientation = (debug && debug.orientation && typeof debug.orientation === 'object')
         ? debug.orientation
         : requestState.orientation;
-    const key = getCameraCenterStateKey(debugView, debugOrientation);
+    const key = getCameraCenterStateKey(answeredView, answeredOrientation);
     cameraCenterByViewOrientation.set(key, [centerX, centerY]);
     if (sbPanCenter) {
         sbPanCenter.textContent = formatCenter2([centerX, centerY]);
     }
 
-    if (Array.isArray(debug.world_camera_center) && debug.world_camera_center.length === 3) {
-        const worldCenter = debug.world_camera_center.map((value) => Number(value));
+    const reportedWorld = (body && Array.isArray(body.world_camera_center)) ? body.world_camera_center
+        : (debug && Array.isArray(debug.world_camera_center)) ? debug.world_camera_center
+        : null;
+    if (reportedWorld && reportedWorld.length === 3) {
+        const worldCenter = reportedWorld.map((value) => Number(value));
         if (worldCenter.every((value) => Number.isFinite(value))) {
             currentWorldCameraCenter = [...worldCenter];
         }
