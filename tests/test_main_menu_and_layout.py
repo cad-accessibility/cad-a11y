@@ -203,12 +203,26 @@ def test_output_device_radios_live_inside_the_settings_dialog():
     settings_start = html.index('id="settings-dialog"')
     settings_end = html.index("</dialog>", settings_start)
     settings_markup = html[settings_start:settings_end]
-    for radio_id in ("output-device-monarch", "output-device-dotpad", "output-device-auto"):
+    for radio_id in ("output-device-monarch", "output-device-dotpad"):
         assert f'id="{radio_id}"' in settings_markup, f"expected #{radio_id} inside the Settings dialog"
 
     assert "output-device-heading" not in html, (
         "the old standalone Output Device section should be gone from the main interface"
     )
+
+
+def test_output_device_has_no_auto_option():
+    # There's no browser API that can "auto-detect" which device to connect to
+    # (Monarch is Web HID, DotPad is Web Bluetooth) — connecting to one *is* the
+    # choice now, so Auto was removed (#145) in favor of a successful connect
+    # selecting its own radio directly.
+    html = VIEWER_HTML.read_text(encoding="utf-8")
+    assert "output-device-auto" not in html
+    assert 'value="auto"' not in html
+
+    js = VIEWER_JS.read_text(encoding="utf-8")
+    assert "currentOutputDevice = 'monarch';" in js
+    assert "currentOutputDevice = 'dotpad';" in js
 
 
 # ---------------------------------------------------------------------------
