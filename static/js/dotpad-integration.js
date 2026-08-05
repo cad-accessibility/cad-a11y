@@ -296,7 +296,6 @@ function onKey(device, currKeyCode, keyMsg) {
     const byte6 = labelToByte6(label);
     const letter = byte6ToLetter(byte6);
     const cursorState = window.whichCursor ? window.whichCursor() : 'none';
-    const n = 10; // TODO: make this global and dynamic
     if (
         typeof window.getCurrentSliceDepth !== 'function' ||
         typeof window.updateSliceDepth !== 'function' ||
@@ -310,28 +309,60 @@ function onKey(device, currKeyCode, keyMsg) {
         if (typeof window.cycleCursorState === 'function') {
             window.cycleCursorState();
             // 20 character announcement for screen reader users to know the cursor state has changed
-            console.log('Cursor state now ', window.whichCursor ? window.whichCursor() : 'none');
+            console.log('Cursor state: ', window.whichCursor ? window.whichCursor() : 'none');
         }
         return;
     }
+    if (letter === 'f'){
+        if (typeof window.fitCurrentViewToDevice != 'function') {
+            console.warn('DotPad fit controls are unavailable because viewer fit helpers are not exposed.');
+            return;
+        }
+        window.fitCurrentViewToDevice();
+        return;
+    }
     if (byte6 === 0x01){
-        // Go shallower (decrease depth by 100/N)
+        // Go shallower by 10
         const previousDepth = window.getCurrentSliceDepth();
-        const nextDepth = Math.max(0, previousDepth - 100/n); // TODO: calculate integer value
+        const nextDepth = Math.max(0, previousDepth - 10);
         window.updateSliceDepth(nextDepth, false);
         window.announceDepthValue(nextDepth, previousDepth);
         return;
     }
     if (byte6 === 0x08){
-        // Go deeper (increase depth by 100/N)
+        // Go deeper by 10
         const previousDepth = window.getCurrentSliceDepth();
-        const nextDepth = Math.min(100, previousDepth + 100/n); // TODO: calculate integer value
+        const nextDepth = Math.min(100, previousDepth + 10);
         window.updateSliceDepth(nextDepth, false);
         window.announceDepthValue(nextDepth, previousDepth);
         return;
     }
-    if (typeof window.moveCursor != 'function') return;
+    if (byte6 === 0x03){
+        // Go shallower by 1
+        const previousDepth = window.getCurrentSliceDepth();
+        const nextDepth = Math.max(0, previousDepth - 1);
+        window.updateSliceDepth(nextDepth, false);
+        window.announceDepthValue(nextDepth, previousDepth);
+        return;
+    }
+    if (byte6 === 0x18){
+        // Go deeper by 1
+        const previousDepth = window.getCurrentSliceDepth();
+        const nextDepth = Math.min(100, previousDepth + 1);
+        window.updateSliceDepth(nextDepth, false);
+        window.announceDepthValue(nextDepth, previousDepth);
+        return;
+    }
+    if (byte6 === 0x07) {
+        scrollTactileText(-1);
+        return;
+    }
+    if (byte6 === 0x38) {
+        scrollTactileText(1);
+        return;
+    }
 
+    if (typeof window.moveCursor != 'function') return;
     const cursorAction = DOTPAD_KEY_ACTIONS[currKeyCode];
     if (cursorState === 'none') {
         console.log('DotPad key pressed but cursor state is "none":', currKeyCode, keyMsg);
@@ -475,6 +506,46 @@ window._dotpadOnRender = sendHexToDotPad;
 
 // --- Send announcements to DotPad ---
 
+let tactileTextPages = [];
+let tactileTextPageIndex = 0;
+
+function buildTactileTextPages(message, cellCount) {
+    const text = String(message || '').replace(/\s+/g, ' ').trim();
+    const pages = [];
+    let remaining = text;
+
+    while (remaining.length > 0) {
+        if (remaining.length <= cellCount) {
+            pages.push(remaining);
+            break;
+        }
+
+        const candidate = remaining.slice(0, cellCount);
+        const nextChar = remaining.slice(cellCount, cellCount + 1);
+
+        if (/\s/.test(nextChar)) {
+            pages.push(candidate);
+            remaining = remaining.slice(cellCount).trimStart();
+            continue;
+        }
+
+        const breakIndex = candidate.lastIndexOf(' ');
+        if (breakIndex > 0) {
+            pages.push(remaining.slice(0, breakIndex));
+            remaining = remaining.slice(breakIndex).trimStart();
+        } else {
+            pages.push(remaining.slice(0, cellCount));
+            remaining = remaining.slice(cellCount).trimStart();
+        }
+    }
+
+    return pages.length ? pages : [''];
+}
+
+function getDotPadTextCellCount() {
+    return connectedDevice?.numberBrailleCellColumns || 20;
+}
+
 function encodeAnnouncementForDotPad(message, cellCount) {
     let hex = '';
     for (let i = 0; i < cellCount; i++) {
@@ -486,12 +557,38 @@ function encodeAnnouncementForDotPad(message, cellCount) {
     return hex;
 }
 
-function sendAnnouncementToDotPad({message}) {
+function renderTactileTextWindow() {
     if (!connectedDevice) return;
 
-    const cellCount = connectedDevice.numberBrailleCellColumns || 20;
-    const textHex = encodeAnnouncementForDotPad(message, cellCount);
+    const cellCount = getDotPadTextCellCount();
+    const visibleText = tactileTextPages[tactileTextPageIndex] || '';
+    const textHex = encodeAnnouncementForDotPad(visibleText, cellCount);
+
     sdk.displayTextData(textHex, connectedDevice, DisplayMode.TextMode);
+}
+
+function setTactileTextMessage(message) {
+    const cellCount = getDotPadTextCellCount();
+    tactileTextPages = buildTactileTextPages(message, cellCount);
+    tactileTextPageIndex = 0;
+    renderTactileTextWindow();
+}
+
+function scrollTactileText(deltaPages) {
+    if (!tactileTextPages.length) return;
+
+    const maxPageIndex = Math.max(0, tactileTextPages.length - 1);
+    tactileTextPageIndex = Math.max(
+        0,
+        Math.min(maxPageIndex, tactileTextPageIndex + deltaPages)
+    );
+
+    renderTactileTextWindow();
+}
+
+function sendAnnouncementToDotPad({message}) {
+    if (!connectedDevice) return;
+    setTactileTextMessage(message);
 }
 
 window.onTactileAnnouncement = sendAnnouncementToDotPad;

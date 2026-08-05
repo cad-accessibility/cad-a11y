@@ -2107,6 +2107,7 @@ window.whichCursor = whichCursor;
 window.getCurrentSliceDepth = getCurrentSliceDepth;
 window.updateSliceDepth = updateSliceDepth;
 window.announceDepthValue = announceDepthValue;
+window.fitCurrentViewToDevice = fitCurrentViewToDevice;
 
 if (clearAnnouncementsBtn && announcementHistory) {
     clearAnnouncementsBtn.addEventListener('click', function() {
@@ -2452,7 +2453,7 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             fitCurrentViewToDevice();
             break;
-            
+
         // View shortcuts
         case '7':
             e.preventDefault();

@@ -117,8 +117,13 @@ NOTE: Cursor or guideline movements only work when the cursor or guidelines are 
 
 The DotPad supports cursor controls and depth changes with the following inputs:
 
-- dot 1: change depth shallower by 10%.
-- dot 4: change depth deeper by 10%.
+- dot 1: decreases depth by 10%.
+- dot 4: increases depth by 10%.
+- dots 1 and 2: decreases depth by 1%.
+- dots 4 and 5: increases depth by 1%.
+- dots 1 2 3: move back one page in the Braille text display.
+- dots 4 5 6: move forward one page in the Braille text display.
+- letter `f`: fit the current tactile view to the connected display.
 - letter `v` or dot chord 1 2 3 6: cycles through these cursor modes
     - `none`: hides the cursor and disables cursor movement.
     - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
@@ -130,7 +135,7 @@ The DotPad supports cursor controls and depth changes with the following inputs:
 - dot 2: move cursor or vertical line up
 - dot 5: move cursor or vertical line down
 
-NOTE: Cursor or guideline movements will only work when the cursor or guidelines are active. A single button press will move one pixel. A double or triple button press will move the line five or twelve pixels respectively.
+NOTE: Cursor or guideline movements will only work when the cursor or guidelines are active. A single button press will move one pixel. A double or triple button press will move the line five or twelve pixels respectively. Braille text pages break at spaces when possible. Long words, such as file names, are split only when they are longer than the text display width.
 
 
 ## Uploads on managed servers
