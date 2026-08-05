@@ -60,30 +60,20 @@ def _is_ascii_stl(file_path: str) -> bool:
 # Check Function
 
 def _is_ascii_stl_upload(file) -> bool:
-
-    """Return True if the uploaded FileStorage looks like ASCII STL."""
-
     stream = file.stream
 
     try:
-
         original_pos = stream.tell()
-
     except (AttributeError, OSError):
-
         original_pos = 0
 
-
     try:
-
         stream.seek(0)
-
         header = stream.read(256).decode("utf-8", errors="strict").strip().lower()
 
         if not header.startswith("solid"):
 
             return False
-
 
         stream.seek(0)
 
@@ -108,48 +98,28 @@ def _is_ascii_stl_upload(file) -> bool:
 
 
 
-def _read_binary_stl(file_path: str):
-
-    """
-
-    Read a binary STL file and return the solid name and list of triangles.
-
-
-    Binary STL format:
-
-    - 80 bytes: header
-
-    - 4 bytes: uint32 number of triangles
-
-    - For each triangle (50 bytes):
-
-        - 12 bytes: normal vector (3 x float32)
-
-        - 12 bytes: vertex 1 (3 x float32)
-
-        - 12 bytes: vertex 2 (3 x float32)
-
-        - 12 bytes: vertex 3 (3 x float32)
-
-        - 2 bytes: attribute byte count (uint16)
-
-    """
-
+def _read_binary_stl(file):
     triangles = []
 
+    # with open(file_path, 'rb') as f:
+    stream = file.stream
 
-    with open(file_path, 'rb') as f:
+        # header_bytes = f.read(80)
 
-        # Read 80-byte header
+    try:
 
-        header_bytes = f.read(80)
+        original_pos = stream.tell()
 
-        if len(header_bytes) < 80:
+    except (AttributeError, OSError):
 
-            raise ValueError("File too small to be a valid binary STL (header incomplete)")
+        original_pos = 0
 
+    stream.seek(0)
 
-        # Try to extract a name from the header
+    header_bytes = stream.read(80)
+
+    if len(header_bytes) < 80:
+        raise ValueError("File too small to be a valid binary STL (header incomplete)")
 
         try:
 
@@ -160,8 +130,6 @@ def _read_binary_stl(file_path: str):
             header_str = ""
 
 
-        # Extract solid name from header if it starts with 'solid'
-
         solid_name = "converted"
 
         if header_str.lower().startswith('solid'):
@@ -170,8 +138,6 @@ def _read_binary_stl(file_path: str):
 
             if potential_name:
 
-                # Clean the name - remove non-printable characters
-
                 solid_name = ''.join(c for c in potential_name if c.isprintable()).strip()
 
                 if not solid_name:
@@ -179,29 +145,21 @@ def _read_binary_stl(file_path: str):
                     solid_name = "converted"
 
 
-        # Read number of triangles (4 bytes, unsigned int, little-endian)
-
-        num_triangles_data = f.read(4)
+        # num_triangles_data = f.read(4)
+        num_triangles_data = stream.read(4)
 
         if len(num_triangles_data) < 4:
 
             raise ValueError("File too small to be a valid binary STL (triangle count missing)")
-
-
         num_triangles = struct.unpack('<I', num_triangles_data)[0]
-
-
-        # Validate file size
 
         expected_size = 80 + 4 + (num_triangles * 50)
 
-        f.seek(0, 2)  # Seek to end
+        stream.seek(0, 2)  # Seek to end
 
-        actual_size = f.tell()
+        actual_size = stream.tell()
 
-        f.seek(84)  # Seek back to triangle data
-
-
+        stream.seek(84)  # Seek back to triangle data
         if actual_size < expected_size:
 
             raise ValueError(
@@ -217,9 +175,6 @@ def _read_binary_stl(file_path: str):
 
             raise ValueError("Binary STL contains 0 triangles")
 
-
-        # Sanity check on triangle count (prevent memory issues)
-
         if num_triangles > 50_000_000:
 
             raise ValueError(
@@ -230,12 +185,9 @@ def _read_binary_stl(file_path: str):
 
             )
 
-
-        # Read each triangle
-
         for i in range(num_triangles):
 
-            triangle_data = f.read(50)
+            triangle_data = stream.read(50)
 
             if len(triangle_data) < 50:
 
@@ -245,8 +197,6 @@ def _read_binary_stl(file_path: str):
 
                 )
 
-
-            # Unpack: normal (3 floats) + 3 vertices (9 floats) + attribute (1 unsigned short)
 
             values = struct.unpack('<12fH', triangle_data)
 
@@ -258,8 +208,6 @@ def _read_binary_stl(file_path: str):
             vertex2 = (values[6], values[7], values[8])
 
             vertex3 = (values[9], values[10], values[11])
-
-            # attribute_byte_count = values[12]  # Usually 0, ignored for ASCII
 
 
             triangles.append({
@@ -277,7 +225,7 @@ def _read_binary_stl(file_path: str):
 
 
 # Note: change this function so it returns the written file and so that it does not require a file path.
-def _write_ascii_stl(file_path: str, solid_name: str, triangles: list):
+def _write_ascii_stl(file, solid_name: str, triangles: list):
 
     """Write triangles to an ASCII STL file."""
 
