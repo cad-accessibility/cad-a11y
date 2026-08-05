@@ -711,6 +711,43 @@ button:focus-visible {
     }
 }
 
+/* Keyboard shortcuts dialog (#146) */
+#shortcuts-dialog {
+    border: none;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+    max-width: 560px;
+    width: calc(100% - 40px);
+    max-height: calc(100% - 80px);
+    overflow-y: auto;
+    padding: 32px;
+    color: #333;
+}
+
+#shortcuts-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.55);
+}
+
+#shortcuts-dialog h2 {
+    margin: 0 0 8px 0;
+    font-size: 1.4em;
+    color: #2c3e50;
+}
+
+#shortcuts-dialog h3 {
+    margin: 20px 0 8px 0;
+    font-size: 1.05em;
+    color: #2c3e50;
+}
+
+#shortcuts-dialog h3:first-of-type {
+    margin-top: 16px;
+}
+
+#shortcuts-dialog .shortcuts-list {
+    margin: 0;
+}
+
 /* Session consent dialog */
 #session-consent-dialog {
     border: none;
@@ -791,6 +828,16 @@ button:focus-visible {
  * keyboard-tabbable control, so suppress the full-width outline that would otherwise show.
  */
 #main-content:focus {
+    outline: none;
+}
+
+/*
+ * The shortcuts dialog focuses its own heading on open (tabindex=-1), per the ARIA
+ * APG dialog pattern's guidance for read-only content: land on a static element at
+ * the top of the dialog rather than the first interactive control, so reading
+ * forward from there covers the whole dialog instead of starting at the end.
+ */
+#shortcuts-heading:focus {
     outline: none;
 }
 
