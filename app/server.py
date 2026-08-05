@@ -872,7 +872,7 @@ def _save_print_if_requested(params: dict[str, Any], result: Any, img_data: np.n
         f"{result.render_mode}_"
         f"{result.cut_depth}_"
         f"{result.view_axis}_"
-        f"{np.array(result.axis_limits).tolist()}"
+        f"{np.array(result.framing_bounds).tolist()}"
     )
     pdf_path = RENDERS_DIR / f"{stem}.pdf"
     npy_path = RENDERS_DIR / f"{stem}.npy"

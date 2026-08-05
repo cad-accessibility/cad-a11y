@@ -141,24 +141,40 @@ DEFAULT_SCREEN_SIZE = (96, 40)
 
 
 class RenderResult:
-    """What one render produced.
+    """The output of one render: the image, plus the values that describe it.
 
-    The image plus the values the caller needs back. `camera_center` is the one
-    that matters: the caller sends it again on the next request, which is what
-    keeps panning inside the window that did it. These used to be left on the
-    renderer for the server to read afterwards, on an instance shared by every
-    window looking at the model.
+    This is a return value, not stored state. Which view, orientation, camera
+    centre, depth and zoom a window is looking at lives in the client and arrives
+    in the request; nothing about an individual window is kept here, or on the
+    renderer, which is shared by every window looking at the same model.
+
+    Of these fields, only `camera_center` travels back to the client: a pan
+    resolves to a new centre and the window sends it again next time, which is
+    what keeps panning inside the window that did it. The others are what the
+    render settled on for its inputs and are read only on the server.
     """
 
-    __slots__ = ("image", "camera_center", "axis_limits", "view_axis",
+    __slots__ = ("image", "camera_center", "framing_bounds", "view_axis",
                  "cut_depth", "render_mode", "zoom_level", "screen_size")
 
-    def __init__(self, image, *, camera_center, axis_limits, view_axis,
+    def __init__(self, image, *, camera_center, framing_bounds, view_axis,
                  cut_depth, render_mode, zoom_level, screen_size):
         self.image = image
+        # Echoed to the client, which stores it per view + orientation.
         self.camera_center = camera_center
-        self.axis_limits = axis_limits
+        # The world-space rectangle [[x_min, x_max], [y_min, y_max]] this render
+        # framed, once the view, the orientation basis and the zoom were applied:
+        # the outer edges of what reached the image. Model-derived, so identical
+        # for every window in the same state. Server-only; its one use is naming
+        # saved print files so two differently framed prints cannot collide.
+        # (Previously `axis_limits`.)
+        self.framing_bounds = framing_bounds
+        # A coarse label for the view, e.g. "x+". A summary of the orientation
+        # the request carried, not the orientation itself: the full
+        # forward/up/right basis stays in the request and is what frames the
+        # image above.
         self.view_axis = view_axis
+        # The single slice depth, 0..1, along the axis the view looks down.
         self.cut_depth = cut_depth
         self.render_mode = render_mode
         self.zoom_level = zoom_level
@@ -1383,7 +1399,7 @@ class CADComparisonRenderer:
         return RenderResult(
             img_array,
             camera_center=list(camera_center),
-            axis_limits=imposed_zoom_ax_limits,
+            framing_bounds=imposed_zoom_ax_limits,
             view_axis=view_name,
             cut_depth=1.0 - cut_depth,
             render_mode=render_mode,
