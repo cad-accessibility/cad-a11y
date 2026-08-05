@@ -43,13 +43,15 @@ EXPECTED_LIVE_ELEMENTS = {
 
 # Divs demoted to plain visual text; each must stay free of aria-live and of
 # the implicit live-region roles.
+#
+# monarch-hid-status and dotpad-status were dropped from this list (#145):
+# the standalone Monarch USB / DotPad sections they lived in were removed from
+# the page when Connect/Disconnect became the single generic pair in the nav.
 DEMOTED_STATUS_IDS = [
     "slice-graph-lock-status",
     "upload-model-status",
-    "monarch-hid-status",
     "trinkey-status",
     "witmotion-status",
-    "dotpad-status",
     "debug-stage-list",
 ]
 

@@ -369,12 +369,17 @@ let currentRenderMode = 'filled';
 let currentRepresentationMode = 'single';
 let currentMoveCamera = "none";
 let currentPrintView = false;
-// The output-device radio the user picked: 'monarch', 'dotpad', or 'auto'.
-// Kept separate from whether a Monarch is actually connected over Web HID
-// (monarchHidConnected) so that selecting a radio can never turn off a live
-// Monarch feed — see getEffectiveOutputDevice and issue #75.
+// The output-device radio the user picked: 'monarch' or 'dotpad'. Also flipped
+// automatically on a successful connect — see setMonarchHidConnected /
+// setDotpadConnected. Kept separate from whether a Monarch is actually
+// connected over Web HID (monarchHidConnected) so that selecting a radio can
+// never turn off a live Monarch feed — see getEffectiveOutputDevice.
 let currentOutputDevice = 'monarch';
 let monarchHidConnected = false;
+// Mirrors monarchHidConnected for the DotPad, set via window.setDotpadConnected
+// (called from dotpad-integration.js) so the generic Connect/Disconnect pair
+// (#145) knows which device, if either, is live.
+let dotpadConnected = false;
 // Single source of truth for render modes.
 //   key        held in currentRenderMode and used as the radio `value`. Lowercase
 //              throughout, so a case mismatch cannot silently unselect the group.
@@ -754,7 +759,6 @@ const showViewInfoBoxCheckbox = document.getElementById('show-view-info-box');
 const exportSliceSvgBtn = document.getElementById('export-slice-svg-btn');
 const highFidelityPreviewImg = document.getElementById('high-fidelity-preview-img');
 const highFidelityPreviewMeta = document.getElementById('high-fidelity-preview-meta');
-const debugPipelineToggleBtn = document.getElementById('debug-pipeline-toggle-btn');
 const debugPipelineContent = document.getElementById('debug-pipeline-content');
 const debugPipelineSummary = document.getElementById('debug-pipeline-summary');
 const debugStageList = document.getElementById('debug-stage-list');
@@ -763,6 +767,29 @@ const shortcutsDialog = document.getElementById('shortcuts-dialog');
 const shortcutsCloseBtn = document.getElementById('shortcuts-close-btn');
 const shortcutsHeading = document.getElementById('shortcuts-heading');
 const mainContent = document.getElementById('main-content');
+
+// Main menu (#145)
+const navMainBtn = document.getElementById('nav-main-btn');
+const navAboutBtn = document.getElementById('nav-about-btn');
+const navHelpBtn = document.getElementById('nav-help-btn');
+const navSettingsBtn = document.getElementById('nav-settings-btn');
+const aboutDialog = document.getElementById('about-dialog');
+const aboutCloseBtn = document.getElementById('about-close-btn');
+const aboutHeading = document.getElementById('about-heading');
+const settingsDialog = document.getElementById('settings-dialog');
+const settingsCloseBtn = document.getElementById('settings-close-btn');
+const settingsHeading = document.getElementById('settings-heading');
+const settingsSliderCheckbox = document.getElementById('settings-enable-slider');
+const settingsCubeCheckbox = document.getElementById('settings-enable-cube');
+const settingsDebugPanelCheckbox = document.getElementById('settings-enable-debug-panel');
+const settingsBboxCheckbox = document.getElementById('settings-enable-bbox');
+const trinkeySection = document.getElementById('trinkey-section');
+const witmotionSection = document.getElementById('witmotion-section');
+const debugPanelSection = document.getElementById('debug-panel-section');
+const bboxSection = document.getElementById('bbox-section');
+const deviceConnectBtn = document.getElementById('device-connect-btn');
+const deviceDisconnectBtn = document.getElementById('device-disconnect-btn');
+const deviceConnectStatus = document.getElementById('device-connect-status');
 
 // New radio group references
 const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
@@ -1015,19 +1042,11 @@ function setDebugPipelineVisible(isVisible) {
         return;
     }
     debugPipelineContent.hidden = !isVisible;
-    debugPipelineToggleBtn.textContent = isVisible ? 'Hide Debug Pipeline' : 'Show Debug Pipeline';
     try {
         window.localStorage.setItem(DEBUG_PIPELINE_VISIBILITY_KEY, isVisible ? '1' : '0');
     } catch (_) {
         // Ignore localStorage failures (e.g., privacy mode).
     }
-}
-
-function toggleDebugPipelineVisibility() {
-    if (!debugPipelineContent) {
-        return;
-    }
-    setDebugPipelineVisible(debugPipelineContent.hidden);
 }
 
 function initializeDebugPipelineVisibility() {
@@ -1043,54 +1062,216 @@ function initializeDebugPipelineVisibility() {
     setDebugPipelineVisible(isVisible);
 }
 
-// Keyboard shortcuts dialog (#146). Native <dialog> + showModal() supplies focus
+// Small read-only info dialogs opened from the Main menu: Keyboard
+// Shortcuts, About, Settings. Native <dialog> + showModal() supplies focus
 // containment, background inertness, and Escape-to-close for free; the one thing
 // that isn't automatic is returning focus to whatever triggered the dialog once
-// it closes, which is what shortcutsDialogTrigger is for. See the ARIA APG
+// it closes, which is what each controller's `trigger` is for. See the ARIA APG
 // pattern: https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/examples/dialog/
-let shortcutsDialogTrigger = null;
+function makeInfoDialogController(dialog, headingEl) {
+    let trigger = null;
+
+    function open() {
+        if (!dialog || !dialog.showModal || dialog.open) {
+            return;
+        }
+        trigger = document.activeElement;
+        // Backs up the native modal inertness for older assistive tech, same as
+        // the session consent dialog.
+        if (mainContent) mainContent.setAttribute('aria-hidden', 'true');
+        dialog.showModal();
+        // showModal() defaults to focusing the first focusable element, which here
+        // is the Close button at the very end of the content — reading forward
+        // from there reads nothing. Per the ARIA APG dialog pattern, a read-only
+        // dialog like this one should instead land on a static element at the top
+        // (the heading, made focusable via tabindex="-1"), so reading forward
+        // covers the whole dialog.
+        if (headingEl) headingEl.focus({ preventScroll: true });
+    }
+
+    function close() {
+        if (!dialog || !dialog.open) {
+            return;
+        }
+        dialog.close();
+    }
+
+    function restoreAfterClose() {
+        if (mainContent) mainContent.removeAttribute('aria-hidden');
+        // Return focus to whatever opened the dialog rather than stranding it at
+        // the top of the document (or on an element that's since been removed).
+        if (trigger && document.contains(trigger)) {
+            trigger.focus();
+        }
+        trigger = null;
+    }
+
+    if (dialog) {
+        // Cleanup after the dialog has actually closed. (Escape triggers `cancel`,
+        // whose default action closes the dialog and then fires `close`.)
+        dialog.addEventListener('close', restoreAfterClose);
+    }
+
+    return { open, close };
+}
+
+const shortcutsDialogController = makeInfoDialogController(shortcutsDialog, shortcutsHeading);
+const aboutDialogController = makeInfoDialogController(aboutDialog, aboutHeading);
+const settingsDialogController = makeInfoDialogController(settingsDialog, settingsHeading);
 
 function openShortcutsDialog() {
-    if (!shortcutsDialog || !shortcutsDialog.showModal || shortcutsDialog.open) {
-        return;
-    }
-    shortcutsDialogTrigger = document.activeElement;
-    // Backs up the native modal inertness for older assistive tech, same as the
-    // session consent dialog.
-    if (mainContent) mainContent.setAttribute('aria-hidden', 'true');
-    shortcutsDialog.showModal();
-    // showModal() defaults to focusing the first focusable element, which here is
-    // the Close button at the very end of the content — reading forward from there
-    // reads nothing. Per the ARIA APG dialog pattern, a read-only dialog like this
-    // one should instead land on a static element at the top (the heading, made
-    // focusable via tabindex="-1"), so reading forward covers the whole dialog.
-    if (shortcutsHeading) shortcutsHeading.focus({ preventScroll: true });
+    shortcutsDialogController.open();
 }
 
 function closeShortcutsDialog() {
-    if (!shortcutsDialog || !shortcutsDialog.open) {
-        return;
-    }
-    shortcutsDialog.close();
+    shortcutsDialogController.close();
 }
 
-function restoreAfterShortcutsDialogClose() {
-    if (mainContent) mainContent.removeAttribute('aria-hidden');
-    // Return focus to whatever opened the dialog rather than stranding it at the
-    // top of the document (or on an element that's since been removed).
-    if (shortcutsDialogTrigger && document.contains(shortcutsDialogTrigger)) {
-        shortcutsDialogTrigger.focus();
-    }
-    shortcutsDialogTrigger = null;
-}
-
-if (shortcutsDialog) {
-    // Cleanup after the dialog has actually closed. (Escape triggers `cancel`, whose
-    // default action closes the dialog and then fires `close`.)
-    shortcutsDialog.addEventListener('close', restoreAfterShortcutsDialogClose);
-}
 if (shortcutsCloseBtn) {
     shortcutsCloseBtn.addEventListener('click', closeShortcutsDialog);
+}
+if (aboutCloseBtn) {
+    aboutCloseBtn.addEventListener('click', () => aboutDialogController.close());
+}
+if (settingsCloseBtn) {
+    settingsCloseBtn.addEventListener('click', () => settingsDialogController.close());
+}
+if (navAboutBtn) {
+    navAboutBtn.addEventListener('click', () => aboutDialogController.open());
+}
+if (navHelpBtn) {
+    navHelpBtn.addEventListener('click', openShortcutsDialog);
+}
+if (navSettingsBtn) {
+    navSettingsBtn.addEventListener('click', () => settingsDialogController.open());
+}
+if (navMainBtn) {
+    // "Main" is an escape hatch back to the tool: close whichever dialog is open
+    // and refocus the main content, the same target the session-consent dialog
+    // returns to. A no-op if you're already on the main page with nothing open.
+    navMainBtn.addEventListener('click', () => {
+        document.querySelectorAll('dialog[open]').forEach((d) => d.close());
+        if (mainContent) {
+            mainContent.setAttribute('tabindex', '-1');
+            mainContent.focus();
+        }
+    });
+}
+
+// --- Optional / advanced sections (Slider, Cube, Debug Panel, Bounding Box),
+// gated by Settings (#145) --------------------------------------------------
+//
+// Trinkey Slider and WitMotion IMU are optional extras, not the primary tactile
+// display; Debug Panel and Bounding Box are developer/advanced diagnostics. All
+// four sections start hidden and only appear once explicitly turned on here.
+// Persisted so the choice survives a reload.
+const SETTINGS_SLIDER_VISIBLE_KEY = 'settingsSliderEnabled';
+const SETTINGS_CUBE_VISIBLE_KEY = 'settingsCubeEnabled';
+const SETTINGS_DEBUG_PANEL_VISIBLE_KEY = 'settingsDebugPanelEnabled';
+const SETTINGS_BBOX_VISIBLE_KEY = 'settingsBboxEnabled';
+
+function setOptionalSectionVisible(sectionEl, checkboxEl, storageKey, isVisible) {
+    if (sectionEl) sectionEl.hidden = !isVisible;
+    if (checkboxEl) checkboxEl.checked = isVisible;
+    try {
+        window.localStorage.setItem(storageKey, isVisible ? '1' : '0');
+    } catch (_) {
+        // Ignore localStorage failures (e.g., privacy mode).
+    }
+}
+
+function initializeOptionalSectionVisibility() {
+    let sliderEnabled = false;
+    let cubeEnabled = false;
+    let debugPanelEnabled = false;
+    let bboxEnabled = false;
+    try {
+        sliderEnabled = window.localStorage.getItem(SETTINGS_SLIDER_VISIBLE_KEY) === '1';
+        cubeEnabled = window.localStorage.getItem(SETTINGS_CUBE_VISIBLE_KEY) === '1';
+        debugPanelEnabled = window.localStorage.getItem(SETTINGS_DEBUG_PANEL_VISIBLE_KEY) === '1';
+        bboxEnabled = window.localStorage.getItem(SETTINGS_BBOX_VISIBLE_KEY) === '1';
+    } catch (_) {
+        // Default to hidden if storage is unavailable.
+    }
+    setOptionalSectionVisible(trinkeySection, settingsSliderCheckbox, SETTINGS_SLIDER_VISIBLE_KEY, sliderEnabled);
+    setOptionalSectionVisible(witmotionSection, settingsCubeCheckbox, SETTINGS_CUBE_VISIBLE_KEY, cubeEnabled);
+    setOptionalSectionVisible(
+        debugPanelSection, settingsDebugPanelCheckbox, SETTINGS_DEBUG_PANEL_VISIBLE_KEY, debugPanelEnabled
+    );
+    setOptionalSectionVisible(bboxSection, settingsBboxCheckbox, SETTINGS_BBOX_VISIBLE_KEY, bboxEnabled);
+}
+
+if (settingsSliderCheckbox) {
+    settingsSliderCheckbox.addEventListener('change', () => {
+        setOptionalSectionVisible(
+            trinkeySection, settingsSliderCheckbox, SETTINGS_SLIDER_VISIBLE_KEY, settingsSliderCheckbox.checked
+        );
+    });
+}
+if (settingsCubeCheckbox) {
+    settingsCubeCheckbox.addEventListener('change', () => {
+        setOptionalSectionVisible(
+            witmotionSection, settingsCubeCheckbox, SETTINGS_CUBE_VISIBLE_KEY, settingsCubeCheckbox.checked
+        );
+    });
+}
+if (settingsDebugPanelCheckbox) {
+    settingsDebugPanelCheckbox.addEventListener('change', () => {
+        setOptionalSectionVisible(
+            debugPanelSection, settingsDebugPanelCheckbox, SETTINGS_DEBUG_PANEL_VISIBLE_KEY,
+            settingsDebugPanelCheckbox.checked
+        );
+    });
+}
+if (settingsBboxCheckbox) {
+    settingsBboxCheckbox.addEventListener('change', () => {
+        setOptionalSectionVisible(
+            bboxSection, settingsBboxCheckbox, SETTINGS_BBOX_VISIBLE_KEY, settingsBboxCheckbox.checked
+        );
+    });
+}
+
+// --- Generic "Connect to device" / "Disconnect" (#145) --------------------
+//
+// Proxies to whichever output device (Monarch or DotPad) the Output Device
+// setting names, by forwarding the click to that device's own connect/disconnect
+// button — Web HID/Web Bluetooth's requestDevice() needs a direct user gesture,
+// and a synthetic click dispatched synchronously from within this click handler
+// still counts as one. This is a shortcut in front of the two existing
+// device-specific sections, not a replacement for them.
+function updateGenericDeviceConnectUI() {
+    if (!deviceConnectBtn || !deviceDisconnectBtn) return;
+    const connected = monarchHidConnected || dotpadConnected;
+    deviceDisconnectBtn.hidden = !connected;
+    deviceConnectBtn.disabled = connected;
+    if (deviceConnectStatus) {
+        deviceConnectStatus.textContent = monarchHidConnected
+            ? 'Connected: Monarch'
+            : dotpadConnected
+                ? 'Connected: DotPad'
+                : 'Not connected.';
+    }
+}
+
+if (deviceConnectBtn) {
+    deviceConnectBtn.addEventListener('click', () => {
+        // Calls the real connect logic directly (exposed by monarch-hid.js /
+        // dotpad-integration.js) rather than clicking a per-device button.
+        if (currentOutputDevice === 'dotpad') {
+            window.connectDotpad?.();
+        } else {
+            window.connectMonarchHid?.();
+        }
+    });
+}
+if (deviceDisconnectBtn) {
+    deviceDisconnectBtn.addEventListener('click', () => {
+        if (monarchHidConnected) {
+            window.disconnectMonarchHid?.();
+        } else if (dotpadConnected) {
+            window.disconnectDotpad?.();
+        }
+    });
 }
 
 function renderPipelineDebug(debugPipeline, debugInfo = null) {
@@ -1425,20 +1606,35 @@ function syncRadios() {
 
 // The server only attaches monarch_cells_hex to a render when output_device is
 // 'monarch_hid'. Send that whenever a Monarch is connected over Web HID and the
-// user has not explicitly chosen a different device, independent of which radio
-// is selected — so picking the Monarch radio cannot turn its own feed off (#75).
+// user has picked Monarch, independent of connection order.
 function getEffectiveOutputDevice() {
-    if (monarchHidConnected && (currentOutputDevice === 'monarch' || currentOutputDevice === 'auto')) {
+    if (monarchHidConnected && currentOutputDevice === 'monarch') {
         return 'monarch_hid';
     }
     return currentOutputDevice;
 }
 
-// Called by the Monarch Web HID integration on connect/disconnect. Only toggles
-// the connection flag; the radio preference is the user's and is left alone.
+// Called by the Monarch Web HID integration on connect/disconnect. 
 function setMonarchHidConnected(connected) {
     monarchHidConnected = Boolean(connected);
+    if (connected) {
+        currentOutputDevice = 'monarch';
+        syncRadios();
+    }
+    updateGenericDeviceConnectUI();
 }
+
+// Called by the DotPad integration (dotpad-integration.js) on connect/disconnect,
+// mirroring setMonarchHidConnected above.
+function setDotpadConnected(connected) {
+    dotpadConnected = Boolean(connected);
+    if (connected) {
+        currentOutputDevice = 'dotpad';
+        syncRadios();
+    }
+    updateGenericDeviceConnectUI();
+}
+window.setDotpadConnected = setDotpadConnected;
 
 // --- Connected tactile displays -------------------------------------------
 //
@@ -2403,11 +2599,6 @@ exportSliceSvgBtn.addEventListener('click', function() {
     exportCurrentSliceAsPng();
 });
 
-if (debugPipelineToggleBtn) {
-    debugPipelineToggleBtn.addEventListener('click', function() {
-        toggleDebugPipelineVisibility();
-    });
-}
 
 // Global keyboard navigation support for accessibility
 document.addEventListener('keydown', function(e) {
@@ -2769,6 +2960,8 @@ document.addEventListener('DOMContentLoaded', async function() {
     // Expose globally so display-connect handlers can trigger a send.
     window.sendStateToServer = sendStateToServer;
     initializeDebugPipelineVisibility();
+    initializeOptionalSectionVisibility();
+    updateGenericDeviceConnectUI();
 
     // Pre-select a model when opened via /workshop?model=<stem> or ?model=<stem>.
     // Resolve the stem to its server index before the first render so the viewer
