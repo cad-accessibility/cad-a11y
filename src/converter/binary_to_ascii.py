@@ -7,13 +7,14 @@ Purpose: Converts binary STL files to ASCII STL files
 
 """
 
-
 import os
 
 import re
 
 import struct
 
+
+from io import StringIO
 
 # def register_file(path: str, file_type: str, description: str) -> None:
 
@@ -228,13 +229,10 @@ def _read_binary_stl(file):
 def _write_ascii_stl(file, solid_name: str, triangles: list):
 
     """Write triangles to an ASCII STL file."""
+f = StringIO()
+f.write(f"solid {solid_name}\n")
 
-    with open(file_path, 'w', encoding='utf-8') as f:
-
-        f.write(f"solid {solid_name}\n")
-
-
-        for tri in triangles:
+    for tri in triangles:
 
             nx, ny, nz = tri['normal']
 
@@ -257,6 +255,7 @@ def _write_ascii_stl(file, solid_name: str, triangles: list):
 
         f.write(f"endsolid {solid_name}\n")
 
+return f
 
 
 
