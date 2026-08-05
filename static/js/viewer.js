@@ -371,9 +371,9 @@ let currentMoveCamera = "none";
 let currentPrintView = false;
 // The output-device radio the user picked: 'monarch' or 'dotpad'. Also flipped
 // automatically on a successful connect — see setMonarchHidConnected /
-// setDotpadConnected. Kept separate from whether a Monarch is actually
-// connected over Web HID (monarchHidConnected) so that selecting a radio can
-// never turn off a live Monarch feed — see getEffectiveOutputDevice.
+// setDotpadConnected. Kept separate from the connection flags (monarchHidConnected
+// / dotpadConnected) so device connection state and routing preference aren't
+// conflated.
 let currentOutputDevice = 'monarch';
 let monarchHidConnected = false;
 // Mirrors monarchHidConnected for the DotPad, set via window.setDotpadConnected
