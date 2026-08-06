@@ -2238,6 +2238,7 @@ window.whichCursor = whichCursor;
 window.getCurrentSliceDepth = getCurrentSliceDepth;
 window.updateSliceDepth = updateSliceDepth;
 window.announceDepthValue = announceDepthValue;
+window.fitCurrentViewToDevice = fitCurrentViewToDevice;
 
 // Event listeners
 
@@ -2554,7 +2555,7 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             fitCurrentViewToDevice();
             break;
-            
+
         // View shortcuts
         case 'r':
             e.preventDefault();
