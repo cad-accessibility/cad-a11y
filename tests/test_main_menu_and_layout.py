@@ -73,13 +73,24 @@ def test_help_button_opens_the_same_dialog_as_pressing_h():
     assert "navHelpBtn.addEventListener('click', openShortcutsDialog)" in js
 
 
-def test_main_button_closes_dialogs_and_refocuses_main_content_if_present():
-    # #nav-main-btn isn't currently in the markup (folded away when Connect/
-    # Disconnect moved into the nav), but the wiring is guarded and harmless if
-    # it's ever added back, so this only checks the JS side stays intact.
+def test_there_is_no_dedicated_main_nav_button():
+    # There was a standalone "Main" button in the nav; it's gone by design now
+    # (clicking outside a dialog's content is the escape hatch instead — see
+    # test_clicking_outside_a_dialog_closes_it_and_refocuses_main_content).
+    by_id = _by_id()
+    assert "nav-main-btn" not in by_id
     js = VIEWER_JS.read_text(encoding="utf-8")
-    assert "navMainBtn.addEventListener" in js
-    assert "dialog[open]" in js
+    assert "navMainBtn" not in js
+
+
+def test_clicking_outside_a_dialog_closes_it_and_refocuses_main_content():
+    # The shared makeInfoDialogController (used by Help/About/Settings) treats a
+    # click on the dialog element itself (i.e. not on any of its descendants) as
+    # a backdrop click, since a native <dialog> occupies the full viewport once
+    # open — this replaces the old dedicated "Main" button as the escape hatch.
+    js = VIEWER_JS.read_text(encoding="utf-8")
+    assert "if (e.target !== dialog) return;" in js
+    assert "dialog.close();" in js
     assert "mainContent.focus();" in js
 
 

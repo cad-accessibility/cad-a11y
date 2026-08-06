@@ -202,15 +202,12 @@
                             Side-by-Side
                         </label>
                         <label>
-                            <input type="radio" name="view-mode" id="view-mode-slice-graph-difference" value="slice-graph-difference">
-                            Slice Graph (Difference)
-                        </label>
-                        <label>
-                            <input type="radio" name="view-mode" id="view-mode-slice-graph-column-count" value="slice-graph-column-count">
-                            Slice Graph (Slice Area)
+                            <input type="radio" name="view-mode" id="view-mode-slice-graph" value="slice-graph">
+                            Slice Graph
                         </label>
                     </fieldset>
                 </div>
+                <div class="help-text" id="slice-graph-lock-status">Graph lock ON.</div>
             </section>
 
             <!-- 1d. Zoom -->
@@ -238,33 +235,6 @@
                     <button type="button" id="reset-position-btn">Reset Position</button>
                 </div>
                 <div class="help-text sr-only">Snaps the view back to the default centered position. Key: Z.</div>
-            </section>
-
-            <!-- ============================================================
-                 2. DISPLAY OPTIONS — changed occasionally
-                 ============================================================ -->
-            <section class="section" aria-labelledby="display-opts-heading">
-                <h2 id="display-opts-heading">Display Options</h2>
-
-                <label class="checkbox-label" for="show-view-info-box">
-                    <input type="checkbox" id="show-view-info-box">
-                    View info box on display
-                </label>
-
-                <label class="checkbox-label" for="slice-graph-lock-checkbox">
-                    <input type="checkbox" id="slice-graph-lock-checkbox" checked>
-                    Lock slice graph
-                </label>
-
-                <div class="button-group" style="margin-top: 8px;">
-                    <button type="button" id="slice-graph-refresh-btn">
-                        Refresh Graph
-                    </button>
-                    <button type="button" id="slice-graph-mode-btn" aria-pressed="false">
-                        Graph Mode: Difference
-                    </button>
-                </div>
-                <div class="help-text" id="slice-graph-lock-status">Graph lock ON.</div>
             </section>
 
             <!-- ============================================================
@@ -564,6 +534,29 @@
                 Bounding Box
             </label>
         </div>
+
+        <h3>Display</h3>
+        <div class="button-group settings-checkbox-group">
+            <label class="checkbox-label" for="show-view-info-box">
+                <input type="checkbox" id="show-view-info-box">
+                View info box on display
+            </label>
+            <label class="checkbox-label" for="slice-graph-lock-checkbox">
+                <input type="checkbox" id="slice-graph-lock-checkbox" checked>
+                Lock slice graph
+            </label>
+        </div>
+        <fieldset>
+            <legend class="sr-only">Slice graph mode</legend>
+            <label>
+                <input type="radio" name="slice-graph-mode" id="slice-graph-mode-difference" value="difference" checked>
+                Graph Mode: Difference
+            </label>
+            <label>
+                <input type="radio" name="slice-graph-mode" id="slice-graph-mode-column-count" value="column-count">
+                Graph Mode: Slice Area
+            </label>
+        </fieldset>
 
         <div class="consent-actions">
             <button type="button" id="settings-close-btn">Close</button>

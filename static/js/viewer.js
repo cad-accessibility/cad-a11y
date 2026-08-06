@@ -312,6 +312,27 @@ async function sendStateToServer() {
                 }
             }
             renderPipelineDebug(data.debug_pipeline, data.debug);
+            // The graph precompute for a model kicks off lazily, on the first
+            // slice-graph request for it, so that first response can be the flat
+            // placeholder rather than the real profile. Locked mode won't refresh
+            // on its own after that (that's the point of locking), so without
+            // this it just sits there looking broken until something else
+            // happens to trigger another render.
+            //
+            // This polls a dedicated cheap status endpoint rather than retrying
+            // sendStateToServer() itself. It used to retry the real render, but
+            // that render is a genuine matplotlib/shapely computation under
+            // render_lock — repeating it every couple of seconds while waiting
+            // pits the poll against the very background precompute thread it's
+            // waiting on for CPU, and under a constrained host that can starve
+            // precompute badly enough that it never finishes at all (confirmed
+            // live: with the old polling running, slicegraph_ready stayed false
+            // for 30s+; checking status only, precompute completed in ~18s).
+            if (data.slicegraph_ready === false && sliceGraphLocked) {
+                scheduleSliceGraphStatusCheck();
+            } else {
+                sliceGraphAutoRefreshAttemptsLeft = 0;
+            }
             const shouldRequestPreview =
                 state.move_camera_center === 'none' &&
                 !(state.mode === 'slice-graph' && state.slicegraph_mode === 'column-count');
@@ -374,7 +395,7 @@ let currentPrintView = false;
 // setDotpadConnected. Kept separate from the connection flags (monarchHidConnected
 // / dotpadConnected) so device connection state and routing preference aren't
 // conflated.
-let currentOutputDevice = 'monarch';
+let currentOutputDevice = 'dotpad';
 let monarchHidConnected = false;
 // Mirrors monarchHidConnected for the DotPad, set via window.setDotpadConnected
 // (called from dotpad-integration.js) so the generic Connect/Disconnect pair
@@ -392,15 +413,13 @@ const renderModes = [
     { key: 'cut', label: 'Cut', wire: 'Cut', projection: 'orthographic' },
     { key: 'xray', label: 'X-Ray', wire: 'x-ray', projection: 'x-ray' },
 ];
-// Single source of truth for view modes. Same shape as renderModes, plus:
-//   sliceGraphMode  which slice-graph variant this mode selects, when it is one.
-// `wire` collapses both slice-graph variants to the one mode name the server
-// knows; the variant is a client-side concern.
+// Single source of truth for view modes. Same shape as renderModes. Which
+// slice-graph variant (difference vs. slice area) is a separate Settings
+// choice (sliceGraphMode below), not part of which view mode this is.
 const representationModes = [
     { key: 'single', label: 'Single (with scrollbar)', wire: 'single' },
     { key: 'side-by-side', label: 'Side-by-Side', wire: 'side-by-side' },
-    { key: 'slice-graph-difference', label: 'Slice Graph (Difference)', wire: 'slice-graph', sliceGraphMode: 'difference' },
-    { key: 'slice-graph-column-count', label: 'Slice Graph (Slice Area)', wire: 'slice-graph', sliceGraphMode: 'column-count' },
+    { key: 'slice-graph', label: 'Slice Graph', wire: 'slice-graph' },
 ];
 let currentModel = "none";
 let sessionOwnedModels = new Set(); // filenames (with extension) owned by the current cookie session
@@ -413,6 +432,14 @@ let sliceGraphLocked = true;
 let sliceGraphAnchorView = 'y-';
 let sliceGraphAnchorDepth = 50;
 let sliceGraphMode = 'difference';
+// Retries the slice graph render every SLICE_GRAPH_AUTO_REFRESH_DELAY_MS while
+// the server keeps reporting slicegraph_ready: false (precompute for this model
+// still running), up to SLICE_GRAPH_AUTO_REFRESH_MAX_ATTEMPTS times, then gives
+// up. See sendStateToServer's response handler.
+let sliceGraphAutoRefreshPending = false;
+let sliceGraphAutoRefreshAttemptsLeft = 0;
+const SLICE_GRAPH_AUTO_REFRESH_DELAY_MS = 2000;
+const SLICE_GRAPH_AUTO_REFRESH_MAX_ATTEMPTS = 20; // ~40s ceiling
 
 // Cursor variables
 let currentCursorCol = 2;
@@ -751,8 +778,6 @@ const zoomLevelValue = document.getElementById('zoom-level-value');
 const zoomOutBtn = document.getElementById('zoom-out-btn');
 const zoomInBtn = document.getElementById('zoom-in-btn');
 const sliceGraphLockCheckbox = document.getElementById('slice-graph-lock-checkbox');
-const sliceGraphRefreshBtn = document.getElementById('slice-graph-refresh-btn');
-const sliceGraphModeBtn = document.getElementById('slice-graph-mode-btn');
 const resetPositionBtn = document.getElementById('reset-position-btn');
 const sliceGraphLockStatus = document.getElementById('slice-graph-lock-status');
 const showViewInfoBoxCheckbox = document.getElementById('show-view-info-box');
@@ -768,8 +793,7 @@ const shortcutsCloseBtn = document.getElementById('shortcuts-close-btn');
 const shortcutsHeading = document.getElementById('shortcuts-heading');
 const mainContent = document.getElementById('main-content');
 
-// Main menu (#145)
-const navMainBtn = document.getElementById('nav-main-btn');
+// Main menu
 const navAboutBtn = document.getElementById('nav-about-btn');
 const navHelpBtn = document.getElementById('nav-help-btn');
 const navSettingsBtn = document.getElementById('nav-settings-btn');
@@ -783,6 +807,7 @@ const settingsSliderCheckbox = document.getElementById('settings-enable-slider')
 const settingsCubeCheckbox = document.getElementById('settings-enable-cube');
 const settingsDebugPanelCheckbox = document.getElementById('settings-enable-debug-panel');
 const settingsBboxCheckbox = document.getElementById('settings-enable-bbox');
+const sliceGraphModeRadios = () => document.querySelectorAll('input[name="slice-graph-mode"]');
 const trinkeySection = document.getElementById('trinkey-section');
 const witmotionSection = document.getElementById('witmotion-section');
 const debugPanelSection = document.getElementById('debug-panel-section');
@@ -941,7 +966,6 @@ function updateButtonLabels() {
 
 function updateSliceGraphLockUI() {
     const isSliceGraphMode = isSliceGraphRepresentationMode();
-    sliceGraphRefreshBtn.disabled = !isSliceGraphMode;
     if (sliceGraphLockCheckbox) {
         sliceGraphLockCheckbox.checked = sliceGraphLocked;
     }
@@ -961,20 +985,35 @@ function updateSliceGraphLockUI() {
 }
 
 function updateSliceGraphModeUI() {
-    if (!sliceGraphModeBtn) {
-        return;
-    }
-    const isColumnCountMode = sliceGraphMode === 'column-count';
-    sliceGraphModeBtn.textContent = isColumnCountMode
-        ? 'Graph Mode: Slice Area'
-        : 'Graph Mode: Difference';
+    syncRadioGroup(sliceGraphModeRadios(), sliceGraphMode, 'slice-graph-mode');
 }
 
-function toggleSliceGraphMode() {
-    sliceGraphMode = sliceGraphMode === 'difference' ? 'column-count' : 'difference';
+// Settings-only now: which slice-graph algorithm to use, independent of
+// whether the current view mode is even Slice Graph. Persisted like the other
+// Settings choices so it survives a reload.
+const SETTINGS_SLICE_GRAPH_MODE_KEY = 'settingsSliceGraphMode';
+
+function setSliceGraphMode(newMode) {
+    sliceGraphMode = newMode;
     updateSliceGraphModeUI();
+    try {
+        window.localStorage.setItem(SETTINGS_SLICE_GRAPH_MODE_KEY, sliceGraphMode);
+    } catch (_) {
+        // Ignore localStorage failures (e.g., privacy mode).
+    }
     pendingInputSource = 'ui';
     sendStateToServer();
+}
+
+function initializeSliceGraphMode() {
+    let storedMode = null;
+    try {
+        storedMode = window.localStorage.getItem(SETTINGS_SLICE_GRAPH_MODE_KEY);
+    } catch (_) {
+        // Default below if storage is unavailable.
+    }
+    sliceGraphMode = (storedMode === 'column-count') ? 'column-count' : 'difference';
+    updateSliceGraphModeUI();
 }
 
 function captureSliceGraphAnchor(shouldAnnounce = true) {
@@ -995,6 +1034,46 @@ function autoRefreshSliceGraph(options = {}) {
     }
 
     sendStateToServer();
+}
+
+// Polls /render/status (cheap: no render_lock, no matplotlib) rather
+// than retrying the real render itself — see the comment at the call site in
+// sendStateToServer's response handler for why that distinction matters. Once
+// status says ready, does exactly one real render to pick up the finished
+// graph; until then, keeps checking every SLICE_GRAPH_AUTO_REFRESH_DELAY_MS,
+// up to SLICE_GRAPH_AUTO_REFRESH_MAX_ATTEMPTS times, then gives up (a manual
+// interaction, e.g. moving the depth slider, still recovers after that).
+function scheduleSliceGraphStatusCheck() {
+    if (sliceGraphAutoRefreshAttemptsLeft <= 0) {
+        sliceGraphAutoRefreshAttemptsLeft = SLICE_GRAPH_AUTO_REFRESH_MAX_ATTEMPTS;
+    }
+    if (sliceGraphAutoRefreshPending) {
+        return;
+    }
+    sliceGraphAutoRefreshPending = true;
+    sliceGraphAutoRefreshAttemptsLeft -= 1;
+    setTimeout(async () => {
+        sliceGraphAutoRefreshPending = false;
+        if (!isSliceGraphRepresentationMode() || !sliceGraphLocked) {
+            return;
+        }
+        try {
+            const res = await fetch(`${SERVER_URL}/render/status`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ current_model: currentModel }),
+            });
+            const statusData = await res.json();
+            if (statusData.slice_graphs_ready) {
+                sendStateToServer();
+            } else if (sliceGraphAutoRefreshAttemptsLeft > 0) {
+                scheduleSliceGraphStatusCheck();
+            }
+        } catch (_) {
+            // Network hiccup checking status — not fatal, a manual interaction
+            // still recovers same as before this existed.
+        }
+    }, SLICE_GRAPH_AUTO_REFRESH_DELAY_MS);
 }
 
 function setSliceGraphLocked(locked) {
@@ -1038,7 +1117,7 @@ function formatDebugValue(value) {
 }
 
 function setDebugPipelineVisible(isVisible) {
-    if (!debugPipelineContent || !debugPipelineToggleBtn) {
+    if (!debugPipelineContent) {
         return;
     }
     debugPipelineContent.hidden = !isVisible;
@@ -1110,6 +1189,22 @@ function makeInfoDialogController(dialog, headingEl) {
         // Cleanup after the dialog has actually closed. (Escape triggers `cancel`,
         // whose default action closes the dialog and then fires `close`.)
         dialog.addEventListener('close', restoreAfterClose);
+        // Clicking outside the dialog's own content is the escape hatch a
+        // dedicated "Main" button used to provide: close it and land on the main
+        // content directly, rather than wherever restoreAfterClose above would
+        // otherwise return focus to. A click on the dialog element itself (not a
+        // descendant) is a click on the backdrop area, since <dialog> occupies the
+        // full viewport once open — a click on any actual content inside targets
+        // that descendant instead, so this can't be triggered by clicking the
+        // dialog's own controls.
+        dialog.addEventListener('click', (e) => {
+            if (e.target !== dialog) return;
+            dialog.close();
+            if (mainContent) {
+                mainContent.setAttribute('tabindex', '-1');
+                mainContent.focus();
+            }
+        });
     }
 
     return { open, close };
@@ -1144,18 +1239,6 @@ if (navHelpBtn) {
 }
 if (navSettingsBtn) {
     navSettingsBtn.addEventListener('click', () => settingsDialogController.open());
-}
-if (navMainBtn) {
-    // "Main" is an escape hatch back to the tool: close whichever dialog is open
-    // and refocus the main content, the same target the session-consent dialog
-    // returns to. A no-op if you're already on the main page with nothing open.
-    navMainBtn.addEventListener('click', () => {
-        document.querySelectorAll('dialog[open]').forEach((d) => d.close());
-        if (mainContent) {
-            mainContent.setAttribute('tabindex', '-1');
-            mainContent.focus();
-        }
-    });
 }
 
 // --- Optional / advanced sections (Slider, Cube, Debug Panel, Bounding Box),
@@ -1756,8 +1839,7 @@ function updateDisplayOptions() {
             composeScrollbar = false;
             composeSliceGraph = false;
             break;
-        case 'slice-graph-difference':
-        case 'slice-graph-column-count':
+        case 'slice-graph':
             composeScrollbar = false;
             composeSliceGraph = true;
             break;
@@ -2354,10 +2436,6 @@ function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
     const previousMode = currentRepresentationMode;
     const enteringSliceGraph = !isSliceGraphRepresentationMode(previousMode) && isSliceGraphRepresentationMode(targetMode);
 
-    if (mode.sliceGraphMode) {
-        sliceGraphMode = mode.sliceGraphMode;
-    }
-
     currentRepresentationMode = targetMode;
     updateDisplayOptions();
     if (enteringSliceGraph) {
@@ -2546,22 +2624,16 @@ if (sliceGraphLockCheckbox) {
     });
 }
 
-sliceGraphRefreshBtn.addEventListener('click', function() {
-    if (!isSliceGraphRepresentationMode()) {
-        announce('refresh only available in slice-graph mode');
-        return;
-    }
-    captureSliceGraphAnchor(true);
-    pendingInputSource = 'ui';
-    sendStateToServer();
-});
+// Refresh is keyboard-only (G) — see the 'g' case in the keydown handler.
+// There is no on-screen button for it.
 
-if (sliceGraphModeBtn) {
-    sliceGraphModeBtn.addEventListener('click', function() {
-        toggleSliceGraphMode();
-        announce(`Slice graph mode ${sliceGraphMode === 'column-count' ? 'column count' : 'difference'}`);
+sliceGraphModeRadios().forEach((radio) => {
+    radio.addEventListener('change', function() {
+        if (!this.checked) return;
+        setSliceGraphMode(this.value);
+        announce(`Slice graph mode ${sliceGraphMode === 'column-count' ? 'slice area' : 'difference'}`);
     });
-}
+});
 
 if (resetPositionBtn) {
     resetPositionBtn.addEventListener('click', function() {
@@ -2961,6 +3033,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     window.sendStateToServer = sendStateToServer;
     initializeDebugPipelineVisibility();
     initializeOptionalSectionVisibility();
+    initializeSliceGraphMode();
     updateGenericDeviceConnectUI();
 
     // Pre-select a model when opened via /workshop?model=<stem> or ?model=<stem>.
