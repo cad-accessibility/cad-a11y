@@ -64,8 +64,23 @@ def _resolve_orientation_basis(orientation_basis):
 
     Accepted keys:
     - depth or forward: viewing direction
-    - up: camera-up hint
-    - right: optional camera-right hint used when up is missing/degenerate
+    - up: camera-up axis
+    - right: camera-right axis
+
+    All three are used as given when all three are present and mutually
+    perpendicular (either handedness accepted). That matters because the six
+    named views below are not consistently handed: front, back and bottom
+    have right x up = -depth where top, left and right have +depth. Deriving
+    one axis from the other two therefore mirrors half the views, which is why
+    the caller sends a complete basis rather than a hint.
+
+    A complete but skewed basis (not mutually perpendicular) falls through to
+    the same derivation used for a partial one, rather than being used as
+    given -- projecting onto non-orthogonal axes would silently skew the
+    picture instead of just mirroring it.
+
+    Deriving is kept only as a fallback for a partial or skewed basis, where a
+    mirrored image beats no image.
     """
     if not isinstance(orientation_basis, dict):
         return None
@@ -75,24 +90,27 @@ def _resolve_orientation_basis(orientation_basis):
     if depth_axis is None:
         return None
 
-    up_hint = _safe_unit(orientation_basis.get("up"))
-    right_hint = _safe_unit(orientation_basis.get("right"))
+    up_axis = _safe_unit(orientation_basis.get("up"))
+    right_axis = _safe_unit(orientation_basis.get("right"))
 
-    if up_hint is not None:
-        right_axis = np.cross(up_hint, depth_axis)
-        right_axis = _safe_unit(right_axis)
+    if (
+        right_axis is not None
+        and up_axis is not None
+        and abs(np.dot(right_axis, up_axis)) < 1e-6
+        and abs(np.dot(right_axis, depth_axis)) < 1e-6
+        and abs(np.dot(up_axis, depth_axis)) < 1e-6
+    ):
+        return right_axis, up_axis, depth_axis
+
+    if up_axis is not None:
+        right_axis = _safe_unit(np.cross(up_axis, depth_axis))
         if right_axis is not None:
-            up_axis = _safe_unit(np.cross(depth_axis, right_axis))
-            if up_axis is not None:
-                return right_axis, up_axis, depth_axis
+            return right_axis, up_axis, depth_axis
 
-    if right_hint is not None:
-        up_axis = np.cross(depth_axis, right_hint)
-        up_axis = _safe_unit(up_axis)
+    if right_axis is not None:
+        up_axis = _safe_unit(np.cross(depth_axis, right_axis))
         if up_axis is not None:
-            right_axis = _safe_unit(np.cross(up_axis, depth_axis))
-            if right_axis is not None:
-                return right_axis, up_axis, depth_axis
+            return right_axis, up_axis, depth_axis
 
     return None
 
@@ -232,11 +250,16 @@ SUPERSAMPLE = 8
 MAX_CANVAS_PX = 3200
 
 
-def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="filled", imposed_ax_limits=[], screen_size=[96,40]):
+def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="filled",
+                    imposed_ax_limits=[], screen_size=[96,40], orientation_basis=None):
     print("get_single_view", rendering_mode)
 
     shape = copy(shape)
-    normal_dir = views[view_key]["dir"]
+    # Cut along whichever way the viewer is actually looking. For the six named
+    # views this is the same vector views[view_key]["dir"] gave; under a rotated
+    # orientation it is the only one that slices into the screen rather than
+    # along a fixed model axis.
+    normal_dir = _get_view_basis(view_key, orientation_basis=orientation_basis)[2]
     shape, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
     if rendering_mode == "cut":
         shape = faces_on_plane_fast(shape, plane_origin, normal_dir)
@@ -262,22 +285,11 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
     if type(shape) != list and len(shape.faces) > 0 and not np.isclose(shape.area, 0.0):
 
         colors = [0.0 for i in range(len(shape.faces))]
-        if view_key == "top":
-            coords = shape.vertices[:,[0,1]]
-        if view_key == "front":
-            coords = shape.vertices[:,[0,2]]
-        if view_key == "left":
-            coords = shape.vertices[:,[1,2]]
-        if view_key == "bottom":
-            coords = shape.vertices[:,[0,1]]
-            coords[:,0] *= -1
-            coords[:,1] *= -1
-        if view_key == "back":
-            coords = shape.vertices[:,[0,2]]
-            coords[:,0] *= -1
-        if view_key == "right":
-            coords = shape.vertices[:,[1,2]]
-            coords[:,0] *= -1
+        # One projection for every mode and every orientation. This used to pick
+        # columns per named view, which meant an orientation off the six named
+        # ones could not be drawn at all: the basis was accepted by the server,
+        # validated, and then never reached the renderer.
+        coords = project_vertices(shape.vertices, view_key, orientation_basis=orientation_basis)
         ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape.faces, aa=False, edgecolor="#00000000", shading="flat")
 
     if len(imposed_ax_limits) > 0:
@@ -308,26 +320,10 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
         ax.set_xlim(ax_limits[0])
         ax.set_ylim(ax_limits[1])
 
-        segments = _collect_feature_edges(shape, view_key)
-        segments_2d = []
-        segments = segments.reshape(-1,3)
-        if view_key == "top":
-            segments_2d = segments[:,[0,1]]
-        if view_key == "front":
-            segments_2d = segments[:,[0,2]]
-        if view_key == "left":
-            segments_2d = segments[:,[1,2]]
-        if view_key == "bottom":
-            segments_2d = segments[:,[0,1]]
-            segments_2d[:,0] *= -1
-            segments_2d[:,1] *= -1
-        if view_key == "back":
-            segments_2d = segments[:,[0,2]]
-            segments_2d[:,0] *= -1
-        if view_key == "right":
-            segments_2d = segments[:,[1,2]]
-            segments_2d[:,0] *= -1
-        segments_2d = segments_2d.reshape(-1,2,2)
+        segments = _collect_feature_edges(shape, view_key, orientation_basis=orientation_basis)
+        segments_2d = project_vertices(
+            segments.reshape(-1, 3), view_key, orientation_basis=orientation_basis
+        ).reshape(-1, 2, 2)
         # With _to_braille_payload's majority (>50%) threshold, a line that
         # straddles an output-pixel boundary splits its coverage as (a, W-a)
         # between the two neighbors: too thin and both sides can land under

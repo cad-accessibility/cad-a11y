@@ -248,8 +248,10 @@ async function sendStateToServer() {
             slicegraph_depth: requestedGraphDepth,
             slicegraph_mode: sliceGraphMode,
             input_source: pendingInputSource,
-            target_pixel_width: window.connectedTactileDisplay?.pixelWidth || null,
-            target_pixel_height: window.connectedTactileDisplay?.pixelHeight || null,
+            // The grid of the display actually receiving output, so the render,
+            // the payload sent to it and both previews all describe one thing.
+            target_pixel_width: activeTactileGrid().pixelWidth,
+            target_pixel_height: activeTactileGrid().pixelHeight,
         };
         if (sbPanCmd) {
             sbPanCmd.textContent = String(moveCamera || 'none');
@@ -299,6 +301,7 @@ async function sendStateToServer() {
             syncCameraCenterFromResponse(data, state);
             // Update tactile display preview
             if (data.image_base64) {
+                lastRenderedGrid = gridForSize(state.target_pixel_width, state.target_pixel_height);
                 updateTactilePreview(data.image_base64, data.image_shape);
                 if (isActiveModelLoadTask(activeModelLoadTask)) {
                     // One announcement per event: two calls in the same tick would
@@ -354,6 +357,12 @@ async function sendStateToServer() {
 
 // State management
 let currentSliceDepth = 50;
+// The slice plane's position along each model axis, as a 0-1 fraction from
+// that axis's minimum end. Kept independent of viewing direction so turning
+// the model doesn't relocate the physical plane -- rotating only changes
+// which of the three is currently the active (visible) one, and from which
+// side currentSliceDepth reads it. See activeSliceAxis/displayDepthFromPlanes.
+let slicePlanes = { x: 0.5, y: 0.5, z: 0.5 };
 let currentView = 'x+';
 let currentZoom = 0.0;
 let currentRenderMode = 'filled';
@@ -431,8 +440,9 @@ function moveCursor(dCol, dRow, stepSize = cursorStep) {
         console.error('Cursor movement values must be integers.');
         return;
     }
-    const displayWidth = window.connectedTactileDisplay?.pixelWidth || 96;
-    const displayHeight = window.connectedTactileDisplay?.pixelHeight || 40;
+    const activeGrid = activeTactileGrid();
+    const displayWidth = activeGrid.pixelWidth;
+    const displayHeight = activeGrid.pixelHeight;
 
     const usableWidth = composeScrollbar? Math.max(1, displayWidth - 2) : displayWidth;
     const usableHeight = composeScrollbar? Math.max(1, displayHeight - 2) : displayHeight;
@@ -447,7 +457,7 @@ function moveCursor(dCol, dRow, stepSize = cursorStep) {
 
     pendingInputSource = 'dotpad';
     console.debug(`Display cursor: col ${currentCursorCol}, row ${currentCursorRow}`);
-    announce(`Cursor column ${currentCursorCol}, row ${currentCursorRow}`);
+    announceAlert(`Column ${currentCursorCol}, row ${currentCursorRow}`);
     sendStateToServer();
 }
 
@@ -458,7 +468,7 @@ function whichCursor() {
 function cycleCursorState() {
     currentCursorStateIndex = (currentCursorStateIndex + 1) % cursorStates.length;
     const newState = whichCursor();
-    announce(`Cursor state changed to ${newState}`);
+    announceAlert(`${newState} cursor`);
     pendingInputSource = 'dotpad';
     sendStateToServer();
 }
@@ -500,7 +510,7 @@ function beginModelLoadAnnouncement(modelLabel, source = 'selection') {
         label,
         source,
     };
-    announce(`Starting processing for ${label}.`);
+    announce(`${label} processing started.`);
 }
 
 function isActiveModelLoadTask(task) {
@@ -513,7 +523,7 @@ function clearModelLoadTask(task) {
     }
 }
 
-function formatZoomPercent(zoomValue) {
+function ratioToPercent(zoomValue) {
     const percent = Math.round(Number(zoomValue) * 100);
     return `${percent}%`;
 }
@@ -523,37 +533,43 @@ const MAX_ZOOM = Number.POSITIVE_INFINITY;
 const ZOOM_STEP = 0.1;
 const FINE_ZOOM_STEP = 0.01;
 
-const VIEW_FORWARD_VECTORS = {
-    'x+': [1, 0, 0],
-    'x-': [-1, 0, 0],
-    'y+': [0, 1, 0],
-    'y-': [0, -1, 0],
-    'z+': [0, 0, 1],
-    'z-': [0, 0, -1],
+// The camera basis for each named view, in model coordinates. These mirror
+// _get_view_basis in src/converter/single_view_stl.py exactly, so sending this
+// basis for a named view renders the same picture as naming the view does.
+//
+// All three axes are tracked rather than two plus a cross product, because the
+// six views are not consistently handed: y-, y+ and z- have right x up = -depth
+// where z+, x- and x+ have +depth. Deriving `right` mirrors half of them.
+const VIEW_BASIS = {
+    'z+': { right: [1, 0, 0],  up: [0, 1, 0],  depth: [0, 0, 1] },   // top
+    'y-': { right: [1, 0, 0],  up: [0, 0, 1],  depth: [0, 1, 0] },   // front
+    'x-': { right: [0, 1, 0],  up: [0, 0, 1],  depth: [1, 0, 0] },   // left
+    'x+': { right: [0, -1, 0], up: [0, 0, 1],  depth: [-1, 0, 0] },  // right
+    'y+': { right: [-1, 0, 0], up: [0, 0, 1],  depth: [0, -1, 0] },  // back
+    'z-': { right: [-1, 0, 0], up: [0, -1, 0], depth: [0, 0, -1] },  // bottom
 };
 
-const CANONICAL_UP_FOR_VIEW = {
-    'x+': [0, 0, 1],
-    'x-': [0, 0, 1],
-    'y+': [0, 0, 1],
-    'y-': [0, 0, 1],
-    'z+': [0, 1, 0],
-    'z-': [0, 1, 0],
-};
+// [1,0,0] -> "pos X", [-1,0,0] -> "neg X", [0,0,-1] -> "neg Z"
+// Words, not a +/- glyph: a sign glued to a letter ("-X") can get misread by a
+// screen reader (e.g. as "dash X") depending on context.
+// Kept short (pos/neg, not positive/negative) since this gets spoken often.
+function axisLabel(vec) {
+    const names = ['X', 'Y', 'Z'];
+    const i = vec.findIndex(v => v !== 0);
+    return `${vec[i] > 0 ? 'pos' : 'neg'} ${names[i]}`;
+}
 
-let orientationForward = [...VIEW_FORWARD_VECTORS['x+']];
-let orientationUp = [...CANONICAL_UP_FOR_VIEW['x+']];
+// Plain-English description of a { right, up, depth } basis.
+function describeBasis(basis) {
+    return `${axisLabel(basis.depth)} toward you, Right: ${axisLabel(basis.right)}, Up: ${axisLabel(basis.up)}`;
+}
+
+let orientationRight = [...VIEW_BASIS['x+'].right];
+let orientationUp = [...VIEW_BASIS['x+'].up];
+let orientationDepth = [...VIEW_BASIS['x+'].depth];
 
 function dotVec3(a, b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}
-
-function crossVec3(a, b) {
-    return [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ];
 }
 
 function normalizeAxisVector(v) {
@@ -571,26 +587,13 @@ function normalizeAxisVector(v) {
     ];
 }
 
-function rotateVectorByAxis90(vector, axis, quarterTurns) {
-    const turns = ((quarterTurns % 4) + 4) % 4;
-    if (turns === 0) return [...vector];
-    let out = [...vector];
-    const k = normalizeAxisVector(axis);
-    for (let i = 0; i < turns; i += 1) {
-        const projection = dotVec3(k, out);
-        const cross = crossVec3(k, out);
-        out = [
-            k[0] * projection + cross[0],
-            k[1] * projection + cross[1],
-            k[2] * projection + cross[2],
-        ];
-    }
-    return normalizeAxisVector(out);
+function negateVec3(v) {
+    return [-v[0], -v[1], -v[2]];
 }
 
-function orientationViewFromForward(forwardVector) {
-    for (const [viewToken, vec] of Object.entries(VIEW_FORWARD_VECTORS)) {
-        if (dotVec3(vec, forwardVector) === 1) {
+function orientationViewFromDepth(depthVector) {
+    for (const [viewToken, basis] of Object.entries(VIEW_BASIS)) {
+        if (dotVec3(basis.depth, depthVector) === 1) {
             return viewToken;
         }
     }
@@ -598,50 +601,135 @@ function orientationViewFromForward(forwardVector) {
 }
 
 function setOrientationFromView(viewToken) {
-    orientationForward = [...(VIEW_FORWARD_VECTORS[viewToken] || VIEW_FORWARD_VECTORS['x+'])];
-    orientationUp = [...(CANONICAL_UP_FOR_VIEW[viewToken] || CANONICAL_UP_FOR_VIEW['x+'])];
+    const basis = VIEW_BASIS[viewToken] || VIEW_BASIS['x+'];
+    orientationRight = [...basis.right];
+    orientationUp = [...basis.up];
+    orientationDepth = [...basis.depth];
 }
 
-function applyRelativeRotation(kind, direction, announcementText) {
-    // direction: +1 or -1 indicates ±90 degree about the local axis.
-    let rotationAxis;
-    if (kind === 'yaw') {
-        rotationAxis = orientationUp;
-    } else if (kind === 'pitch') {
-        rotationAxis = normalizeAxisVector(crossVec3(orientationUp, orientationForward));
-    } else if (kind === 'roll') {
-        rotationAxis = orientationForward;
-    } else {
-        return;
+const RELATIVE_ROTATIONS = {
+    rollCounterclockwise: { speech: 'roll counterclockwise' },
+    rollClockwise:        { speech: 'roll clockwise' },
+    pitchUp:              { speech: 'pitch up' },
+    pitchDown:            { speech: 'pitch down' },
+    yawLeft:              { speech: 'yaw left' },
+    yawRight:             { speech: 'yaw right' },
+};
+
+
+function applyRelativeRotation(rotationName, emit = announceAlert) {
+    const rotation = RELATIVE_ROTATIONS[rotationName];
+    const right = orientationRight, up = orientationUp, depth = orientationDepth;
+    switch (rotationName) {
+        case 'rollClockwise':
+            orientationRight = up;
+            orientationUp = negateVec3(right);
+            break;
+        case 'rollCounterclockwise':
+            orientationRight = negateVec3(up);
+            orientationUp = right;
+            break;
+        case 'pitchUp':
+            orientationUp = negateVec3(depth);
+            orientationDepth = up;
+            break;
+        case 'pitchDown':
+            orientationUp = depth;
+            orientationDepth = negateVec3(up);
+            break;
+        case 'yawLeft':
+            orientationRight = depth;
+            orientationDepth = negateVec3(right);
+            break;
+        case 'yawRight':
+            orientationRight = negateVec3(depth);
+            orientationDepth = right;
+            break;
+        default:
+            return;
     }
 
-    orientationForward = rotateVectorByAxis90(orientationForward, rotationAxis, direction);
-    orientationUp = rotateVectorByAxis90(orientationUp, rotationAxis, direction);
+    // Pitch/yaw can switch which of the three persisted planes is now facing
+    // the viewer; roll never does (it doesn't touch orientationDepth), so this
+    // is a no-op there. Must run before updateView/sendStateToServer below so
+    // the request they send already carries the re-derived depth.
+    const depthChanged = syncSliceDepthFromPlanes();
+    const depthMessage = depthChanged ? `depth ${currentSliceDepth}%` : "";
+    const viewChanged = updateView(orientationViewFromDepth(orientationDepth), false,
+                                   { syncOrientation: false });
+    const currentBasis = { right: orientationRight, up: orientationUp, depth: orientationDepth };
+    const orientationMessage = describeBasis(currentBasis);
 
-    const newView = orientationViewFromForward(orientationForward);
-    updateView(newView, false, { syncOrientation: false });
-    announce(announcementText);
+    if (!viewChanged) {
+        // A roll leaves the same face toward the reader, so updateView sees no
+        // change and would not redraw.
+        if (isSliceGraphRepresentationMode()) {
+            autoRefreshSliceGraph({ updateAnchor: true });
+        } else {
+            sendStateToServer();
+        }
+
+    }
+
+    const message = `${rotation.speech}, ${orientationMessage}. ${depthMessage}`;
+    const messageShort = `${orientationMessage}. ${depthMessage}`;
+    announceParameterValue(rotationName, message, messageShort, emit);
 }
 
 function getOrientationPayload() {
-    const forward = normalizeAxisVector(orientationForward);
-    const up = normalizeAxisVector(orientationUp);
-    const right = normalizeAxisVector(crossVec3(up, forward));
     return {
         scheme: 'basis-v1',
-        forward,
-        up,
-        right,
+        forward: normalizeAxisVector(orientationDepth),
+        up: normalizeAxisVector(orientationUp),
+        right: normalizeAxisVector(orientationRight),
     };
 }
 
-const axisInfo = {
-    'Front': 'X-axis: left-right, Y-axis: up-down, Z-axis: forward-back (viewing from front)',
-    'Left': 'Z-axis: left-right, Y-axis: up-down, X-axis: back-forward (viewing from left side)',
-    'Right': 'Z-axis: right-left, Y-axis: up-down, X-axis: forward-back (viewing from right side)',
-    'Top': 'X-axis: left-right, Z-axis: up-down, Y-axis: forward-back (viewing from above)',
-    'Bottom': 'X-axis: left-right, Z-axis: down-up, Y-axis: back-forward (viewing from below)'
-};
+// Which model axis the current view slices along, and from which side.
+// sign > 0 means depth points toward that axis's positive end (0% is the
+// negative end); sign < 0 means the reverse. This sign is what makes the same
+// physical plane read as (100 - x)% after a 180-degree turn around that axis.
+function activeSliceAxis() {
+    const d = orientationDepth;
+    if (d[0] !== 0) return { axis: 'x', sign: Math.sign(d[0]) };
+    if (d[1] !== 0) return { axis: 'y', sign: Math.sign(d[1]) };
+    return { axis: 'z', sign: Math.sign(d[2]) };
+}
+
+// Convert the persisted absolute plane position into the view-relative
+// percentage the slider/announcements show ("X% from where you're looking").
+function displayDepthFromPlanes() {
+    const { axis, sign } = activeSliceAxis();
+    const fraction = slicePlanes[axis];
+    return Math.round((sign > 0 ? fraction : 1 - fraction) * 100);
+}
+
+// The inverse: fold a view-relative percentage back into the persisted
+// absolute position of whichever axis is currently active.
+function writeDisplayDepthToPlanes(depthPercent) {
+    const { axis, sign } = activeSliceAxis();
+    const fraction = depthPercent / 100;
+    slicePlanes[axis] = sign > 0 ? fraction : 1 - fraction;
+}
+
+function resetSlicePlanes() {
+    slicePlanes = { x: 0.5, y: 0.5, z: 0.5 };
+}
+
+// Re-derive currentSliceDepth from the persisted planes after the active axis
+// may have changed (any pitch/yaw, or picking a different named view). Roll
+// never changes the active axis, so this is a harmless no-op there. Does not
+// write back to slicePlanes -- only updateSliceDepth (a user-initiated change)
+// does that.
+function syncSliceDepthFromPlanes() {
+    const oldDepth = currentSliceDepth;
+    currentSliceDepth = displayDepthFromPlanes();
+    if (sliceSlider) {
+        sliceSlider.value = currentSliceDepth;
+    }
+    if (slicePercentage) slicePercentage.textContent = currentSliceDepth;
+    return oldDepth !== currentSliceDepth;
+}
 
 // DOM elements
 const sliceSlider = document.getElementById('slice-depth-slider');
@@ -651,15 +739,13 @@ const currentSliceDepthInfo = document.getElementById('current-slice-depth-info'
 const currentRenderModeInfo = document.getElementById('current-render-mode-info');
 const currentZoomInfo = document.getElementById('current-zoom-info');
 const currentBBoxDimensionsInfo = document.getElementById('current-bbox-dimensions-info');
-const announcementHistory = document.getElementById('announcement-history');
-const clearAnnouncementsBtn = document.getElementById('clear-announcements-btn');
 const deeperBtn = document.getElementById('deeper-btn');
 const shallowerBtn = document.getElementById('shallower-btn');
 const zoomInput = document.getElementById('zoom-input');
 const zoomLevelValue = document.getElementById('zoom-level-value');
 const zoomOutBtn = document.getElementById('zoom-out-btn');
 const zoomInBtn = document.getElementById('zoom-in-btn');
-const sliceGraphLockBtn = document.getElementById('slice-graph-lock-btn');
+const sliceGraphLockCheckbox = document.getElementById('slice-graph-lock-checkbox');
 const sliceGraphRefreshBtn = document.getElementById('slice-graph-refresh-btn');
 const sliceGraphModeBtn = document.getElementById('slice-graph-mode-btn');
 const resetPositionBtn = document.getElementById('reset-position-btn');
@@ -673,11 +759,14 @@ const debugPipelineContent = document.getElementById('debug-pipeline-content');
 const debugPipelineSummary = document.getElementById('debug-pipeline-summary');
 const debugStageList = document.getElementById('debug-stage-list');
 const DEBUG_PIPELINE_VISIBILITY_KEY = 'debugPipelineVisible';
+const shortcutsDialog = document.getElementById('shortcuts-dialog');
+const shortcutsCloseBtn = document.getElementById('shortcuts-close-btn');
+const shortcutsHeading = document.getElementById('shortcuts-heading');
+const mainContent = document.getElementById('main-content');
 
 // New radio group references
 const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
 const viewModeRadios = () => document.querySelectorAll('input[name="view-mode"]');
-const viewRadios = () => document.querySelectorAll('input[name="view-select"]');
 const outputDeviceRadios = () => document.querySelectorAll('input[name="output-device"]');
 
 function getRenderPipelineParams(uiRenderMode) {
@@ -712,36 +801,12 @@ function formatCenter2(value) {
     return `${x.toFixed(3)},${y.toFixed(3)}`;
 }
 
-// Toast / live-region elements
-const announcementToast = document.getElementById('announcement-toast');
-// Two politeness tiers, each a two-slot swap. Toggling which element in a tier
-// receives text guarantees AT sees a fresh DOM mutation for every announcement,
-// including consecutive identical messages, without any clear+setTimeout race.
-const srLiveTiers = {
-    polite: [
-        document.getElementById('sr-live-polite-a'),
-        document.getElementById('sr-live-polite-b'),
-    ],
-    assertive: [
-        document.getElementById('sr-live-assertive-a'),
-        document.getElementById('sr-live-assertive-b'),
-    ],
-};
-const srLiveActiveSlot = { polite: 0, assertive: 0 };
-const toastDurationSlider = document.getElementById('toast-duration-slider');
-const toastDurationValue = document.getElementById('toast-duration-value');
-let toastDurationSec = 3;  // default 3 seconds; 0 = off
-let toastTimer = null;
-
-// Toast duration slider handler
-if (toastDurationSlider) {
-    toastDurationSlider.addEventListener('input', function() {
-        toastDurationSec = parseFloat(this.value);
-        if (toastDurationValue) toastDurationValue.textContent = toastDurationSec === 0 ? 'off' : toastDurationSec + 's';
-        this.setAttribute('aria-valuenow', toastDurationSec);
-        this.setAttribute('aria-valuetext', toastDurationSec === 0 ? 'off' : toastDurationSec + ' seconds');
-    });
-}
+// Message window elements: two persistent, always-visible native ARIA
+// live regions (see the markup for role="alert" vs aria-live="polite"). Assertive
+// for anything the user just did or an error to act on; polite for background/
+// system events.
+const announcementWindow = document.getElementById('announcement-window');
+const announcementWindowPolite = document.getElementById('announcement-window-polite');
 
 /** Update the top status bar to reflect current state. */
 function refreshStatusBar() {
@@ -752,28 +817,10 @@ function refreshStatusBar() {
     if (sbViewMode) sbViewMode.textContent = representationModeLabel();
 }
 
-/** Show a brief on-screen toast and push text to the SR live region for a tier. */
-function showToast(message, politeness = 'polite') {
-    // Two-slot swap within the chosen tier: write to the next slot and clear the
-    // previous one. AT always sees a genuine new-content mutation regardless of
-    // whether the message is identical to the last one, and there is no setTimeout
-    // race to lose when keys are pressed in rapid succession.
-    const tier = srLiveTiers[politeness] ? politeness : 'polite';
-    const slots = srLiveTiers[tier];
-    srLiveActiveSlot[tier] = 1 - srLiveActiveSlot[tier];
-    const activeEl = slots[srLiveActiveSlot[tier]];
-    const idleEl   = slots[1 - srLiveActiveSlot[tier]];
-    if (activeEl) activeEl.textContent = message;
-    if (idleEl)   idleEl.textContent   = '';
-
-    // Visual toast: respect user-chosen duration.
-    if (!announcementToast || toastDurationSec <= 0) return;
-    announcementToast.textContent = message;
-    announcementToast.classList.add('visible');
-    if (toastTimer) clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => {
-        announcementToast.classList.remove('visible');
-    }, toastDurationSec * 1000);
+/** Write the message into the message window for the given politeness tier. */
+function updateMessageWindow(message, politeness = 'polite') {
+    const field = politeness === 'assertive' ? announcementWindow : announcementWindowPolite;
+    if (field) field.textContent = message;
 }
 
 // A depth value as a single spoken token: the ends get words, the middle a percent.
@@ -788,88 +835,36 @@ function clampDepth(value) {
     return Number.isFinite(n) ? Math.round(n) : null;
 }
 
-// Zoom and depth changes are announced on a trailing debounce that accumulates:
-// the first press of a burst anchors `from`, later presses only move `to`, and
-// one announcement fires once the burst settles. Holding a key, and the 1%-step
-// zoom that would otherwise announce ten times across a range, collapse to a
-// single "from <start> to <final>". The render and the braille display are NOT
-// debounced — those update on every press so tactile feedback stays immediate;
-// only the spoken summary waits.
-const PARAMETER_SETTLE_MS = 150;
-const pendingParameterAnnouncements = {};
+// Every depth/zoom change is announced (or logged) immediately, with no debounce.
+// For the assertive keyboard/hardware channel (announceAlert) each new announcement
+// already interrupts and replaces whatever's currently being spoken
 
-function scheduleAccumulatedAnnouncement(key, from, to, emit) {
-    let pending = pendingParameterAnnouncements[key];
-    if (!pending) {
-        pending = pendingParameterAnnouncements[key] = { timer: null, from: null, to: null };
-    }
-    if (pending.timer === null) {
-        pending.from = from; // anchor once, at the start of the burst
-    } else {
-        clearTimeout(pending.timer);
-    }
-    pending.to = to;
-    pending.timer = setTimeout(() => {
-        pending.timer = null;
-        emit(pending.from, pending.to);
-    }, PARAMETER_SETTLE_MS);
-}
-
-// Build and speak a settled depth change. The first time depth is announced the
-// phrase carries its label; an immediately following depth change drops to just
-// the new value (see announceParameterValue). A burst that changed nothing still
-// speaks, since silence reads as a dropped key.
-function emitDepthAnnouncement(from, to) {
-    const toToken = depthToken(to);
-    if (from === null || from === to) {
-        // "surface"/"full depth" are self-identifying; a mid-range no-op keeps the label.
-        const text = to === 0 || to === 100 ? toToken : `depth ${toToken}`;
-        announceParameterValue('slice-depth', text, text);
-        return;
-    }
-    const arrow = `${depthToken(from)} to ${toToken}`;
-    announceParameterValue('slice-depth', `depth from ${arrow}`, toToken);
-}
-
-function announceDepthValue(depthValue, previousDepth = null) {
+function announceDepthValue(depthValue, previousDepth = null, emit = announceAlert) {
     const to = clampDepth(depthValue);
     if (to === null) return;
-    const from = previousDepth === null || previousDepth === undefined ? null : clampDepth(previousDepth);
-    scheduleAccumulatedAnnouncement('slice-depth', from, to, emitDepthAnnouncement);
+    announceParameterValue("depth", `Depth ${to}%`, `${to}%`, emit);
 }
 
-// Zoom, same pattern. Zoom has no upper limit, so the only boundary is minimum.
-function emitZoomAnnouncement(from, to) {
-    const toPercent = formatZoomPercent(to);
-    if (from === null || !Number.isFinite(from) || from === to) {
-        const text = to <= MIN_ZOOM ? 'minimum zoom' : `zoom ${toPercent}`;
-        announceParameterValue('zoom-level', text, text);
-        return;
-    }
-    const arrow = `${formatZoomPercent(from)} to ${toPercent}`;
-    announceParameterValue('zoom-level', `zooming from ${arrow}`, toPercent);
-}
-
-function announceZoomValue(zoomValue, previousZoom = null) {
+function announceZoomValue(zoomValue, previousZoom = null, emit = announceAlert) {
     const to = Number(zoomValue);
     if (!Number.isFinite(to)) return;
-    const from = previousZoom === null || previousZoom === undefined ? null : Number(previousZoom);
-    scheduleAccumulatedAnnouncement('zoom-level', from, to, emitZoomAnnouncement);
+    // ratioToPercent already appends "%" — don't add a second one.
+    announceParameterValue("zoom", `Zoom ${ratioToPercent(to)}`, `${ratioToPercent(to)}`, emit);
 }
 
-// Speak firstText the first time this parameter is announced, then repeatText on
-// an immediately following announcement of the SAME parameter. Any other
+// Speak firstText the first time this parameter is announced, then repeatText
+// on an immediately following announcement of the SAME parameter. Any other
 // announcement in between resets the run, so the fuller phrasing returns once the
 // context is no longer obvious. Only zoom and depth use this; everything else
-// calls announce() directly.
-function announceParameterValue(parameterKey, firstText, repeatText) {
+// calls announceAlert()/announce() directly.
+function announceParameterValue(parameterKey, firstText, repeatText, emit = announceAlert) {
     const normalizedKey = String(parameterKey || '').trim().toLowerCase();
     const useFirst = normalizedKey === '' || normalizedKey !== lastAnnouncedParameterKey;
     const message = useFirst ? String(firstText) : String(repeatText);
 
-    // announce() clears lastAnnouncedParameterKey; re-establish this parameter's
-    // key afterwards so a run of the SAME parameter still drops to the arrow.
-    announce(message);
+    // emit() clears lastAnnouncedParameterKey; re-establish this parameter's key
+    // afterwards so a run of the SAME parameter still drops to the arrow.
+    emit(message);
     if (normalizedKey) {
         lastAnnouncedParameterKey = normalizedKey;
     }
@@ -913,30 +908,27 @@ function getStatusBarAnnouncement() {
 // Update button labels with current state information
 function updateButtonLabels() {
     const depthText = `${currentSliceDepth}%`;
-    deeperBtn.textContent = `Deeper: Currently ${depthText}`;
-    deeperBtn.setAttribute('aria-label', `Go deeper. Current depth: ${depthText}. Will increase to ${Math.min(100, currentSliceDepth + 10)}%`);
-    shallowerBtn.textContent = `Shallower: Currently ${depthText}`;
-    shallowerBtn.setAttribute('aria-label', `Go shallower. Current depth: ${depthText}. Will decrease to ${Math.max(0, currentSliceDepth - 10)}%`);
+    deeperBtn.textContent = `Deeper 10%`;
+    shallowerBtn.textContent = `Shallower 10%`;
 }
 
 function updateSliceGraphLockUI() {
     const isSliceGraphMode = isSliceGraphRepresentationMode();
     sliceGraphRefreshBtn.disabled = !isSliceGraphMode;
+    if (sliceGraphLockCheckbox) {
+        sliceGraphLockCheckbox.checked = sliceGraphLocked;
+    }
     if (sliceGraphLocked) {
-        sliceGraphLockBtn.textContent = 'Slice Graph Lock: On';
-        sliceGraphLockBtn.setAttribute('aria-pressed', 'true');
         if (isSliceGraphMode) {
-            sliceGraphLockStatus.textContent = `Graph lock is ON. Frozen at view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%.`;
+            sliceGraphLockStatus.textContent = `Freeze graph`;
         } else {
-            sliceGraphLockStatus.textContent = 'Graph lock is ON (default). Switch to Slice Graph mode to refresh.';
+            sliceGraphLockStatus.textContent = 'Switch to Slice Graph mode to refresh.';
         }
     } else {
-        sliceGraphLockBtn.textContent = 'Slice Graph Lock: Off';
-        sliceGraphLockBtn.setAttribute('aria-pressed', 'false');
         if (isSliceGraphMode) {
-            sliceGraphLockStatus.textContent = 'Graph lock is OFF. Graph follows your current location.';
+            sliceGraphLockStatus.textContent = `view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`;
         } else {
-            sliceGraphLockStatus.textContent = 'Graph lock is OFF. Switch to Slice Graph mode to use refresh.';
+            sliceGraphLockStatus.textContent = 'Switch to Slice Graph mode to use refresh.';
         }
     }
 }
@@ -949,7 +941,6 @@ function updateSliceGraphModeUI() {
     sliceGraphModeBtn.textContent = isColumnCountMode
         ? 'Graph Mode: Slice Area'
         : 'Graph Mode: Difference';
-    sliceGraphModeBtn.setAttribute('aria-pressed', isColumnCountMode ? 'true' : 'false');
 }
 
 function toggleSliceGraphMode() {
@@ -979,14 +970,18 @@ function autoRefreshSliceGraph(options = {}) {
     sendStateToServer();
 }
 
-function toggleSliceGraphLock() {
-    sliceGraphLocked = !sliceGraphLocked;
+function setSliceGraphLocked(locked) {
+    sliceGraphLocked = locked;
     if (sliceGraphLocked) {
         // When turning lock back on, freeze at the current exploration point.
         captureSliceGraphAnchor(false);
     }
     updateSliceGraphLockUI();
     sendStateToServer();
+}
+
+function toggleSliceGraphLock() {
+    setSliceGraphLocked(!sliceGraphLocked);
 }
 
 function print_view(){
@@ -1020,7 +1015,6 @@ function setDebugPipelineVisible(isVisible) {
         return;
     }
     debugPipelineContent.hidden = !isVisible;
-    debugPipelineToggleBtn.setAttribute('aria-expanded', String(isVisible));
     debugPipelineToggleBtn.textContent = isVisible ? 'Hide Debug Pipeline' : 'Show Debug Pipeline';
     try {
         window.localStorage.setItem(DEBUG_PIPELINE_VISIBILITY_KEY, isVisible ? '1' : '0');
@@ -1047,6 +1041,56 @@ function initializeDebugPipelineVisibility() {
         // Keep default hidden if persistence is unavailable.
     }
     setDebugPipelineVisible(isVisible);
+}
+
+// Keyboard shortcuts dialog (#146). Native <dialog> + showModal() supplies focus
+// containment, background inertness, and Escape-to-close for free; the one thing
+// that isn't automatic is returning focus to whatever triggered the dialog once
+// it closes, which is what shortcutsDialogTrigger is for. See the ARIA APG
+// pattern: https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/examples/dialog/
+let shortcutsDialogTrigger = null;
+
+function openShortcutsDialog() {
+    if (!shortcutsDialog || !shortcutsDialog.showModal || shortcutsDialog.open) {
+        return;
+    }
+    shortcutsDialogTrigger = document.activeElement;
+    // Backs up the native modal inertness for older assistive tech, same as the
+    // session consent dialog.
+    if (mainContent) mainContent.setAttribute('aria-hidden', 'true');
+    shortcutsDialog.showModal();
+    // showModal() defaults to focusing the first focusable element, which here is
+    // the Close button at the very end of the content — reading forward from there
+    // reads nothing. Per the ARIA APG dialog pattern, a read-only dialog like this
+    // one should instead land on a static element at the top (the heading, made
+    // focusable via tabindex="-1"), so reading forward covers the whole dialog.
+    if (shortcutsHeading) shortcutsHeading.focus({ preventScroll: true });
+}
+
+function closeShortcutsDialog() {
+    if (!shortcutsDialog || !shortcutsDialog.open) {
+        return;
+    }
+    shortcutsDialog.close();
+}
+
+function restoreAfterShortcutsDialogClose() {
+    if (mainContent) mainContent.removeAttribute('aria-hidden');
+    // Return focus to whatever opened the dialog rather than stranding it at the
+    // top of the document (or on an element that's since been removed).
+    if (shortcutsDialogTrigger && document.contains(shortcutsDialogTrigger)) {
+        shortcutsDialogTrigger.focus();
+    }
+    shortcutsDialogTrigger = null;
+}
+
+if (shortcutsDialog) {
+    // Cleanup after the dialog has actually closed. (Escape triggers `cancel`, whose
+    // default action closes the dialog and then fires `close`.)
+    shortcutsDialog.addEventListener('close', restoreAfterShortcutsDialogClose);
+}
+if (shortcutsCloseBtn) {
+    shortcutsCloseBtn.addEventListener('click', closeShortcutsDialog);
 }
 
 function renderPipelineDebug(debugPipeline, debugInfo = null) {
@@ -1271,9 +1315,7 @@ function updateHighFidelityPreview(data) {
     highFidelityPreviewImg.src = 'data:image/png;base64,' + previewBase64;
     highFidelityPreviewImg.alt = `Render preview: ${currentView} view, ${currentSliceDepth}% depth, ${renderModeLabel()}`;
 
-    const width = shape && shape.length > 1 ? shape[1] : '--';
-    const height = shape && shape.length > 0 ? shape[0] : '--';
-    highFidelityPreviewMeta.textContent = `${currentView} · ${currentSliceDepth}% · ${renderModeLabel()} · ${height}×${width}px`;
+    highFidelityPreviewMeta.textContent = previewCaption(shape);
 }
 
 async function exportCurrentSliceAsPng() {
@@ -1323,23 +1365,21 @@ async function exportCurrentSliceAsPng() {
 function updateSliceDepth(newDepth, shouldAnnounce = true) {
     const oldDepth = currentSliceDepth;
     currentSliceDepth = Math.max(0, Math.min(100, newDepth));
+    writeDisplayDepthToPlanes(currentSliceDepth);
     sliceSlider.value = currentSliceDepth;
     slicePercentage.textContent = currentSliceDepth;
     refreshViewInfoSummary();
 
-    // Only mutate ARIA attributes, button labels, and trigger a render when the
-    // value actually changed.
+    // Only mutate button labels and trigger a render when the value actually
+    // changed.
     if (oldDepth !== currentSliceDepth) {
-        sliceSlider.setAttribute('aria-valuenow', currentSliceDepth);
-        // aria-valuetext is announced by NVDA on every mutation of a range input
-        // regardless of focus. When shouldAnnounce=false the caller (a keyboard
-        // shortcut handler) will push the announcement through the assertive live
-        // region instead, so we must NOT mutate aria-valuetext here — doing so
-        // would cause a second, racing announcement on NVDA/JAWS.
-        // When shouldAnnounce=true (slider focused, hardware input) the mutation
-        // IS the correct announcement channel, so we set it as before.
+        // shouldAnnounce=false means the caller (a keyboard shortcut handler, or
+        // hardware acting through window.updateSliceDepth) announces its own
+        // settled value separately. shouldAnnounce=true (a mouse click on the
+        // slider or the +/- buttons) has no other feedback mechanism, so announce
+        // it here.
         if (shouldAnnounce) {
-            sliceSlider.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
+            announceDepthValue(currentSliceDepth, oldDepth, announceAlert);
         }
         updateButtonLabels();
         sendStateToServer();
@@ -1380,7 +1420,6 @@ function syncRadioGroup(radios, currentValue, groupLabel) {
 function syncRadios() {
     syncRadioGroup(renderModeRadios(), currentRenderMode, 'render-mode');
     syncRadioGroup(viewModeRadios(), currentRepresentationMode, 'view-mode');
-    syncRadioGroup(viewRadios(), currentView, 'view-select');
     syncRadioGroup(outputDeviceRadios(), currentOutputDevice, 'output-device');
 }
 
@@ -1400,6 +1439,102 @@ function getEffectiveOutputDevice() {
 function setMonarchHidConnected(connected) {
     monarchHidConnected = Boolean(connected);
 }
+
+// --- Connected tactile displays -------------------------------------------
+//
+// One entry per device, keyed by the names getEffectiveOutputDevice() returns.
+// This used to be a single global slot, which meant a Monarch disconnecting
+// cleared the entry belonging to a DotPad connected at the same time. That is
+// why the Monarch deliberately never reported its dimensions at all, and why the
+// two devices took different routes through the render path.
+//
+// A Monarch is 48 cells x 10 lines and a braille cell is 2x4 pixels, so it is
+// exactly the 96x40 default. Only the DotPad differs, at 60x40. "Nothing
+// connected" and "Monarch connected" therefore describe the same grid.
+window.tactileDisplays = window.tactileDisplays || {};
+
+// With nothing connected there is no right answer, so sit between the two
+// displays we support rather than favouring either: a Monarch is 96x40 and a
+// DotPad 60x40. 78 is the midpoint and still a whole number of braille cells,
+// which are two pixels wide. This drives the render as well as the caption, so
+// what the preview reports is what was actually drawn.
+const DEFAULT_TACTILE_GRID = Object.freeze({
+    pixelWidth: 78,
+    pixelHeight: 40,
+    label: 'default grid',
+});
+
+// The grid the render currently on screen was made at. Captions describe that
+// payload rather than whatever is connected at this instant, so connecting a
+// display cannot pair its new label with the previous render's dimensions.
+let lastRenderedGrid = DEFAULT_TACTILE_GRID;
+
+/** The display using this grid, or the default if none does. */
+/** The registry key for a device.
+ *
+ * The two integrations in this repo pass lowercase literals that already match
+ * what getEffectiveOutputDevice() returns, so this changes nothing today. It is
+ * here so that a third integration registering "DotPad" cannot end up filed
+ * under a key nothing ever looks up. Applied on both writing and reading, since
+ * normalising only one side would create exactly the mismatch it guards against.
+ */
+function displayKey(deviceKey) {
+    return String(deviceKey).toLowerCase();
+}
+
+function gridForSize(width, height) {
+    // Compared as numbers: a device reporting "60" rather than 60 would other-
+    // wise match nothing and read as no device connected at all, which looks
+    // like a hardware fault rather than a type confusion.
+    width = Number(width);
+    height = Number(height);
+    for (const entry of Object.values(window.tactileDisplays)) {
+        if (Number(entry.pixelWidth) === width && Number(entry.pixelHeight) === height) {
+            return entry;
+        }
+    }
+    return DEFAULT_TACTILE_GRID;
+}
+
+/** Register (or with `null`, clear) one device without touching the others. */
+function setTactileDisplay(deviceKey, info) {
+    if (!deviceKey) return;
+    const key = displayKey(deviceKey);
+    if (info) {
+        window.tactileDisplays[key] = info;
+    } else {
+        delete window.tactileDisplays[key];
+    }
+    // The size only reached the server on the next render, so connecting a
+    // display left the previews describing the previous one until the user
+    // happened to do something else.
+    if (typeof sendStateToServer === 'function') sendStateToServer();
+}
+
+/** The grid to render at: the display that will actually receive this frame.
+ *
+ * Not simply the selected output device. That setting is a preference and
+ * defaults to the Monarch whether or not one is attached, while a connected
+ * DotPad is sent every frame regardless of it. Keying only on the preference
+ * meant plugging in a DotPad while the setting said Monarch left the render at
+ * the default size, so the display received a frame shaped for something else.
+ *
+ * So: the selected device if it is actually connected; failing that, the only
+ * display that is, since with one attached there is no ambiguity; failing that,
+ * the default.
+ */
+function activeTactileGrid() {
+    const selected = window.tactileDisplays[displayKey(getEffectiveOutputDevice())];
+    if (selected) return selected;
+
+    const connected = Object.values(window.tactileDisplays);
+    if (connected.length === 1) return connected[0];
+
+    return DEFAULT_TACTILE_GRID;
+}
+
+window.setTactileDisplay = setTactileDisplay;
+window.activeTactileGrid = activeTactileGrid;
 
 function switchOutputDevice(targetDevice) {
     if (currentOutputDevice === targetDevice) {
@@ -1472,6 +1607,7 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
     currentView = newView;
     if (syncOrientation && oldView !== currentView) {
         setOrientationFromView(currentView);
+        syncSliceDepthFromPlanes();
     }
     if (currentViewSpan) currentViewSpan.textContent = currentView;
     refreshViewInfoSummary();
@@ -1479,7 +1615,9 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
     updateSideBySideAxisLabels();
     syncRadios();
     if (oldView !== currentView && shouldAnnounce) {
-        announce(`${currentView.toLowerCase()} view`);
+        // Only real caller: the WitMotion orientation-cube hardware reporting a
+        // new face (applyRelativeRotation and page-load both call with false/no-op).
+        announceAlert(`${currentView.toLowerCase()} view`);
     }
 
     // Send state to server if changed
@@ -1494,17 +1632,31 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
     return oldView !== currentView;
 }
 
+/** Caption for either preview. Both go through this so they cannot disagree
+ * about the order of the dimensions, or about which display they describe.
+ * `shape` is [height, width], as numpy reports it. */
+function previewCaption(shape) {
+    const parts = [currentView, `${currentSliceDepth}%`, renderModeLabel()];
+    if (shape && shape.length > 1) {
+        parts.push(`${shape[1]}\u00d7${shape[0]}px`);
+    }
+    // Labelled by the grid that produced this render rather than by whatever is
+    // connected now, so connecting a display cannot pair its name with the
+    // previous render's size. lastRenderedGrid always holds a grid, but a device
+    // may register without a label, and "undefined" in the caption would be
+    // worse than saying the size plainly.
+    parts.push(lastRenderedGrid.label
+        || `${lastRenderedGrid.pixelWidth}\u00d7${lastRenderedGrid.pixelHeight} grid`);
+    return parts.join(' \u00b7 ');
+}
+
 // Update the tactile display preview image
 function updateTactilePreview(base64, shape) {
     const img = document.getElementById('tactile-display-img');
     const meta = document.getElementById('tactile-preview-meta');
     img.src = 'data:image/png;base64,' + base64;
     img.alt = `Tactile display: ${currentView} view, ${currentSliceDepth}% depth, ${renderModeLabel()}`;
-    if (shape) {
-        meta.textContent = `${currentView} \u00b7 ${currentSliceDepth}% \u00b7 ${renderModeLabel()} \u00b7 ${shape[1]}\u00d7${shape[0]}px`;
-    } else {
-        meta.textContent = `${currentView} \u00b7 ${currentSliceDepth}% \u00b7 ${renderModeLabel()}`;
-    }
+    meta.textContent = previewCaption(shape);
 }
 
 // Update bounding box display
@@ -1626,6 +1778,7 @@ document.getElementById("model-list-dropdown").addEventListener("change", functi
     const selectedItem = this.value;
     currentModel = selectedItem;
     clearCameraCenterState();
+    resetSlicePlanes();
     const selectedLabel = this.selectedIndex >= 0 ? this.options[this.selectedIndex].text : `model ${selectedItem}`;
     if (sbModel && this.selectedIndex >= 0) {
         sbModel.textContent = this.options[this.selectedIndex].text;
@@ -1739,6 +1892,7 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             dropdown.value = String(data.new_model_index);
             currentModel = String(data.new_model_index);
             clearCameraCenterState();
+            resetSlicePlanes();
             const selectedLabel = dropdown.selectedIndex >= 0 ? dropdown.options[dropdown.selectedIndex].text : data.filename;
             if (sbModel && dropdown.selectedIndex >= 0) {
                 sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
@@ -1793,7 +1947,7 @@ function applyServerState(data) {
             updateSliceDepth(newDepth, false);
         }
     }
-    if (data.builtin_model_stems && !builtinModelStems) {
+    if (Array.isArray(data.builtin_model_stems) && data.builtin_model_stems.length && !builtinModelStems) {
         builtinModelStems = data.builtin_model_stems;
         // Force a rebuild now that the filter is known.
         lastModelListSignature = null;
@@ -1815,6 +1969,7 @@ function applyServerState(data) {
         if (idx >= 0 && String(idx) !== currentModel) {
             currentModel = String(idx);
             clearCameraCenterState();
+            resetSlicePlanes();
             pendingInputSource = 'ingest';
             sendStateToServer();
         }
@@ -1894,12 +2049,14 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
     zoomInput.value = zoomText;
     zoomLevelValue.textContent = zoomText;
     refreshViewInfoSummary();
-    zoomInput.setAttribute('aria-valuetext', `zoom ${formatZoomPercent(currentZoom)}`);
-
     updateButtonLabels();
 
+    // shouldAnnounce=true here only ever comes from a mouse click (zoom +/- buttons,
+    // the zoom number field on change), which has no other feedback mechanism, so
+    // announce it. Keyboard callers pass shouldAnnounce=false and announce their
+    // own settled value.
     if (shouldAnnounce) {
-        announceZoomValue(currentZoom, oldZoom);
+        announceZoomValue(currentZoom, oldZoom, announceAlert);
     }
 
     console.log(oldZoom, currentZoom);
@@ -1955,7 +2112,8 @@ async function fitCurrentViewToDevice() {
 
     updateZoom(data.zoom, false, false);
     sendStateToServer();
-    announce('View fitted to tactile display');
+    // Only reachable via the 'f' keyboard shortcut — no on-screen button.
+    announceAlert(`View fitted to ${payload.output_device}`);
 
 }
 
@@ -1974,7 +2132,7 @@ function switchToRenderMode(targetMode, shouldAnnounce = true) {
     refreshViewInfoSummary();
     updateButtonLabels();
     syncRadios();
-    if (shouldAnnounce) announce(`${renderModeLabel(previousMode)} to ${renderModeLabel()}`);
+    if (shouldAnnounce) announce(`${renderModeLabel()}`);
 
     // Send state to server
     sendStateToServer();
@@ -2028,10 +2186,10 @@ function cycleRepresentationMode(shouldAnnounce = true) {
     switchToRepresentationMode(representationModes[nextIndex].key, shouldAnnounce);
 }
 
-// Announce a change: adds to visible history, shows toast, and speaks via SR live region.
-function emitAnnouncement(message, politeness, isAlert) {
+// Announce a change: updates the message window, speaks via the SR live region,
+// echoes to the tactile display.
+function emitAnnouncement(message, politeness) {
     const normalizedMessage = String(message);
-
     // Any announcement ends the current zoom/depth run: the next such change
     // re-includes its label, since the context is no longer obvious. A parameter
     // announcement re-establishes its own key immediately after this returns
@@ -2041,63 +2199,36 @@ function emitAnnouncement(message, politeness, isAlert) {
     // Always refresh the status bar so it reflects the latest state.
     refreshStatusBar();
 
-    // Show the toast + push to the screen-reader live region for this tier.
-    showToast(normalizedMessage, politeness);
+    updateMessageWindow(normalizedMessage, politeness);
 
     // Send announcement to tactile display
     if (typeof window.onTactileAnnouncement === 'function') {
         try {
             window.onTactileAnnouncement({
                 message: normalizedMessage,
-                politeness,
-                isAlert
+                politeness
             });
         } catch (err) {
             console.warn('Tactile announcement failed:', err);
         }
     }
-
-    // Append to visible history log; alerts are weighted so the log distinguishes
-    // an interrupting condition from routine state changes.
-    if (announcementHistory) {
-        if (normalizedMessage !== lastAnnouncementMessage) {
-            const item = document.createElement('li');
-            if (isAlert) item.style.fontWeight = '600';
-
-            const time = new Date();
-            const timestamp = document.createElement('span');
-            timestamp.className = 'announcement-time';
-            timestamp.textContent = `[${time.toLocaleTimeString()}]`;
-
-            const text = document.createElement('span');
-            text.textContent = message;
-
-            item.appendChild(timestamp);
-            item.appendChild(text);
-            announcementHistory.appendChild(item);
-            announcementHistory.scrollTop = announcementHistory.scrollHeight;
-        }
-    }
-
-    lastAnnouncementMessage = normalizedMessage;
 }
 
 /**
- * Announce a state change politely: it waits for the user to pause rather than
- * interrupting. This is the right default for anything the user just did, since
- * they already know it happened and only need the result.
+ * Announce a background/system event politely: it waits for the user to pause
+ * rather than interrupting. Reserve for things not tied to an immediate action —
+ * a server reconnecting, a model finishing a load that was kicked off moments
+ * ago — since the user may be doing something else entirely when it lands.
  */
 function announce(message) {
-    emitAnnouncement(message, 'polite', false);
+    emitAnnouncement(message, 'polite');
 }
 
 /**
  * Announce assertively, interrupting whatever the AT is currently speaking.
- * Reserve for conditions the user did not initiate and must act on: a lost
- * server or device, a failed render, upload, or export.
  */
 function announceAlert(message) {
-    emitAnnouncement(message, 'assertive', true);
+    emitAnnouncement(message, 'assertive');
 }
 
 // External API used by hardware integration modules.
@@ -2109,12 +2240,6 @@ window.updateSliceDepth = updateSliceDepth;
 window.announceDepthValue = announceDepthValue;
 window.fitCurrentViewToDevice = fitCurrentViewToDevice;
 
-if (clearAnnouncementsBtn && announcementHistory) {
-    clearAnnouncementsBtn.addEventListener('click', function() {
-        announcementHistory.innerHTML = '';
-    });
-}
-
 // Event listeners
 
 // Slice depth slider with enhanced feedback
@@ -2125,10 +2250,6 @@ sliceSlider.addEventListener('input', function() {
     currentSliceDepth = newValue;
     slicePercentage.textContent = currentSliceDepth;
 
-    // Update ARIA attributes immediately
-    this.setAttribute('aria-valuenow', currentSliceDepth);
-    this.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
-
     // Update button labels immediately
     updateButtonLabels();
 });
@@ -2137,46 +2258,6 @@ sliceSlider.addEventListener('change', function() {
     clearTimeout(sliderUpdateTimeout);
     pendingInputSource = 'ui';
     sendStateToServer();
-});
-
-// Sync aria-valuetext when the slider receives focus so it reflects any depth
-// changes made via keyboard shortcuts while focus was elsewhere.
-sliceSlider.addEventListener('focus', function() {
-    this.setAttribute('aria-valuenow', currentSliceDepth);
-    this.setAttribute('aria-valuetext', `${currentSliceDepth} percent depth`);
-});
-
-// Keyboard support for slider
-sliceSlider.addEventListener('keydown', function(e) {
-    let newValue = currentSliceDepth;
-
-    switch(e.key) {
-        case 'ArrowUp':
-        case 'ArrowRight':
-            newValue += 1;
-            break;
-        case 'ArrowDown':
-        case 'ArrowLeft':
-            newValue -= 1;
-            break;
-        case 'PageUp':
-            newValue += 10;
-            break;
-        case 'PageDown':
-            newValue -= 10;
-            break;
-        case 'Home':
-            newValue = 0;
-            break;
-        case 'End':
-            newValue = 100;
-            break;
-        default:
-            return; // Don't prevent default for other keys
-    }
-
-    e.preventDefault();
-    updateSliceDepth(newValue, true);
 });
 
 // Render mode radios
@@ -2195,16 +2276,6 @@ document.addEventListener('change', function(e) {
         if (e.target.checked) {
             pendingInputSource = 'ui';
             switchToRepresentationMode(e.target.value);
-        }
-    }
-});
-
-// View selection radios
-document.addEventListener('change', function(e) {
-    if (e.target && e.target.matches('input[name="view-select"]')) {
-        if (e.target.checked) {
-            pendingInputSource = 'ui';
-            updateView(e.target.value);
         }
     }
 });
@@ -2237,7 +2308,6 @@ zoomInput.addEventListener('change', function() {
     clearTimeout(zoomDebounceTimer);
     if (!Number.isFinite(this.valueAsNumber)) {
         this.value = currentZoom.toFixed(1);
-        announce('zoom value unchanged');
         return;
     }
     pendingInputSource = 'ui';
@@ -2272,9 +2342,14 @@ shallowerBtn.addEventListener('click', function() {
     updateSliceDepth(currentSliceDepth - 10, true);
 });
 
-sliceGraphLockBtn.addEventListener('click', function() {
-    toggleSliceGraphLock();
-});
+if (sliceGraphLockCheckbox) {
+    sliceGraphLockCheckbox.addEventListener('change', function() {
+        setSliceGraphLocked(this.checked);
+        // The checkbox's own checked state already gives its own accessible
+        // feedback; only log the change 
+        announce(`Slice graph lock ${sliceGraphLocked ? 'on' : 'off'}`);
+    });
+}
 
 sliceGraphRefreshBtn.addEventListener('click', function() {
     if (!isSliceGraphRepresentationMode()) {
@@ -2300,6 +2375,28 @@ if (resetPositionBtn) {
         sendStateToServer();
         currentMoveCamera = "none";
         announce('Position reset');
+    });
+}
+
+// The same six turns the keys perform, for anyone not driving from the keyboard.
+// Buttons rather than a radio group per view: there is no fixed set of
+// orientations to choose from once roll is available, only turns to make from
+// wherever the model currently is.
+const ORIENTATION_BUTTONS = {
+    'pitch-up-btn': 'pitchUp',
+    'pitch-down-btn': 'pitchDown',
+    'yaw-left-btn': 'yawLeft',
+    'yaw-right-btn': 'yawRight',
+    'roll-ccw-btn': 'rollCounterclockwise',
+    'roll-cw-btn': 'rollClockwise',
+};
+
+for (const [buttonId, rotationName] of Object.entries(ORIENTATION_BUTTONS)) {
+    const button = document.getElementById(buttonId);
+    if (!button) continue;
+    button.addEventListener('click', function() {
+        pendingInputSource = 'ui';
+        applyRelativeRotation(rotationName, announce);
     });
 }
 
@@ -2339,6 +2436,13 @@ document.addEventListener('keydown', function(e) {
         return;
     }
 
+    // A modal dialog (shortcuts help, session consent) makes the rest of the page
+    // inert — Escape and Tab must stay scoped to it, not also fire a background
+    // shortcut underneath.
+    if (document.querySelector('dialog[open]')) {
+        return;
+    }
+
     // Leave browser/app shortcuts untouched (Cmd/Ctrl/Alt combos).
     if (e.metaKey || e.ctrlKey || e.altKey) {
         return;
@@ -2352,17 +2456,15 @@ document.addEventListener('keydown', function(e) {
         code === 'Digit3' || code === 'Numpad3' ? '3' :
         code === 'Digit4' || code === 'Numpad4' ? '4' :
         code === 'Digit5' || code === 'Numpad5' ? '5' :
-        code === 'Digit6' || code === 'Numpad6' ? '6' :
-        code === 'Digit7' || code === 'Numpad7' ? '7' :
         key
     );
     const supportedShortcuts = new Set([
         'arrowup', 'arrowdown', 'pageup', 'pagedown',
          '2', '3', 'q', 'e',
         'u', 'i', 'o', 'j', 'k', 'l',
-        '4', '5', '6', '7', '8', '9', '0', '-', '=',
+        '4', '5',
         'r', 't', 'g', 'v', 'z',
-        'w', 'a', 's', 'd', '[', ']', 'h', 'p', '.', 'escape', 'f'
+        'w', 'a', 's', 'd', '[', ']', 'h', '?', 'p', '.', 'escape', 'f'
     ]);
 
     if (!supportedShortcuts.has(normalizedKey)) {
@@ -2455,61 +2557,12 @@ document.addEventListener('keydown', function(e) {
             break;
 
         // View shortcuts
-        case '7':
-            e.preventDefault();
-            if (updateView('x-', false)) {
-                announce('View changed: x-');
-            } else {
-                announce('View unchanged: x-');
-            }
-            break;
-        case '8':
-            e.preventDefault();
-            if (updateView('x+', false)) {
-                announce('View changed: x+');
-            } else {
-                announce('View unchanged: x+');
-            }
-            break;
-        case '9':
-            e.preventDefault();
-            if (updateView('z+', false)) {
-                announce('View changed: z+');
-            } else {
-                announce('View unchanged: z+');
-            }
-            break;
-        case '0':
-            e.preventDefault();
-            if (updateView('z-', false)) {
-                announce('View changed: z-');
-            } else {
-                announce('View unchanged: z-');
-            }
-            break;
-        case '-':
-            e.preventDefault();
-            if (updateView('y-', false)) {
-                announce('View changed: y-');
-            } else {
-                announce('View unchanged: y-');
-            }
-            break;
-        case '=':
-            e.preventDefault();
-            if (updateView('y+', false)) {
-                announce('View changed: y+');
-            } else {
-                announce('View unchanged: y+');
-            }
-            break;
-
         case 'r':
             e.preventDefault();
             {
                 const previousMode = currentRenderMode;
                 cycleRenderMode(false);
-                announce(`Render mode changed: ${renderModeLabel(previousMode)} to ${renderModeLabel()}`);
+                announceAlert(`${renderModeLabel()}`);
             }
             break;
 
@@ -2518,109 +2571,101 @@ document.addEventListener('keydown', function(e) {
             {
                 const previousViewMode = currentRepresentationMode;
                 cycleRepresentationMode(false);
-                announce(`Display mode changed: ${representationModeLabel(previousViewMode)} to ${representationModeLabel()}`);
+                announceAlert(`${representationModeLabel()}`);
             }
             break;
 
         case 'u':
             e.preventDefault();
-            // Roll counterclockwise around current view direction.
-            applyRelativeRotation('roll', 1, 'Roll counterclockwise');
+            applyRelativeRotation('rollCounterclockwise');
             break;
 
         case 'o':
             e.preventDefault();
-            // Roll clockwise around current view direction.
-            applyRelativeRotation('roll', -1, 'Roll clockwise');
+            applyRelativeRotation('rollClockwise');
             break;
 
         case 'i':
             e.preventDefault();
-            applyRelativeRotation('pitch', -1, 'Rotate up');
+            applyRelativeRotation('pitchUp');
             break;
 
         case 'k':
             e.preventDefault();
-            applyRelativeRotation('pitch', 1, 'Rotate down');
+            applyRelativeRotation('pitchDown');
             break;
 
         case 'j':
             e.preventDefault();
-            applyRelativeRotation('yaw', -1, 'Rotate left');
+            applyRelativeRotation('yawLeft');
             break;
 
         case 'l':
             e.preventDefault();
-            applyRelativeRotation('yaw', 1, 'Rotate right');
+            applyRelativeRotation('yawRight');
             break;
 
         case '.':
             // Read the full top-of-page status bar.
             e.preventDefault();
-            announce(getStatusBarAnnouncement());
+            announceAlert(getStatusBarAnnouncement());
             break;
 
         case 'g':
             e.preventDefault();
             if (!isSliceGraphRepresentationMode()) {
-                announce('Slice graph refresh: not in slice-graph mode');
+                announceAlert('not in slice-graph mode');
                 break;
             }
             captureSliceGraphAnchor(true);
             sendStateToServer();
-            announce(`Slice graph refreshed: view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
+            announceAlert(`view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
             break;
 
         case 'v':
             e.preventDefault();
             if (!isSliceGraphRepresentationMode()) {
-                announce('Slice graph lock: not in slice-graph mode');
+                announceAlert('not in slice-graph mode');
                 break;
             }
             toggleSliceGraphLock();
-            announce(`Slice graph lock ${sliceGraphLocked ? 'on' : 'off'}`);
+            announceAlert(`${sliceGraphLocked ? 'on' : 'off'}`);
             break;
 
-        //case '0':
-        //    // Jump to 0% depth (surface)
-        //    e.preventDefault();
-        //    updateSliceDepth(0, true);
-        //    break;
-        //
         case 'w':
             currentMoveCamera = "up";
             sendStateToServer();
             currentMoveCamera = "none";
-            announce('Object panned up');
+            announceAlert('up');
             break;
         case 'd':
             currentMoveCamera = "right";
             sendStateToServer();
             currentMoveCamera = "none";
-            announce('Object panned right');
+            announceAlert('right');
             break;
         case 's':
             currentMoveCamera = "down";
             sendStateToServer();
             currentMoveCamera = "none";
-            announce('Object panned down');
+            announceAlert('down');
             break;
         case '[':
             composeScrollbar = !composeScrollbar;
             sendStateToServer();
-            announce(`Compose scrollbar ${composeScrollbar ? 'on' : 'off'}`);
+            announceAlert(`${composeScrollbar ? 'on' : 'off'}`);
             break;
         case ']':
             composeSliceGraph = !composeSliceGraph;
             sendStateToServer();
-            announce(`Compose slice graph ${composeSliceGraph ? 'on' : 'off'}`);
+            announceAlert(`${composeSliceGraph ? 'on' : 'off'}`);
             break;
 
         case 'a':
             currentMoveCamera = "left";
             sendStateToServer();
             currentMoveCamera = "none";
-            announce('Object panned left');
+            announceAlert('left');
             break;
 
         case '4':
@@ -2651,21 +2696,17 @@ document.addEventListener('keydown', function(e) {
         case 'escape':
             e.preventDefault();
             document.activeElement.blur();
-            announce('Focus cleared');
+            announceAlert('Focus cleared');
             break;
 
         case 'h':
+        case '?':
             e.preventDefault();
-            {
-                const shortcutsHeading = document.getElementById('shortcuts-heading');
-                if (shortcutsHeading) {
-                    shortcutsHeading.focus();
-                }
-            }
+            openShortcutsDialog();
             break;
 
         case 'p':
-            announce('Printing current render');
+            announceAlert('Printing current render');
             print_view();
             break;
 
@@ -2674,7 +2715,7 @@ document.addEventListener('keydown', function(e) {
             currentMoveCamera = "reset";
             sendStateToServer();
             currentMoveCamera = "none";
-            announce('Position reset');
+            announceAlert('Position reset');
             break;
 
         default:

@@ -52,14 +52,21 @@
             // connecting shouldn't override an explicit selection.
             if (typeof setMonarchHidConnected === 'function') setMonarchHidConnected(true);
             if (typeof window.announce === 'function') window.announce('Monarch connected via USB.');
-            // Deliberately not setting window.connectedTactileDisplay. The viewer reads
-            // that flag to ask the server for a payload at a specific pixel size, and the
-            // server then renders a second time to produce it. The Monarch render already
-            // happens at the default grid, and the viewer's own fallbacks for those
-            // dimensions are the same 96x40, so claiming it gains nothing and costs a
-            // full extra render on every interaction.
-            // Send current model state immediately so the display shows the model on connect.
-            if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
+            // A Monarch is 48 cells x 10 lines and a braille cell is 2x4 pixels,
+            // so this is exactly the 96x40 default grid. Registering it costs no
+            // extra render: naming a size is what routes the request down the
+            // single-render path, and it lets the previews say which display they
+            // are describing. Registering also re-renders, so the display shows
+            // the model on connect.
+            window.setTactileDisplay?.('monarch_hid', {
+                type: 'Monarch',
+                connection: 'usb-hid',
+                cellCols: 48,
+                cellRows: 10,
+                pixelWidth: 96,
+                pixelHeight: 40,
+                label: 'Monarch 48\u00d710 cells',
+            });
 
             monarchHidDevice.addEventListener('inputreport', (e) => {
                 const key = monarchReportKey(e.reportId, e.data);

@@ -183,14 +183,15 @@ function setConnectedDotPadDisplay(dotDevice, connectionType){
     const cellRows = dotDevice.numberCellRows || 10;
     const pixelWidth = cellCols * 2;  // Each cell is 2 pixels wide
     const pixelHeight = cellRows * 4;  // Each cell is 4 pixels tall
-    window.connectedTactileDisplay = {
+    window.setTactileDisplay?.('dotpad', {
         type: 'DotPad',
         connection: connectionType,
         cellCols: cellCols,
         cellRows: cellRows,
         pixelWidth: pixelWidth,
         pixelHeight: pixelHeight,
-    }
+        label: `DotPad ${cellCols}\u00d7${cellRows} cells`,
+    });
     console.log(`DotPad dimensions: ${cellCols}×${cellRows} cells, ${pixelWidth}×${pixelHeight} pixels`);
 }
 // --- BLE scan & connect ---
@@ -267,7 +268,7 @@ disconnectBtn.addEventListener('click', () => {
     connectionType = null;
     rawTarget = null;
     disconnectBtn.disabled = true;
-    window.connectedTactileDisplay = null;
+    window.setTactileDisplay?.('dotpad', null);
     setStatus('Disconnected.');
     if (typeof window.announce === 'function') window.announce('DotPad disconnected.');
     // No global device dimensions exposed in minimal setup
@@ -280,7 +281,7 @@ function onMessage(device, dataCode, msg) {
         connectionType = null;
         rawTarget = null;
         disconnectBtn.disabled = true;
-        window.connectedTactileDisplay = null;
+        window.setTactileDisplay?.('dotpad', null);
         setStatus('DotPad disconnected unexpectedly.');
         if (typeof window.announceAlert === 'function') window.announceAlert('DotPad disconnected unexpectedly.');
     } else if (dataCode === DataCodes.Connected) {
@@ -368,13 +369,22 @@ function onKey(device, currKeyCode, keyMsg) {
         console.log('DotPad key pressed but cursor state is "none":', currKeyCode, keyMsg);
         return;
     }
-    if (cursorState === 'horizontal-line' && (currKeyCode === 'KeyFunction1' || currKeyCode === 'KeyFunction4')) {
-        console.log('DotPad key pressed but cursor state is "horizontal-line":', currKeyCode, keyMsg);
-        return;
-    }
-    if (cursorState === 'vertical-line' && (currKeyCode === 'PanningLeft' || currKeyCode === 'PanningRight')) {
-        console.log('DotPad key pressed but cursor state is "vertical-line":', currKeyCode, keyMsg);
-        return;
+    // Block the axis the line cannot travel along. A horizontal line spans the
+    // full width, so it is repositioned by moving up and down and left/right is
+    // what has no meaning; a vertical line is the mirror image. These two were
+    // the wrong way round, which also made the DotPad behave opposite to the
+    // Monarch. Guard on the movement axis rather than on key names so the two
+    // handlers cannot drift apart again if the key map changes.
+    if (cursorAction) {
+        const [dCol, dRow] = cursorAction;
+        if (cursorState === 'horizontal-line' && dCol !== 0) {
+            console.log('DotPad key pressed but cursor state is "horizontal-line":', currKeyCode, keyMsg);
+            return;
+        }
+        if (cursorState === 'vertical-line' && dRow !== 0) {
+            console.log('DotPad key pressed but cursor state is "vertical-line":', currKeyCode, keyMsg);
+            return;
+        }
     }
 
     if (!cursorAction) {

@@ -86,8 +86,8 @@ The Monarch supports cursor controls and depth changes with the following inputs
     - `none`: hides the cursor and disables cursor movement.
     - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
     - `guidelines`: shows horizontal and vertical guide lines through the cursor.
-    - `horizontal-line`: shows only the horizontal guide line; up and down movement are disabled.
-    - `vertical-line`: shows only the vertical guide line; left and right movement are disabled.
+    - `horizontal-line`: shows only the horizontal guide line; left and right movement are disabled, since the line spans the full width and is repositioned by moving it up and down.
+    - `vertical-line`: shows only the vertical guide line; up and down movement are disabled, since the line spans the full height and is repositioned by moving it left and right.
 - right directional pad: controls cursor movement as expected and explained below
     - left navigation button: move cursor or vertical line left
     - right navigation button: move cursor or vertical line right
@@ -128,20 +128,41 @@ The DotPad supports cursor controls and depth changes with the following inputs:
     - `none`: hides the cursor and disables cursor movement.
     - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
     - `guidelines`: shows horizontal and vertical guide lines through the cursor.
-    - `horizontal-line`: shows only the horizontal guide line; up and down movement are disabled.
-    - `vertical-line`: shows only the vertical guide line; left and right movement are disabled.
-- dot 3: move cursor or horizontal line left
-- dot 6: move cursor or horizontal line right
-- dot 2: move cursor or vertical line up
-- dot 5: move cursor or vertical line down
+    - `horizontal-line`: shows only the horizontal guide line; left and right movement are disabled, since the line spans the full width and is repositioned by moving it up and down.
+    - `vertical-line`: shows only the vertical guide line; up and down movement are disabled, since the line spans the full height and is repositioned by moving it left and right.
+- dot 3: move cursor or vertical line left
+- dot 6: move cursor or vertical line right
+- dot 2: move cursor or horizontal line up
+- dot 5: move cursor or horizontal line down
 
 NOTE: Cursor or guideline movements will only work when the cursor or guidelines are active. A single button press will move one pixel. A double or triple button press will move the line five or twelve pixels respectively. Braille text pages break at spaces when possible. Long words, such as file names, are split only when they are longer than the text display width.
 
 
-## Uploads on managed servers
+## Where models are stored
 
-If the container cannot write to `/project/data/models`, uploads fall back to `/tmp/cad-a11y/models`. Override the path with:
+Models live in two directories, and which one a file is in decides who can see it.
+
+*   `builtin_models/` holds the models that ship with the project. They are tracked in git, copied into the image, and seeded into `data/models` every time the server starts. Seeding on each start is what lets a built-in added later reach a server whose Docker volume already exists, since Docker only seeds a named volume while it is empty.
+*   `data/uploads/` holds what people upload. These are private to the person who uploaded them.
+
+To add a built-in model, put the file in `builtin_models/` and rebuild. Do not put it in `data/models` directly: that directory is runtime state and is not tracked.
+
+The two directories must never be the same. Classification is by location, so if uploads landed in the built-in directory every uploaded file would be served to every visitor. That is exactly what happened in #102 once the move to Docker named volumes made `data/models` writable. The server now refuses to start if `UPLOAD_MODEL_DIR` resolves to the built-in directory.
+
+### Uploads on managed servers
+
+`docker-compose.yml` sets `UPLOAD_MODEL_DIR=/project/data/uploads` explicitly. Override it only if that path is not writable:
 
 ```bash
 UPLOAD_MODEL_DIR=/some/writable/path docker compose up
 ```
+
+### Cleaning up a server that predates the split
+
+On a deployment where uploads used to share the built-in directory, participant files accumulated there and are treated as public. To see what is affected:
+
+```bash
+docker compose exec app python scripts/cleanup_ingest_models.py
+```
+
+That reports only. Re-run with `--apply` to delete. It never touches anything shipped in `builtin_models/`, and it warns about models that share a stem, since a stem names one model to the client.

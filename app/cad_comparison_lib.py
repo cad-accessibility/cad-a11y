@@ -16,7 +16,13 @@ from trimesh import Trimesh
 from trimesh.repair import stitch, fill_holes, fix_inversion, fix_winding
 from copy import copy, deepcopy
 import src.converter.plane_intersection_utils as plane_inter_utils
-from src.converter.single_view_stl import get_single_view, get_cut_faces, project_vertices
+from src.converter.single_view_stl import (
+    _get_view_basis,
+    _resolve_orientation_basis,
+    get_cut_faces,
+    get_single_view,
+    project_vertices,
+)
 from src.converter.juxtaposition_view_stl import get_juxtaposition_view
 from src.converter.superposition_view_stl import get_superposition_view
 from src.converter.side_by_side_view import get_side_view
@@ -69,7 +75,23 @@ def compute_imposed_zoom_limits(horizontal_dist, vertical_dist, center_x, center
     return x_lim, y_lim
 
 
-def _projected_view_axis_limits(shape, view_key):
+VIEW_KEYS = ("top", "front", "left", "bottom", "back", "right")
+
+
+def _is_canonical_orientation(view_key, orientation_basis):
+    """Is this basis just the named view spelled out?
+
+    The viewer sends a basis on every request, so without this check every
+    render would take the reframing path below and pay to recompute limits that
+    have already been precomputed.
+    """
+    resolved = _resolve_orientation_basis(orientation_basis)
+    if resolved is None:
+        return True
+    return all(np.allclose(a, b) for a, b in zip(resolved, _get_view_basis(view_key)))
+
+
+def _projected_view_axis_limits(shape, view_key, orientation_basis=None):
     """Fast replacement for reading axis limits off a full
     get_single_view(..., cut_depth=1.0, "filled", ...) render.
 
@@ -84,21 +106,9 @@ def _projected_view_axis_limits(shape, view_key):
     vertices directly and matching matplotlib's own auto-margin formula gives
     the same bounds in O(vertices) instead of O(faces) rendering work.
     """
-    vertices = shape.vertices
-    if view_key == "top":
-        coords = vertices[:, [0, 1]]
-    elif view_key == "front":
-        coords = vertices[:, [0, 2]]
-    elif view_key == "left":
-        coords = vertices[:, [1, 2]]
-    elif view_key == "bottom":
-        coords = vertices[:, [0, 1]] * np.array([-1.0, -1.0])
-    elif view_key == "back":
-        coords = vertices[:, [0, 2]] * np.array([-1.0, 1.0])
-    elif view_key == "right":
-        coords = vertices[:, [1, 2]] * np.array([-1.0, 1.0])
-    else:
+    if view_key not in VIEW_KEYS:
         raise ValueError(f"Unknown view_key: {view_key}")
+    coords = project_vertices(shape.vertices, view_key, orientation_basis=orientation_basis)
 
     x_min, y_min = coords.min(axis=0)
     x_max, y_max = coords.max(axis=0)
@@ -113,6 +123,17 @@ def _projected_view_axis_limits(shape, view_key):
 # several renders. A tessellation tolerance can cap this for STEP at load time,
 # but an STL arrives already tessellated, so cap it here for every source.
 MAX_RENDER_FACES = 40000
+
+# The grid a renderer draws at until something tells it otherwise. A Monarch is
+# 48 cells by 10 lines and a braille cell is 2x4 pixels, so this is exactly a
+# Monarch, and it is what every caller that does not name a size gets. Named
+# here, beside the assignment it describes, so the server's fallbacks cannot
+# quietly disagree with what a renderer actually starts at.
+#
+# Not to be confused with the viewer's DEFAULT_TACTILE_GRID, which is 78x40: that
+# is the client's answer to "no display is connected, so pick something between
+# the two we support", and the client always names it explicitly.
+DEFAULT_SCREEN_SIZE = (96, 40)
 
 
 def _decimate_for_display(mesh):
@@ -135,7 +156,14 @@ class CADComparisonRenderer:
     """
     Renderer for CAD model comparisons.
     """
-    
+
+    # Framing state, at class level so an instance built without __init__ still
+    # has it. Composition tests do exactly that, to exercise a single stage
+    # without paying to load a mesh.
+    _orientation_frame_key = None
+    _canonical_view_limits = None
+
+
     def __init__(self, before_model_path, after_model_path):
         """
         Initialize the renderer with two STEP model files.
@@ -153,7 +181,7 @@ class CADComparisonRenderer:
         self.view_current_axis = -1
         self.view_current_view_limits = -1
         self.current_render_mode = None
-        self.screen_size = [96,40]
+        self.screen_size = list(DEFAULT_SCREEN_SIZE)
         self.view_diff_mats = {}
         self.view_cut_polygons = {}
         self.current_render = None
@@ -171,6 +199,9 @@ class CADComparisonRenderer:
             "cad_precompute_cache.json",
         )
         self._model_signature_value = None
+        # The framing in force, so a turn reframes but a redraw does not.
+        self._orientation_frame_key = None
+        self._canonical_view_limits = None
         
         # Load and normalize shapes
         self._load_models()
@@ -240,6 +271,42 @@ class CADComparisonRenderer:
         self._calculate_view_limits(same_shapes=same_file)
         #self._compute_slice_graphs()
 
+    def _reframe_for_orientation(self, orientation_basis, view_index, view_key):
+        """Fit the window to the model as it is currently turned.
+
+        Only when the orientation has actually changed. Recomputing on every
+        render would throw away panning, since the camera centre has to be reset
+        to the middle of the new extent: there is nowhere sensible to carry a pan
+        offset to when the model has turned under it.
+
+        Returning to a named view restores that view's precomputed limits, so
+        nothing about the six named views changes.
+        """
+        key = None
+        if not _is_canonical_orientation(view_key, orientation_basis):
+            resolved = _resolve_orientation_basis(orientation_basis)
+            key = (view_index, tuple(np.round(np.concatenate(resolved), 6)))
+        if key == self._orientation_frame_key:
+            return
+        self._orientation_frame_key = key
+
+        if key is None:
+            self.view_limits[view_index] = self._canonical_view_limits[view_index]
+        else:
+            limits = _projected_view_axis_limits(self.shapes[0], view_key, orientation_basis)
+            for other in self.shapes[1:]:
+                other_limits = _projected_view_axis_limits(other, view_key, orientation_basis)
+                limits = [
+                    [min(limits[0][0], other_limits[0][0]), max(limits[0][1], other_limits[0][1])],
+                    [min(limits[1][0], other_limits[1][0]), max(limits[1][1], other_limits[1][1])],
+                ]
+            self.view_limits[view_index] = np.array(limits)
+
+        self.view_current_camera_center[view_index] = [
+            float(np.mean(self.view_limits[view_index][0])),
+            float(np.mean(self.view_limits[view_index][1])),
+        ]
+
     def _calculate_view_limits(self, same_shapes=False):
         """Calculate axis limits for all views for both shapes."""
         #view_keys = ["top", "front", "side"]
@@ -283,6 +350,8 @@ class CADComparisonRenderer:
             self.view_current_camera_center[i][1] = (view_limits[i][1][0] + view_limits[i][1][1])/2.0
         
         self.view_limits = np.array(view_limits)
+        self._canonical_view_limits = self.view_limits.copy()
+        self._orientation_frame_key = None
         self.view_current_camera_center = np.array(self.view_current_camera_center)
 
     # Background precompute is CPU-bound and runs in a plain thread, so without
@@ -750,6 +819,9 @@ class CADComparisonRenderer:
         comparison_mode = params.get("mode", "single").lower()
         superposition_mode = params.get("superpositionMode", "outline").lower()
 
+        zoom_level = float(params.get("zoom", 0.0))
+        zoom_level = max(0.0, min(10.0, zoom_level))
+
         if "compose_scrollbar" in params.keys():
             compose_scrollbar = params["compose_scrollbar"]
         else:
@@ -757,6 +829,11 @@ class CADComparisonRenderer:
 
         # Slice-graph mode should never show scrollbars.
         if comparison_mode == "slice-graph":
+            compose_scrollbar = False
+
+        # At zoom_level 0 the whole model extent is already visible, so a
+        # scrollbar would have nothing meaningful to show (#150).
+        if zoom_level == 0.0:
             compose_scrollbar = False
 
         # Define a per-view viewing window. When scrollbars are enabled we reserve
@@ -818,11 +895,17 @@ class CADComparisonRenderer:
         if comparison_mode == "side-by-side":
             view_index = self._get_view_index(view_name_cut)
 
-        zoom_level = float(params.get("zoom", 0.0))
-        zoom_level = max(0.0, min(10.0, zoom_level))
         # Linear zoom mapping: 0 -> full window, 1 -> half, 2 -> one-third, etc.
         zoom_scale = 1.0 / (zoom_level + 1.0)
         camera_move = params.get("move_camera_center", "none")
+
+        # Reframe when the model has been turned off the named views. The limits
+        # for each named view are precomputed from the model's extent along that
+        # view's own axes, so a rotated model projects somewhere else entirely:
+        # pitching a chair to look down on it framed a region it no longer
+        # occupied and rendered an empty display.
+        self._reframe_for_orientation(params.get("orientation"), view_index, view_name)
+
         camera_center = params.get("camera_center")
         if isinstance(camera_center, list) and len(camera_center) == 2:
             self.view_current_camera_center[view_index] = camera_center
@@ -972,6 +1055,9 @@ class CADComparisonRenderer:
             #         self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][1])]
             #)
             print("params", params)
+            # The orientation the viewer is holding the model at. Without this the
+            # renderer only ever saw the six named views, so the roll, pitch and
+            # yaw keys could move the camera but never change the picture.
             img_array, _ = get_single_view(
                 self.shapes[shape_index],
                 self.bbox,
@@ -980,6 +1066,7 @@ class CADComparisonRenderer:
                 render_mode,
                 imposed_ax_limits=imposed_zoom_ax_limits,
                 screen_size=render_screen_size,
+                orientation_basis=params.get("orientation"),
             )
             self.current_cut_depth = 1.0-cut_depth
             self.view_current_axis = view_name
@@ -1177,7 +1264,7 @@ class CADComparisonRenderer:
         if device is None:
             return
         if device.kind == "monarch":
-            self.screen_size = [96, 40]
+            self.screen_size = list(DEFAULT_SCREEN_SIZE)
         if device.kind == "dotpad":
             self.screen_size = [60, 40]
 

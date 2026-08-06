@@ -372,49 +372,11 @@ fieldset label {
     margin-right: 8px;
 }
 
-.announcements-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 10px;
-}
-
-.announcements-header h2 {
-    margin-bottom: 0;
-}
-
 #clear-announcements-btn {
     min-width: auto;
     padding: 8px 12px;
     margin: 0;
     font-size: 0.9em;
-}
-
-#announcement-history {
-    list-style: none;
-    margin: 12px 0 0;
-    padding: 0;
-    max-height: 260px;
-    overflow-y: auto;
-    border: 1px solid #d9e2ec;
-    border-radius: 6px;
-    background: #fff;
-}
-
-#announcement-history li {
-    padding: 8px 12px;
-    border-bottom: 1px solid #eef2f7;
-    font-size: 0.95em;
-}
-
-#announcement-history li:last-child {
-    border-bottom: none;
-}
-
-#announcement-history .announcement-time {
-    color: #596871;
-    margin-right: 8px;
-    font-variant-numeric: tabular-nums;
 }
 
 #current-view, #current-axis {
@@ -460,50 +422,6 @@ fieldset label {
     user-select: none;
 }
 
-/* ---- Announcement toast overlay ---- */
-#announcement-toast {
-    position: fixed;
-    top: 16px;
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(44, 62, 80, 0.94);
-    color: #fff;
-    padding: 10px 24px;
-    border-radius: 8px;
-    font-size: 1.1em;
-    font-weight: 500;
-    z-index: 9999;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.18s ease;
-    max-width: 90vw;
-    text-align: center;
-}
-#announcement-toast.visible {
-    opacity: 1;
-}
-
-/* ---- Announcement duration control ---- */
-#announcement-duration-control {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 6px;
-}
-#announcement-duration-control label {
-    font-size: 0.92em;
-    color: #596871;
-}
-#announcement-duration-control input[type="range"] {
-    width: 120px;
-    height: 6px;
-}
-#announcement-duration-control .duration-value {
-    font-size: 0.92em;
-    font-variant-numeric: tabular-nums;
-    min-width: 32px;
-}
-
 /* Focus indicators – visible only for keyboard (focus-visible) per WCAG 2.4.7 / 2.4.11 */
 button:focus-visible,
 input:focus-visible,
@@ -546,10 +464,6 @@ button:focus-visible {
         border: 2px solid #fff;
     }
 
-    #announcement-toast {
-        border: 2px solid #fff;
-    }
-
     #status-bar .status-label {
         color: #fff;
     }
@@ -563,12 +477,6 @@ button:focus-visible {
 @media (forced-colors: active) {
     #status-bar {
         border: 2px solid ButtonText;
-    }
-
-    #announcement-toast {
-        border: 2px solid ButtonText;
-        background: Canvas;
-        color: CanvasText;
     }
 
     button:focus-visible,
@@ -803,6 +711,43 @@ button:focus-visible {
     }
 }
 
+/* Keyboard shortcuts dialog (#146) */
+#shortcuts-dialog {
+    border: none;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+    max-width: 560px;
+    width: calc(100% - 40px);
+    max-height: calc(100% - 80px);
+    overflow-y: auto;
+    padding: 32px;
+    color: #333;
+}
+
+#shortcuts-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.55);
+}
+
+#shortcuts-dialog h2 {
+    margin: 0 0 8px 0;
+    font-size: 1.4em;
+    color: #2c3e50;
+}
+
+#shortcuts-dialog h3 {
+    margin: 20px 0 8px 0;
+    font-size: 1.05em;
+    color: #2c3e50;
+}
+
+#shortcuts-dialog h3:first-of-type {
+    margin-top: 16px;
+}
+
+#shortcuts-dialog .shortcuts-list {
+    margin: 0;
+}
+
 /* Session consent dialog */
 #session-consent-dialog {
     border: none;
@@ -886,6 +831,16 @@ button:focus-visible {
     outline: none;
 }
 
+/*
+ * The shortcuts dialog focuses its own heading on open (tabindex=-1), per the ARIA
+ * APG dialog pattern's guidance for read-only content: land on a static element at
+ * the top of the dialog rather than the first interactive control, so reading
+ * forward from there covers the whole dialog instead of starting at the end.
+ */
+#shortcuts-heading:focus {
+    outline: none;
+}
+
 .consent-actions {
     display: flex;
     gap: 12px;
@@ -933,7 +888,7 @@ button:focus-visible {
 
 /* ---------------------------------------------------------------------------
    Simplified workshop viewer (/workshop or ?ui=simple).
-   Show only the core control sections: View, Depth, Rendering Mode, Zoom,
+   Show only the core control sections: Orientation, Depth, Rendering Mode, Zoom,
    Monarch and DotPad. Everything else in the left column is hidden;
    the right-column tactile preview (not a .section) stays visible.
    The output-device chooser is deliberately absent: the display that is
@@ -942,7 +897,7 @@ button:focus-visible {
    choice is redundant here and only adds a step that can be set wrong.
    --------------------------------------------------------------------------- */
 body.simple-ui .section { display: none; }
-body.simple-ui section[aria-labelledby="view-select-heading"],
+body.simple-ui section[aria-labelledby="orientation-heading"],
 body.simple-ui section[aria-labelledby="slice-heading"],
 body.simple-ui section[aria-labelledby="render-heading"],
 body.simple-ui section[aria-labelledby="zoom-select-heading"],

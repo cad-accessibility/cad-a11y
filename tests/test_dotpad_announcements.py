@@ -138,7 +138,6 @@ def test_viewer_forwards_normalized_announcements_to_tactile_hook():
     assert "window.onTactileAnnouncement({" in source
     assert "message: normalizedMessage" in source
     assert "politeness" in source
-    assert "isAlert" in source
 
 
 def test_dotpad_text_cell_count_uses_connected_device_with_fallback():

@@ -21,6 +21,8 @@ import logging
 import os
 import queue as _queue_module
 import re
+import shutil
+import sqlite3
 import sys
 import threading
 import time
@@ -47,7 +49,7 @@ from .braille_display import (
     _DOTPAD_LINES,
     _DOTPAD_COLS,
 )
-from .cad_comparison_lib import CADComparisonRenderer
+from .cad_comparison_lib import DEFAULT_SCREEN_SIZE, CADComparisonRenderer
 from src.converter.render_low_res import dilate_mask, raised_ink_mask, save_binary_array_as_vector_pdf
 
 try:
@@ -81,6 +83,11 @@ else:
     # app/server.py lives one level below the project root.
     REPO_ROOT = Path(__file__).resolve().parent.parent
 MODEL_DIR = REPO_ROOT / "data" / "models"
+# Tracked built-in models ship here, outside any Docker volume mount, and are
+# copied into MODEL_DIR at startup by _seed_builtin_models(). Keeping the source
+# outside the mount is what lets built-ins added later reach a server whose
+# models volume already exists — Docker only seeds a named volume when empty.
+BUILTIN_SOURCE_DIR = REPO_ROOT / "builtin_models"
 RENDERS_DIR = REPO_ROOT / "data" / "renders"
 STUDY_LOG_DIR = REPO_ROOT / "data" / "logs"
 
@@ -112,16 +119,49 @@ def _is_writable_directory(path: Path) -> bool:
         return False
 
 
+# A writability probe touches the disk twice, and /health checks four directories
+# on an endpoint that is unauthenticated by design and polled every 30 seconds by
+# the container healthcheck. Cache briefly so traffic cannot turn a health check
+# into disk load, while staying short enough that a mount going read-only is
+# still reported within one healthcheck interval.
+_WRITABILITY_CACHE_TTL = 10.0  # seconds
+_writability_cache: dict[str, tuple[float, bool]] = {}
+_writability_cache_lock = threading.Lock()
+
+
+def _is_writable_directory_cached(path: Path) -> bool:
+    key = str(path)
+    now = time.monotonic()
+    with _writability_cache_lock:
+        cached = _writability_cache.get(key)
+        if cached is not None and now - cached[0] < _WRITABILITY_CACHE_TTL:
+            return cached[1]
+
+    # Probed outside the lock: a hung filesystem should not block every other
+    # caller, and a duplicated probe is harmless.
+    writable = _is_writable_directory(path)
+    with _writability_cache_lock:
+        _writability_cache[key] = (now, writable)
+    return writable
+
+
 def _resolve_upload_dir() -> Path:
+    """Resolve the directory uploads are written to.
+
+    MODEL_DIR is deliberately NOT a candidate. Built-in vs. uploaded is decided
+    by which directory a file sits in (see _is_builtin), so the two must never
+    be the same directory. MODEL_DIR used to be the first candidate, which meant
+    that merely making it writable — as the move to Docker named volumes did in
+    #96 — silently collapsed the distinction and emptied the model dropdown (#102).
+    """
     env_dir = os.getenv("UPLOAD_MODEL_DIR", "").strip()
     candidates: list[Path] = []
     if env_dir:
         candidates.append(Path(env_dir))
     candidates.extend(
         [
-            MODEL_DIR,
             REPO_ROOT / "data" / "uploads",
-            Path("/tmp/cad-a11y/models"),
+            Path("/tmp/cad-a11y/uploads"),
         ]
     )
 
@@ -130,10 +170,55 @@ def _resolve_upload_dir() -> Path:
     for candidate in deduped_candidates:
         if _is_writable_directory(candidate):
             return candidate
-    return MODEL_DIR
+    raise RuntimeError(
+        "No writable upload directory found. Tried: "
+        + ", ".join(str(c) for c in deduped_candidates)
+        + ". Set UPLOAD_MODEL_DIR to a writable path."
+    )
 
 
 UPLOAD_DIR = _resolve_upload_dir()
+
+# Structural invariant, not a preference. If uploads ever shared a directory with
+# built-ins, every uploaded file would be classified public. Fail loudly at start
+# rather than silently reshaping who can see what.
+if UPLOAD_DIR.resolve() == MODEL_DIR.resolve():
+    raise RuntimeError(
+        f"UPLOAD_MODEL_DIR ({UPLOAD_DIR}) must not be the built-in model "
+        f"directory ({MODEL_DIR}); uploads would be served to every visitor."
+    )
+
+
+def _seed_builtin_models() -> int:
+    """Copy tracked built-ins into MODEL_DIR, skipping files already present.
+
+    Idempotent and safe on every boot. Docker seeds a named volume from the image
+    only while the volume is empty, so without this a built-in added to the image
+    later would never appear on an existing deployment (#124).
+    """
+    if not BUILTIN_SOURCE_DIR.is_dir():
+        return 0
+    try:
+        MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as error:
+        _log(f"Could not create model directory {MODEL_DIR}: {error}", force=True)
+        return 0
+
+    copied = 0
+    for source in sorted(BUILTIN_SOURCE_DIR.iterdir()):
+        if not source.is_file() or source.name.startswith("."):
+            continue
+        target = MODEL_DIR / source.name
+        if target.exists():
+            continue
+        try:
+            shutil.copy2(source, target)
+            copied += 1
+        except Exception as error:
+            _log(f"Could not seed built-in model {source.name}: {error}", force=True)
+    if copied:
+        _log(f"Seeded {copied} built-in model(s) into {MODEL_DIR}", force=True)
+    return copied
 
 
 def _resolve_braille_log_path() -> Path:
@@ -332,6 +417,13 @@ def _renderer_stdio_guard():
     return contextlib.nullcontext(), contextlib.nullcontext()
 
 
+# The extensions a model file can carry, compared case-insensitively. Discovery
+# below still globs a fixed set of spellings, so a file named .STL is not indexed
+# and cannot be opened; _stem_is_taken uses this set anyway, so such a file still
+# reserves its name and cannot be shadowed by an upload.
+MODEL_SUFFIXES = frozenset({".stl", ".step"})
+
+
 def _discover_models() -> list[Path]:
     patterns = ("*.stl", "*.step", "*.STEP")
     models: list[Path] = []
@@ -350,19 +442,49 @@ def _find_default_model() -> Path:
     raise FileNotFoundError(f"No .stl/.step model found in {MODEL_DIR}")
 
 
+# Seed before the first discovery so a fresh MODEL_DIR (or a Docker volume that
+# predates a newly added built-in) is populated before anything globs it.
+_seed_builtin_models()
+
 DEFAULT_MODEL = _find_default_model()
 AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
 MODEL_NAME_LIST = [model_path.stem for model_path in AVAILABLE_MODELS]
-# Stems of models that ship with the repository. When UPLOAD_DIR resolves to a
-# different directory than MODEL_DIR, files in MODEL_DIR are the built-ins. When
-# they're the same directory we can't distinguish built-ins from persisted uploads,
-# so we return [] — the client treats null/empty as "show all", avoiding a privacy
-# leak where uploaded files appear as built-ins visible to every session.
-BUILTIN_MODEL_STEMS: list[str] = (
-    [p.stem for p in AVAILABLE_MODELS if p.parent == MODEL_DIR]
-    if MODEL_DIR.resolve() != UPLOAD_DIR.resolve()
-    else []
-)
+
+_MODEL_DIR_RESOLVED = MODEL_DIR.resolve()
+
+
+def _is_builtin(model_path: Path) -> bool:
+    """True if this model ships with the app and is therefore public.
+
+    Classification is by directory: built-ins live in MODEL_DIR, uploads in
+    UPLOAD_DIR, and _resolve_upload_dir plus the startup guard above make it
+    impossible for those to be the same place. This replaces a module-level
+    BUILTIN_MODEL_STEMS that was computed once at import while the model list
+    itself kept refreshing, so a model added at runtime was never classifiable.
+    """
+    try:
+        return model_path.parent.resolve() == _MODEL_DIR_RESOLVED
+    except OSError:
+        return False
+
+
+def _builtin_model_stems() -> list[str]:
+    """Stems of the currently discovered built-in models."""
+    return [p.stem for p in AVAILABLE_MODELS if _is_builtin(p)]
+
+
+def _stem_is_taken(stem: str) -> bool:
+    """True if any model in either directory already uses this stem.
+
+    Built-ins and uploads live in different directories now, so two files can
+    share a stem without ever colliding on a path. Stems have to stay unique:
+    they are how a model is named to the client.
+    """
+    for directory in (MODEL_DIR, UPLOAD_DIR):
+        for existing in directory.glob(f"{stem}.*"):
+            if existing.suffix.lower() in MODEL_SUFFIXES:
+                return True
+    return False
 _model_list_last_refresh: float = 0.0
 _MODEL_LIST_REFRESH_INTERVAL = 2.0  # seconds
 
@@ -508,16 +630,53 @@ def _next_braille_send_sequence() -> int:
         return braille_send_sequence
 
 
+def _target_grid(params: dict[str, Any]) -> tuple[int, int] | None:
+    """The display grid the client named, or None if it named none.
+
+    One reader for `target_pixel_width`/`target_pixel_height`, so the render, the
+    payload sent to the display and both previews cannot disagree about the size
+    they are describing.
+
+    Always a (width, height) tuple or None, never a list: it is a fixed pair that
+    nothing should append to, and it ends up inside a cache key. A tuple and a
+    list of the same numbers serialise identically through json.dumps, so mixing
+    them could not split the cache, but a single stated convention beats relying
+    on that.
+
+    None means the caller named no size and should use the renderer's own grid,
+    DEFAULT_SCREEN_SIZE. Every consumer guards for it rather than substituting a
+    size the caller did not ask for.
+    """
+    width = params.get("target_pixel_width")
+    height = params.get("target_pixel_height")
+    if width is None or height is None:
+        return None
+    try:
+        width, height = int(width), int(height)
+    except (TypeError, ValueError):
+        return None
+    return (width, height) if width > 0 and height > 0 else None
+
+
 def _make_hifi_preview(
     params: dict[str, Any], model_index: int, preview_width: int = 800, *, use_cache: bool = True
 ) -> tuple[str, list[int]]:
     """Render at high resolution and return (base64_png, [height, width]).
 
     Return strict binary black-on-white preview (no grayscale).
+
+    The shape follows the grid the client named, so this preview describes the
+    same display as the tactile one beside it. It used to take its aspect from
+    the renderer's default screen size, which meant that with a DotPad attached
+    the tactile preview reported the device while this one silently kept showing
+    the 96x40 default (#52).
     """
     engine = get_or_create_renderer(model_index)
-    orig = list(engine.screen_size) if engine.screen_size else [96, 40]
-    w0, h0 = max(1, orig[0]), max(1, orig[1] if len(orig) > 1 else orig[0])
+    grid = _target_grid(params)
+    if grid is None:
+        orig = list(engine.screen_size) if engine.screen_size else list(DEFAULT_SCREEN_SIZE)
+        grid = (max(1, orig[0]), max(1, orig[1] if len(orig) > 1 else orig[0]))
+    w0, h0 = grid
     hifi_h = max(1, int(round(preview_width * h0 / w0)))
 
     payload = _get_braille_payload_at_size(
@@ -541,7 +700,7 @@ def _render_and_send(
     engine = get_or_create_renderer(model_index)
     out_guard, err_guard = _renderer_stdio_guard()
     with render_lock:
-        original_screen_size = list(engine.screen_size) if engine.screen_size else [96, 40]
+        original_screen_size = list(engine.screen_size) if engine.screen_size else list(DEFAULT_SCREEN_SIZE)
         if render_size is not None:
             engine.screen_size = [max(1, int(render_size[0])), max(1, int(render_size[1]))]
         try:
@@ -719,7 +878,12 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
                "camera_center",
                "world_camera_center",
                "compose_scrollbar", "compose_cursor", "cursor_col", "cursor_row", "cursor_state", "compose_slicegraph", "show_view_info_box",
-               "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth", "slicegraph_mode")
+               "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth", "slicegraph_mode",
+               # The frame is drawn at this size, so two requests that differ only
+               # here are different renders. Omitting it meant connecting a display
+               # returned the previous size's frame from cache, and the preview then
+               # reported that stale size against the new display's name.
+               "target_pixel_width", "target_pixel_height")
     fp_dict = {k: merged.get(k) for k in fp_keys}
     fp_dict["model_index"] = model_index
     fingerprint = hashlib.sha256(json.dumps(fp_dict, sort_keys=True).encode()).hexdigest()
@@ -750,6 +914,8 @@ def _build_quantized_render_key(params: dict[str, Any], model_index: int) -> str
         "slicegraph_view": str(params.get("slicegraph_view", "")).lower(),
         "slicegraph_depth": round(float(params.get("slicegraph_depth", 0)), 0),
         "slicegraph_mode": str(params.get("slicegraph_mode", "difference")).lower(),
+        # Same reason as the exact fingerprint: this decides the size drawn.
+        "target_grid": _target_grid(params),
     }
     return hashlib.sha256(json.dumps(quantized, sort_keys=True).encode()).hexdigest()
 
@@ -826,7 +992,7 @@ def _render_braille_payload_at_size(
     engine = get_or_create_renderer(model_index)
     out_guard, err_guard = _renderer_stdio_guard()
     with render_lock:
-        original_screen_size = list(engine.screen_size) if engine.screen_size else [96, 40]
+        original_screen_size = list(engine.screen_size) if engine.screen_size else list(DEFAULT_SCREEN_SIZE)
         engine.screen_size = [max(1, int(pixel_width)), max(1, int(pixel_height))]
         try:
             with out_guard, err_guard:
@@ -871,28 +1037,25 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     """Render, send to braille display, and build JSON response dict."""
     _refresh_model_list_if_stale()
     model_index = _normalize_model_index(params.get("current_model"))
-    # A client that names a target pixel size (i.e. one with a tactile display
-    # attached) used to cost two full renders per interaction: one at the default
-    # grid, whose payload only fed telemetry, and a second at the device size that
-    # actually reached the display. Render once at the size the client asked for
-    # and let it serve both. The Monarch path is excluded because its cell packing
-    # below assumes the default grid.
-    target_width = params.get("target_pixel_width")
-    target_height = params.get("target_pixel_height")
-    is_monarch = str(params.get("output_device", "")).strip().lower() == "monarch_hid"
-
-    render_size: tuple[int, int] | None = None
-    if not is_monarch and target_width is not None and target_height is not None:
-        try:
-            if int(target_width) > 0 and int(target_height) > 0:
-                render_size = (int(target_width), int(target_height))
-        except (TypeError, ValueError):
-            render_size = None
+    # A client that names a target pixel size used to cost two full renders per
+    # interaction: one at the default grid, whose payload only fed telemetry, and
+    # a second at the device size that actually reached the display. Render once
+    # at the size the client asked for and let it serve both.
+    #
+    # The Monarch used to be excluded here, on the grounds that its cell packing
+    # assumes the default grid. It does, and it still gets it: a Monarch is 48
+    # cells by 10 lines and a braille cell is 2x4 pixels, so its size *is* 96x40.
+    # Excluding it was also counterproductive, because leaving render_size unset
+    # is precisely what sent it down the second-render path it was meant to avoid.
+    render_size = _target_grid(params)
 
     rendered, bbox, braille_payload = _render_and_send(
         params, source=source, model_index=model_index, render_size=render_size
     )
 
+    # What the previews show is the payload that reaches the display, so the two
+    # cannot describe different things. There is no second render to reconcile:
+    # the frame was drawn at the requested size in the first place.
     preview_payload = braille_payload
 
     if render_size is not None:
@@ -907,20 +1070,6 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
             ),
             braille_payload,
         )
-    elif target_width is not None and target_height is not None:
-        try:
-            target_width = int(target_width)
-            target_height = int(target_height)
-            if target_width > 0 and target_height > 0:
-                preview_payload = _get_braille_payload_at_size(
-                    params,
-                    model_index=model_index,
-                    pixel_width=target_width,
-                    pixel_height=target_height,
-                    use_cache=True,
-                )
-        except (TypeError, ValueError):
-            pass
     session_id = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE)) if has_request_context() else None
     db.record_render(
         session_id=session_id,
@@ -1172,8 +1321,81 @@ def home():
                 "/session/models": "GET - List uploaded models for current session",
                 "/models/<filename>": "DELETE - Delete an uploaded model",
                 "/events/track": "POST - Record a client-side interaction event",
+                "/health": "GET - Deployment self-check: storage layout, writability, database",
             },
         }
+    )
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    """Report whether this deployment is configured and working correctly.
+
+    Exists so the servers can be checked without shell access to them, which we
+    do not have. Everything here is something that has actually broken in
+    production: the database the app could not open during the 2026-07-22
+    outage, and the storage layout that made uploads public and emptied the
+    model list (#102).
+
+    Deliberately reports counts and booleans only, never paths, filenames or
+    model names, so it is safe to expose on a public deployment.
+    """
+    _refresh_model_list_if_stale()
+
+    # Cached: this endpoint is unauthenticated by design and polled every 30s by
+    # the container healthcheck, and each probe writes and unlinks a file.
+    writable = {
+        "models": _is_writable_directory_cached(MODEL_DIR),
+        "uploads": _is_writable_directory_cached(UPLOAD_DIR),
+        "renders": _is_writable_directory_cached(RENDERS_DIR),
+        "logs": _is_writable_directory_cached(STUDY_LOG_DIR),
+    }
+
+    # Opening the file is the thing that failed in the 2026-07-22 outage, and it
+    # is a separate question from whether the schema has been created: init_db()
+    # runs from main(), so a database can be perfectly openable and still empty.
+    # Conflating the two reports a healthy deployment as broken.
+    try:
+        with contextlib.closing(sqlite3.connect(db.DB_PATH)) as conn:
+            conn.execute("SELECT 1").fetchone()
+            initialised = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'"
+            ).fetchone()
+        database = "ok" if initialised else "uninitialised"
+    except Exception:
+        database = "error"
+
+    shipped = 0
+    if BUILTIN_SOURCE_DIR.is_dir():
+        shipped = sum(
+            1 for p in BUILTIN_SOURCE_DIR.iterdir() if p.is_file() and not p.name.startswith(".")
+        )
+    public_models = len(_builtin_model_stems())
+
+    storage_separated = UPLOAD_DIR.resolve() != MODEL_DIR.resolve()
+    checks = {
+        # The invariant the built-in/upload distinction rests on (#102).
+        "storage_separated": storage_separated,
+        "builtin_models_shipped": shipped,
+        "public_models": public_models,
+        # Files public despite not shipping with the app: left over from before
+        # uploads were separated. Not an error, but they are visible to everyone.
+        "unexpected_public_models": max(0, public_models - shipped),
+        "writable": writable,
+        "database": database,
+    }
+
+    healthy = (
+        storage_separated
+        and all(writable.values())
+        # "uninitialised" still means the file opened, which is what the outage
+        # broke. The schema appears as soon as the server's own startup runs.
+        and database in ("ok", "uninitialised")
+        and shipped > 0
+        and public_models >= shipped
+    )
+    return jsonify({"status": "ok" if healthy else "degraded", "checks": checks}), (
+        200 if healthy else 503
     )
 
 
@@ -1514,6 +1736,7 @@ def _save_and_index_stl(
     *,
     session_id: str | None = None,
     original_name: str | None = None,
+    public: bool = False,
 ) -> tuple[str, Path, int]:
     """Persist an uploaded STL/STEP file and refresh the in-memory model list.
 
@@ -1521,6 +1744,12 @@ def _save_and_index_stl(
     or ``dest.write_bytes``). Shared by /upload and /ingest so both apply the
     identical sanitisation, collision-rename, DB registration and cache
     invalidation under the same locks.
+
+    ``public=True`` writes into MODEL_DIR instead of UPLOAD_DIR, making the file a
+    built-in visible to everyone. Only /ingest uses it: an ingested model has no
+    browser session to own it, so under the upload rules it would be visible to
+    nobody and the workshop flow would break. /ingest is slated for removal, and
+    this carve-out goes with it.
 
     Returns ``(filename, dest_path, new_index)``. Raises ``ValueError`` for a
     missing name or unsupported extension; save/registration errors propagate.
@@ -1534,13 +1763,20 @@ def _save_and_index_stl(
     if suffix not in _ALLOWED_EXTENSIONS:
         raise ValueError(f"Unsupported file type '{suffix}'. Use .stl or .step")
 
-    dest = UPLOAD_DIR / filename
-    if dest.exists():
+    target_dir = MODEL_DIR if public else UPLOAD_DIR
+    # Uniqueness is checked on the stem across BOTH directories, not just on
+    # whether the destination path is free. Models are addressed by stem on the
+    # wire, and the client tells built-ins apart from uploads by stem too, so an
+    # upload allowed to reuse a built-in's stem would both collide and be shown
+    # to every visitor. Before the storage split a plain dest.exists() sufficed,
+    # because everything lived in one directory.
+    dest = target_dir / filename
+    if dest.exists() or _stem_is_taken(Path(filename).stem):
         stem = Path(filename).stem
         filename = f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
-        dest = UPLOAD_DIR / filename
+        dest = target_dir / filename
 
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    target_dir.mkdir(parents=True, exist_ok=True)
     save_fn(dest)
 
     if session_id:
@@ -1667,6 +1903,8 @@ def ingest_model():
             requested_name,
             session_id=user_id,
             original_name=requested_name,
+            # Ingested models stay public; see the `public` note on the helper.
+            public=True,
         )
     except ValueError as err:
         return jsonify({"status": "error", "message": str(err)}), 400
@@ -1912,7 +2150,7 @@ def get_data():
             "slider_value": state.slider_value,
             "current_model": state.current_model_index,
             "model_list": MODEL_NAME_LIST,
-            "builtin_model_stems": BUILTIN_MODEL_STEMS,
+            "builtin_model_stems": _builtin_model_stems(),
         }
     return jsonify(payload), 200
 
@@ -1937,7 +2175,7 @@ def render_export_source():
         with render_lock:
             original_screen_size = list(engine.screen_size)
             if not original_screen_size or original_screen_size[0] <= 0:
-                original_screen_size = [96, 40]
+                original_screen_size = list(DEFAULT_SCREEN_SIZE)
             aspect_ratio = float(original_screen_size[1]) / float(original_screen_size[0])
             export_height = max(1, int(round(export_width * aspect_ratio)))
             engine.screen_size = [export_width, export_height]
