@@ -1219,6 +1219,15 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     }
     if bbox is not None:
         response["bbox"] = bbox
+    # Only meaningful for a request that actually asked for the slice graph:
+    # slicegraph_ready otherwise carries whatever a previous request left it at,
+    # which would misreport for one that wasn't building a graph. The render just
+    # done cached this model's engine, so reading the flag is a lookup, not a build.
+    if params.get("compose_slicegraph"):
+        with models_lock:
+            engine = renderers_by_model.get(str(_path_for_stem(model_stem)))
+        if engine is not None and not getattr(engine, "slicegraph_ready", True):
+            response["slicegraph_ready"] = False
     if str(params.get("output_device", "")).strip().lower() == "monarch_hid":
         cells = _pixels_to_braille_cells(braille_payload, lines=_MONARCH_LINES, cols=_MONARCH_COLS)
         response["monarch_cells_hex"] = cells.hex()
@@ -1425,7 +1434,17 @@ def render_view():
         merged_params, model_stem, is_pan_request, fingerprint = _prepare_render_params(request.get_json(silent=True))
         quantized_cache_key = _build_quantized_render_key(merged_params, model_stem)
 
-        if not is_pan_request and merged_params.get("print_view") is not True:
+        # A slice-graph response is not a pure function of these params: the
+        # precompute it plots finishes in the background, independent of any
+        # request, so identical params legitimately produce a different (correct)
+        # response once that finishes. A response cached while precompute was
+        # still pending would then be served forever, even once the real graph
+        # was ready, because nothing here knows precompute state changed on its
+        # own. Skip the cache entirely for these; the render is cheap once
+        # precompute is done, so this only costs the redundant plot.
+        skip_cache = bool(merged_params.get("compose_slicegraph"))
+
+        if not skip_cache and not is_pan_request and merged_params.get("print_view") is not True:
             cached_response = _get_quantized_cached_response(quantized_cache_key)
             if cached_response is not None:
                 cached_response["model_list"] = MODEL_NAME_LIST
@@ -1457,13 +1476,44 @@ def render_view():
         # Reads were already guarded; writes were not, so a pan stored its result
         # under the unpanned key and the next window to ask got it. The request
         # after a pan carries the new centre explicitly and caches correctly.
-        cacheable = not is_pan_request and merged_params.get("print_view") is not True
+        cacheable = not skip_cache and not is_pan_request and merged_params.get("print_view") is not True
         if cacheable:
             _set_quantized_cached_response(quantized_cache_key, response)
         return jsonify(response), 200
     except Exception as error:
         _log(f"Error rendering: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
+
+
+@app.route("/render/status", methods=["POST"])
+def render_status():
+    """Per-model async-work status — today, whether slice-graph precompute has
+    finished. A cheap, render_lock-free check, deliberately separate from
+    /render itself (unlike /health, this is per-model, so it can't live there:
+    /health is a fixed, unauthenticated, model-name-free deployment check
+    polled by infra, not something with per-viewer-session context).
+
+    The client polls this while waiting for a locked slice graph's first real
+    render (see viewer.js's scheduleSliceGraphStatusCheck). Polling /render
+    itself for this would repeatedly re-run the same, non-trivial
+    matplotlib/shapely-based render() under render_lock — real CPU competing
+    with the very background precompute thread the poll is waiting on, which
+    can starve it indefinitely under constrained CPU. This only reads a flag
+    already set by the background thread; it never renders and never blocks
+    on render_lock, so it cannot compete with the thing it's checking on.
+
+    Looks the renderer up directly rather than through get_or_create_renderer,
+    so calling this can't itself construct a renderer (and thus can't be the
+    thing that kicks off a mesh load) for a model nobody has actually rendered
+    yet — "not ready" is the correct answer for that case anyway.
+    """
+    data = request.get_json(silent=True) or {}
+    model_stem = _resolve_model_stem(data.get("model", data.get("current_model")))
+    with models_lock:
+        engine = renderers_by_model.get(str(_path_for_stem(model_stem)))
+    slice_graphs_ready = bool(engine is not None and getattr(engine, "_slice_graphs_ready", False))
+    return jsonify({"slice_graphs_ready": slice_graphs_ready}), 200
+
 
 @app.route("/render/fit-view", methods=["POST"])
 def fit_render_view():
@@ -2062,7 +2112,13 @@ def render_preview():
         _refresh_model_list_if_stale()
         merged_params, model_stem, is_pan_request, _fingerprint = _prepare_render_params(request.get_json(silent=True))
         preview_width = _coerce_positive_int(merged_params.get("preview_width", 800), 800)
-        use_cache = not is_pan_request and merged_params.get("print_view") is not True
+        use_cache = (
+            not is_pan_request
+            and merged_params.get("print_view") is not True
+            # See render_view(): a slice-graph output is time-dependent
+            # (precompute finishes on its own), so it must not be cached.
+            and not merged_params.get("compose_slicegraph")
+        )
         preview_b64, preview_shape = _make_hifi_preview(
             merged_params,
             model_stem,
@@ -2100,7 +2156,13 @@ def render_dotpad_hex():
         pixel_width  = dotpad_cols * 2
         pixel_height = dotpad_rows * 4
 
-        use_cache = not is_pan_request and merged_params.get("print_view") is not True
+        use_cache = (
+            not is_pan_request
+            and merged_params.get("print_view") is not True
+            # See render_view(): a slice-graph output is time-dependent
+            # (precompute finishes on its own), so it must not be cached.
+            and not merged_params.get("compose_slicegraph")
+        )
         braille_payload = _get_braille_payload_at_size(
             merged_params,
             model_stem=model_stem,
