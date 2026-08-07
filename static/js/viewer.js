@@ -2553,7 +2553,7 @@ document.addEventListener('change', function(e) {
     }
 });
 
-// Output device radios (Monarch, DotPad, Auto)
+// Output device radios (Monarch, DotPad)
 document.addEventListener('change', function(e) {
     if (e.target && e.target.matches('input[name="output-device"]')) {
         if (e.target.checked) {

@@ -53,10 +53,9 @@
                 await monarchHidDevice.open();
             }
             setStatus(`Connected: ${monarchHidDevice.productName || 'Monarch'}`);
-            // Only flip the connection flag; leave the output-device radio as the
-            // user set it. getEffectiveOutputDevice() already routes to the Monarch
-            // when it's connected and the user's choice is 'monarch' or 'auto', so
-            // connecting shouldn't override an explicit selection.
+            // A successful connect selects Monarch as the output device and syncs
+            // the radios to match (see setMonarchHidConnected in viewer.js), so
+            // output routes to the display that was just connected.
             if (typeof setMonarchHidConnected === 'function') setMonarchHidConnected(true);
             if (typeof window.announce === 'function') window.announce('Monarch connected via USB.');
             // A Monarch is 48 cells x 10 lines and a braille cell is 2x4 pixels,
