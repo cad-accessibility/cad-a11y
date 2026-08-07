@@ -30,7 +30,6 @@ import threading
 import time
 import webbrowser
 from collections import OrderedDict
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
@@ -51,7 +50,7 @@ from .braille_display import (
     _DOTPAD_LINES,
     _DOTPAD_COLS,
 )
-from .cad_comparison_lib import DEFAULT_SCREEN_SIZE, CADComparisonRenderer
+from .cad_comparison_lib import DEFAULT_SCREEN_SIZE, CADComparisonRenderer, RenderResult
 from src.converter.render_low_res import dilate_mask, raised_ink_mask, save_binary_array_as_vector_pdf
 
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
@@ -567,6 +566,9 @@ def _forget_renderer(model_path: Path) -> None:
     engine = renderers_by_model.pop(str(model_path), None)
     if engine is None:
         return
+    # Tell the background precompute (if it is still running) that this model is
+    # gone, so it does not write its cache file back after we unlink it here.
+    engine._discarded = True
     with contextlib.suppress(Exception):
         Path(engine.cache_path).unlink(missing_ok=True)
 
@@ -648,6 +650,13 @@ def start_model_warmup() -> None:
         models = list(AVAILABLE_MODELS)
     for model_path in models:
         enqueue_model_for_warmup(model_path)
+    if len(models) > RENDERER_CACHE_MAX:
+        _log(
+            f"Warming {len(models)} models but RENDERER_CACHE_MAX is "
+            f"{RENDERER_CACHE_MAX}: the renderer cache will start evicting models "
+            f"it just warmed. Raise RENDERER_CACHE_MAX to at least the model count.",
+            force=True,
+        )
     _log(f"Warming {len(models)} model(s) in the background", force=True)
 
 
@@ -786,7 +795,6 @@ def _make_hifi_preview(
     the tactile preview reported the device while this one silently kept showing
     the 96x40 default (#52).
     """
-    engine = get_or_create_renderer(model_stem)
     grid = _target_grid(params)
     if grid is None:
         grid = DEFAULT_SCREEN_SIZE
@@ -808,7 +816,7 @@ def _make_hifi_preview(
 def _render_and_send(
     params: dict[str, Any], *, source: str, model_stem: str,
     render_size: tuple[int, int] | None = None,
-) -> tuple[np.ndarray, list[float] | None, np.ndarray, Any]:
+) -> tuple[np.ndarray, list[float] | None, np.ndarray, RenderResult]:
     engine = get_or_create_renderer(model_stem)
     out_guard, err_guard = _renderer_stdio_guard()
     grid = None
@@ -851,7 +859,7 @@ def _render_and_send(
     return rendered, bbox, braille_payload, result
 
 
-def _save_print_if_requested(params: dict[str, Any], result: Any, img_data: np.ndarray) -> None:
+def _save_print_if_requested(params: dict[str, Any], result: RenderResult, img_data: np.ndarray) -> None:
     if not params.get("print_view"):
         return
 
@@ -1313,6 +1321,7 @@ def home():
             "message": "Accessible 3D Viewer server",
             "endpoints": {
                 "/render": "POST - Render CAD view with parameters",
+                "/render/fit-view": "POST - Render with the model framed to fit the display",
                 "/models": "GET - List available models",
                 "/upload": "POST - Upload an STL or STEP model file",
                 "/ingest": "POST - Ingest an STL from an external tool; optional first_name, returns a workshop_url + user_id",
@@ -2141,7 +2150,7 @@ def main() -> int:
     _log(f"Upload directory: {UPLOAD_DIR}", force=True)
     _log(f"Upload directory writable: {_is_writable_directory(UPLOAD_DIR)}", force=True)
     _log(f"Models found: {len(AVAILABLE_MODELS)}", force=True)
-    _log("Endpoints: POST /render, POST /command, GET /get_data", force=True)
+    _log("Endpoints: POST /render, GET /get_data", force=True)
     _log(f"Braille send logs: {BRAILLE_LOG_PATH}", force=True)
     if QUIET_MODE:
         _log("Output mode: quiet (set SERVER_VERBOSE=1 for debug logs)", force=True)

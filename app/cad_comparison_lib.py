@@ -583,6 +583,12 @@ class CADComparisonRenderer:
         Best effort. A model that cannot be cached still works, just slowly, so a
         read-only or full disk must not break rendering.
         """
+        # The model may have been deleted (its renderer forgotten) while this
+        # precompute was still running. Writing now would leave an orphan cache
+        # file for a model that no longer exists.
+        if getattr(self, "_discarded", False):
+            return
+
         cache_payload = {
             "cache_version": self.cache_version,
             "model_signature": signature,
