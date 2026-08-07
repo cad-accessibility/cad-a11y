@@ -87,3 +87,41 @@ def test_a_print_names_its_file_from_the_render_that_made_it():
     assert helper, "_save_print_if_requested not found"
     assert "result." in helper.group(0), "the filename is not built from the render result"
     assert "engine." not in helper.group(0), "still reading values off the shared engine"
+
+
+def test_the_render_cache_key_covers_everything_render_reads():
+    """The quantized render key is a hand-maintained list of the params that change
+    the image, and the bug this PR fixed was four of them missing from it. Catch
+    the next omission by construction: every param render() reads must be in the
+    key, or in the small set deliberately excluded below with a reason.
+
+    Only render()'s own source is scanned, so a param read solely inside a helper
+    it calls would slip through; the direct surface is where this drift happened.
+    """
+    import inspect
+
+    import app.cad_comparison_lib as cad_lib
+
+    def _param_keys(source: str) -> set[str]:
+        return set(re.findall(r'params(?:\.get\(|\[)["\'](\w+)["\']', source))
+
+    render_reads = _param_keys(inspect.getsource(cad_lib.CADComparisonRenderer.render))
+
+    key_fn = re.search(r"def _build_quantized_render_key\(.*?\n(?=\ndef )", SERVER_SOURCE, re.S)
+    assert key_fn, "could not locate _build_quantized_render_key"
+    keyed = _param_keys(key_fn.group(0))
+
+    # Deliberately not in the key, each with why leaving it out is safe.
+    EXCLUDED = {
+        # The pan verb. It resolves to a new camera_center (which IS keyed), and a
+        # separate guard stops a panned frame being written under an unpanned key,
+        # so keying the verb itself would only prevent legitimate cache reuse.
+        "move_camera_center",
+    }
+
+    missing = render_reads - keyed - EXCLUDED
+    assert not missing, (
+        f"render() reads these params but the quantized cache key ignores them, so "
+        f"changing any would serve a stale cached image: {sorted(missing)}. Add each "
+        f"to _build_quantized_render_key, or to EXCLUDED with a reason."
+    )

@@ -292,15 +292,39 @@ def test_an_upload_does_not_renumber_a_model_under_an_open_window(client):
 
 
 def test_an_unknown_model_falls_back_rather_than_borrowing_one(client):
-    """There is no process-wide "current model" to fall back to any more, which
-    is what used to hand over whatever another window had selected."""
-    assert _render(client, model="no_such_model_at_all")["status"] == "success"
-    assert _render(client, model=None)["status"] == "success"
+    """There is no process-wide "current model" to fall back to any more, which is
+    what used to hand over whatever another window had selected. Both an unknown
+    name and a missing model resolve to the default, so their renders match the
+    default byte for byte rather than borrowing another window's model."""
+    import app.server as server
+
+    default_render = _render(client, model=server.DEFAULT_MODEL.stem)
+    assert _render(client, model="no_such_model_at_all")["image_base64"] == default_render["image_base64"]
+    assert _render(client, model=None)["image_base64"] == default_render["image_base64"]
 
 
-def test_a_numeric_model_still_resolves(client):
-    """A browser holding an older viewer.js keeps working until it reloads."""
-    assert _render(client, model=None, current_model=0)["status"] == "success"
+def test_a_numeric_model_is_ambiguous_by_position_unlike_a_name(monkeypatch):
+    """Numeric indices are accepted only so an older viewer.js keeps working, and
+    they stay ambiguous by nature: the same index resolves to a different model
+    whenever the model list changes underneath it. This documents that accepted
+    risk explicitly, so nobody reads more protection into the numeric path than
+    the by-name fix actually gives it. A name is immune, shown here alongside.
+    """
+    import pathlib
+
+    import app.server as server
+
+    before = [pathlib.Path("/m/beta.stl"), pathlib.Path("/m/mug.stl")]
+    after = [pathlib.Path("/m/aaa.stl"), pathlib.Path("/m/beta.stl"), pathlib.Path("/m/mug.stl")]
+
+    monkeypatch.setattr(server, "AVAILABLE_MODELS", before)
+    assert server._resolve_model_stem("0") == "beta"
+    assert server._resolve_model_stem("mug") == "mug"
+
+    # A model added ahead of it shifts every later index by one.
+    monkeypatch.setattr(server, "AVAILABLE_MODELS", after)
+    assert server._resolve_model_stem("0") == "aaa", "the same index now means a different model"
+    assert server._resolve_model_stem("mug") == "mug", "a name is unaffected by the shift"
 
 
 def test_the_server_keeps_no_current_model_for_everyone():
