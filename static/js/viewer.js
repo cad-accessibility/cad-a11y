@@ -312,6 +312,27 @@ async function sendStateToServer() {
                 }
             }
             renderPipelineDebug(data.debug_pipeline, data.debug);
+            // The graph precompute for a model kicks off lazily, on the first
+            // slice-graph request for it, so that first response can be the flat
+            // placeholder rather than the real profile. Locked mode won't refresh
+            // on its own after that (that's the point of locking), so without
+            // this it just sits there looking broken until something else
+            // happens to trigger another render.
+            //
+            // This polls a dedicated cheap status endpoint rather than retrying
+            // sendStateToServer() itself. It used to retry the real render, but
+            // that render is a genuine matplotlib/shapely computation under
+            // render_lock — repeating it every couple of seconds while waiting
+            // pits the poll against the very background precompute thread it's
+            // waiting on for CPU, and under a constrained host that can starve
+            // precompute badly enough that it never finishes at all (confirmed
+            // live: with the old polling running, slicegraph_ready stayed false
+            // for 30s+; checking status only, precompute completed in ~18s).
+            if (data.slicegraph_ready === false && sliceGraphLocked) {
+                scheduleSliceGraphStatusCheck();
+            } else {
+                sliceGraphAutoRefreshAttemptsLeft = 0;
+            }
             const shouldRequestPreview =
                 state.move_camera_center === 'none' &&
                 !(state.mode === 'slice-graph' && state.slicegraph_mode === 'column-count');
@@ -369,12 +390,17 @@ let currentRenderMode = 'filled';
 let currentRepresentationMode = 'single';
 let currentMoveCamera = "none";
 let currentPrintView = false;
-// The output-device radio the user picked: 'monarch', 'dotpad', or 'auto'.
-// Kept separate from whether a Monarch is actually connected over Web HID
-// (monarchHidConnected) so that selecting a radio can never turn off a live
-// Monarch feed — see getEffectiveOutputDevice and issue #75.
-let currentOutputDevice = 'monarch';
+// The output-device radio the user picked: 'monarch' or 'dotpad'. Also flipped
+// automatically on a successful connect — see setMonarchHidConnected /
+// setDotpadConnected. Kept separate from the connection flags (monarchHidConnected
+// / dotpadConnected) so device connection state and routing preference aren't
+// conflated.
+let currentOutputDevice = 'dotpad';
 let monarchHidConnected = false;
+// Mirrors monarchHidConnected for the DotPad, set via window.setDotpadConnected
+// (called from dotpad-integration.js) so the generic Connect/Disconnect pair
+// (#145) knows which device, if either, is live.
+let dotpadConnected = false;
 // Single source of truth for render modes.
 //   key        held in currentRenderMode and used as the radio `value`. Lowercase
 //              throughout, so a case mismatch cannot silently unselect the group.
@@ -387,15 +413,13 @@ const renderModes = [
     { key: 'cut', label: 'Cut', wire: 'Cut', projection: 'orthographic' },
     { key: 'xray', label: 'X-Ray', wire: 'x-ray', projection: 'x-ray' },
 ];
-// Single source of truth for view modes. Same shape as renderModes, plus:
-//   sliceGraphMode  which slice-graph variant this mode selects, when it is one.
-// `wire` collapses both slice-graph variants to the one mode name the server
-// knows; the variant is a client-side concern.
+// Single source of truth for view modes. Same shape as renderModes. Which
+// slice-graph variant (difference vs. slice area) is a separate Settings
+// choice (sliceGraphMode below), not part of which view mode this is.
 const representationModes = [
     { key: 'single', label: 'Single (with scrollbar)', wire: 'single' },
     { key: 'side-by-side', label: 'Side-by-Side', wire: 'side-by-side' },
-    { key: 'slice-graph-difference', label: 'Slice Graph (Difference)', wire: 'slice-graph', sliceGraphMode: 'difference' },
-    { key: 'slice-graph-column-count', label: 'Slice Graph (Slice Area)', wire: 'slice-graph', sliceGraphMode: 'column-count' },
+    { key: 'slice-graph', label: 'Slice Graph', wire: 'slice-graph' },
 ];
 let currentModel = "none";
 let sessionOwnedModels = new Set(); // filenames (with extension) owned by the current cookie session
@@ -408,6 +432,14 @@ let sliceGraphLocked = true;
 let sliceGraphAnchorView = 'y-';
 let sliceGraphAnchorDepth = 50;
 let sliceGraphMode = 'difference';
+// Retries the slice graph render every SLICE_GRAPH_AUTO_REFRESH_DELAY_MS while
+// the server keeps reporting slicegraph_ready: false (precompute for this model
+// still running), up to SLICE_GRAPH_AUTO_REFRESH_MAX_ATTEMPTS times, then gives
+// up. See sendStateToServer's response handler.
+let sliceGraphAutoRefreshPending = false;
+let sliceGraphAutoRefreshAttemptsLeft = 0;
+const SLICE_GRAPH_AUTO_REFRESH_DELAY_MS = 2000;
+const SLICE_GRAPH_AUTO_REFRESH_MAX_ATTEMPTS = 20; // ~40s ceiling
 
 // Cursor variables
 let currentCursorCol = 2;
@@ -746,15 +778,12 @@ const zoomLevelValue = document.getElementById('zoom-level-value');
 const zoomOutBtn = document.getElementById('zoom-out-btn');
 const zoomInBtn = document.getElementById('zoom-in-btn');
 const sliceGraphLockCheckbox = document.getElementById('slice-graph-lock-checkbox');
-const sliceGraphRefreshBtn = document.getElementById('slice-graph-refresh-btn');
-const sliceGraphModeBtn = document.getElementById('slice-graph-mode-btn');
 const resetPositionBtn = document.getElementById('reset-position-btn');
 const sliceGraphLockStatus = document.getElementById('slice-graph-lock-status');
 const showViewInfoBoxCheckbox = document.getElementById('show-view-info-box');
 const exportSliceSvgBtn = document.getElementById('export-slice-svg-btn');
 const highFidelityPreviewImg = document.getElementById('high-fidelity-preview-img');
 const highFidelityPreviewMeta = document.getElementById('high-fidelity-preview-meta');
-const debugPipelineToggleBtn = document.getElementById('debug-pipeline-toggle-btn');
 const debugPipelineContent = document.getElementById('debug-pipeline-content');
 const debugPipelineSummary = document.getElementById('debug-pipeline-summary');
 const debugStageList = document.getElementById('debug-stage-list');
@@ -763,6 +792,29 @@ const shortcutsDialog = document.getElementById('shortcuts-dialog');
 const shortcutsCloseBtn = document.getElementById('shortcuts-close-btn');
 const shortcutsHeading = document.getElementById('shortcuts-heading');
 const mainContent = document.getElementById('main-content');
+
+// Main menu
+const navAboutBtn = document.getElementById('nav-about-btn');
+const navHelpBtn = document.getElementById('nav-help-btn');
+const navSettingsBtn = document.getElementById('nav-settings-btn');
+const aboutDialog = document.getElementById('about-dialog');
+const aboutCloseBtn = document.getElementById('about-close-btn');
+const aboutHeading = document.getElementById('about-heading');
+const settingsDialog = document.getElementById('settings-dialog');
+const settingsCloseBtn = document.getElementById('settings-close-btn');
+const settingsHeading = document.getElementById('settings-heading');
+const settingsSliderCheckbox = document.getElementById('settings-enable-slider');
+const settingsCubeCheckbox = document.getElementById('settings-enable-cube');
+const settingsDebugPanelCheckbox = document.getElementById('settings-enable-debug-panel');
+const settingsBboxCheckbox = document.getElementById('settings-enable-bbox');
+const sliceGraphModeRadios = () => document.querySelectorAll('input[name="slice-graph-mode"]');
+const trinkeySection = document.getElementById('trinkey-section');
+const witmotionSection = document.getElementById('witmotion-section');
+const debugPanelSection = document.getElementById('debug-panel-section');
+const bboxSection = document.getElementById('bbox-section');
+const deviceConnectBtn = document.getElementById('device-connect-btn');
+const deviceDisconnectBtn = document.getElementById('device-disconnect-btn');
+const deviceConnectStatus = document.getElementById('device-connect-status');
 
 // New radio group references
 const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
@@ -914,7 +966,6 @@ function updateButtonLabels() {
 
 function updateSliceGraphLockUI() {
     const isSliceGraphMode = isSliceGraphRepresentationMode();
-    sliceGraphRefreshBtn.disabled = !isSliceGraphMode;
     if (sliceGraphLockCheckbox) {
         sliceGraphLockCheckbox.checked = sliceGraphLocked;
     }
@@ -934,20 +985,35 @@ function updateSliceGraphLockUI() {
 }
 
 function updateSliceGraphModeUI() {
-    if (!sliceGraphModeBtn) {
-        return;
-    }
-    const isColumnCountMode = sliceGraphMode === 'column-count';
-    sliceGraphModeBtn.textContent = isColumnCountMode
-        ? 'Graph Mode: Slice Area'
-        : 'Graph Mode: Difference';
+    syncRadioGroup(sliceGraphModeRadios(), sliceGraphMode, 'slice-graph-mode');
 }
 
-function toggleSliceGraphMode() {
-    sliceGraphMode = sliceGraphMode === 'difference' ? 'column-count' : 'difference';
+// Settings-only now: which slice-graph algorithm to use, independent of
+// whether the current view mode is even Slice Graph. Persisted like the other
+// Settings choices so it survives a reload.
+const SETTINGS_SLICE_GRAPH_MODE_KEY = 'settingsSliceGraphMode';
+
+function setSliceGraphMode(newMode) {
+    sliceGraphMode = newMode;
     updateSliceGraphModeUI();
+    try {
+        window.localStorage.setItem(SETTINGS_SLICE_GRAPH_MODE_KEY, sliceGraphMode);
+    } catch (_) {
+        // Ignore localStorage failures (e.g., privacy mode).
+    }
     pendingInputSource = 'ui';
     sendStateToServer();
+}
+
+function initializeSliceGraphMode() {
+    let storedMode = null;
+    try {
+        storedMode = window.localStorage.getItem(SETTINGS_SLICE_GRAPH_MODE_KEY);
+    } catch (_) {
+        // Default below if storage is unavailable.
+    }
+    sliceGraphMode = (storedMode === 'column-count') ? 'column-count' : 'difference';
+    updateSliceGraphModeUI();
 }
 
 function captureSliceGraphAnchor(shouldAnnounce = true) {
@@ -968,6 +1034,46 @@ function autoRefreshSliceGraph(options = {}) {
     }
 
     sendStateToServer();
+}
+
+// Polls /render/status (cheap: no render_lock, no matplotlib) rather
+// than retrying the real render itself — see the comment at the call site in
+// sendStateToServer's response handler for why that distinction matters. Once
+// status says ready, does exactly one real render to pick up the finished
+// graph; until then, keeps checking every SLICE_GRAPH_AUTO_REFRESH_DELAY_MS,
+// up to SLICE_GRAPH_AUTO_REFRESH_MAX_ATTEMPTS times, then gives up (a manual
+// interaction, e.g. moving the depth slider, still recovers after that).
+function scheduleSliceGraphStatusCheck() {
+    if (sliceGraphAutoRefreshAttemptsLeft <= 0) {
+        sliceGraphAutoRefreshAttemptsLeft = SLICE_GRAPH_AUTO_REFRESH_MAX_ATTEMPTS;
+    }
+    if (sliceGraphAutoRefreshPending) {
+        return;
+    }
+    sliceGraphAutoRefreshPending = true;
+    sliceGraphAutoRefreshAttemptsLeft -= 1;
+    setTimeout(async () => {
+        sliceGraphAutoRefreshPending = false;
+        if (!isSliceGraphRepresentationMode() || !sliceGraphLocked) {
+            return;
+        }
+        try {
+            const res = await fetch(`${SERVER_URL}/render/status`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ current_model: currentModel }),
+            });
+            const statusData = await res.json();
+            if (statusData.slice_graphs_ready) {
+                sendStateToServer();
+            } else if (sliceGraphAutoRefreshAttemptsLeft > 0) {
+                scheduleSliceGraphStatusCheck();
+            }
+        } catch (_) {
+            // Network hiccup checking status — not fatal, a manual interaction
+            // still recovers same as before this existed.
+        }
+    }, SLICE_GRAPH_AUTO_REFRESH_DELAY_MS);
 }
 
 function setSliceGraphLocked(locked) {
@@ -1011,23 +1117,15 @@ function formatDebugValue(value) {
 }
 
 function setDebugPipelineVisible(isVisible) {
-    if (!debugPipelineContent || !debugPipelineToggleBtn) {
+    if (!debugPipelineContent) {
         return;
     }
     debugPipelineContent.hidden = !isVisible;
-    debugPipelineToggleBtn.textContent = isVisible ? 'Hide Debug Pipeline' : 'Show Debug Pipeline';
     try {
         window.localStorage.setItem(DEBUG_PIPELINE_VISIBILITY_KEY, isVisible ? '1' : '0');
     } catch (_) {
         // Ignore localStorage failures (e.g., privacy mode).
     }
-}
-
-function toggleDebugPipelineVisibility() {
-    if (!debugPipelineContent) {
-        return;
-    }
-    setDebugPipelineVisible(debugPipelineContent.hidden);
 }
 
 function initializeDebugPipelineVisibility() {
@@ -1043,54 +1141,220 @@ function initializeDebugPipelineVisibility() {
     setDebugPipelineVisible(isVisible);
 }
 
-// Keyboard shortcuts dialog (#146). Native <dialog> + showModal() supplies focus
+// Small read-only info dialogs opened from the Main menu: Keyboard
+// Shortcuts, About, Settings. Native <dialog> + showModal() supplies focus
 // containment, background inertness, and Escape-to-close for free; the one thing
 // that isn't automatic is returning focus to whatever triggered the dialog once
-// it closes, which is what shortcutsDialogTrigger is for. See the ARIA APG
+// it closes, which is what each controller's `trigger` is for. See the ARIA APG
 // pattern: https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/examples/dialog/
-let shortcutsDialogTrigger = null;
+function makeInfoDialogController(dialog, headingEl) {
+    let trigger = null;
+
+    function open() {
+        if (!dialog || !dialog.showModal || dialog.open) {
+            return;
+        }
+        trigger = document.activeElement;
+        // Backs up the native modal inertness for older assistive tech, same as
+        // the session consent dialog.
+        if (mainContent) mainContent.setAttribute('aria-hidden', 'true');
+        dialog.showModal();
+        // showModal() defaults to focusing the first focusable element, which here
+        // is the Close button at the very end of the content — reading forward
+        // from there reads nothing. Per the ARIA APG dialog pattern, a read-only
+        // dialog like this one should instead land on a static element at the top
+        // (the heading, made focusable via tabindex="-1"), so reading forward
+        // covers the whole dialog.
+        if (headingEl) headingEl.focus({ preventScroll: true });
+    }
+
+    function close() {
+        if (!dialog || !dialog.open) {
+            return;
+        }
+        dialog.close();
+    }
+
+    function restoreAfterClose() {
+        if (mainContent) mainContent.removeAttribute('aria-hidden');
+        // Return focus to whatever opened the dialog rather than stranding it at
+        // the top of the document (or on an element that's since been removed).
+        if (trigger && document.contains(trigger)) {
+            trigger.focus();
+        }
+        trigger = null;
+    }
+
+    if (dialog) {
+        // Cleanup after the dialog has actually closed. (Escape triggers `cancel`,
+        // whose default action closes the dialog and then fires `close`.)
+        dialog.addEventListener('close', restoreAfterClose);
+        // Clicking outside the dialog's own content is the escape hatch a
+        // dedicated "Main" button used to provide: close it and land on the main
+        // content directly, rather than wherever restoreAfterClose above would
+        // otherwise return focus to. A click on the dialog element itself (not a
+        // descendant) is a click on the backdrop area, since <dialog> occupies the
+        // full viewport once open — a click on any actual content inside targets
+        // that descendant instead, so this can't be triggered by clicking the
+        // dialog's own controls.
+        dialog.addEventListener('click', (e) => {
+            if (e.target !== dialog) return;
+            dialog.close();
+            if (mainContent) {
+                mainContent.setAttribute('tabindex', '-1');
+                mainContent.focus();
+            }
+        });
+    }
+
+    return { open, close };
+}
+
+const shortcutsDialogController = makeInfoDialogController(shortcutsDialog, shortcutsHeading);
+const aboutDialogController = makeInfoDialogController(aboutDialog, aboutHeading);
+const settingsDialogController = makeInfoDialogController(settingsDialog, settingsHeading);
 
 function openShortcutsDialog() {
-    if (!shortcutsDialog || !shortcutsDialog.showModal || shortcutsDialog.open) {
-        return;
-    }
-    shortcutsDialogTrigger = document.activeElement;
-    // Backs up the native modal inertness for older assistive tech, same as the
-    // session consent dialog.
-    if (mainContent) mainContent.setAttribute('aria-hidden', 'true');
-    shortcutsDialog.showModal();
-    // showModal() defaults to focusing the first focusable element, which here is
-    // the Close button at the very end of the content — reading forward from there
-    // reads nothing. Per the ARIA APG dialog pattern, a read-only dialog like this
-    // one should instead land on a static element at the top (the heading, made
-    // focusable via tabindex="-1"), so reading forward covers the whole dialog.
-    if (shortcutsHeading) shortcutsHeading.focus({ preventScroll: true });
+    shortcutsDialogController.open();
 }
 
 function closeShortcutsDialog() {
-    if (!shortcutsDialog || !shortcutsDialog.open) {
-        return;
-    }
-    shortcutsDialog.close();
+    shortcutsDialogController.close();
 }
 
-function restoreAfterShortcutsDialogClose() {
-    if (mainContent) mainContent.removeAttribute('aria-hidden');
-    // Return focus to whatever opened the dialog rather than stranding it at the
-    // top of the document (or on an element that's since been removed).
-    if (shortcutsDialogTrigger && document.contains(shortcutsDialogTrigger)) {
-        shortcutsDialogTrigger.focus();
-    }
-    shortcutsDialogTrigger = null;
-}
-
-if (shortcutsDialog) {
-    // Cleanup after the dialog has actually closed. (Escape triggers `cancel`, whose
-    // default action closes the dialog and then fires `close`.)
-    shortcutsDialog.addEventListener('close', restoreAfterShortcutsDialogClose);
-}
 if (shortcutsCloseBtn) {
     shortcutsCloseBtn.addEventListener('click', closeShortcutsDialog);
+}
+if (aboutCloseBtn) {
+    aboutCloseBtn.addEventListener('click', () => aboutDialogController.close());
+}
+if (settingsCloseBtn) {
+    settingsCloseBtn.addEventListener('click', () => settingsDialogController.close());
+}
+if (navAboutBtn) {
+    navAboutBtn.addEventListener('click', () => aboutDialogController.open());
+}
+if (navHelpBtn) {
+    navHelpBtn.addEventListener('click', openShortcutsDialog);
+}
+if (navSettingsBtn) {
+    navSettingsBtn.addEventListener('click', () => settingsDialogController.open());
+}
+
+// --- Optional / advanced sections (Slider, Cube, Debug Panel, Bounding Box),
+// gated by Settings (#145) --------------------------------------------------
+//
+// Trinkey Slider and WitMotion IMU are optional extras, not the primary tactile
+// display; Debug Panel and Bounding Box are developer/advanced diagnostics. All
+// four sections start hidden and only appear once explicitly turned on here.
+// Persisted so the choice survives a reload.
+const SETTINGS_SLIDER_VISIBLE_KEY = 'settingsSliderEnabled';
+const SETTINGS_CUBE_VISIBLE_KEY = 'settingsCubeEnabled';
+const SETTINGS_DEBUG_PANEL_VISIBLE_KEY = 'settingsDebugPanelEnabled';
+const SETTINGS_BBOX_VISIBLE_KEY = 'settingsBboxEnabled';
+
+function setOptionalSectionVisible(sectionEl, checkboxEl, storageKey, isVisible) {
+    if (sectionEl) sectionEl.hidden = !isVisible;
+    if (checkboxEl) checkboxEl.checked = isVisible;
+    try {
+        window.localStorage.setItem(storageKey, isVisible ? '1' : '0');
+    } catch (_) {
+        // Ignore localStorage failures (e.g., privacy mode).
+    }
+}
+
+function initializeOptionalSectionVisibility() {
+    let sliderEnabled = false;
+    let cubeEnabled = false;
+    let debugPanelEnabled = false;
+    let bboxEnabled = false;
+    try {
+        sliderEnabled = window.localStorage.getItem(SETTINGS_SLIDER_VISIBLE_KEY) === '1';
+        cubeEnabled = window.localStorage.getItem(SETTINGS_CUBE_VISIBLE_KEY) === '1';
+        debugPanelEnabled = window.localStorage.getItem(SETTINGS_DEBUG_PANEL_VISIBLE_KEY) === '1';
+        bboxEnabled = window.localStorage.getItem(SETTINGS_BBOX_VISIBLE_KEY) === '1';
+    } catch (_) {
+        // Default to hidden if storage is unavailable.
+    }
+    setOptionalSectionVisible(trinkeySection, settingsSliderCheckbox, SETTINGS_SLIDER_VISIBLE_KEY, sliderEnabled);
+    setOptionalSectionVisible(witmotionSection, settingsCubeCheckbox, SETTINGS_CUBE_VISIBLE_KEY, cubeEnabled);
+    setOptionalSectionVisible(
+        debugPanelSection, settingsDebugPanelCheckbox, SETTINGS_DEBUG_PANEL_VISIBLE_KEY, debugPanelEnabled
+    );
+    setOptionalSectionVisible(bboxSection, settingsBboxCheckbox, SETTINGS_BBOX_VISIBLE_KEY, bboxEnabled);
+}
+
+if (settingsSliderCheckbox) {
+    settingsSliderCheckbox.addEventListener('change', () => {
+        setOptionalSectionVisible(
+            trinkeySection, settingsSliderCheckbox, SETTINGS_SLIDER_VISIBLE_KEY, settingsSliderCheckbox.checked
+        );
+    });
+}
+if (settingsCubeCheckbox) {
+    settingsCubeCheckbox.addEventListener('change', () => {
+        setOptionalSectionVisible(
+            witmotionSection, settingsCubeCheckbox, SETTINGS_CUBE_VISIBLE_KEY, settingsCubeCheckbox.checked
+        );
+    });
+}
+if (settingsDebugPanelCheckbox) {
+    settingsDebugPanelCheckbox.addEventListener('change', () => {
+        setOptionalSectionVisible(
+            debugPanelSection, settingsDebugPanelCheckbox, SETTINGS_DEBUG_PANEL_VISIBLE_KEY,
+            settingsDebugPanelCheckbox.checked
+        );
+    });
+}
+if (settingsBboxCheckbox) {
+    settingsBboxCheckbox.addEventListener('change', () => {
+        setOptionalSectionVisible(
+            bboxSection, settingsBboxCheckbox, SETTINGS_BBOX_VISIBLE_KEY, settingsBboxCheckbox.checked
+        );
+    });
+}
+
+// --- Generic "Connect to device" / "Disconnect" (#145) --------------------
+//
+// Proxies to whichever output device (Monarch or DotPad) the Output Device
+// setting names, by forwarding the click to that device's own connect/disconnect
+// button — Web HID/Web Bluetooth's requestDevice() needs a direct user gesture,
+// and a synthetic click dispatched synchronously from within this click handler
+// still counts as one. This is a shortcut in front of the two existing
+// device-specific sections, not a replacement for them.
+function updateGenericDeviceConnectUI() {
+    if (!deviceConnectBtn || !deviceDisconnectBtn) return;
+    const connected = monarchHidConnected || dotpadConnected;
+    deviceDisconnectBtn.hidden = !connected;
+    deviceConnectBtn.disabled = connected;
+    if (deviceConnectStatus) {
+        deviceConnectStatus.textContent = monarchHidConnected
+            ? 'Connected: Monarch'
+            : dotpadConnected
+                ? 'Connected: DotPad'
+                : 'Not connected.';
+    }
+}
+
+if (deviceConnectBtn) {
+    deviceConnectBtn.addEventListener('click', () => {
+        // Calls the real connect logic directly (exposed by monarch-hid.js /
+        // dotpad-integration.js) rather than clicking a per-device button.
+        if (currentOutputDevice === 'dotpad') {
+            window.connectDotpad?.();
+        } else {
+            window.connectMonarchHid?.();
+        }
+    });
+}
+if (deviceDisconnectBtn) {
+    deviceDisconnectBtn.addEventListener('click', () => {
+        if (monarchHidConnected) {
+            window.disconnectMonarchHid?.();
+        } else if (dotpadConnected) {
+            window.disconnectDotpad?.();
+        }
+    });
 }
 
 function renderPipelineDebug(debugPipeline, debugInfo = null) {
@@ -1425,20 +1689,35 @@ function syncRadios() {
 
 // The server only attaches monarch_cells_hex to a render when output_device is
 // 'monarch_hid'. Send that whenever a Monarch is connected over Web HID and the
-// user has not explicitly chosen a different device, independent of which radio
-// is selected — so picking the Monarch radio cannot turn its own feed off (#75).
+// user has picked Monarch, independent of connection order.
 function getEffectiveOutputDevice() {
-    if (monarchHidConnected && (currentOutputDevice === 'monarch' || currentOutputDevice === 'auto')) {
+    if (monarchHidConnected && currentOutputDevice === 'monarch') {
         return 'monarch_hid';
     }
     return currentOutputDevice;
 }
 
-// Called by the Monarch Web HID integration on connect/disconnect. Only toggles
-// the connection flag; the radio preference is the user's and is left alone.
+// Called by the Monarch Web HID integration on connect/disconnect. 
 function setMonarchHidConnected(connected) {
     monarchHidConnected = Boolean(connected);
+    if (connected) {
+        currentOutputDevice = 'monarch';
+        syncRadios();
+    }
+    updateGenericDeviceConnectUI();
 }
+
+// Called by the DotPad integration (dotpad-integration.js) on connect/disconnect,
+// mirroring setMonarchHidConnected above.
+function setDotpadConnected(connected) {
+    dotpadConnected = Boolean(connected);
+    if (connected) {
+        currentOutputDevice = 'dotpad';
+        syncRadios();
+    }
+    updateGenericDeviceConnectUI();
+}
+window.setDotpadConnected = setDotpadConnected;
 
 // --- Connected tactile displays -------------------------------------------
 //
@@ -1560,8 +1839,7 @@ function updateDisplayOptions() {
             composeScrollbar = false;
             composeSliceGraph = false;
             break;
-        case 'slice-graph-difference':
-        case 'slice-graph-column-count':
+        case 'slice-graph':
             composeScrollbar = false;
             composeSliceGraph = true;
             break;
@@ -2158,10 +2436,6 @@ function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
     const previousMode = currentRepresentationMode;
     const enteringSliceGraph = !isSliceGraphRepresentationMode(previousMode) && isSliceGraphRepresentationMode(targetMode);
 
-    if (mode.sliceGraphMode) {
-        sliceGraphMode = mode.sliceGraphMode;
-    }
-
     currentRepresentationMode = targetMode;
     updateDisplayOptions();
     if (enteringSliceGraph) {
@@ -2279,7 +2553,7 @@ document.addEventListener('change', function(e) {
     }
 });
 
-// Output device radios (Monarch, DotPad, Auto)
+// Output device radios (Monarch, DotPad)
 document.addEventListener('change', function(e) {
     if (e.target && e.target.matches('input[name="output-device"]')) {
         if (e.target.checked) {
@@ -2350,22 +2624,16 @@ if (sliceGraphLockCheckbox) {
     });
 }
 
-sliceGraphRefreshBtn.addEventListener('click', function() {
-    if (!isSliceGraphRepresentationMode()) {
-        announce('refresh only available in slice-graph mode');
-        return;
-    }
-    captureSliceGraphAnchor(true);
-    pendingInputSource = 'ui';
-    sendStateToServer();
-});
+// Refresh is keyboard-only (G) — see the 'g' case in the keydown handler.
+// There is no on-screen button for it.
 
-if (sliceGraphModeBtn) {
-    sliceGraphModeBtn.addEventListener('click', function() {
-        toggleSliceGraphMode();
-        announce(`Slice graph mode ${sliceGraphMode === 'column-count' ? 'column count' : 'difference'}`);
+sliceGraphModeRadios().forEach((radio) => {
+    radio.addEventListener('change', function() {
+        if (!this.checked) return;
+        setSliceGraphMode(this.value);
+        announce(`Slice graph mode ${sliceGraphMode === 'column-count' ? 'slice area' : 'difference'}`);
     });
-}
+});
 
 if (resetPositionBtn) {
     resetPositionBtn.addEventListener('click', function() {
@@ -2403,11 +2671,6 @@ exportSliceSvgBtn.addEventListener('click', function() {
     exportCurrentSliceAsPng();
 });
 
-if (debugPipelineToggleBtn) {
-    debugPipelineToggleBtn.addEventListener('click', function() {
-        toggleDebugPipelineVisibility();
-    });
-}
 
 // Global keyboard navigation support for accessibility
 document.addEventListener('keydown', function(e) {
@@ -2769,6 +3032,9 @@ document.addEventListener('DOMContentLoaded', async function() {
     // Expose globally so display-connect handlers can trigger a send.
     window.sendStateToServer = sendStateToServer;
     initializeDebugPipelineVisibility();
+    initializeOptionalSectionVisibility();
+    initializeSliceGraphMode();
+    updateGenericDeviceConnectUI();
 
     // Pre-select a model when opened via /workshop?model=<stem> or ?model=<stem>.
     // Resolve the stem to its server index before the first render so the viewer

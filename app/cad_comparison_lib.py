@@ -192,6 +192,13 @@ class CADComparisonRenderer:
         self._precompute_lock = threading.Lock()
         self._precompute_done = threading.Event()
         self._precompute_done.set()
+        # Set by _get_zoom_filtered_slice_profile on every slice-graph render:
+        # whether the profile it returned was real (precompute finished for this
+        # view) or the flat placeholder precompute hands back while it's still
+        # running. The client uses this to refresh automatically, instead
+        # of a blind horizontal line sitting there until something else happens
+        # to trigger a re-render.
+        self.slicegraph_ready = True
         self.cache_version = 2
         self.cache_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
@@ -419,7 +426,6 @@ class CADComparisonRenderer:
                     pair_count += 1
                     if pair_count % self._PRECOMPUTE_DIFF_YIELD_EVERY == 0:
                         time.sleep(self._PRECOMPUTE_YIELD_SECONDS)
-
             max_diff = np.max(diff_mat)
             if max_diff > 0:
                 diff_mat /= max_diff
@@ -447,6 +453,14 @@ class CADComparisonRenderer:
             self._compute_slice_graphs()
             self._save_precompute_cache(self._model_signature_value or self._model_signature())
             self._slice_graphs_ready = True
+        except Exception as error:
+            # A daemon thread's uncaught exception is otherwise invisible: it
+            # neither surfaces to a caller nor appears in quiet-mode's redirected
+            # stdout/stderr, so slicegraph_ready would stay False forever with no
+            # trace of why. sys.__stderr__ bypasses that redirect deliberately.
+            import sys, traceback
+            print(f"Slice-graph precompute failed: {error!r}", file=sys.__stderr__, flush=True)
+            traceback.print_exc(file=sys.__stderr__)
         finally:
             with self._precompute_lock:
                 self._precompute_in_progress = False
@@ -509,10 +523,16 @@ class CADComparisonRenderer:
             # view_cut_polygons for a view are always populated together, so this
             # is effectively "nothing ready"); return a flat profile so the graph
             # shows something sane instead of crashing while precompute runs.
+            # slicegraph_ready flags this render's profile as the placeholder,
+            # not a real one, so the client knows to refresh once precompute
+            # actually finishes instead of leaving a flat line on screen.
+            self.slicegraph_ready = False
             diff_row = self.view_diff_mats.get(view_key)
             if diff_row is None:
                 return np.zeros(101, dtype=float)
             return diff_row[anchor_depth_percent]
+
+        self.slicegraph_ready = True
 
         x0 = min(float(zoom_ax_limits[0][0]), float(zoom_ax_limits[0][1]))
         x1 = max(float(zoom_ax_limits[0][0]), float(zoom_ax_limits[0][1]))

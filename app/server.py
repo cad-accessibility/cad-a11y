@@ -1095,6 +1095,11 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
         response["debug"] = debug_info
     if bbox is not None:
         response["bbox"] = bbox
+    # Only meaningful for a request that actually asked for the slice graph —
+    # engine.slicegraph_ready otherwise carries whatever a previous request
+    # left it at, which would misreport for a request that wasn't building one.
+    if params.get("compose_slicegraph") and not getattr(engine, "slicegraph_ready", True):
+        response["slicegraph_ready"] = False
     if str(params.get("output_device", "")).strip().lower() == "monarch_hid":
         cells = _pixels_to_braille_cells(braille_payload, lines=_MONARCH_LINES, cols=_MONARCH_COLS)
         response["monarch_cells_hex"] = cells.hex()
@@ -1409,9 +1414,21 @@ def render_view():
         merged_params, model_index, is_pan_request, fingerprint = _prepare_render_params(request.get_json(silent=True))
         quantized_cache_key = _build_quantized_render_key(merged_params, model_index)
 
+        # A slice-graph response is not a pure function of these params: the
+        # precompute it plots finishes in the background, independent of any
+        # request, so the identical params legitimately produce a different
+        # (correct) response once that finishes. Caching runs afoul of that —
+        # a response cached while precompute was still pending would be served
+        # forever after, even once the real graph was ready, because nothing
+        # here knows precompute state changed on its own. Skip both cache
+        # layers entirely for these; the render itself is cheap once precompute
+        # is done, so this only costs the redundant plot, not the compute.
+        skip_cache = bool(merged_params.get("compose_slicegraph"))
+
         with state_lock:
             if (
-                not is_pan_request
+                not skip_cache
+                and not is_pan_request
                 and merged_params.get("print_view") is not True
                 and last_render_fingerprint == fingerprint
                 and last_render_response is not None
@@ -1429,7 +1446,7 @@ def render_view():
                 response["debug"] = debug
                 return jsonify(response), 200
 
-        if not is_pan_request and merged_params.get("print_view") is not True:
+        if not skip_cache and not is_pan_request and merged_params.get("print_view") is not True:
             cached_response = _get_quantized_cached_response(quantized_cache_key)
             if cached_response is not None:
                 cached_response["model_list"] = MODEL_NAME_LIST
@@ -1462,7 +1479,7 @@ def render_view():
         response["debug"] = debug
 
         with state_lock:
-            if merged_params.get("print_view") is not True:
+            if not skip_cache and merged_params.get("print_view") is not True:
                 last_render_fingerprint = fingerprint
                 last_render_response = response
                 _set_quantized_cached_response(quantized_cache_key, response)
@@ -1470,6 +1487,36 @@ def render_view():
     except Exception as error:
         _log(f"Error rendering: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
+
+@app.route("/render/status", methods=["POST"])
+def render_status():
+    """Per-model async-work status — today, whether slice-graph precompute has
+    finished. A cheap, render_lock-free check, deliberately separate from
+    /render itself (unlike /health, this is per-model, so it can't live there:
+    /health is a fixed, unauthenticated, model-name-free deployment check
+    polled by infra, not something with per-viewer-session context).
+
+    The client polls this while waiting for a locked slice graph's first real
+    render (see viewer.js's scheduleSliceGraphStatusCheck). Polling /render
+    itself for this would repeatedly re-run the same, non-trivial
+    matplotlib/shapely-based render() under render_lock — real CPU competing
+    with the very background precompute thread the poll is waiting on, which
+    can starve it indefinitely under constrained CPU. This only reads a flag
+    already set by the background thread; it never renders and never blocks
+    on render_lock, so it cannot compete with the thing it's checking on.
+
+    Looks the renderer up directly rather than through get_or_create_renderer,
+    so calling this can't itself construct a renderer (and thus can't be the
+    thing that kicks off a mesh load) for a model nobody has actually rendered
+    yet — "not ready" is the correct answer for that case anyway.
+    """
+    data = request.get_json(silent=True) or {}
+    model_index = _normalize_model_index(data.get("current_model"))
+    with models_lock:
+        engine = renderers_by_model.get(model_index)
+    slice_graphs_ready = bool(engine is not None and getattr(engine, "_slice_graphs_ready", False))
+    return jsonify({"slice_graphs_ready": slice_graphs_ready}), 200
+
 
 @app.route("/render/fit-view", methods=["POST"])
 def fit_render_view():
@@ -1524,8 +1571,14 @@ def receive_command():
             with state_lock:
                 state.current_model_index = model_index
 
+            # See the matching comment in render_view(): a slice-graph response
+            # isn't a pure function of these params (precompute finishes on its
+            # own, in the background), so it must never be cached or served
+            # from cache.
+            skip_cache = bool(merged_params.get("compose_slicegraph"))
+
             render_result: dict[str, Any] | None = None
-            if not is_pan_request and merged_params.get("print_view") is not True:
+            if not skip_cache and not is_pan_request and merged_params.get("print_view") is not True:
                 with state_lock:
                     if last_render_fingerprint == fingerprint and last_render_response is not None:
                         render_result = copy.deepcopy(last_render_response)
@@ -1538,7 +1591,7 @@ def receive_command():
 
             if render_result is None:
                 render_result = _render_response(merged_params, source="command_auto_render")
-                if not is_pan_request and merged_params.get("print_view") is not True:
+                if not skip_cache and not is_pan_request and merged_params.get("print_view") is not True:
                     quantized_cache_key = _build_quantized_render_key(merged_params, model_index)
                     with state_lock:
                         last_render_fingerprint = fingerprint
@@ -2212,7 +2265,14 @@ def render_preview():
         _refresh_model_list_if_stale()
         merged_params, model_index, is_pan_request, _fingerprint = _prepare_render_params(request.get_json(silent=True))
         preview_width = _coerce_positive_int(merged_params.get("preview_width", 800), 800)
-        use_cache = not is_pan_request and merged_params.get("print_view") is not True
+        use_cache = (
+            not is_pan_request
+            and merged_params.get("print_view") is not True
+            # See the matching comment in render_view(): a slice-graph output
+            # is time-dependent (precompute finishes on its own), so it must
+            # never be cached or served from cache.
+            and not merged_params.get("compose_slicegraph")
+        )
         preview_b64, preview_shape = _make_hifi_preview(
             merged_params,
             model_index,
@@ -2250,7 +2310,14 @@ def render_dotpad_hex():
         pixel_width  = dotpad_cols * 2
         pixel_height = dotpad_rows * 4
 
-        use_cache = not is_pan_request and merged_params.get("print_view") is not True
+        use_cache = (
+            not is_pan_request
+            and merged_params.get("print_view") is not True
+            # See the matching comment in render_view(): a slice-graph output
+            # is time-dependent (precompute finishes on its own), so it must
+            # never be cached or served from cache.
+            and not merged_params.get("compose_slicegraph")
+        )
         braille_payload = _get_braille_payload_at_size(
             merged_params,
             model_index=model_index,
