@@ -2,6 +2,23 @@
 const SERVER_URL = window.location.origin;
 const UPLOAD_SESSION_STORAGE_KEY = 'cadA11yUploadSessionId';
 
+// ---------------------------------------------------------------------------
+// Study mode (/study).
+//
+// The participant uses the ordinary viewer -- the interface they were onboarded
+// on is the interface they do the tasks with -- with two differences. The model
+// chooser is gone, because models load themselves at each protocol step, and the
+// model's *name* is never displayed or announced: "lego_2x4" answers the very
+// question the participant is being asked to work out by touch. studyModelLabel
+// holds the neutral label ("Second object") that is shown in its place.
+//
+// studySessionId tags every render request, which is how the server attributes a
+// render to the right session when several are running at once.
+// ---------------------------------------------------------------------------
+const studyMode = location.pathname.replace(/\/+$/, '') === '/study';
+let studySessionId = null;
+let studyModelLabel = null;
+
 function getUploadSessionId() {
     try {
         let sessionId = window.sessionStorage.getItem(UPLOAD_SESSION_STORAGE_KEY);
@@ -296,11 +313,15 @@ async function sendStateToServer() {
 
         // Send to server and process response
         renderRequestInFlight = true;
+        // The study session is sent as a header rather than in the body so the
+        // render parameters -- and with them the render cache key -- are byte for
+        // byte what the ordinary viewer sends.
+        const renderHeaders = { 'Content-Type': 'application/json' };
+        if (studySessionId) renderHeaders['X-Study-Session'] = String(studySessionId);
+
         fetch(`${SERVER_URL}/render`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: renderHeaders,
             body: JSON.stringify(state),
             mode: 'cors',
             signal: renderAbortController.signal,
@@ -2004,6 +2025,14 @@ function updateModelList(model_list) {
     if (!Array.isArray(model_list)) return;
     lastFullModelList = model_list;
 
+    // In study mode the dropdown is hidden and the model is chosen by the
+    // protocol step, so never rebuild it. The status bar shows the neutral study
+    // label rather than the stem, because the stem gives the task away.
+    if (studyMode) {
+        if (sbModel) sbModel.textContent = studyModelLabel || '--';
+        return;
+    }
+
     // In the simplified workshop viewer the model dropdown is hidden and the model
     // is chosen from the URL, so never rebuild it or reset the current selection
     // (the ownership filter would otherwise drop an ingested model and reset to 0).
@@ -2493,6 +2522,11 @@ function emitAnnouncement(message, politeness) {
             console.warn('Tactile announcement failed:', err);
         }
     }
+
+    // What the participant's screen reader and braille display were told, and
+    // when. Reading a transcript against the log is guesswork without it: the
+    // session recording captures what they said, not what the system said back.
+    reportStudyInteraction('announcement', { message: normalizedMessage, politeness });
 }
 
 /**
@@ -2519,6 +2553,129 @@ window.whichCursor = whichCursor;
 window.getCurrentSliceDepth = getCurrentSliceDepth;
 window.updateSliceDepth = updateSliceDepth;
 window.announceDepthValue = announceDepthValue;
+
+// ---------------------------------------------------------------------------
+// Study mode API, used by static/js/study.js.
+//
+// State is written directly rather than through updateView / updateSliceDepth /
+// switchToRenderMode, then rendered once. Those helpers each send their own
+// render, so going through them would fire five requests for one step change and
+// walk the braille display through four intermediate states the participant
+// never asked for.
+// ---------------------------------------------------------------------------
+
+/** Put the viewer into the state every study model starts from (issue #163):
+ * mug-upright orientation, 50% depth, Cut, single with scrollbars, zoomed out
+ * and centred. Applied on every auto-load so Part B starts where Part A did and
+ * a comparison is between models rather than between viewpoints. */
+function applyStudyDefaults(defaults) {
+    const wanted = defaults || {};
+
+    if (wanted.view && VIEW_BASIS[wanted.view]) {
+        viewerState.currentView = wanted.view;
+        setOrientationFromView(viewerState.currentView);
+    }
+    // Reset all three planes, not just the active one: slice depth is persisted
+    // per axis, so a stale plane would surface the moment the participant turned
+    // the new model.
+    resetSlicePlanes();
+
+    const depth = clampDepth(wanted.depth);
+    if (depth !== null) {
+        viewerState.currentSliceDepth = depth;
+        writeDisplayDepthToPlanes(viewerState.currentSliceDepth);
+    }
+    if (renderModeByKey(wanted.render_mode)) viewerState.currentRenderMode = wanted.render_mode;
+    if (representationModeByKey(wanted.representation_mode)) {
+        viewerState.currentRepresentationMode = wanted.representation_mode;
+    }
+    const zoom = Number(wanted.zoom);
+    if (Number.isFinite(zoom)) viewerState.currentZoom = Math.max(MIN_ZOOM, zoom);
+
+    updateDisplayOptions();
+    if (typeof wanted.compose_scrollbar === 'boolean') {
+        // After updateDisplayOptions, which derives it from the layout mode.
+        viewerState.composeScrollbar = wanted.compose_scrollbar;
+    }
+
+    if (sliceSlider) sliceSlider.value = viewerState.currentSliceDepth;
+    if (slicePercentage) slicePercentage.textContent = viewerState.currentSliceDepth;
+    if (zoomInput) zoomInput.value = viewerState.currentZoom;
+    if (zoomLevelValue) zoomLevelValue.textContent = Number(viewerState.currentZoom).toFixed(1);
+    if (currentViewSpan) currentViewSpan.textContent = viewerState.currentView;
+    syncRadios();
+    updateButtonLabels();
+    refreshViewInfoSummary();
+    refreshStatusBar();
+}
+
+/** Load the model for the current protocol step.
+ *
+ * `stem` is the model's real name, which is how a model has to be addressed --
+ * a position in the server's list means a different file after anyone uploads
+ * one (#123). It is never displayed: `label` is the neutral name the participant
+ * hears, and updateModelList keeps the stem out of the status bar. */
+function loadStudyModel(stem, label, defaults) {
+    if (!stem) return false;
+
+    studyModelLabel = label || 'Model';
+    viewerState.currentModel = stem;
+    clearCameraCenterState();
+    applyStudyDefaults(defaults);
+    if (sbModel) sbModel.textContent = studyModelLabel;
+
+    beginModelLoadAnnouncement(studyModelLabel, 'study');
+    // "reset" centres the object, the last of the study defaults. It is a render
+    // parameter rather than viewer state, so it is set for this one request and
+    // cleared straight after, the same way the Z shortcut does it.
+    pendingInputSource = 'study';
+    viewerState.currentMoveCamera = 'reset';
+    sendStateToServer();
+    viewerState.currentMoveCamera = 'none';
+    return true;
+}
+
+/** The viewer state at this instant, attached to every reported event so a study
+ * log line can be read without joining it against anything else. */
+function viewerStateSnapshot() {
+    return {
+        model_label: studyModelLabel,
+        view: viewerState.currentView,
+        depth: viewerState.currentSliceDepth,
+        render_mode: viewerState.currentRenderMode,
+        layout_mode: viewerState.currentRepresentationMode,
+        zoom: viewerState.currentZoom,
+        orientation: getOrientationPayload(),
+        cursor_state: whichCursor(),
+        output_device: getEffectiveOutputDevice(),
+    };
+}
+
+window.cadStudy = {
+    isStudyMode: () => studyMode,
+    setSessionId: (id) => { studySessionId = id ? Number(id) : null; },
+    getSessionId: () => studySessionId,
+    applyDefaults: applyStudyDefaults,
+    loadModel: loadStudyModel,
+    snapshot: viewerStateSnapshot,
+    // study.js subscribes; kept as a list so nothing here needs to know about it.
+    onInteraction: [],
+};
+
+/** Report an interaction to study.js, if study mode is running. Deliberately
+ * tolerant: a listener that throws must not stop the key from doing its job.
+ * Callable from anything hoisted above the assignment above, so it must also
+ * tolerate being reached before that has run. */
+function reportStudyInteraction(eventType, eventData) {
+    if (!studyMode || !window.cadStudy) return;
+    for (const listener of window.cadStudy.onInteraction) {
+        try {
+            listener(eventType, eventData, viewerStateSnapshot());
+        } catch (error) {
+            console.warn('Study interaction listener failed:', error);
+        }
+    }
+}
 
 // Event listeners
 
@@ -2752,6 +2909,18 @@ document.addEventListener('keydown', function(e) {
         e.preventDefault();
         return;
     }
+
+    // Every shortcut the viewer acts on, reported before it is handled. The
+    // server only sees the renders a keypress happens to produce, so without this
+    // the log cannot distinguish "pressed R" from "pressed a key that did
+    // nothing", and keys that never render (H, the period key) leave no trace.
+    reportStudyInteraction('keyboard', {
+        key: normalizedKey,
+        raw_key: rawKey,
+        code,
+        repeat: Boolean(e.repeat),
+        active_element_id: document.activeElement?.id || null,
+    });
 
     switch(normalizedKey) {
         case 'arrowup':
@@ -3009,6 +3178,13 @@ document.addEventListener('DOMContentLoaded', async function() {
     // Move focus to the top element (page title) on load.
     focusTopOfPage();
 
+    // Study mode: same viewer, minus the model chooser and the upload control.
+    // The model is decided by the protocol step, and study.js drives it from
+    // there; the study region in the markup is revealed by this class.
+    if (studyMode) {
+        document.body.classList.add('study-ui');
+    }
+
     // Simplified workshop viewer: the /workshop route (or ?ui=simple) shows only
     // the core controls (see viewer.css) and constrains depth to four steps.
     const workshopParams = new URLSearchParams(location.search);
@@ -3052,6 +3228,13 @@ document.addEventListener('DOMContentLoaded', async function() {
         viewerState.currentModel = wantedModel.replace(/\.[^.]+$/, '');
         if (sbModel) sbModel.textContent = viewerState.currentModel;
     }
+
+    // In study mode the first render belongs to the protocol, not to page load:
+    // study.js loads whichever model the current step calls for once it has the
+    // session. Rendering the default here would put an arbitrary object on the
+    // braille display -- possibly one from a later task -- and log it against
+    // nothing.
+    if (studyMode) return;
 
     // Send initial state to server
     pendingInputSource = 'init';

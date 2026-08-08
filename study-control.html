@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Study Control Panel — CAD A11y</title>
+    <meta name="description" content="Experimenter control panel for running a CAD A11y study session">
+    <link rel="stylesheet" href="/static/css/viewer.css">
+    <link rel="stylesheet" href="/static/css/study-control.css">
+</head>
+<!--
+    Experimenter-facing, and built to the same accessibility standard as the
+    participant view. Members of this team who run sessions use screen readers,
+    so "the experimenter is sighted" is not an assumption this page gets to make:
+    every state change lands in a live region, every control has a real label,
+    and nothing is conveyed by colour alone.
+-->
+<body class="study-control">
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <div class="container">
+        <header role="banner">
+            <h1 id="page-title" tabindex="-1">Study Control Panel</h1>
+            <p class="help-text" id="protocol-version">Loading protocol&hellip;</p>
+        </header>
+
+        <!--
+            Assertive: this is where the participant's readiness signal and any
+            failure to record data land. Both are things the experimenter needs
+            to hear during the session, not on their next pass through the page.
+        -->
+        <div id="alert-region" class="sr-only" role="alert" aria-atomic="true"></div>
+        <div id="status-region" class="sr-only" role="status" aria-atomic="true"></div>
+
+        <main id="main-content">
+
+            <!-- ============================================================
+                 ENROLLMENT — shown until a session is running
+                 ============================================================ -->
+            <section id="enrollment-section" aria-labelledby="enrollment-heading">
+                <h2 id="enrollment-heading">Start a session</h2>
+
+                <div id="missing-models-warning" class="warning-box" role="status" hidden></div>
+
+                <!-- Someone else is already running a participant on this
+                     deployment. Not an error: sessions run side by side now. It
+                     is here so a second experimenter knows before they start. -->
+                <div id="other-sessions-notice" class="notice-box" role="status" hidden></div>
+
+                <form id="enrollment-form" novalidate>
+                    <div class="field">
+                        <label for="participant-code">Participant ID</label>
+                        <input type="text" id="participant-code" name="participant_code"
+                               autocomplete="off" spellcheck="false"
+                               aria-describedby="participant-code-hint">
+                        <span id="participant-code-hint" class="help-text">
+                            A new ID is suggested for each run. Type an existing ID to run a
+                            second session with the same participant; they keep the model
+                            pairs they were assigned the first time.
+                        </span>
+                    </div>
+
+                    <div class="field">
+                        <label for="session-number">Session number</label>
+                        <input type="number" id="session-number" name="session_number"
+                               value="1" min="1" step="1" aria-describedby="session-number-hint">
+                        <span id="session-number-hint" class="help-text">
+                            1 unless this participant has been run before.
+                        </span>
+                    </div>
+
+                    <fieldset class="field">
+                        <legend>Model pairs for this participant</legend>
+                        <p id="assignment-hint" class="help-text">
+                            Assigned by Latin square from the participant's enrollment
+                            position, so the three pairs stay balanced across participants.
+                            Change it only if you have a reason to.
+                        </p>
+                        <p id="assigned-pairs" role="status" class="assigned-pairs">Loading&hellip;</p>
+                        <div class="field">
+                            <label for="task-1">First pair</label>
+                            <select id="task-1" aria-describedby="assignment-hint"></select>
+                        </div>
+                        <div class="field">
+                            <label for="task-2">Second pair</label>
+                            <select id="task-2" aria-describedby="assignment-hint"></select>
+                        </div>
+                        <p class="help-text">
+                            The Lego brick is always the practice round and is not listed here.
+                        </p>
+                    </fieldset>
+
+                    <div class="button-group">
+                        <button type="submit" id="start-session-btn">Start session</button>
+                    </div>
+                    <p id="enrollment-error" class="error-text" role="alert" hidden></p>
+                </form>
+
+                <h3 id="latin-square-heading">Assignment reference</h3>
+                <table class="reference-table" aria-labelledby="latin-square-heading">
+                    <caption class="help-text">
+                        Which pairs each enrollment position receives. Repeats every six
+                        participants.
+                    </caption>
+                    <thead>
+                        <tr><th scope="col">Position</th><th scope="col">First pair</th><th scope="col">Second pair</th></tr>
+                    </thead>
+                    <tbody id="latin-square-body"></tbody>
+                </table>
+
+                <h3 id="previous-sessions-heading">Previous sessions</h3>
+                <div id="previous-sessions" aria-labelledby="previous-sessions-heading">
+                    <p class="help-text">Loading&hellip;</p>
+                </div>
+            </section>
+
+            <!-- ============================================================
+                 ACTIVE SESSION
+                 ============================================================ -->
+            <section id="session-section" aria-labelledby="session-heading" hidden>
+                <h2 id="session-heading" tabindex="-1">Session in progress</h2>
+
+                <!--
+                    The link this participant opens. With several sessions
+                    running on one deployment a plain /study cannot tell which
+                    session a browser belongs to, so the code in this link is
+                    what binds them.
+                -->
+                <div id="participant-link-block" class="participant-link-block">
+                    <h3 id="participant-link-heading">Participant link</h3>
+                    <p id="participant-link" class="participant-link"></p>
+                    <p class="help-text">
+                        Send this to the participant, or read them the code at the end.
+                        A plain <code>/study</code> link works too while this is the only
+                        session running.
+                    </p>
+                </div>
+
+                <dl class="session-summary">
+                    <dt>Participant</dt><dd id="summary-participant">--</dd>
+                    <dt>Session</dt><dd id="summary-session-number">--</dd>
+                    <dt>Model pairs</dt><dd id="summary-tasks">--</dd>
+                    <dt>Recorded so far</dt><dd id="summary-counts">--</dd>
+                    <dt>Logging</dt><dd id="summary-logging">--</dd>
+                    <dt>Participant views connected</dt><dd id="summary-clients">--</dd>
+                </dl>
+
+                <!-- Participant readiness. role="status" rather than alert: it is
+                     information, not an error, and it is repeated visibly here so
+                     an experimenter who missed the announcement can still find it. -->
+                <p id="ready-indicator" class="ready-indicator" role="status">
+                    Participant has not signalled readiness on this step.
+                </p>
+
+                <section aria-labelledby="current-step-heading">
+                    <h3 id="current-step-heading" tabindex="-1">Current step</h3>
+                    <p id="step-progress" class="step-progress">--</p>
+                    <p id="step-part" class="step-part">--</p>
+
+                    <!--
+                        Not everything here is spoken. Each block declares whether
+                        it is something to do, something to say, something to ask,
+                        or a reminder, and the label is rendered as a <dt> so a
+                        screen reader announces "Say" before the words rather than
+                        leaving the distinction to how the text looks.
+                    -->
+                    <h4 id="script-heading">Experimenter notes</h4>
+                    <!--
+                        No tabindex: this does not scroll, so making it focusable
+                        would only add a tab stop that does nothing on the way to
+                        the controls below.
+                    -->
+                    <dl id="step-script" class="script-box" aria-labelledby="script-heading"></dl>
+
+                    <div id="physical-model-block" hidden>
+                        <h4>Hand over</h4>
+                        <p id="step-physical-model" class="physical-model"></p>
+                    </div>
+
+                    <div id="model-block" hidden>
+                        <h4>On the display</h4>
+                        <p id="step-model" class="help-text"></p>
+                        <p id="model-missing-warning" class="error-text" role="alert" hidden></p>
+                    </div>
+
+                    <div id="checklist-block" hidden>
+                        <h4 id="checklist-heading">Before moving on</h4>
+                        <ul id="step-checklist" aria-labelledby="checklist-heading"></ul>
+                    </div>
+
+                    <!--
+                        The object's description is read to the participant at the
+                        start of Part A, so it must not live under the answer key
+                        heading, which tells the experimenter not to read what
+                        follows. Its own block, above, with the instruction that
+                        it IS spoken.
+                    -->
+                    <div id="object-block" hidden>
+                        <h4 id="object-heading">This object</h4>
+                        <p id="object-label" class="physical-model"></p>
+                        <p id="object-description" class="object-description"></p>
+                        <p class="help-text">
+                            Read the description to the participant at the start of Part A,
+                            before anything goes on the display.
+                        </p>
+                    </div>
+
+                    <div id="answer-key-block" hidden>
+                        <h4 id="answer-key-heading">Answer key</h4>
+                        <p class="help-text">For your reference only. Do not read this out.</p>
+                        <h5>What changed</h5>
+                        <ul id="answer-key-differences" aria-labelledby="answer-key-heading"></ul>
+                        <h5>What did not change</h5>
+                        <ul id="answer-key-unchanged"></ul>
+                    </div>
+                </section>
+
+                <section aria-labelledby="prompts-heading">
+                    <h3 id="prompts-heading">Prompts</h3>
+                    <h4 id="facilitator-prompts-heading">Open-ended</h4>
+                    <ul id="facilitator-prompts" aria-labelledby="facilitator-prompts-heading"></ul>
+
+                    <div class="button-group">
+                        <button type="button" id="toggle-strategy-btn" aria-expanded="false"
+                                aria-controls="strategy-prompts-block">
+                            Show strategy prompts
+                        </button>
+                    </div>
+                    <div id="strategy-prompts-block" hidden>
+                        <p class="help-text">
+                            These name a specific control, so they steer the exploration.
+                            Use them only when the participant is stuck.
+                        </p>
+                        <ul id="strategy-prompts"></ul>
+                    </div>
+                </section>
+
+                <section aria-labelledby="navigation-heading">
+                    <h3 id="navigation-heading">Move through the protocol</h3>
+                    <div class="button-group">
+                        <button type="button" id="previous-step-btn">Previous step</button>
+                        <button type="button" id="next-step-btn">Next step</button>
+                    </div>
+                    <label class="checkbox-label" for="confirm-advance">
+                        <input type="checkbox" id="confirm-advance" checked>
+                        Ask me to confirm before moving
+                    </label>
+
+                    <div class="field">
+                        <label for="step-jump">Jump to a step</label>
+                        <select id="step-jump"></select>
+                    </div>
+
+                    <div class="button-group">
+                        <button type="button" id="end-session-btn" class="danger">End session</button>
+                    </div>
+                </section>
+            </section>
+        </main>
+    </div>
+
+    <script src="/static/js/study-control.js"></script>
+</body>
+</html>

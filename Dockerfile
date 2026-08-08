@@ -36,6 +36,7 @@ COPY src/ ./src/
 COPY static/ ./static/
 COPY accessible-3d-viewer.html ./
 COPY workshop-entry.html ./
+COPY study-control.html ./
 COPY examples/ ./examples/
 # Built-ins ship here, deliberately NOT into data/models. data/models is a mounted
 # volume, so anything copied there is shadowed on a real deployment, and copying

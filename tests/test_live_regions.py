@@ -1,7 +1,8 @@
 """Guardrails on the screen-reader live-region structure in the viewer markup.
 
 The announcement layer has exactly two message windows, and nothing else
-should be a live region:
+should be a live region beyond the small set declared in
+EXPECTED_LIVE_ELEMENTS below:
 
   * #announcement-window: role="alert" (implies aria-live="assertive"), with
     no explicit aria-live attribute alongside it (redundant, and double-speaks
@@ -39,6 +40,23 @@ EXPECTED_LIVE_ELEMENTS = {
     # the announcement layer, hidden until the email field actually fails to
     # validate.
     "consent-email-error": {"aria-live": None, "role": "alert"},
+    # --- Study mode (/study). Present in the markup on every page but revealed
+    # only by body.study-ui, so on the ordinary viewer these are hidden and never
+    # written to.
+    #
+    # The step heading is the one place the study region interrupts, and it is
+    # deliberately polite rather than assertive: it fires on a step change, and a
+    # participant is reading braille with both hands while the display refreshes.
+    # An assertive interruption there is exactly the disruption the study is
+    # trying not to introduce. aria-live rather than role="status" because the
+    # element is an h2 — it has to stay a heading so a screen reader user can
+    # jump to it, and role="status" would replace that.
+    "study-step-heading": {"aria-live": "polite", "role": None},
+    # Step counter and the confirmation after the ready button. Both polite, both
+    # written only in response to something the participant just did or something
+    # the experimenter just changed.
+    "study-step-progress": {"aria-live": None, "role": "status"},
+    "study-ready-status": {"aria-live": None, "role": "status"},
 }
 
 # Divs demoted to plain visual text; each must stay free of aria-live and of

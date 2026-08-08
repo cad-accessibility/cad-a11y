@@ -100,6 +100,43 @@
         <div id="announcement-window-polite" class="sr-only" role="status" aria-atomic="true"></div>
 
        <main id="main-content">
+
+            <!--
+                STUDY SESSION REGION — only shown at /study (viewer.js adds
+                body.study-ui; see viewer.css). First thing inside main, so the
+                skip link lands on it and a screen reader meets the current step
+                before the controls.
+
+                Not role="banner": the page already has one, and a second would
+                make "banner" ambiguous in the landmarks list. A labelled region
+                is listed just as reliably and says what it actually is.
+
+                The heading is aria-live="polite", never assertive. It fires only
+                on a step change, never on a render — participants are reading
+                braille with both hands while the display refreshes, and an
+                assertive interruption mid-slice is exactly the disruption the
+                protocol is trying to avoid measuring.
+            -->
+            <section id="study-region" class="study-region" aria-labelledby="study-step-heading" hidden>
+                <h2 id="study-step-heading" tabindex="-1" aria-live="polite">Waiting for the session to start</h2>
+                <p id="study-step-progress" role="status" class="study-progress">
+                    <span id="study-step-progress-text">Not started</span>
+                </p>
+                <p id="study-step-text" class="study-step-text">
+                    Your experimenter will start the session in a moment.
+                </p>
+                <div class="button-group">
+                    <!--
+                        Advisory only: it tells the experimenter the participant is
+                        done and does not advance anything. Labelled in full rather
+                        than as "Ready" so it is unambiguous under voice control,
+                        where the visible label is the spoken command.
+                    -->
+                    <button type="button" id="study-ready-btn" disabled>I am ready to move on</button>
+                </div>
+                <p id="study-ready-status" role="status" class="help-text"></p>
+            </section>
+
             <div class="layout">
                 <!-- LEFT COLUMN: controls (braille reading order: most-used first) -->
                 <div class="left-col" id="left-col">
@@ -606,6 +643,11 @@
 
     <script src="/static/js/viewer.js"></script>
 
+    <!-- Study session driver. Inert everywhere except /study, where it reveals the
+         study region above, loads the model for each protocol step, and reports
+         interactions to the study log. -->
+    <script src="/static/js/study.js"></script>
+
     <!-- Monarch USB Browser HID integration (mirrors braille_display.py _send_to_monarch) -->
     <script src="/static/js/monarch-hid.js"></script>
 
@@ -632,6 +674,13 @@
             const workshopSimple = location.pathname.replace(/\/+$/, '') === '/workshop'
                 || new URLSearchParams(location.search).get('ui') === 'simple';
             if (workshopSimple) return;
+
+            // Skip it in study mode too. Study participants give informed consent
+            // on paper before the session starts, so this dialog asks a question
+            // that has already been answered — and it would ask it as a modal, in
+            // front of a participant who is mid-onboarding on a braille display.
+            // Study logging is separate from analytics and is not gated on it.
+            if (location.pathname.replace(/\/+$/, '') === '/study') return;
 
             let sessionData = null;
             try {

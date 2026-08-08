@@ -214,15 +214,45 @@ All persistent data is in Docker-managed named volumes, not on the host filesyst
 | --- | --- |
 | `models` | The models that ship with the app, seeded from the image on every start |
 | `uploads` | Models uploaded by visitors |
-| `db` | The usage database |
+| `db` | The usage database, and the study database (`study.db`) |
 | `renders` | Render output |
-| `logs` | Braille send logs and study logs |
+| `logs` | Braille send logs, and per-session study logs under `study/` |
 
 Two consequences that have caught us out before.
 
 **This data is not in the old host location and is outside host-level backups.** Before the move to named volumes it lived under a path on the NFS share. It no longer does, and nothing on the host is backing it up.
 
 **`docker compose down -v` destroys it.** That includes every uploaded model and the entire usage database. Use plain `docker compose down` to stop the app. There is no undo and no copy elsewhere.
+
+**Study data is in there too, and it cannot be regenerated.** A study session is a person's hour; unlike the usage database, losing it means running someone again. It lives in two places, both under volumes covered by the backup command below: `db` holds `study.db`, and `logs/study/` holds the per-session JSONL files. Back both up after every session rather than only before risky operations.
+
+### The study control panel
+
+`/study/control` is gated on a token, and there is nothing to configure. On first start the server generates one, writes it to `study_control_token` in the `db` volume with mode 0600, and prints the full panel URL. Because it lives in a volume it survives restarts and redeploys, so the URL the experimenters have saved keeps working.
+
+Find it at any time with:
+
+```bash
+docker compose logs app | grep 'Study control panel'
+```
+
+Two things follow from where it is stored.
+
+**It is in the `db` volume, so the backup below already covers it** — and `docker compose down -v` destroys it along with everything else. That is recoverable (the next start generates a new one) but it silently invalidates the URL everyone is using, so tell the team if it happens.
+
+**Rotating it is deleting the file:**
+
+```bash
+docker compose exec app rm /project/data/db/study_control_token
+docker compose restart app
+docker compose logs app | grep 'Study control panel'
+```
+
+To pin a token instead of letting the server manage one — for example to hand the same URL to a second deployment — set `STUDY_CONTROL_TOKEN` in `.env`. It overrides the stored file, which is left untouched.
+
+If the volume is read-only, the server falls back to a token that lasts only for that run rather than refusing to serve the study, and says so in the log.
+
+The participant page at `/study` needs no token, by design: a participant should not have to type a secret, and it can only signal readiness and log its own interactions.
 
 ### Backing up
 

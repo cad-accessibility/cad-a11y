@@ -142,6 +142,125 @@ The DotPad supports cursor controls and depth changes with the following inputs:
 NOTE: Cursor or guideline movements will only work when the cursor or guidelines are active. A single button press will move one pixel. A double or triple button press will move the line five or twelve pixels respectively.
 
 
+## Running a study session
+
+`/study` runs the study protocol end to end. It is the ordinary viewer, with the
+model chooser removed and a study region added at the top carrying the current
+step and an "I am ready to move on" button. Models load themselves at each step,
+so the experimenter never has to find one in a list mid-session.
+
+There are two pages, and they stay in sync over Server-Sent Events, so the
+experimenter can drive the session from their own machine while the participant
+works on theirs.
+
+| Page | Who uses it | Needs a token |
+| --- | --- | --- |
+| `/study` | The participant | No |
+| `/study/control?token=<token>` | The experimenter | Yes |
+
+### Finding the control panel
+
+The panel is gated on a token, and the token looks after itself. On first start
+the server generates one, stores it alongside the study database, and prints the
+whole URL. It stays the same across restarts and redeploys, so the link is worth
+bookmarking.
+
+```bash
+docker compose logs app | grep 'Study control panel'
+```
+
+Running without Docker, it is on the same startup line in the terminal.
+
+To pin a token instead — say, one already shared with the team — set
+`STUDY_CONTROL_TOKEN` in `.env`, which overrides the stored one.
+
+### Running one
+
+1. Open the control panel. It suggests the next participant ID (`P01`, `P02`, …)
+   and the two model pairs that participant is due.
+2. Start the session. The participant opens `/study` in Chrome — Chrome
+   specifically, because the braille display connects over Bluetooth — and their
+   view picks up the session on its own.
+3. Work through the steps. Each one shows what to do, what to say and what to
+   ask, which printed model to hand over, and, for the exploration steps, the
+   answer key for that pair. "Next step" advances both views and loads the next
+   model.
+4. End the session when you reach the last step. That closes the record.
+
+The participant sees a practice round with the Lego brick, then two of the three
+model pairs. Which two, and in which order, comes from a Latin square indexed by
+enrollment position, so the pairs stay balanced across participants rather than
+clustering the way a random draw does at this sample size. The panel shows the
+full assignment table.
+
+### Two sessions at once
+
+One deployment serves the whole team, so two experimenters in different places
+can run participants at the same time. Sessions are independent: each has its own
+step, its own models, its own log file, and its own live connection to its
+participant's page.
+
+Each session gets a short **participant code** at enrolment, and the panel shows
+the link that carries it (`/study?s=K9F2`). Send that to the participant, or read
+them the code.
+
+While only one session is running, a plain `/study` link works and there is
+nothing to type — that is the ordinary case and it stays frictionless. Once a
+second session starts, a browser arriving without a code is told to ask its
+experimenter for the link rather than being attached to whichever session is
+newest. Guessing there is what would put one participant's keypresses in another
+participant's record.
+
+The panel tells you before you enrol if someone else is already running a
+session, and warns you if more than one participant view is connected to *your*
+session — that means every interaction is being recorded more than once.
+
+### What each step shows you
+
+Steps are written as labelled blocks rather than one run of prose, because most
+mix things to do with things to say:
+
+| Label | Means |
+| --- | --- |
+| **Say** | Read this to the participant. Shown in quotes. |
+| **Do** | An action you perform. Not spoken. |
+| **Ask** | Questions to ask verbally, sometimes with the response options. |
+| **Note** | Context or a reminder. Never spoken. |
+
+### Questionnaires
+
+The background questions, the rating scale after each object, and the closing
+discussion questions are all in the panel, so there is no second document to keep
+open. They are there **to read from**: ask them out loud and write the answers on
+your own sheet. The panel gives you nowhere to type them and stores none of them.
+
+Consent is not part of the session. It is given before the participant is sent
+the link, so step 1 is settling them in and step 2 is setting up the machine and
+the display.
+
+### Where the data goes
+
+Two records, written independently, both keyed to the participant ID:
+
+- `data/db/study.db` — a SQLite database, separate from the usage database.
+  Interactions and their timings: keypresses, renders, step advances, model
+  loads, readiness signals, announcements.
+- `data/logs/study/<participant>_S<n>_<date>.jsonl` — append-only, one event per
+  line, each line carrying the full viewer state at that moment. This is the
+  record a session is reconstructed from, and it is written even when the
+  database write is the thing that failed.
+
+Nothing else is stored. What the participant said and what the experimenter
+observed stay on the experimenter's own sheet.
+
+Ending a session checkpoints the database, so `study.db` is complete on its own.
+Copy it mid-session and you get only what SQLite has folded in so far — take the
+`-wal` file too, or use the per-session JSON download in the panel.
+
+The control panel reports whether logging is working while the session is
+running, so a storage problem is visible at the time rather than discovered
+during analysis.
+
 ## Where models are stored
 
 Models live in two directories, and which one a file is in decides who can see it.

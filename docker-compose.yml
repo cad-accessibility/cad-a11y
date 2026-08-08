@@ -13,6 +13,15 @@ services:
       # Uploads must never land in data/models: that directory is the built-in
       # set and everything in it is public to every visitor (#102).
       UPLOAD_MODEL_DIR: /project/data/uploads
+      # Optional override for the experimenter control panel token. Leaving it
+      # unset is the normal case: the server generates a token on first use and
+      # stores it in the db volume, so the panel URL is stable across restarts
+      # and redeploys without anyone configuring anything. It is printed in full
+      # at every start (docker compose logs app | grep 'control panel').
+      #
+      # Set it in .env only to pin a token you distribute some other way. Doing
+      # so overrides the stored one.
+      STUDY_CONTROL_TOKEN: "${STUDY_CONTROL_TOKEN:-}"
     volumes:
       # Docker-managed named volumes (not host bind mounts). On first mount,
       # Docker seeds each volume from the image's /project/data/<name>, which
