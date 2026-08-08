@@ -1178,3 +1178,153 @@ class TestNothingIsWrittenBetweenSessions:
             path = study_db.get_study_session(state["study_session_id"])["log_path"]
             codes = {json.loads(line)["participant_code"] for line in open(path, encoding="utf-8")}
             assert codes == {expected}, f"{path} contains {codes}"
+
+
+class TestConcurrentSessionsDoNotMuddleEachOther:
+    """Several sessions logging at the same moment, from different threads.
+
+    The sequential tests above prove the routing is right. These prove it stays
+    right under simultaneous traffic, which is where a shared counter, a shared
+    file handle or a shared "current" anything would show up.
+    """
+
+    SESSIONS = 4
+    EVENTS = 40
+
+    def test_no_event_lands_in_another_session(self, client):
+        import threading
+
+        sessions = []
+        for i in range(self.SESSIONS):
+            state = _start(client, participant_code=f"C{i}").get_json()["state"]
+            sessions.append({"code": f"C{i}", "id": state["study_session_id"]})
+
+        def hammer(session):
+            # A client per thread: they are independent objects over one app.
+            with flask_app.test_client() as own:
+                for n in range(self.EVENTS):
+                    own.post(
+                        "/study/event",
+                        json={
+                            "event_type": "keyboard",
+                            "event_data": {"src": session["code"], "n": n},
+                            "participant_key": None,
+                        },
+                        headers={"X-Study-Key": _key_for(session["id"])},
+                    )
+
+        threads = [threading.Thread(target=hammer, args=(s,)) for s in sessions]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        for session in sessions:
+            export = study_db.export_session(session["id"])
+            keyboard = [e for e in export["events"] if e["event_type"] == "keyboard"]
+            assert len(keyboard) == self.EVENTS, (
+                f"{session['code']} recorded {len(keyboard)} of {self.EVENTS} events"
+            )
+            foreign = [e for e in keyboard if e["event_data"]["src"] != session["code"]]
+            assert not foreign, f"{session['code']} holds events from {foreign[:2]}"
+            assert {e["participant_code"] for e in export["events"]} == {session["code"]}
+
+    def test_sequence_numbers_stay_contiguous_per_session(self, client):
+        """One counter per session, so simultaneous traffic must not leave gaps
+        or repeats -- ordering within a session is what the analysis reads."""
+        import threading
+
+        ids = [
+            _start(client, participant_code=f"D{i}").get_json()["state"]["study_session_id"]
+            for i in range(self.SESSIONS)
+        ]
+
+        def hammer(session_id):
+            for n in range(self.EVENTS):
+                study_db.record_event(session_id, "keyboard", event_data={"n": n})
+
+        threads = [threading.Thread(target=hammer, args=(i,)) for i in ids]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        for session_id in ids:
+            export = study_db.export_session(session_id)
+            sequences = sorted(
+                [e["seq"] for e in export["events"]] + [r["seq"] for r in export["renders"]]
+            )
+            assert sequences == list(range(1, len(sequences) + 1)), (
+                f"session {session_id} has gaps or repeats: {sequences[:20]}"
+            )
+
+    def test_no_log_file_receives_another_session_line(self, client):
+        import threading
+
+        sessions = []
+        for i in range(self.SESSIONS):
+            state = _start(client, participant_code=f"E{i}").get_json()["state"]
+            sessions.append({"code": f"E{i}", "id": state["study_session_id"]})
+
+        def hammer(session):
+            for n in range(self.EVENTS):
+                study_db.record_event(
+                    session["id"], "keyboard", event_data={"src": session["code"], "n": n}
+                )
+
+        threads = [threading.Thread(target=hammer, args=(s,)) for s in sessions]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        for session in sessions:
+            path = study_db.get_study_session(session["id"])["log_path"]
+            lines = [json.loads(line) for line in open(path, encoding="utf-8")]
+            codes = {line["participant_code"] for line in lines}
+            assert codes == {session["code"]}, f"{path} contains {codes}"
+            sources = {
+                line["event_data"].get("src")
+                for line in lines
+                if line["event_type"] == "keyboard"
+            }
+            assert sources == {session["code"]}, f"{path} carries events from {sources}"
+            sequences = [line["seq"] for line in lines]
+            assert sequences == sorted(sequences), "lines are out of sequence order"
+
+    def test_the_same_step_resolves_to_each_session_own_model(self, client):
+        """The sharpest check that nothing is shared: two sessions sitting on the
+        same step id must load different models, because their Latin-square
+        orders differ. A shared 'current step' or 'current model' would collapse
+        them onto one."""
+        first = _start(client, participant_code="F1", task_order=["cane_tip", "coat_rack"])
+        first_id = first.get_json()["state"]["study_session_id"]
+        second = _start(client, participant_code="F2", task_order=["pencil_holder", "coat_rack"])
+        second_id = second.get_json()["state"]["study_session_id"]
+
+        for session_id in (first_id, second_id):
+            for _ in range(40):
+                state = client.get(
+                    f"/study/state?study_session_id={session_id}", headers=_auth()
+                ).get_json()
+                if state["step"]["id"] == "task1.a.virtual":
+                    break
+                client.post(
+                    "/study/step/advance",
+                    json={"direction": "next", "study_session_id": session_id},
+                    headers=_auth(),
+                )
+
+        def autoloaded(session_id):
+            return [
+                e["event_data"]["model"]
+                for e in study_db.export_session(session_id)["events"]
+                if e["event_type"] == "model_autoload" and e["step_id"] == "task1.a.virtual"
+            ]
+
+        assert autoloaded(first_id) == ["cane_tip_hook"]
+        assert autoloaded(second_id) == ["pencil_holder_2x2"]
+
+
+def _key_for(session_id: int) -> str:
+    return study_db.get_study_session(session_id)["participant_key"]
