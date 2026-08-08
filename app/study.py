@@ -482,11 +482,11 @@ def _participant_state(session: dict[str, Any] | None) -> dict[str, Any]:
 def _experimenter_state(session: dict[str, Any] | None) -> dict[str, Any]:
     """Everything, for the token-authenticated panel."""
     protocol = study_protocol.load_protocol()
-    suggested_code = study_db.next_participant_code()
-    existing = study_db.get_participant(suggested_code)
-    sequence_number = (
-        int(existing["sequence_number"]) if existing else study_db.highest_sequence_number() + 1
-    )
+    # Advisory: what the next participant will most likely be called, and which
+    # pairs they are due. The real code comes from the id the database assigns at
+    # enrolment, so two panels showing the same suggestion cannot collide.
+    suggested_code = study_db.preview_next_code()
+    sequence_number = study_db.next_sequence_preview()
     base: dict[str, Any] = {
         "active": False,
         "protocol_version": protocol.get("version"),
@@ -527,6 +527,7 @@ def _experimenter_state(session: dict[str, Any] | None) -> dict[str, Any]:
             "participant_code": session.get("participant_code"),
             "session_number": session.get("session_number"),
             "task_order": session.get("task_order"),
+            "participant_id": session.get("participant_id"),
             "task_labels": [
                 (protocol.get("model_pairs", {}).get(key) or {}).get("label", key)
                 for key in session.get("task_order") or []
@@ -699,8 +700,12 @@ def study_session_start():
     """
     data = request.get_json(silent=True) or {}
 
-    code = str(data.get("participant_code") or "").strip() or study_db.next_participant_code()
-    if len(code) > 32 or any(ch in code for ch in "/\\.:"):
+    # An empty code means "a new participant": the database assigns the id and
+    # derives the label from it, so simultaneous enrolments cannot land on the
+    # same one. A code that is given names an existing participant, or creates
+    # one under that name.
+    code = str(data.get("participant_code") or "").strip()
+    if code and (len(code) > 32 or any(ch in code for ch in "/\\.:")):
         return jsonify({"status": "error", "message": "Invalid participant code"}), 400
 
     # `or 1` would be wrong here: it turns an explicit 0 into 1 and accepts an
@@ -715,7 +720,8 @@ def study_session_start():
     if session_number < 1:
         return jsonify({"status": "error", "message": "session_number must be 1 or more"}), 400
 
-    participant = study_db.get_or_create_participant(code)
+    participant = study_db.create_participant(code or None)
+    code = str(participant["code"])
 
     protocol = study_protocol.load_protocol()
     known_pairs = set(protocol.get("model_pairs", {}))
@@ -723,7 +729,7 @@ def study_session_start():
     if isinstance(requested_order, list) and requested_order:
         task_order = [str(key) for key in requested_order if str(key) in known_pairs]
     else:
-        task_order = study_protocol.assign_task_order(int(participant["sequence_number"]))
+        task_order = study_protocol.assign_task_order(int(participant["id"]))
     if not task_order:
         return jsonify({"status": "error", "message": "task_order names no known model pairs"}), 400
 
@@ -733,6 +739,7 @@ def study_session_start():
     # participant's keypresses began landing on the new session.
     try:
         session = study_db.create_session(
+            participant_id=int(participant["id"]),
             participant_code=code,
             session_number=session_number,
             task_order=task_order,
@@ -746,10 +753,10 @@ def study_session_start():
         "session_start",
         source="experimenter",
         event_data={
+            "participant_id": participant["id"],
             "participant_code": code,
             "session_number": session_number,
             "task_order": task_order,
-            "sequence_number": participant["sequence_number"],
             "protocol_version": protocol.get("version"),
             "missing_models": _missing_models(),
         },

@@ -751,7 +751,7 @@ class TestExport:
         client.post("/study/event", json={"event_type": "keyboard"})
         body = client.get(f"/study/sessions/{session_id}/export", headers=_auth()).get_json()
         assert body["session"]["participant_code"] == "P01"
-        assert body["participant"]["sequence_number"] == 1
+        assert body["participant"]["id"] == 1
         assert any(e["event_type"] == "keyboard" for e in body["events"])
 
     def test_export_requires_a_token(self, client):
@@ -1046,9 +1046,18 @@ class TestUpgradingAnExistingDatabase:
         study_db._local.__dict__.clear()
         study_db.init_db()
 
-        created = study_db.create_session("P02", 1, ["cane_tip", "coat_rack"], "test")
+        participant = study_db.create_participant()
+        created = study_db.create_session(
+            participant_id=int(participant["id"]),
+            participant_code=participant["code"],
+            session_number=1,
+            task_order=["cane_tip", "coat_rack"],
+            protocol_version="test",
+        )
         assert created["participant_key"]
-        assert study_db.get_session_by_key(created["participant_key"])["participant_code"] == "P02"
+        by_key = study_db.get_session_by_key(created["participant_key"])
+        assert by_key["participant_code"] == participant["code"]
+        assert by_key["participant_id"] == participant["id"]
         study_db._local.__dict__.clear()
 
 
@@ -1328,3 +1337,267 @@ class TestConcurrentSessionsDoNotMuddleEachOther:
 
 def _key_for(session_id: int) -> str:
     return study_db.get_study_session(session_id)["participant_key"]
+
+
+class TestIdentityIsAllocatedByTheDatabase:
+    """The participant's identity is an id SQLite hands out; P01, P02 is a label
+    derived from it.
+
+    It used to be the other way round: the code was the primary key and the next
+    one was found by reading every existing code and picking the first gap. Two
+    experimenters enrolling at the same instant read the same gap, and five of
+    six simultaneous enrolments failed on UNIQUE violations and a locked
+    database. An id cannot be raced for.
+    """
+
+    def test_simultaneous_enrolments_all_succeed_with_distinct_identities(self, client):
+        import threading
+
+        count = 8
+        barrier = threading.Barrier(count)
+        results, lock = [], threading.Lock()
+
+        def enrol():
+            with flask_app.test_client() as own:
+                barrier.wait()  # every request fires at the same instant
+                response = own.post("/study/session/start", json={}, headers=_auth())
+                with lock:
+                    results.append((response.status_code, response.get_json()))
+
+        threads = [threading.Thread(target=enrol) for _ in range(count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        failures = [(code, body) for code, body in results if code != 200]
+        assert not failures, f"{len(failures)} of {count} enrolments failed: {failures[:2]}"
+
+        states = [body["state"] for _, body in results]
+        assert len({s["participant_id"] for s in states}) == count, "participant ids collided"
+        assert len({s["participant_code"] for s in states}) == count, "participant codes collided"
+        assert len({s["study_session_id"] for s in states}) == count, "session ids collided"
+
+    def test_the_code_is_derived_from_the_id(self, client):
+        state = _start(client).get_json()["state"]
+        assert state["participant_code"] == study_db.code_for(state["participant_id"])
+
+    def test_a_typed_code_still_names_a_participant(self, client):
+        """A returning participant keeps their code, and with it their assignment."""
+        first = _start(client, participant_code="P01").get_json()["state"]
+        client.post("/study/session/end",
+                    json={"study_session_id": first["study_session_id"]}, headers=_auth())
+        again = _start(
+            client, participant_code="P01", session_number=2
+        ).get_json()["state"]
+        assert again["participant_id"] == first["participant_id"]
+        assert again["task_order"] == first["task_order"]
+
+    def test_the_latin_square_follows_the_id(self, client):
+        """Counterbalancing indexes the identity, so it stays balanced even when
+        participants are enrolled simultaneously."""
+        orders = []
+        for _ in range(6):
+            state = _start(client).get_json()["state"]
+            orders.append(tuple(state["task_order"]))
+            client.post("/study/session/end",
+                        json={"study_session_id": state["study_session_id"]}, headers=_auth())
+        assert len(set(orders)) == 6, f"assignments repeated within one cycle: {orders}"
+
+    def test_ids_are_never_reused_after_a_participant_is_removed(self, client):
+        """AUTOINCREMENT, not max(id)+1: a deleted row must not hand its number to
+        somebody else, or two participants share a code in the exported data."""
+        first = _start(client).get_json()["state"]
+        conn = study_db._get_conn()
+        # Children first: the foreign keys correctly refuse to orphan them.
+        for table in ("study_events", "study_renders"):
+            conn.execute(
+                f"DELETE FROM {table} WHERE study_session_id = ?", (first["study_session_id"],)
+            )
+        conn.execute("DELETE FROM study_sessions WHERE id = ?", (first["study_session_id"],))
+        conn.execute("DELETE FROM participants WHERE id = ?", (first["participant_id"],))
+        conn.commit()
+
+        second = study_db.create_participant()
+        assert second["id"] > first["participant_id"], (
+            "a deleted participant's number was handed to somebody else, so two "
+            "participants would share a code in the exported data"
+        )
+
+    def test_every_row_carries_the_numeric_identity(self, client):
+        state = _start(client).get_json()["state"]
+        client.post(f"/study/event?s={state['participant_key']}",
+                    json={"event_type": "keyboard"})
+        with flask_app.test_request_context(
+            "/render", headers={"X-Study-Session": str(state["study_session_id"])}
+        ):
+            study_module.record_render_for_request({"depth": 50}, model_stem="mug", cache_hit=False)
+
+        export = study_db.export_session(state["study_session_id"])
+        for row in export["events"] + export["renders"]:
+            assert row["participant_id"] == state["participant_id"]
+            assert row["participant_code"] == state["participant_code"]
+
+    def test_simultaneous_session_ends_each_keep_their_own_record(self, client):
+        """What you get if two experimenters finish at the same moment."""
+        import threading
+
+        count = 6
+        states = [_start(client).get_json()["state"] for _ in range(count)]
+        for state in states:
+            client.post(f"/study/event?s={state['participant_key']}",
+                        json={"event_type": "keyboard",
+                              "event_data": {"src": state["participant_code"]}})
+
+        barrier = threading.Barrier(count)
+
+        def finish(state):
+            with flask_app.test_client() as own:
+                barrier.wait()
+                own.post("/study/session/end",
+                         json={"study_session_id": state["study_session_id"]}, headers=_auth())
+
+        threads = [threading.Thread(target=finish, args=(s,)) for s in states]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        for state in states:
+            session = study_db.get_study_session(state["study_session_id"])
+            assert session["status"] == "completed", f"{state['participant_code']} did not close"
+            export = study_db.export_session(state["study_session_id"])
+            ends = [e for e in export["events"] if e["event_type"] == "session_end"]
+            assert len(ends) == 1, f"{state['participant_code']} has {len(ends)} end events"
+            keyboard = [e for e in export["events"] if e["event_type"] == "keyboard"]
+            assert [e["event_data"]["src"] for e in keyboard] == [state["participant_code"]]
+            sequences = sorted(
+                [e["seq"] for e in export["events"]] + [r["seq"] for r in export["renders"]]
+            )
+            assert sequences == list(range(1, len(sequences) + 1))
+
+
+class TestUpgradingToDatabaseAssignedIdentity:
+    def _text_key_database(self, path):
+        """The schema as it was when the participant code was the primary key."""
+        import sqlite3
+
+        conn = sqlite3.connect(str(path))
+        conn.executescript(
+            """
+            CREATE TABLE participants (
+                code TEXT PRIMARY KEY, sequence_number INTEGER NOT NULL,
+                first_session_at DATETIME, created_at DATETIME);
+            CREATE TABLE study_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                participant_code TEXT NOT NULL REFERENCES participants(code),
+                session_number INTEGER NOT NULL DEFAULT 1, participant_key TEXT,
+                task_order TEXT NOT NULL, protocol_version TEXT,
+                step_index INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'active',
+                log_path TEXT, started_at DATETIME, step_started_at DATETIME,
+                completed_at DATETIME, UNIQUE(participant_code, session_number));
+            CREATE TABLE study_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                study_session_id INTEGER NOT NULL REFERENCES study_sessions(id),
+                participant_code TEXT NOT NULL, seq INTEGER NOT NULL, part_id TEXT,
+                step_id TEXT, step_index INTEGER, event_type TEXT NOT NULL,
+                source TEXT NOT NULL, client_id TEXT, event_data TEXT, client_time TEXT,
+                created_at DATETIME, elapsed_ms INTEGER, step_elapsed_ms INTEGER);
+            CREATE TABLE study_renders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                study_session_id INTEGER NOT NULL REFERENCES study_sessions(id),
+                participant_code TEXT NOT NULL, seq INTEGER NOT NULL, part_id TEXT,
+                step_id TEXT, step_index INTEGER, model TEXT, view TEXT, render_mode TEXT,
+                layout_mode TEXT, depth REAL, zoom REAL, input_source TEXT,
+                cache_hit INTEGER, orientation TEXT, created_at DATETIME,
+                elapsed_ms INTEGER, step_elapsed_ms INTEGER);
+            INSERT INTO participants VALUES ('P01', 1, '2026-08-08T01:35:17.937Z', '2026-08-08T01:35:17.937Z');
+            INSERT INTO participants VALUES ('P02', 2, '2026-08-08T02:12:28.779Z', '2026-08-08T02:12:28.779Z');
+            INSERT INTO study_sessions
+                (id, participant_code, session_number, task_order, protocol_version, step_index, status)
+                VALUES (1, 'P01', 1, '["pencil_holder","cane_tip"]', '2026-08-04', 28, 'completed');
+            INSERT INTO study_sessions
+                (id, participant_code, session_number, task_order, protocol_version, step_index, status)
+                VALUES (4, 'P02', 1, '["cane_tip","coat_rack"]', '2026-08-04', 1, 'active');
+            INSERT INTO study_events
+                (study_session_id, participant_code, seq, event_type, source, event_data, created_at)
+                VALUES (1, 'P01', 1, 'session_start', 'experimenter', '{}', '2026-08-08T01:35:17.942Z');
+            INSERT INTO study_renders
+                (study_session_id, participant_code, seq, model, created_at)
+                VALUES (1, 'P01', 2, 'mug', '2026-08-08T01:35:20.000Z');
+            """
+        )
+        conn.commit()
+        conn.close()
+
+    def _upgraded(self, tmp_path, monkeypatch):
+        legacy = tmp_path / "study.db"
+        self._text_key_database(legacy)
+        monkeypatch.setattr(study_db, "DB_PATH", legacy)
+        monkeypatch.setattr(study_db, "LOG_DIR", tmp_path / "logs")
+        study_db._local.__dict__.clear()
+        study_db.init_db()
+        return legacy
+
+    def test_existing_participants_keep_their_code_and_their_position(self, tmp_path, monkeypatch):
+        """The old sequence_number becomes the id, so a participant already run
+        keeps the model pairs the Latin square gave them."""
+        self._upgraded(tmp_path, monkeypatch)
+        assert study_db.get_participant_by_code("P01")["id"] == 1
+        assert study_db.get_participant_by_code("P02")["id"] == 2
+        study_db._local.__dict__.clear()
+
+    def test_existing_sessions_and_rows_are_relinked(self, tmp_path, monkeypatch):
+        self._upgraded(tmp_path, monkeypatch)
+        conn = study_db._get_conn()
+        assert conn.execute("SELECT participant_id FROM study_sessions WHERE id=1").fetchone()[0] == 1
+        assert conn.execute("SELECT participant_id FROM study_sessions WHERE id=4").fetchone()[0] == 2
+        for table in ("study_events", "study_renders"):
+            missing = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE participant_id IS NULL"
+            ).fetchone()[0]
+            assert missing == 0, f"{table} has {missing} rows with no participant id"
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        study_db._local.__dict__.clear()
+
+    def test_no_session_data_is_lost(self, tmp_path, monkeypatch):
+        self._upgraded(tmp_path, monkeypatch)
+        session = study_db.get_study_session(1)
+        assert session["participant_code"] == "P01"
+        assert session["step_index"] == 28
+        assert session["status"] == "completed"
+        export = study_db.export_session(1)
+        assert len(export["events"]) == 1 and len(export["renders"]) == 1
+        study_db._local.__dict__.clear()
+
+    def test_the_next_participant_does_not_reuse_a_migrated_id(self, tmp_path, monkeypatch):
+        self._upgraded(tmp_path, monkeypatch)
+        created = study_db.create_participant()
+        assert created["id"] == 3 and created["code"] == "P03"
+        study_db._local.__dict__.clear()
+
+    def test_the_upgrade_is_idempotent(self, tmp_path, monkeypatch):
+        self._upgraded(tmp_path, monkeypatch)
+        study_db.init_db()
+        study_db.init_db()
+        assert study_db.get_participant_by_code("P01")["id"] == 1
+        study_db._local.__dict__.clear()
+
+    def test_a_half_finished_upgrade_recovers(self, tmp_path, monkeypatch):
+        """A rebuild that died between creating the new table and swapping it in
+        would otherwise wedge every start after it."""
+        legacy = tmp_path / "study.db"
+        self._text_key_database(legacy)
+        import sqlite3
+
+        conn = sqlite3.connect(str(legacy))
+        conn.execute("CREATE TABLE participants_rebuilt (id INTEGER PRIMARY KEY, code TEXT)")
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(study_db, "DB_PATH", legacy)
+        study_db._local.__dict__.clear()
+        study_db.init_db()
+        assert study_db.get_participant_by_code("P01")["id"] == 1
+        study_db._local.__dict__.clear()

@@ -97,12 +97,21 @@ _failures: dict[str, Any] = {
 
 
 _DDL = """
--- One row per participant code, ever. sequence_number is enrollment order and is
--- what the Latin square indexes, so re-enrolling an existing participant for a
--- second session keeps their original model assignment.
+-- One row per participant, ever.
+--
+-- ``id`` is the identity, and it is allocated by SQLite. ``code`` -- P01, P02 --
+-- is a label derived from it, for the experimenter to say out loud and for
+-- filenames; nothing keys on it. It used to be the primary key, and the next one
+-- was found by reading every existing code and picking the first gap. Two
+-- experimenters enrolling at the same instant both read the same gap: five of
+-- six simultaneous enrolments failed outright, on UNIQUE constraint violations
+-- and a locked database. An id the database hands out cannot be raced for.
+--
+-- ``id`` doubles as enrollment order, which is what the Latin square indexes, so
+-- re-enrolling an existing participant keeps their original model assignment.
 CREATE TABLE IF NOT EXISTS participants (
-    code             TEXT PRIMARY KEY,
-    sequence_number  INTEGER NOT NULL,
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    code             TEXT UNIQUE,
     first_session_at DATETIME,
     created_at       DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -118,7 +127,10 @@ CREATE TABLE IF NOT EXISTS participants (
 -- model loads onto the wrong braille display mid-task.
 CREATE TABLE IF NOT EXISTS study_sessions (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    participant_code  TEXT NOT NULL REFERENCES participants(code),
+    participant_id    INTEGER NOT NULL REFERENCES participants(id),
+    -- Denormalised label, carried so an exported row reads without a join. The
+    -- foreign key is participant_id; this is never matched on.
+    participant_code  TEXT NOT NULL,
     session_number    INTEGER NOT NULL DEFAULT 1,
     participant_key   TEXT,
     task_order        TEXT NOT NULL,
@@ -129,7 +141,7 @@ CREATE TABLE IF NOT EXISTS study_sessions (
     started_at        DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     step_started_at   DATETIME,
     completed_at      DATETIME,
-    UNIQUE(participant_code, session_number)
+    UNIQUE(participant_id, session_number)
 );
 CREATE INDEX IF NOT EXISTS idx_study_sessions_status
     ON study_sessions(status, started_at);
@@ -150,6 +162,9 @@ CREATE INDEX IF NOT EXISTS idx_study_sessions_status
 CREATE TABLE IF NOT EXISTS study_events (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     study_session_id INTEGER NOT NULL REFERENCES study_sessions(id),
+    participant_id   INTEGER NOT NULL REFERENCES participants(id),
+    -- Readable label beside the identity, so an exported row or a log line says
+    -- who it belongs to without a join.
     participant_code TEXT NOT NULL,
     seq              INTEGER NOT NULL,
     part_id          TEXT,
@@ -165,7 +180,6 @@ CREATE TABLE IF NOT EXISTS study_events (
     step_elapsed_ms  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_study_events_session ON study_events(study_session_id, seq);
-CREATE INDEX IF NOT EXISTS idx_study_events_participant ON study_events(participant_code, created_at);
 CREATE INDEX IF NOT EXISTS idx_study_events_type ON study_events(study_session_id, event_type);
 CREATE INDEX IF NOT EXISTS idx_study_events_step ON study_events(study_session_id, step_id);
 
@@ -177,6 +191,9 @@ CREATE INDEX IF NOT EXISTS idx_study_events_step ON study_events(study_session_i
 CREATE TABLE IF NOT EXISTS study_renders (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     study_session_id INTEGER NOT NULL REFERENCES study_sessions(id),
+    participant_id   INTEGER NOT NULL REFERENCES participants(id),
+    -- Readable label beside the identity, so an exported row or a log line says
+    -- who it belongs to without a join.
     participant_code TEXT NOT NULL,
     seq              INTEGER NOT NULL,
     part_id          TEXT,
@@ -196,7 +213,6 @@ CREATE TABLE IF NOT EXISTS study_renders (
     step_elapsed_ms  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_study_renders_session ON study_renders(study_session_id, seq);
-CREATE INDEX IF NOT EXISTS idx_study_renders_participant ON study_renders(participant_code, created_at);
 
 -- There is deliberately no table for observations, experimenter notes or
 -- questionnaire answers. Those are what the participant said and what the
@@ -239,7 +255,81 @@ def _migrate(conn: sqlite3.Connection) -> None:
     Sessions already run keep their data; they simply have no participant key,
     which is right -- they were run when only one session could be active.
     """
+    # --- participants: text primary key -> database-assigned id ---------------
+    participant_columns = {row["name"] for row in conn.execute("PRAGMA table_info(participants)")}
+    if participant_columns and "id" not in participant_columns:
+        # SQLite cannot add a primary key in place, so the table is rebuilt. The
+        # old sequence_number becomes the id, which keeps every existing
+        # participant's Latin-square assignment exactly where it was.
+        #
+        # This follows SQLite's own procedure for altering a table other tables
+        # reference: foreign keys off for the duration, the swap in one
+        # transaction, then a check before they go back on. Dropping the old
+        # table with them on fails outright -- study_sessions still points at it.
+        # foreign_keys cannot be changed inside a transaction, hence the commit.
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            conn.execute("BEGIN")
+            # A previous attempt that died between the create and the swap would
+            # otherwise leave this behind and wedge every start after it.
+            conn.execute("DROP TABLE IF EXISTS participants_rebuilt")
+            conn.execute(
+                """CREATE TABLE participants_rebuilt (
+                       id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                       code             TEXT UNIQUE,
+                       first_session_at DATETIME,
+                       created_at       DATETIME
+                   )"""
+            )
+            conn.execute(
+                """INSERT INTO participants_rebuilt (id, code, first_session_at, created_at)
+                   SELECT sequence_number, code, first_session_at, created_at FROM participants"""
+            )
+            conn.execute("DROP TABLE participants")
+            conn.execute("ALTER TABLE participants_rebuilt RENAME TO participants")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            conn.execute("PRAGMA foreign_keys=ON")
+            if violations:
+                raise RuntimeError(f"participants rebuild left dangling references: {violations}")
+
+    # --- sessions and the two event tables: carry the numeric identity --------
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(study_sessions)")}
+    if "participant_id" not in columns:
+        conn.execute("ALTER TABLE study_sessions ADD COLUMN participant_id INTEGER")
+        conn.execute(
+            """UPDATE study_sessions SET participant_id =
+                   (SELECT p.id FROM participants p WHERE p.code = study_sessions.participant_code)"""
+        )
+        # The old UNIQUE(participant_code, session_number) came with the table and
+        # cannot be dropped without another rebuild; this adds the same guarantee
+        # on the new key, which is what the code now inserts against.
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_study_sessions_participant_session "
+            "ON study_sessions(participant_id, session_number)"
+        )
+    for table in ("study_events", "study_renders"):
+        table_columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if table_columns and "participant_id" not in table_columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN participant_id INTEGER")
+            conn.execute(
+                f"""UPDATE {table} SET participant_id =
+                        (SELECT s.participant_id FROM study_sessions s
+                         WHERE s.id = {table}.study_session_id)"""
+            )
+        # Created here rather than in the schema script, for the same reason the
+        # participant_key index is: the script runs first, and on an existing
+        # database the column does not exist until the ALTER above.
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table}_participant "
+            f"ON {table}(participant_id, created_at)"
+        )
+
     if "participant_key" not in columns:
         conn.execute("ALTER TABLE study_sessions ADD COLUMN participant_key TEXT")
     # Unconditional and idempotent, so it lands on a freshly created database as
@@ -315,65 +405,90 @@ def logging_health() -> dict[str, Any]:
 # Participants and sessions
 # ---------------------------------------------------------------------------
 
-def next_participant_code(prefix: str = "P") -> str:
-    """Suggest the next unused code, e.g. P03 when P01 and P02 exist.
+CODE_PREFIX = "P"
 
-    Every run gets a new participant id without the experimenter having to decide
-    on one; they can still type their own at enrollment.
+
+def code_for(participant_id: int) -> str:
+    """The label for a participant id. P01, P02, ... and P100 onward without
+    truncating."""
+    return f"{CODE_PREFIX}{int(participant_id):02d}"
+
+
+def preview_next_code() -> str:
+    """What the next new participant will most likely be called.
+
+    Advisory only -- it is shown in the panel before anyone is enrolled. It is
+    not used to allocate anything, so two panels showing the same suggestion at
+    the same moment is harmless: the real code comes from the id the database
+    assigns. That distinction is the whole point; deriving the code by scanning
+    for a free one is what made simultaneous enrolments fail.
     """
     try:
-        rows = _get_conn().execute("SELECT code FROM participants").fetchall()
+        row = _get_conn().execute("SELECT COALESCE(MAX(id), 0) AS n FROM participants").fetchone()
+        return code_for(int(row["n"]) + 1)
     except Exception:
-        rows = []
-    used = {str(row["code"]) for row in rows}
-    n = 1
-    while f"{prefix}{n:02d}" in used:
-        n += 1
-    return f"{prefix}{n:02d}"
+        return code_for(1)
 
 
-def get_participant(code: str) -> dict[str, Any] | None:
+def next_sequence_preview() -> int:
+    """The Latin-square position the next new participant will most likely get.
+
+    Advisory, like ``preview_next_code``: it fills in the enrollment form before
+    anyone exists. The binding assignment is made from the id the database hands
+    out, in ``create_participant``.
+    """
+    try:
+        row = _get_conn().execute("SELECT COALESCE(MAX(id), 0) AS n FROM participants").fetchone()
+        return int(row["n"]) + 1
+    except Exception:
+        return 1
+
+
+def get_participant(participant_id: int) -> dict[str, Any] | None:
     row = _get_conn().execute(
-        "SELECT code, sequence_number, first_session_at, created_at FROM participants WHERE code = ?",
+        "SELECT id, code, first_session_at, created_at FROM participants WHERE id = ?",
+        (participant_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_participant_by_code(code: str) -> dict[str, Any] | None:
+    row = _get_conn().execute(
+        "SELECT id, code, first_session_at, created_at FROM participants WHERE code = ?",
         (code,),
     ).fetchone()
     return dict(row) if row else None
 
 
-def highest_sequence_number() -> int:
-    try:
-        row = _get_conn().execute(
-            "SELECT COALESCE(MAX(sequence_number), 0) AS n FROM participants"
-        ).fetchone()
-        return int(row["n"])
-    except Exception:
-        return 0
+def create_participant(code: str | None = None) -> dict[str, Any]:
+    """Create a participant and return the row.
 
-
-def get_or_create_participant(code: str) -> dict[str, Any]:
-    """Return the participant row, creating it with the next sequence number.
-
-    The sequence number is what the Latin square indexes. It is assigned once and
-    never changes, so a participant returning for a second session keeps the model
-    pairs they were assigned the first time.
+    With no ``code``, the database assigns the id and the label is derived from
+    it, so two experimenters enrolling at the same instant get different
+    participants rather than fighting over the same one. With a ``code``, an
+    existing participant of that name is returned unchanged -- that is how a
+    returning participant keeps the model pairs they were assigned first time.
     """
     with _write_lock:
-        existing = get_participant(code)
-        if existing:
-            return existing
+        if code:
+            existing = get_participant_by_code(code)
+            if existing:
+                return existing
+
         conn = _get_conn()
-        sequence_number = highest_sequence_number() + 1
+        # Two statements, one transaction, under the write lock. The insert is
+        # what allocates the identity; the update only labels it. code is
+        # nullable precisely so the row can exist for the instant in between.
+        cursor = conn.execute(
+            "INSERT INTO participants (code, first_session_at) VALUES (NULL, ?)", (now(),)
+        )
+        participant_id = int(cursor.lastrowid)
         conn.execute(
-            "INSERT INTO participants (code, sequence_number, first_session_at) VALUES (?, ?, ?)",
-            (code, sequence_number, now()),
+            "UPDATE participants SET code = ? WHERE id = ?",
+            (code or code_for(participant_id), participant_id),
         )
         conn.commit()
-        return get_participant(code) or {
-            "code": code,
-            "sequence_number": sequence_number,
-            "first_session_at": None,
-            "created_at": None,
-        }
+        return get_participant(participant_id) or {}
 
 
 def _log_path_for(code: str, session_number: int) -> Path:
@@ -394,6 +509,7 @@ def new_participant_key() -> str:
 
 
 def create_session(
+    participant_id: int,
     participant_code: str,
     session_number: int,
     task_order: list[str],
@@ -406,7 +522,6 @@ def create_session(
     against, and the experimenter needs to know before the participant starts.
     """
     with _write_lock:
-        get_or_create_participant(participant_code)
         conn = _get_conn()
         log_path = _log_path_for(participant_code, session_number)
         timestamp = now()
@@ -417,11 +532,12 @@ def create_session(
             try:
                 cursor = conn.execute(
                     """INSERT INTO study_sessions
-                       (participant_code, session_number, participant_key, task_order,
-                        protocol_version, step_index, status, log_path, started_at,
-                        step_started_at)
-                       VALUES (?, ?, ?, ?, ?, 0, 'active', ?, ?, ?)""",
+                       (participant_id, participant_code, session_number, participant_key,
+                        task_order, protocol_version, step_index, status, log_path,
+                        started_at, step_started_at)
+                       VALUES (?, ?, ?, ?, ?, ?, 0, 'active', ?, ?, ?)""",
                     (
+                        participant_id,
                         participant_code,
                         session_number,
                         key,
@@ -504,8 +620,8 @@ def get_session_by_key(participant_key: str) -> dict[str, Any] | None:
 
 def list_sessions(limit: int = 100) -> list[dict[str, Any]]:
     rows = _get_conn().execute(
-        """SELECT id, participant_code, session_number, task_order, status,
-                  started_at, completed_at, step_index, log_path
+        """SELECT id, participant_id, participant_code, session_number, task_order,
+                  status, started_at, completed_at, step_index, log_path
            FROM study_sessions ORDER BY id DESC LIMIT ?""",
         (limit,),
     ).fetchall()
@@ -625,6 +741,7 @@ def record_event(
     elapsed = _elapsed_ms(session.get("started_at"), timestamp)
     step_elapsed = _elapsed_ms(session.get("step_started_at"), timestamp)
     participant_code = str(session.get("participant_code") or "")
+    participant_id = session.get("participant_id")
     seq: int | None = None
     # Both writes happen under the one lock. The JSONL append used to sit outside
     # it, which let two clients posting at the same moment take seq 10 and 11 and
@@ -637,12 +754,13 @@ def record_event(
             seq = _next_seq(conn, study_session_id)
             conn.execute(
                 """INSERT INTO study_events
-                   (study_session_id, participant_code, seq, part_id, step_id, step_index,
-                    event_type, source, client_id, event_data, client_time, created_at,
-                    elapsed_ms, step_elapsed_ms)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (study_session_id, participant_id, participant_code, seq, part_id,
+                    step_id, step_index, event_type, source, client_id, event_data,
+                    client_time, created_at, elapsed_ms, step_elapsed_ms)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     study_session_id,
+                    participant_id,
                     participant_code,
                     seq,
                     part_id,
@@ -719,6 +837,7 @@ def record_render(
     elapsed = _elapsed_ms(session.get("started_at"), timestamp)
     step_elapsed = _elapsed_ms(session.get("step_started_at"), timestamp)
     participant_code = str(session.get("participant_code") or "")
+    participant_id = session.get("participant_id")
     seq: int | None = None
     # One lock over both writes, so the file stays in seq order. See record_event.
     with _write_lock:
@@ -727,12 +846,14 @@ def record_render(
             seq = _next_seq(conn, study_session_id)
             conn.execute(
                 """INSERT INTO study_renders
-                   (study_session_id, participant_code, seq, part_id, step_id, step_index,
-                    model, view, render_mode, layout_mode, depth, zoom, input_source,
-                    cache_hit, orientation, created_at, elapsed_ms, step_elapsed_ms)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (study_session_id, participant_id, participant_code, seq, part_id,
+                    step_id, step_index, model, view, render_mode, layout_mode, depth,
+                    zoom, input_source, cache_hit, orientation, created_at, elapsed_ms,
+                    step_elapsed_ms)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     study_session_id,
+                    participant_id,
                     participant_code,
                     seq,
                     part_id,
@@ -839,7 +960,7 @@ def export_session(study_session_id: int) -> dict[str, Any] | None:
     ]
     return {
         "session": session,
-        "participant": get_participant(str(session.get("participant_code"))),
+        "participant": get_participant(int(session["participant_id"])) if session.get("participant_id") else None,
         "events": events,
         "renders": renders,
     }
