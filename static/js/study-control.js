@@ -459,13 +459,20 @@
             lastStepId = stepId;
             status(`Step ${(state.step_index || 0) + 1} of ${state.step_count}: `
                    + `${(state.step || {}).title || ''}`);
-            // Move focus to the step heading on a real advance, so a screen reader
-            // user lands on the new script instead of hunting for it. Not on the
-            // first render, which would yank focus away from the page heading the
-            // moment the panel loaded.
+            // Move focus to the step heading on a real advance, so a screen
+            // reader user lands on the new script instead of hunting for it.
+            // Here that is right: the experimenter pressed Next, so the change
+            // is theirs and the focus should follow it. Not on the first render,
+            // which would yank focus away from the page heading the moment the
+            // panel loaded.
+            //
+            // Called directly, not through requestAnimationFrame: the heading is
+            // already laid out, and rAF does not run in a background tab -- the
+            // panel can easily be behind the participant's window, and the move
+            // would then fire whenever it next came forward.
             if (!wasFirstRender) {
                 const target = el('current-step-heading');
-                if (target) requestAnimationFrame(function () { target.focus(); });
+                if (target) target.focus();
             }
         }
     }

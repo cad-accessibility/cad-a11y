@@ -275,16 +275,20 @@
         }
 
         if (stepChanged) {
+            // Announce, but do not steal focus.
+            //
+            // The heading is a polite live region, so the new step is read out
+            // wherever the participant happens to be. Moving focus as well would
+            // take them out of the depth slider they were exploring with, and
+            // they would have to find their way back -- and it is the
+            // experimenter who advanced the step, not them. Focus belongs to
+            // whoever caused the change, and here that is not the person whose
+            // hands are on the display.
+            //
+            // This also used to be wrapped in requestAnimationFrame, which does
+            // not run in a background tab: the move silently did not happen, and
+            // then fired the moment the window came forward.
             setHeading(state.title || 'Study step');
-            // Focus follows the step. Without it a participant who was in the
-            // depth slider stays there and never hears the new instruction; the
-            // heading is tabindex="-1" precisely so it can receive focus without
-            // joining the tab order.
-            if (heading) {
-                requestAnimationFrame(function () {
-                    try { heading.focus({ preventScroll: true }); } catch (_) { heading.focus(); }
-                });
-            }
         }
     }
 

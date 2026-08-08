@@ -401,3 +401,59 @@ class TestControlPanelBehaviour:
         html = CONTROL_HTML.read_text(encoding="utf-8")
         assert "Experimenter notes" in html
         assert "Read aloud" not in html
+
+
+class TestFocusIsMovedOnlyByWhoeverCausedTheChange:
+    """Who a step change belongs to decides whether focus follows it.
+
+    On the panel the experimenter pressed Next, so focus moves to the new script.
+    On the participant's page the change came from someone else's machine, so it
+    is announced and their hands are left where they were.
+    """
+
+    def test_the_participant_is_announced_to_not_pulled_away(self):
+        """A participant exploring with the depth slider must not be yanked out
+        of it because the experimenter advanced a step. The heading is a polite
+        live region, so the new step is read out wherever they are."""
+        js = STUDY_JS.read_text(encoding="utf-8")
+        step_change = js.split("if (stepChanged) {")[-1].split("}")[0]
+        assert "focus()" not in step_change, (
+            "the participant page steals focus on a step change it did not cause"
+        )
+        heading = _by_id(VIEWER_HTML)["study-step-heading"]
+        assert heading["attrs"].get("aria-live") == "polite", (
+            "with no focus move, the live region is the only thing announcing the step"
+        )
+
+    def test_the_panel_moves_focus_to_the_new_step(self):
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "target.focus();" in js
+        assert _by_id(CONTROL_HTML)["current-step-heading"]["attrs"].get("tabindex") == "-1"
+
+    def test_focus_is_never_deferred_to_an_animation_frame(self):
+        """requestAnimationFrame does not run in a background tab. The move
+        silently did not happen, and then fired the moment the window came
+        forward -- which for the panel is whenever the experimenter switches
+        back to it."""
+        for path in (STUDY_JS, CONTROL_JS):
+            js = path.read_text(encoding="utf-8")
+            for line in js.splitlines():
+                if "requestAnimationFrame" in line and "//" not in line.split("requestAnimationFrame")[0]:
+                    assert "focus" not in line, f"{path.name}: focus deferred to an animation frame"
+
+
+class TestBothStudyPagesAreCheckedByAxe:
+    def test_ci_runs_axe_on_the_study_pages_too(self):
+        """The automated check only covered /viewer, so neither study page had
+        ever been through it."""
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        assert "/study (in a session)" in ci
+        assert "/study/control" in ci
+        assert "/study (waiting for a code)" in ci
+
+    def test_the_study_pages_are_checked_in_a_real_session(self):
+        """An empty panel and a participant page with no session exercise almost
+        none of the markup that a session actually renders."""
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        assert "/study/session/start" in ci, "axe should run against a live session"
+        assert "participant_key" in ci
