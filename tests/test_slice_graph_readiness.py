@@ -49,11 +49,11 @@ SERVER_PY = Path(__file__).resolve().parent.parent / "app" / "server.py"
 @pytest.fixture()
 def client(monkeypatch):
     server_module.app.config["TESTING"] = True
-    # This module's render-cache tests care about a clean slate: both cache
-    # layers are plain module globals, shared across every test in the
-    # process, not scoped to a client instance.
-    monkeypatch.setattr(server_module, "last_render_fingerprint", None)
-    monkeypatch.setattr(server_module, "last_render_response", None)
+    # This module's render-cache tests care about a clean slate: the quantized
+    # cache is a plain module global, shared across every test in the process,
+    # not scoped to a client instance. (The old process-wide "last render"
+    # exact cache was removed with window independence, so there is nothing
+    # else to reset here.)
     server_module.quantized_render_cache.clear()
     with server_module.app.test_client() as c:
         yield c
@@ -93,16 +93,24 @@ def test_profile_flags_ready_once_precompute_data_exists(monkeypatch):
 
 def test_server_only_reports_not_ready_when_a_slice_graph_was_actually_requested():
     source = SERVER_PY.read_text(encoding="utf-8")
-    assert 'if params.get("compose_slicegraph") and not getattr(engine, "slicegraph_ready", True):' in source
+    assert 'if params.get("compose_slicegraph"):' in source
+    assert 'not getattr(engine, "slicegraph_ready", True)' in source
     assert 'response["slicegraph_ready"] = False' in source
 
 
 
+def _status_key(stem):
+    # The endpoint looks a renderer up by the same key get_or_create_renderer
+    # stores it under: the string of the model's path, resolved from its name.
+    return str(server_module._path_for_stem(stem))
+
+
 def test_render_status_endpoint_reads_the_flag_without_rendering(client, monkeypatch):
     fake_engine = type("FakeEngine", (), {"_slice_graphs_ready": True})()
-    monkeypatch.setitem(server_module.renderers_by_model, 0, fake_engine)
+    stem = server_module.DEFAULT_MODEL.stem
+    monkeypatch.setitem(server_module.renderers_by_model, _status_key(stem), fake_engine)
 
-    resp = client.post("/render/status", json={"current_model": 0})
+    resp = client.post("/render/status", json={"current_model": stem})
 
     assert resp.status_code == 200
     assert resp.get_json() == {"slice_graphs_ready": True}
@@ -110,9 +118,10 @@ def test_render_status_endpoint_reads_the_flag_without_rendering(client, monkeyp
 
 def test_render_status_endpoint_reports_not_ready_before_precompute_finishes(client, monkeypatch):
     fake_engine = type("FakeEngine", (), {"_slice_graphs_ready": False})()
-    monkeypatch.setitem(server_module.renderers_by_model, 0, fake_engine)
+    stem = server_module.DEFAULT_MODEL.stem
+    monkeypatch.setitem(server_module.renderers_by_model, _status_key(stem), fake_engine)
 
-    resp = client.post("/render/status", json={"current_model": 0})
+    resp = client.post("/render/status", json={"current_model": stem})
 
     assert resp.get_json() == {"slice_graphs_ready": False}
 
@@ -125,7 +134,7 @@ def test_render_status_endpoint_does_not_construct_a_renderer(client, monkeypatc
     calls = []
     monkeypatch.setattr(server_module, "get_or_create_renderer", lambda *a, **k: calls.append(1))
 
-    resp = client.post("/render/status", json={"current_model": 0})
+    resp = client.post("/render/status", json={"current_model": server_module.DEFAULT_MODEL.stem})
 
     assert resp.get_json() == {"slice_graphs_ready": False}
     assert calls == []

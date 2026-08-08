@@ -127,7 +127,7 @@ def test_hifi_preview_follows_the_named_grid(monkeypatch):
     attached it silently kept showing a 96x40-shaped preview."""
     captured = {}
 
-    def fake_payload(_params, *, model_index, pixel_width, pixel_height, use_cache=True):
+    def fake_payload(_params, *, model_stem, pixel_width, pixel_height, use_cache=True):
         captured["size"] = (pixel_width, pixel_height)
         return np.zeros((pixel_height, pixel_width), dtype=np.uint8)
 
@@ -147,7 +147,7 @@ def test_hifi_preview_follows_the_named_grid(monkeypatch):
 def test_hifi_preview_falls_back_to_the_renderer_default(monkeypatch):
     captured = {}
 
-    def fake_payload(_params, *, model_index, pixel_width, pixel_height, use_cache=True):
+    def fake_payload(_params, *, model_stem, pixel_width, pixel_height, use_cache=True):
         captured["size"] = (pixel_width, pixel_height)
         return np.zeros((pixel_height, pixel_width), dtype=np.uint8)
 
@@ -281,8 +281,8 @@ def test_render_caches_distinguish_the_target_size():
     _, _, _, fp_large = server._prepare_render_params(large)
     assert fp_small != fp_large, "the exact-render cache would serve the wrong size"
 
-    key_small = server._build_quantized_render_key(small, model_index=0)
-    key_large = server._build_quantized_render_key(large, model_index=0)
+    key_small = server._build_quantized_render_key(small, model_stem="cube")
+    key_large = server._build_quantized_render_key(large, model_stem="cube")
     assert key_small != key_large, "the coarse cache would serve the wrong size"
 
 
@@ -290,7 +290,7 @@ def test_the_same_size_still_shares_a_cache_entry():
     """The keys must distinguish sizes without defeating caching entirely."""
     a = _params(view="x+", depth=50, target_pixel_width=60, target_pixel_height=40)
     b = _params(view="x+", depth=50, target_pixel_width=60, target_pixel_height=40)
-    assert server._build_quantized_render_key(a, model_index=0) == server._build_quantized_render_key(b, model_index=0)
+    assert server._build_quantized_render_key(a, model_stem="cube") == server._build_quantized_render_key(b, model_stem="cube")
 
 
 # --- Robustness of the display registry -----------------------------------

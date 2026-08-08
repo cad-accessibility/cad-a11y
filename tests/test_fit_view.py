@@ -30,7 +30,7 @@ def _renderer_for_fit():
         ],
         dtype=float,
     )
-    renderer.view_current_camera_center = np.array(
+    renderer.view_default_camera_center = np.array(
         [[5.0, 5.0]] * 6,
         dtype=float,
     )

@@ -51,7 +51,8 @@ def _render_with_scrollbar(monkeypatch, zoom):
         "compose_scrollbar": True,
         "compose_slicegraph": False,
     }
-    return renderer.render(params)
+    # render() returns a RenderResult on this branch; the tests want the image.
+    return renderer.render(params).image
 
 
 def test_scrollbar_hidden_at_zero_zoom_even_when_requested(monkeypatch):
