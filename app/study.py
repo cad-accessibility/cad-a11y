@@ -417,12 +417,25 @@ def _participant_state(session: dict[str, Any] | None) -> dict[str, Any]:
     protocol = study_protocol.load_protocol()
     defaults = protocol.get("viewer_defaults")
     if not session:
-        return {"active": False, "viewer_defaults": defaults}
+        # "No session" has two causes and the page has to tell them apart: a
+        # browser that has not been given a code yet, and one whose code matches
+        # nothing. Both used to answer with the same object, so a mistyped or
+        # wiped-out code looked exactly like never having joined -- the page
+        # showed the code prompt with no hint that what was entered was refused.
+        return {
+            "active": False,
+            "unknown_code": bool(_participant_key()),
+            "viewer_defaults": defaults,
+        }
     steps = _steps_for(session)
     step = _current_step(session)
     return {
         "active": session.get("status") == "active",
         "study_session_id": session.get("id"),
+        # Their own anonymous code. Not a leak -- it says nothing about the
+        # models -- and on one machine the experimenter is reading this screen
+        # and wants to note which session was just recorded.
+        "participant_code": session.get("participant_code"),
         # Handed back so a browser that attached without one can bind itself to
         # this session and stay bound. Without that, a page opened during a
         # single-session run holds no key, and when that session ends and the
@@ -1032,7 +1045,14 @@ def study_stream():
     # browser, so advancing one session moved another participant's page.
     try:
         session = (
-            _resolve_experimenter_session() if is_experimenter else _resolve_participant_session()
+            _resolve_experimenter_session()
+            if is_experimenter
+            # The display resolver, not the strict one. A page reconnecting to a
+            # session that has finished should be told it finished; the strict
+            # resolver returns nothing for it, and this stream's opening message
+            # would then overwrite "the session has ended" with "that code was
+            # not recognised".
+            else _participant_session_for_display()
         )
     except SessionAmbiguous as error:
         return _ambiguous_response(error)

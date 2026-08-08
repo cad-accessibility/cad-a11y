@@ -1791,3 +1791,103 @@ class TestTheEndOfASingleDeviceSession:
         response = client.post(f"/study/step/ready?s={state['participant_key']}", json={})
         assert response.get_json()["finished"] is False
         assert study_db.get_study_session(session_id)["status"] == "active"
+
+
+class TestTheParticipantPageCanTellTheStatesApart:
+    """Three ways a page can have no session, which need three different things
+    said to whoever is reading the screen."""
+
+    def _solo(self, client):
+        state = _start(client).get_json()["state"]
+        client.post(
+            "/study/session/mode",
+            json={"mode": "solo", "study_session_id": state["study_session_id"]},
+            headers=_auth(),
+        )
+        return state
+
+    def test_no_code_and_a_rejected_code_are_distinguishable(self, client):
+        """They used to be byte-identical, so a mistyped or wiped-out code looked
+        exactly like never having joined: the page showed the code prompt with no
+        hint that what was entered had been refused."""
+        _start(client)
+        nothing_entered = client.get("/study/state").get_json()
+        rejected = client.get("/study/state?s=ZZZZ").get_json()
+
+        assert nothing_entered["unknown_code"] is False
+        assert rejected["unknown_code"] is True
+        assert nothing_entered != rejected
+
+    def test_a_finished_session_is_distinguishable_from_both(self, client):
+        state = self._solo(client)
+        session_id = state["study_session_id"]
+        steps = client.get(
+            f"/study/state?study_session_id={session_id}", headers=_auth()
+        ).get_json()["step_count"]
+        client.post(
+            "/study/step/advance",
+            json={"step_index": steps - 1, "study_session_id": session_id},
+            headers=_auth(),
+        )
+        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+
+        finished = client.get(f"/study/state?s={state['participant_key']}").get_json()
+        assert finished["active"] is False
+        assert finished["status"] == "completed"
+        assert finished.get("unknown_code") is None, "a known session is not an unknown code"
+
+    def test_the_page_is_told_how_the_session_was_run(self, client):
+        """So it can word things for whoever is actually reading: on one machine
+        there is no second person to refer them to."""
+        solo = self._solo(client)
+        assert client.get(f"/study/state?s={solo['participant_key']}").get_json()["mode"] == "solo"
+
+        paired = _start(client).get_json()["state"]
+        assert client.get(f"/study/state?s={paired['participant_key']}").get_json()["mode"] == "paired"
+
+    def test_the_participant_code_is_available_for_the_end_message(self, client):
+        """On one machine the experimenter reads this screen and wants to know
+        which session was just recorded."""
+        state = _start(client).get_json()["state"]
+        payload = client.get(f"/study/state?s={state['participant_key']}").get_json()
+        assert payload["participant_code"] == state["participant_code"]
+
+    def test_the_code_does_not_bring_the_answer_key_with_it(self, client):
+        """Adding a field to the participant payload is exactly where a leak
+        would get in."""
+        state = _start(client, participant_code="P01").get_json()["state"]
+        _advance_to(client, "task1.b.virtual")
+        serialised = json.dumps(client.get(f"/study/state?s={state['participant_key']}").get_json())
+        for leak in ("pencil holder", "compartments", "Aspect ratio", "script"):
+            assert leak.lower() not in serialised.lower()
+
+
+class TestReconnectingToAFinishedSession:
+    def test_the_stream_says_the_session_ended_not_that_the_code_is_wrong(self, client):
+        """The page asks twice on load -- once directly, once by opening the
+        event stream -- and both answers have to agree. The stream used to use
+        the strict lookup, so its opening message overwrote "the session has
+        ended" with "that code was not recognised" a moment after the page had
+        got it right."""
+        state = _start(client).get_json()["state"]
+        session_id = state["study_session_id"]
+        client.post(
+            "/study/session/mode",
+            json={"mode": "solo", "study_session_id": session_id},
+            headers=_auth(),
+        )
+        client.post("/study/session/end", json={"study_session_id": session_id}, headers=_auth())
+
+        direct = client.get(f"/study/state?s={state['participant_key']}").get_json()
+        assert direct["status"] == "completed"
+
+        # The first message on the stream is the state it opens with.
+        stream = client.get(f"/study/stream?s={state['participant_key']}")
+        first = next(iter(stream.response)).decode()
+        opening = json.loads(first[len("data: "):])
+        stream.close()
+
+        assert opening["status"] == "completed", (
+            f"the stream opened with {opening}, contradicting the direct answer"
+        )
+        assert opening.get("unknown_code") is None

@@ -53,6 +53,26 @@
     let currentModelStem = null;
     let sessionActive = false;
 
+    // How this session is being run, remembered across reloads. In 'solo' the
+    // experimenter and the participant share this laptop, so there is no second
+    // person at another screen to refer them to -- "your experimenter will give
+    // you a code" is nonsense said to the person holding the computer. Kept
+    // client-side as well as on the session so the wording is still right on a
+    // page that cannot reach its session to ask.
+    const MODE_STORAGE = 'cadA11yStudyMode';
+    let sessionMode = (function () {
+        try { return sessionStorage.getItem(MODE_STORAGE) || 'paired'; } catch (_) { return 'paired'; }
+    })();
+    const isSolo = () => sessionMode === 'solo';
+
+    function rememberMode(mode) {
+        if (!mode || mode === sessionMode) return;
+        sessionMode = mode;
+        try { sessionStorage.setItem(MODE_STORAGE, mode); } catch (_) {}
+    }
+
+    let participantCode = '';
+
     // Which session this browser belongs to. Several can run at once on one
     // deployment, so a plain /study is only unambiguous while exactly one is
     // active; the key in the link is what makes it certain. Kept in
@@ -173,6 +193,8 @@
         if (!state) return;
 
         rememberKey(state.participant_key);
+        rememberMode(state.mode);
+        if (state.participant_code) participantCode = state.participant_code;
 
         const wasActive = sessionActive;
         sessionActive = Boolean(state.active);
@@ -185,17 +207,38 @@
             if (finished) {
                 setHeading('The session has ended');
                 if (progressText) progressText.textContent = 'Finished';
-                if (stepText) stepText.textContent = 'That is everything. Thank you.';
+                if (stepText) {
+                    // On one machine the experimenter is reading this too, and
+                    // what they need to know is that it is safely recorded and
+                    // they can stop. On two, this is the participant's screen
+                    // and the experimenter has their own.
+                    stepText.textContent = isSolo()
+                        ? 'The session is complete and everything has been recorded. '
+                          + 'You can close this window.'
+                        : 'That is everything. Thank you.';
+                }
                 showJoinPrompt(false);
+            } else if (state.unknown_code) {
+                setHeading('That session code was not recognised');
+                if (progressText) progressText.textContent = 'Not connected';
+                if (stepText) {
+                    stepText.textContent = isSolo()
+                        ? 'This session is no longer running. Open the control panel '
+                          + 'and start a new one.'
+                        : 'Check the code with your experimenter and enter it again.';
+                }
+                showJoinPrompt(!isSolo());
             } else {
                 setHeading('Enter your session code');
                 if (progressText) progressText.textContent = 'Not connected';
                 if (stepText) {
-                    stepText.textContent =
-                        'Your experimenter will give you a four-character code. '
-                        + 'Enter it below to join your session.';
+                    stepText.textContent = isSolo()
+                        ? 'This window is not attached to a session. Open the control '
+                          + 'panel and use "Run the study on this device".'
+                        : 'Your experimenter will give you a four-character code. '
+                          + 'Enter it below to join your session.';
                 }
-                showJoinPrompt(true);
+                showJoinPrompt(!isSolo());
             }
             if (readyBtn) readyBtn.disabled = true;
             return;
@@ -284,7 +327,9 @@
                     readyStatus.textContent =
                         'Could not send that. Please tell your experimenter you are ready.';
                 } else if (body.finished) {
-                    readyStatus.textContent = 'That is the end of the session. Thank you.';
+                    readyStatus.textContent = participantCode
+                        ? `Session ${participantCode} is complete and has been recorded.`
+                        : 'The session is complete and has been recorded.';
                 } else if (body.advanced) {
                     // The heading changes and focus moves to it, which is the
                     // confirmation; a second message would be read out on top.
