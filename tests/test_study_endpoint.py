@@ -25,9 +25,9 @@ def study_env(tmp_path, monkeypatch):
     control token so the tests are not at the mercy of a generated one."""
     monkeypatch.setattr(study_db, "DB_PATH", tmp_path / "study.db")
     monkeypatch.setattr(study_db, "LOG_DIR", tmp_path / "logs")
-    # The token is resolved lazily and cached; seeding the cache pins it without
-    # touching the environment or writing a token file.
-    monkeypatch.setattr(study_module, "_token_cache", TOKEN)
+    # Most of these run with the optional gate turned on, so the token paths stay
+    # covered. The default -- no gate at all -- is covered by TestPanelIsOpen.
+    monkeypatch.setenv("STUDY_CONTROL_TOKEN", TOKEN)
     study_db._local.__dict__.clear()
     study_db._failures.update(
         {"db_writes": 0, "db_reads": 0, "jsonl_writes": 0, "last_error": None}
@@ -51,6 +51,13 @@ def _auth(**extra):
 
 def _start(client, **payload):
     return client.post("/study/session/start", json=payload, headers=_auth())
+
+
+def _key(state_or_id):
+    """The join code for a session, as a participant's browser would carry it."""
+    if isinstance(state_or_id, dict):
+        return state_or_id["participant_key"]
+    return study_db.get_study_session(int(state_or_id))["participant_key"]
 
 
 def _advance_to(client, step_id):
@@ -104,86 +111,55 @@ class TestAccessControl:
         assert client.get("/study/config", headers=_auth()).status_code == 200
         assert client.get(f"/study/config?token={TOKEN}").status_code == 200
 
-    def test_rejection_says_how_to_find_the_token_but_not_where_it_lives(self, client):
-        """This reply is unauthenticated, so it must help the experimenter without
-        describing the server's filesystem."""
+    def test_rejection_names_the_variable_that_turns_the_gate_on(self, client):
         body = client.get("/study/config").get_json()
-        assert "server log" in body["message"]
-        assert "/" not in body["message"].replace("Invalid or missing", "")
+        assert "STUDY_CONTROL_TOKEN" in body["message"]
 
 
-class TestTokenManagement:
-    """The panel token manages itself: generated on first use, persisted beside
-    the study database so the URL survives a restart, overridable by environment."""
+class TestPanelIsOpenByDefault:
+    """Running a session should be: open the app, start.
 
-    @pytest.fixture(autouse=True)
-    def isolated_token(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(study_db, "DB_PATH", tmp_path / "db" / "study.db")
+    The panel used to be gated on a generated secret that an experimenter had to
+    find in the server log. Now it is open unless the deployment sets
+    STUDY_CONTROL_TOKEN, which turns the gate back on without changing anything
+    else.
+    """
+
+    @pytest.fixture()
+    def open_client(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(study_db, "DB_PATH", tmp_path / "study.db")
+        monkeypatch.setattr(study_db, "LOG_DIR", tmp_path / "logs")
         monkeypatch.delenv("STUDY_CONTROL_TOKEN", raising=False)
-        monkeypatch.delenv("STUDY_CONTROL_TOKEN_FILE", raising=False)
-        monkeypatch.setattr(study_module, "_token_cache", None)
-        yield
-        study_module._token_cache = None
+        study_db._local.__dict__.clear()
+        study_db.init_db()
+        flask_app.config["TESTING"] = True
+        with flask_app.test_client() as c:
+            yield c
+        study_db._local.__dict__.clear()
 
-    def test_generates_and_persists_a_token_on_first_use(self, tmp_path):
-        token = study_module.control_token()
-        assert token
-        token_file = tmp_path / "db" / "study_control_token"
-        assert token_file.is_file()
-        assert token_file.read_text(encoding="utf-8").strip() == token
+    def test_the_panel_opens_with_no_token(self, open_client):
+        assert open_client.get("/study/control").status_code == 200
 
-    def test_the_token_file_is_not_world_readable(self, tmp_path):
-        """It is a secret sitting on a shared volume."""
-        study_module.control_token()
-        mode = (tmp_path / "db" / "study_control_token").stat().st_mode
-        assert mode & 0o077 == 0, f"token file mode is {oct(mode)}"
+    def test_a_session_can_be_run_with_no_token(self, open_client):
+        started = open_client.post("/study/session/start", json={})
+        assert started.status_code == 200
+        session_id = started.get_json()["state"]["study_session_id"]
+        assert open_client.post(
+            "/study/step/advance", json={"direction": "next", "study_session_id": session_id}
+        ).status_code == 200
+        assert open_client.post(
+            "/study/session/end", json={"study_session_id": session_id}
+        ).status_code == 200
 
-    def test_the_same_token_is_reused_across_restarts(self, tmp_path):
-        """A regenerated token means every deploy silently breaks the panel URL
-        the experimenters have saved."""
-        first = study_module.control_token()
-        study_module._token_cache = None  # simulate a process restart
-        assert study_module.control_token() == first
+    def test_there_is_no_generated_secret_to_find(self, open_client, tmp_path):
+        """No token file, no startup banner, nothing to go looking for."""
+        assert study_module.control_token() == ""
+        assert not list(tmp_path.glob("**/*token*"))
 
-    def test_environment_variable_overrides_the_file(self, tmp_path, monkeypatch):
-        study_module.control_token()  # write a file first
-        study_module._token_cache = None
-        monkeypatch.setenv("STUDY_CONTROL_TOKEN", "pinned-by-deployment")
-        assert study_module.control_token() == "pinned-by-deployment"
-
-    def test_token_file_location_is_configurable(self, tmp_path, monkeypatch):
-        elsewhere = tmp_path / "secrets" / "token"
-        monkeypatch.setenv("STUDY_CONTROL_TOKEN_FILE", str(elsewhere))
-        token = study_module.control_token()
-        assert elsewhere.read_text(encoding="utf-8").strip() == token
-
-    def test_an_unwritable_location_still_yields_a_working_token(self, monkeypatch):
-        """A read-only volume must degrade to a per-run token, not stop the study
-        being served at all."""
-        monkeypatch.setattr(study_module, "_write_token_file", lambda *_: False)
-        assert study_module.control_token()
-
-    def test_a_blank_token_file_is_replaced_rather_than_used(self, tmp_path):
-        token_file = tmp_path / "db" / "study_control_token"
-        token_file.parent.mkdir(parents=True, exist_ok=True)
-        token_file.write_text("   \n", encoding="utf-8")
-        assert study_module.control_token().strip()
-
-    def test_panel_path_carries_the_token(self):
-        assert study_module.control_token() in study_module.control_panel_path()
-        assert study_module.control_panel_path().startswith("/study/control?token=")
-
-    def test_token_source_names_the_environment_when_pinned(self, monkeypatch):
-        monkeypatch.setenv("STUDY_CONTROL_TOKEN", "pinned")
-        assert study_module.token_source() == "STUDY_CONTROL_TOKEN"
-
-    def test_token_source_names_the_file_otherwise(self, tmp_path):
-        assert study_module.token_source().endswith("study_control_token")
-
-    def test_importing_the_module_does_not_create_a_token_file(self, tmp_path):
-        """Resolution is lazy: importing this module during test collection, or
-        from a CLI script, must not write a secret to disk."""
-        assert not (tmp_path / "db" / "study_control_token").exists()
+    def test_setting_the_variable_turns_the_gate_back_on(self, open_client, monkeypatch):
+        monkeypatch.setenv("STUDY_CONTROL_TOKEN", "gated")
+        assert open_client.get("/study/control").status_code == 403
+        assert open_client.get("/study/control?token=gated").status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -195,9 +171,9 @@ class TestParticipantPayloadWithholdsTheAnswer:
         """The stem has to be sent -- a model is addressed by name now (#123) --
         so what protects the participant is that the label is the only one of the
         two the interface ever shows or announces."""
-        _start(client, participant_code="P01")
+        state = _start(client, participant_code="P01").get_json()["state"]
         _advance_to(client, "task1.a.virtual")
-        payload = client.get("/study/state").get_json()
+        payload = client.get(f"/study/state?s={state['participant_key']}").get_json()
         assert payload["model"]["label"] == "First object"
         assert payload["model"]["stem"] == "pencil_holder_2x2"
 
@@ -217,9 +193,9 @@ class TestParticipantPayloadWithholdsTheAnswer:
             assert leak.lower() not in serialised.lower(), f"participant payload leaks {leak!r}"
 
     def test_part_b_label_does_not_say_what_changed(self, client):
-        _start(client, participant_code="P01")
+        state = _start(client, participant_code="P01").get_json()["state"]
         _advance_to(client, "task1.b.virtual")
-        payload = client.get("/study/state").get_json()
+        payload = client.get(f"/study/state?s={state['participant_key']}").get_json()
         assert payload["model"]["label"] == "Second object"
 
     def test_no_answer_key_or_script_reaches_the_participant(self, client):
@@ -300,8 +276,8 @@ class TestEnrollment:
         state = client.get(
             f"/study/state?study_session_id={second}", headers=_auth()
         ).get_json()
-        others = {o["participant_code"] for o in state["other_active_sessions"]}
-        assert others == {"P01"}, "a panel should see the other session but not itself"
+        listed = {o["participant_code"]: o["is_current"] for o in state["active_sessions"]}
+        assert listed == {"P01": False, "P02": True}
 
     def test_duplicate_participant_and_session_number_is_refused(self, client):
         _start(client, participant_code="P01", session_number=1)
@@ -362,8 +338,10 @@ class TestSteps:
 
 class TestReadySignal:
     def test_ready_is_logged_and_shown_to_the_experimenter(self, client):
-        _start(client)
-        assert client.post("/study/step/ready", json={"client_id": "c1"}).status_code == 200
+        state = _start(client).get_json()["state"]
+        assert client.post(
+            f"/study/step/ready?s={state['participant_key']}", json={"client_id": "c1"}
+        ).status_code == 200
         state = client.get("/study/state", headers=_auth()).get_json()
         assert state["participant_ready"]["step_id"] == state["step"]["id"]
 
@@ -395,7 +373,7 @@ class TestEventLogging:
     def test_participant_events_are_recorded_against_the_participant(self, client):
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
         client.post(
-            "/study/event",
+            f"/study/event?s={_key(session_id)}",
             json={
                 "event_type": "keyboard",
                 "event_data": {"key": "arrowup"},
@@ -410,21 +388,26 @@ class TestEventLogging:
         assert keyboard[0]["event_data"]["key"] == "arrowup"
 
     def test_unknown_event_types_are_rejected(self, client):
-        _start(client)
-        response = client.post("/study/event", json={"event_type": "exfiltrate"})
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        response = client.post(
+            f"/study/event?s={_key(session_id)}", json={"event_type": "exfiltrate"}
+        )
         assert response.status_code == 400
 
     def test_events_without_a_session_are_ignored_not_errors(self, client):
         """A participant page left open after a session ends must not spam errors
         into the browser console during the next session's setup."""
-        response = client.post("/study/event", json={"event_type": "keyboard"})
+        response = client.post("/study/event?s=ZZZZ", json={"event_type": "keyboard"})
         assert response.status_code == 200
         assert response.get_json()["status"] == "ignored"
 
     def test_step_context_is_attached_to_every_event(self, client):
         session_id = _start(client).get_json()["state"]["study_session_id"]
         state = _advance_to(client, "practice.a.virtual")
-        client.post("/study/event", json={"event_type": "keyboard", "event_data": {"key": "r"}})
+        client.post(
+            f"/study/event?s={_key(session_id)}",
+            json={"event_type": "keyboard", "event_data": {"key": "r"}},
+        )
         export = study_db.export_session(session_id)
         keyboard = [e for e in export["events"] if e["event_type"] == "keyboard"][0]
         assert keyboard["step_id"] == state["step"]["id"]
@@ -432,7 +415,7 @@ class TestEventLogging:
 
     def test_timings_are_recorded(self, client):
         session_id = _start(client).get_json()["state"]["study_session_id"]
-        client.post("/study/event", json={"event_type": "keyboard"})
+        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
         event = study_db.export_session(session_id)["events"][-1]
         assert event["elapsed_ms"] is not None and event["elapsed_ms"] >= 0
         assert event["step_elapsed_ms"] is not None and event["step_elapsed_ms"] >= 0
@@ -440,19 +423,19 @@ class TestEventLogging:
     def test_the_step_clock_restarts_on_advance(self, client):
         session_id = _start(client).get_json()["state"]["study_session_id"]
         client.post("/study/step/advance", json={"step_index": 3}, headers=_auth())
-        client.post("/study/event", json={"event_type": "keyboard"})
+        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
         event = study_db.export_session(session_id)["events"][-1]
         # Session elapsed keeps counting from the start; the step clock does not.
         assert event["step_elapsed_ms"] <= event["elapsed_ms"]
 
     def test_ordering_is_shared_between_events_and_renders(self, client):
         session_id = _start(client).get_json()["state"]["study_session_id"]
-        client.post("/study/event", json={"event_type": "keyboard"})
+        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
         study_db.record_render(
             session_id, model="mug", view="x-", render_mode="Cut", layout_mode="single",
             depth=50, zoom=0, input_source="keyboard", cache_hit=False,
         )
-        client.post("/study/event", json={"event_type": "keyboard"})
+        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
         export = study_db.export_session(session_id)
         sequences = [e["seq"] for e in export["events"]] + [r["seq"] for r in export["renders"]]
         assert len(sequences) == len(set(sequences)), "seq must be unique across both tables"
@@ -477,7 +460,10 @@ class TestEventLogging:
 class TestJsonlLog:
     def test_every_event_is_mirrored_to_the_jsonl_log(self, client, study_env):
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
-        client.post("/study/event", json={"event_type": "keyboard", "event_data": {"key": "r"}})
+        client.post(
+            f"/study/event?s={_key(session_id)}",
+            json={"event_type": "keyboard", "event_data": {"key": "r"}},
+        )
 
         log_path = study_db.get_study_session(session_id)["log_path"]
         lines = [json.loads(line) for line in open(log_path, encoding="utf-8")]
@@ -491,7 +477,7 @@ class TestJsonlLog:
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
         _advance_to(client, "practice.a.virtual")
         client.post(
-            "/study/event",
+            f"/study/event?s={_key(session_id)}",
             json={"event_type": "keyboard", "viewer_state": {"depth": 60, "view": "x-"}},
         )
         log_path = study_db.get_study_session(session_id)["log_path"]
@@ -627,7 +613,7 @@ class TestLoggingHealth:
             raise sqlite3.OperationalError("database or disk is full")
 
         monkeypatch.setattr(study_db, "_next_seq", broken)
-        response = client.post("/study/event", json={"event_type": "keyboard"})
+        response = client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
 
         assert response.status_code == 200
         assert study_db.logging_health()["db_write_failures"] >= 1
@@ -644,13 +630,15 @@ class TestLoggingHealth:
         mid-exploration."""
         import sqlite3
 
-        _start(client)
+        state = _start(client).get_json()["state"]
 
         def broken():
             raise sqlite3.OperationalError("unable to open database file")
 
         monkeypatch.setattr(study_db, "_get_conn", broken)
-        response = client.post("/study/event", json={"event_type": "keyboard"})
+        response = client.post(
+            f"/study/event?s={state['participant_key']}", json={"event_type": "keyboard"}
+        )
 
         assert response.status_code == 200
         assert study_db.logging_health()["db_read_failures"] >= 1
@@ -668,10 +656,11 @@ class TestDataIsRecoverableFromTheFilesAlone:
         import shutil
         import sqlite3
 
-        _start(client, participant_code="P01")
+        state = _start(client, participant_code="P01").get_json()["state"]
         for _ in range(12):
             client.post("/study/step/advance", json={"direction": "next"}, headers=_auth())
-            client.post("/study/event", json={"event_type": "keyboard", "event_data": {"key": "arrowup"}})
+            client.post(f"/study/event?s={state['participant_key']}",
+                        json={"event_type": "keyboard", "event_data": {"key": "arrowup"}})
         client.post("/study/session/end", json={}, headers=_auth())
 
         live = study_db.export_session(1)
@@ -738,7 +727,7 @@ class TestDataIsRecoverableFromTheFilesAlone:
         session_id = _start(client).get_json()["state"]["study_session_id"]
         for _ in range(5):
             client.post("/study/step/advance", json={"direction": "next"}, headers=_auth())
-            client.post("/study/event", json={"event_type": "keyboard"})
+            client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
         export = study_db.export_session(session_id)
         log_path = study_db.get_study_session(session_id)["log_path"]
         lines = sum(1 for _ in open(log_path, encoding="utf-8"))
@@ -748,7 +737,7 @@ class TestDataIsRecoverableFromTheFilesAlone:
 class TestExport:
     def test_export_returns_the_whole_session(self, client):
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
-        client.post("/study/event", json={"event_type": "keyboard"})
+        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
         body = client.get(f"/study/sessions/{session_id}/export", headers=_auth()).get_json()
         assert body["session"]["participant_code"] == "P01"
         assert body["participant"]["id"] == 1
@@ -929,136 +918,61 @@ class TestConcurrentSessions:
             assert sequences == list(range(1, len(sequences) + 1))
 
 
-class TestAmbiguityIsRefusedNotGuessed:
-    """With more than one session running, a request that does not say which it
-    means must be refused. Guessing is what produced every failure above."""
+class TestTheJoinCodeIsAlwaysRequired:
+    """A participant's browser says which session it belongs to with a
+    four-character code, whether one session is running or five.
 
-    @pytest.fixture()
-    def ambiguous(self, client):
-        _start(client, participant_code="AAA")
-        _start(client, participant_code="BBB")
-        return client
+    It used to fall back to "the single active session" when no code was given,
+    so the instruction to a participant changed depending on how many sessions
+    happened to be up -- and a page that attached that way held nothing of its
+    own, so when its session ended it drifted onto the next one.
+    """
 
-    def test_a_keyless_participant_event_is_refused(self, ambiguous):
-        response = ambiguous.post("/study/event", json={"event_type": "keyboard"})
-        assert response.status_code == 409
-        assert response.get_json()["ambiguous"] is True
+    def test_an_event_without_a_code_is_not_recorded(self, client):
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        before = len(study_db.export_session(session_id)["events"])
+        response = client.post("/study/event", json={"event_type": "keyboard"})
+        assert response.get_json()["status"] == "ignored"
+        assert len(study_db.export_session(session_id)["events"]) == before
 
-    def test_a_keyless_ready_signal_is_refused(self, ambiguous):
-        assert ambiguous.post("/study/step/ready", json={}).status_code == 409
+    def test_a_readiness_signal_without_a_code_is_refused(self, client):
+        _start(client)
+        assert client.post("/study/step/ready", json={}).status_code == 404
 
-    def test_an_unscoped_advance_is_refused(self, ambiguous):
-        """Otherwise one experimenter's Next button moves another's session."""
-        assert ambiguous.post(
-            "/study/step/advance", json={"direction": "next"}, headers=_auth()
-        ).status_code == 409
+    def test_the_participant_view_asks_for_the_code(self, client):
+        """One session running, no code: the page still asks. Same instruction
+        every time."""
+        _start(client)
+        assert client.get("/study/state").get_json()["active"] is False
 
-    def test_an_unscoped_session_end_is_refused(self, ambiguous):
-        assert ambiguous.post("/study/session/end", json={}, headers=_auth()).status_code == 409
-
-    def test_the_participant_view_is_told_to_ask_for_its_link(self, ambiguous):
-        """A participant gets something their page can render, not an error: the
-        actionable thing is "ask your experimenter for your link"."""
-        payload = ambiguous.get("/study/state").get_json()
-        assert payload["active"] is False
-        assert payload["ambiguous"] is True
-        assert payload["active_sessions"] == 2
-
-    def test_a_stale_key_does_not_fall_through_to_another_session(self, ambiguous):
-        """A participant page left open after its session ended must not attach
-        itself to whichever session happens to be running now."""
-        payload = ambiguous.get("/study/state?s=NOTAKEY").get_json()
+    def test_a_wrong_code_joins_nothing(self, client):
+        _start(client)
+        payload = client.get("/study/state?s=ZZZZ").get_json()
         assert payload["active"] is False
         assert payload.get("study_session_id") is None
 
-    def test_one_session_alone_still_needs_no_key(self, client):
-        """The common case stays frictionless: one experimenter, one participant,
-        a plain /study link and nothing to type."""
-        started = _start(client, participant_code="AAA").get_json()["state"]
-        payload = client.get("/study/state").get_json()
+    def test_the_right_code_joins_that_session(self, client):
+        state = _start(client).get_json()["state"]
+        payload = client.get(f"/study/state?s={state['participant_key']}").get_json()
         assert payload["active"] is True
-        assert payload["study_session_id"] == started["study_session_id"]
+        assert payload["study_session_id"] == state["study_session_id"]
 
+    def test_the_code_is_short_enough_to_read_out(self, client):
+        assert len(_start(client).get_json()["state"]["participant_key"]) == 4
 
-class TestUpgradingAnExistingDatabase:
-    """A database written before participant keys existed holds sessions that
-    cannot be re-run, so opening it must never fail."""
+    def test_the_code_avoids_characters_that_sound_or_look_alike(self, client):
+        """It is read aloud to someone who may not be able to see the screen."""
+        for _ in range(20):
+            state = _start(client).get_json()["state"]
+            assert not (set(state["participant_key"]) & set("O0I1L5S2Z"))
+            client.post("/study/session/end",
+                        json={"study_session_id": state["study_session_id"]}, headers=_auth())
 
-    def _legacy_database(self, path):
-        """The schema exactly as it was before sessions could run concurrently."""
-        import sqlite3
-
-        conn = sqlite3.connect(str(path))
-        conn.executescript(
-            """
-            CREATE TABLE participants (
-                code TEXT PRIMARY KEY, sequence_number INTEGER NOT NULL,
-                first_session_at DATETIME, created_at DATETIME);
-            CREATE TABLE study_sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                participant_code TEXT NOT NULL, session_number INTEGER NOT NULL DEFAULT 1,
-                task_order TEXT NOT NULL, protocol_version TEXT,
-                step_index INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'active',
-                log_path TEXT, started_at DATETIME, step_started_at DATETIME,
-                completed_at DATETIME, UNIQUE(participant_code, session_number));
-            INSERT INTO participants VALUES ('P01', 1, '2026-08-08T01:35:17.937Z', '2026-08-08T01:35:17.937Z');
-            INSERT INTO study_sessions
-                (participant_code, session_number, task_order, protocol_version, step_index, status)
-                VALUES ('P01', 1, '["pencil_holder","cane_tip"]', '2026-08-04', 28, 'completed');
-            """
-        )
-        conn.commit()
-        conn.close()
-
-    def test_init_db_upgrades_it_instead_of_failing(self, tmp_path, monkeypatch):
-        """CREATE TABLE IF NOT EXISTS does nothing to an existing table, so the
-        schema script must not assume a column the migration has not added yet.
-        It did, and init_db raised "no such column: participant_key" on every
-        database that already held a session."""
-        legacy = tmp_path / "study.db"
-        self._legacy_database(legacy)
-        monkeypatch.setattr(study_db, "DB_PATH", legacy)
-        study_db._local.__dict__.clear()
-
-        study_db.init_db()
-
-        session = study_db.get_study_session(1)
-        assert session["participant_code"] == "P01"
-        assert session["step_index"] == 28, "the existing session must survive untouched"
-        assert session["participant_key"] is None, "a session run before keys existed has none"
-        study_db._local.__dict__.clear()
-
-    def test_the_upgrade_is_idempotent(self, tmp_path, monkeypatch):
-        legacy = tmp_path / "study.db"
-        self._legacy_database(legacy)
-        monkeypatch.setattr(study_db, "DB_PATH", legacy)
-        study_db._local.__dict__.clear()
-        study_db.init_db()
-        study_db.init_db()
-        assert study_db.get_study_session(1)["participant_code"] == "P01"
-        study_db._local.__dict__.clear()
-
-    def test_new_sessions_on_an_upgraded_database_still_get_keys(self, tmp_path, monkeypatch):
-        legacy = tmp_path / "study.db"
-        self._legacy_database(legacy)
-        monkeypatch.setattr(study_db, "DB_PATH", legacy)
-        monkeypatch.setattr(study_db, "LOG_DIR", tmp_path / "logs")
-        study_db._local.__dict__.clear()
-        study_db.init_db()
-
-        participant = study_db.create_participant()
-        created = study_db.create_session(
-            participant_id=int(participant["id"]),
-            participant_code=participant["code"],
-            session_number=1,
-            task_order=["cane_tip", "coat_rack"],
-            protocol_version="test",
-        )
-        assert created["participant_key"]
-        by_key = study_db.get_session_by_key(created["participant_key"])
-        assert by_key["participant_code"] == participant["code"]
-        assert by_key["participant_id"] == participant["id"]
-        study_db._local.__dict__.clear()
+    def test_the_code_is_accepted_case_insensitively(self, client):
+        """A participant typing it will not match the panel's capitals."""
+        state = _start(client).get_json()["state"]
+        payload = client.get(f"/study/state?s={state['participant_key'].lower()}").get_json()
+        assert payload["active"] is True
 
 
 class TestNothingIsWrittenBetweenSessions:
@@ -1137,43 +1051,24 @@ class TestNothingIsWrittenBetweenSessions:
         ]
         assert "stale" not in keys
 
-    def test_a_page_that_attached_without_a_key_is_given_one(self, client):
-        """The fix for the hole this class exists to close. A browser that
-        attached during a single-session run holds no key of its own, so when
-        that session ends and the next starts it would join the new one. The
-        state it receives carries the key, so it can bind itself."""
-        started = _start(client, participant_code="AAA").get_json()["state"]
-        payload = client.get("/study/state").get_json()  # no key, single session
-        assert payload["study_session_id"] == started["study_session_id"]
-        assert payload["participant_key"] == started["participant_key"], (
-            "a keyless participant must be told which session it reached, or it "
-            "cannot stay bound to it"
-        )
-
-    def test_a_bound_page_cannot_drift_onto_the_next_session(self, client):
-        """The whole boundary, end to end, the way a real tab behaves: attach
-        with no key, bind to what it is given, then keep sending after that
-        session ends and another starts."""
-        first = _start(client, participant_code="AAA").get_json()["state"]
-        bound_key = client.get("/study/state").get_json()["participant_key"]
-
-        client.post("/study/session/end",
-                    json={"study_session_id": first["study_session_id"]}, headers=_auth())
+    def test_a_page_cannot_drift_onto_the_next_session(self, client):
+        """A tab left open when its session ends keeps its own code, so it is
+        refused rather than re-homed onto whatever is running now."""
+        first = self._run_and_end(client, code="AAA")
         second = _start(client, participant_code="BBB").get_json()["state"]
 
-        # The stale tab now sends with the key it bound to, not bare.
         response = client.post(
-            f"/study/event?s={bound_key}",
+            f"/study/event?s={first['participant_key']}",
             json={"event_type": "keyboard", "event_data": {"key": "from-the-old-tab"}},
         )
         assert response.get_json()["status"] == "ignored"
 
-        second_events = study_db.export_session(second["study_session_id"])["events"]
-        assert not [
-            e for e in second_events
+        leaked = [
+            e for e in study_db.export_session(second["study_session_id"])["events"]
             if e["event_type"] == "keyboard"
             and e["event_data"].get("key") == "from-the-old-tab"
-        ], "an old participant page leaked into the next participant's record"
+        ]
+        assert not leaked, "an old participant page leaked into the next participant's record"
 
     def test_each_session_writes_only_its_own_participant_to_its_own_log(self, client):
         first = self._run_and_end(client, code="AAA")
@@ -1601,3 +1496,63 @@ class TestUpgradingToDatabaseAssignedIdentity:
         study_db.init_db()
         assert study_db.get_participant_by_code("P01")["id"] == 1
         study_db._local.__dict__.clear()
+
+
+class TestPanelAndParticipantAreToldApartWithoutAToken:
+    """With the panel open by default, the token no longer says who is asking.
+
+    A request identifies itself by what it carries: a participant has a join
+    code, a panel names a session. Neither means participant -- the payload that
+    withholds the answer key is the safe default when we cannot tell.
+    """
+
+    @pytest.fixture()
+    def open_client(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(study_db, "DB_PATH", tmp_path / "study.db")
+        monkeypatch.setattr(study_db, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.delenv("STUDY_CONTROL_TOKEN", raising=False)
+        study_db._local.__dict__.clear()
+        study_db.init_db()
+        flask_app.config["TESTING"] = True
+        with flask_app.test_client() as c:
+            yield c
+        study_db._local.__dict__.clear()
+
+    def test_a_bare_request_gets_the_participant_payload(self, open_client):
+        """Not the experimenter one, and not a 409. This is what a participant's
+        browser sends before they have typed their code, and it used to be
+        treated as a panel request and answered with 'which session do you mean'
+        -- so the page never got as far as asking for the code."""
+        open_client.post("/study/session/start", json={})
+        open_client.post("/study/session/start", json={})  # two running
+
+        response = open_client.get("/study/state")
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload["active"] is False
+        assert "step" not in payload, "a bare request must not get the experimenter payload"
+
+    def test_a_code_gets_the_participant_payload(self, open_client):
+        state = open_client.post("/study/session/start", json={}).get_json()["state"]
+        payload = open_client.get(f"/study/state?s={state['participant_key']}").get_json()
+        assert payload["active"] is True
+        assert "script" not in payload
+        assert "pair" not in payload
+
+    def test_naming_a_session_gets_the_panel_payload(self, open_client):
+        state = open_client.post("/study/session/start", json={}).get_json()["state"]
+        payload = open_client.get(
+            f"/study/state?study_session_id={state['study_session_id']}"
+        ).get_json()
+        assert payload["active"] is True
+        assert payload["step"]["script"], "the panel needs its script"
+
+    def test_two_running_sessions_do_not_break_a_participant_arriving(self, open_client):
+        """The regression this class exists for: with two sessions up, a
+        participant opening /study got a 409 instead of the code prompt."""
+        open_client.post("/study/session/start", json={})
+        second = open_client.post("/study/session/start", json={}).get_json()["state"]
+
+        assert open_client.get("/study/state").status_code == 200
+        joined = open_client.get(f"/study/state?s={second['participant_key']}").get_json()
+        assert joined["study_session_id"] == second["study_session_id"]

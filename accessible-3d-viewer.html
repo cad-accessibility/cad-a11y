@@ -125,6 +125,29 @@
                 <p id="study-step-text" class="study-step-text">
                     Your experimenter will start the session in a moment.
                 </p>
+
+                <!--
+                    How this browser says which session it belongs to. Several
+                    can be running at once on one server, so the code is what
+                    makes it certain. Always asked for, never guessed: the
+                    procedure is the same whether one session is running or
+                    five, and there is one instruction to give a participant.
+
+                    Hidden once joined, so it is not a stray control sitting in
+                    the tab order for the rest of the session.
+                -->
+                <form id="study-join-form" class="study-join" hidden>
+                    <label for="study-join-code">Session code</label>
+                    <input type="text" id="study-join-code" name="code"
+                           autocomplete="off" autocapitalize="characters"
+                           spellcheck="false" maxlength="8" size="8"
+                           aria-describedby="study-join-hint">
+                    <button type="submit" id="study-join-btn">Join</button>
+                    <span id="study-join-hint" class="help-text">
+                        Four letters and numbers, from your experimenter.
+                    </span>
+                    <p id="study-join-error" class="error-text" role="alert" hidden></p>
+                </form>
                 <div class="button-group">
                     <!--
                         Advisory only: it tells the experimenter the participant is

@@ -57,6 +57,11 @@ EXPECTED_LIVE_ELEMENTS = {
     # the experimenter just changed.
     "study-step-progress": {"aria-live": None, "role": "status"},
     "study-ready-status": {"aria-live": None, "role": "status"},
+    # Shown only before the session starts, while the participant is entering
+    # their code. Assertive on purpose: a code that did not match has to be
+    # heard, and there is no braille reading in progress to interrupt yet. Same
+    # pattern as the consent dialog's email error above.
+    "study-join-error": {"aria-live": None, "role": "alert"},
 }
 
 # Divs demoted to plain visual text; each must stay free of aria-live and of

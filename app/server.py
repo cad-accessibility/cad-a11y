@@ -2238,11 +2238,7 @@ def main() -> int:
     # be re-run is never at the mercy of a change to product telemetry.
     study_db.init_db()
     _log(f"Study database: {study_db.DB_PATH}", force=True)
-    # Printed in full, every start. The panel is useless without the token, and
-    # the log is the one place an experimenter can always reach it. Resolving it
-    # here is also what creates and persists the token file.
-    _log(f"Study control panel: {study.control_panel_path()}", force=True)
-    _log(f"Study token source: {study.token_source()}", force=True)
+    _log("Study control panel: /study/control", force=True)
     initialize_default_braille_render()
     start_model_warmup()
     open_viewer_in_browser()

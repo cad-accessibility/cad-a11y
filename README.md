@@ -153,67 +153,50 @@ There are two pages, and they stay in sync over Server-Sent Events, so the
 experimenter can drive the session from their own machine while the participant
 works on theirs.
 
-| Page | Who uses it | Needs a token |
+| Page | Who uses it | What they need |
 | --- | --- | --- |
-| `/study` | The participant | No |
-| `/study/control?token=<token>` | The experimenter | Yes |
-
-### Finding the control panel
-
-The panel is gated on a token, and the token looks after itself. On first start
-the server generates one, stores it alongside the study database, and prints the
-whole URL. It stays the same across restarts and redeploys, so the link is worth
-bookmarking.
-
-```bash
-docker compose logs app | grep 'Study control panel'
-```
-
-Running without Docker, it is on the same startup line in the terminal.
-
-To pin a token instead — say, one already shared with the team — set
-`STUDY_CONTROL_TOKEN` in `.env`, which overrides the stored one.
+| `/study/control` | The experimenter | Nothing — opening it starts a session |
+| `/study` | The participant | The four-character code from the panel |
 
 ### Running one
 
-1. Open the control panel. It suggests the next participant ID (`P01`, `P02`, …)
-   and the two model pairs that participant is due.
-2. Start the session. The participant opens `/study` in Chrome — Chrome
-   specifically, because the braille display connects over Bluetooth — and their
-   view picks up the session on its own.
-3. Work through the steps. Each one shows what to do, what to say and what to
-   ask, which printed model to hand over, and, for the exploration steps, the
-   answer key for that pair. "Next step" advances both views and loads the next
-   model.
-4. End the session when you reach the last step. That closes the record.
+1. Open **`/study/control`**. That starts a session — there is nothing to fill in
+   first, because the participant id, the model pairs and the session number are
+   all decided by the protocol.
+2. The panel shows two things to read out: the address `/study`, and a
+   four-character code.
+3. The participant opens `/study` in Chrome — Chrome specifically, because the
+   braille display connects over Bluetooth — and enters the code.
+4. Work through the steps. Each shows what to do, what to say and what to ask,
+   which printed model to hand over, and, for the exploration steps, the answer
+   key for that pair. "Next step" advances both views and loads the next model.
+5. End the session when you reach the last step. That closes the record.
 
 The participant sees a practice round with the Lego brick, then two of the three
-model pairs. Which two, and in which order, comes from a Latin square indexed by
-enrollment position, so the pairs stay balanced across participants rather than
-clustering the way a random draw does at this sample size. The panel shows the
-full assignment table.
+model pairs, assigned by a Latin square so they stay balanced across
+participants. The panel shows the assignment.
 
-### Two sessions at once
+### One panel, one session
 
-One deployment serves the whole team, so two experimenters in different places
-can run participants at the same time. Sessions are independent: each has its own
-step, its own models, its own log file, and its own live connection to its
-participant's page.
+A tab of `/study/control` owns exactly one session. Reloading stays on the same
+session; opening the panel in a **new tab or window starts another**. That is how
+two people run participants at the same time — two panels, two codes — and it is
+also why you should not open the panel "just to look" while a session is running.
 
-Each session gets a short **participant code** at enrolment, and the panel shows
-the link that carries it (`/study?s=K9F2`). Send that to the participant, or read
-them the code.
+The code is what ties a participant's browser to a session, and it is asked for
+every time, whether one session is running or five. One instruction to give, and
+it never changes.
 
-While only one session is running, a plain `/study` link works and there is
-nothing to type — that is the ordinary case and it stays frictionless. Once a
-second session starts, a browser arriving without a code is told to ask its
-experimenter for the link rather than being attached to whichever session is
-newest. Guessing there is what would put one participant's keypresses in another
-participant's record.
+### Access
 
-The panel tells you before you enrol if someone else is already running a
-session, and warns you if more than one participant view is connected to *your*
-session — that means every interaction is being recorded more than once.
+There is none by default: whoever has the address can open the panel. That is
+deliberate — it keeps the thing you actually do down to opening the app and
+starting.
+
+On a public deployment it also means a stranger with the URL can advance a live
+session, see the answer key and download a participant's interaction log. Setting
+`STUDY_CONTROL_TOKEN` in `.env` turns a gate back on, and the panel then needs
+`/study/control?token=…`. It is off unless that variable is set.
 
 ### What each step shows you
 

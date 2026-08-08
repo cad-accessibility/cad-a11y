@@ -13,16 +13,16 @@
 (function () {
     'use strict';
 
-    // The token gates every call. It is in the URL because that is how the
-    // experimenter opened the page; it is never put in a form field, so it does
-    // not end up read aloud or left on screen.
+    // The panel is open unless the deployment sets STUDY_CONTROL_TOKEN. When it
+    // does, the token rides in the URL; when it does not -- the default -- there
+    // is nothing to find and nothing to paste.
     const TOKEN = new URLSearchParams(location.search).get('token') || '';
 
     const el = (id) => document.getElementById(id);
 
     const alertRegion = el('alert-region');
     const statusRegion = el('status-region');
-    const enrollmentSection = el('enrollment-section');
+    const startingSection = el('starting-section');
     const sessionSection = el('session-section');
 
     let config = null;
@@ -67,10 +67,8 @@
 
     function api(path, options) {
         const opts = Object.assign({ headers: {} }, options || {});
-        opts.headers = Object.assign(
-            { 'Content-Type': 'application/json', 'X-Study-Token': TOKEN },
-            opts.headers
-        );
+        opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers);
+        if (TOKEN) opts.headers['X-Study-Token'] = TOKEN;
         if (boundSessionId) opts.headers['X-Study-Session'] = String(boundSessionId);
         return fetch(path, opts).then(function (res) {
             return res.json().catch(function () { return {}; }).then(function (body) {
@@ -173,147 +171,32 @@
     // Enrollment
     // -----------------------------------------------------------------------
 
-    function pairOptions(select, selectedKey) {
-        if (!select || !config) return;
-        select.innerHTML = '';
-        (config.main_pairs || []).forEach(function (key) {
-            const pair = (config.model_pairs || {})[key] || {};
-            const option = document.createElement('option');
-            option.value = key;
-            option.textContent = pair.label || key;
-            select.appendChild(option);
-        });
-        if (selectedKey) select.value = selectedKey;
-    }
-
-    function renderLatinSquare() {
-        const body = el('latin-square-body');
-        if (!body || !config) return;
-        body.innerHTML = '';
-        (config.latin_square || []).forEach(function (row) {
-            const tr = document.createElement('tr');
-            const th = document.createElement('th');
-            th.scope = 'row';
-            th.textContent = String(row.sequence_number);
-            tr.appendChild(th);
-            (row.labels || []).forEach(function (label) {
-                const td = document.createElement('td');
-                td.textContent = label;
-                tr.appendChild(td);
-            });
-            body.appendChild(tr);
-        });
-    }
-
-    function renderEnrollment() {
-        if (!state) return;
-        const codeInput = el('participant-code');
-        // Only prefill an untouched field, so a typed ID is never overwritten by
-        // a background refresh mid-entry.
-        if (codeInput && !codeInput.value) {
-            codeInput.value = state.suggested_participant_code || '';
-        }
-
-        const suggested = state.suggested_task_order || [];
-        pairOptions(el('task-1'), suggested[0]);
-        pairOptions(el('task-2'), suggested[1]);
-
-        const labels = suggested.map(function (key) {
-            return ((state.model_pairs || {})[key] || {}).label || key;
-        });
-        const assigned = el('assigned-pairs');
-        if (assigned) {
-            assigned.textContent = labels.length
-                ? `Position ${state.next_sequence_number}: ${labels.join(', then ')}`
-                : 'No assignment available';
-        }
-
-        const others = state.other_active_sessions || [];
-        const otherNotice = el('other-sessions-notice');
-        if (otherNotice) {
-            otherNotice.hidden = others.length === 0;
-            otherNotice.textContent = others.length
-                ? `Also running on this server right now: `
-                  + others.map(o => o.participant_code).join(', ')
-                  + `. Starting a session here will not disturb them.`
-                : '';
-        }
-
-        const warning = el('missing-models-warning');
-        if (warning) {
-            const missing = state.missing_models || [];
-            warning.hidden = missing.length === 0;
-            warning.textContent = missing.length
-                ? `These protocol models are not on the server, and the steps that use `
-                  + `them will not load anything: ${missing.join(', ')}.`
-                : '';
-        }
-    }
-
-    function loadPreviousSessions() {
-        api('/study/sessions').then(function (body) {
-            const container = el('previous-sessions');
-            if (!container) return;
-            const sessions = body.sessions || [];
-            if (!sessions.length) {
-                container.innerHTML = '<p class="help-text">No sessions recorded yet.</p>';
-                return;
-            }
-            const list = document.createElement('ul');
-            sessions.forEach(function (session) {
-                const li = document.createElement('li');
-                const started = String(session.started_at || '').replace('T', ' ').replace('Z', ' UTC');
-                li.textContent =
-                    `${session.participant_code} session ${session.session_number} — `
-                    + `${session.status}, started ${started}, reached step ${session.step_index + 1}`;
-                const link = document.createElement('a');
-                link.href = `/study/sessions/${session.id}/export?token=${encodeURIComponent(TOKEN)}`;
-                link.textContent = ` Download data for ${session.participant_code} session ${session.session_number}`;
-                li.appendChild(link);
-                list.appendChild(li);
-            });
-            container.innerHTML = '';
-            container.appendChild(list);
-        }).catch(function () { /* the list is a convenience, not the session */ });
-    }
-
-    const enrollmentForm = el('enrollment-form');
-    if (enrollmentForm) {
-        enrollmentForm.addEventListener('submit', function (event) {
-            event.preventDefault();
-            const errorEl = el('enrollment-error');
-            if (errorEl) { errorEl.hidden = true; errorEl.textContent = ''; }
-
-            const first = el('task-1') ? el('task-1').value : null;
-            const second = el('task-2') ? el('task-2').value : null;
-            if (first && second && first === second) {
-                if (errorEl) {
-                    errorEl.hidden = false;
-                    errorEl.textContent = 'The two model pairs must be different.';
-                    errorEl.focus?.();
-                }
-                return;
-            }
-
-            api('/study/session/start', {
-                method: 'POST',
-                body: JSON.stringify({
-                    participant_code: (el('participant-code') || {}).value || '',
-                    session_number: Number((el('session-number') || {}).value || 1),
-                    task_order: [first, second].filter(Boolean),
-                }),
-            }).then(function (body) {
+    /** Opening this page starts a session. Every field the old enrolment form
+     * asked for was already decided by the protocol -- the participant id comes
+     * from the database, the model pairs from the Latin square, the session
+     * number is 1 -- so it asked questions with only one answer and stood
+     * between the experimenter and the session they came to run.
+     *
+     * A reload does not start another: the session is remembered per tab, so one
+     * instance of this page owns exactly one session. */
+    function startSession() {
+        return api('/study/session/start', { method: 'POST', body: JSON.stringify({}) })
+            .then(function (body) {
                 bindSession(body.state.study_session_id);
                 applyState(body.state);
-                announce(`Session started for participant ${body.state.participant_code}.`);
-            }).catch(function (error) {
-                if (errorEl) {
-                    errorEl.hidden = false;
-                    errorEl.textContent = error.message;
+                announce(
+                    `Session started for ${body.state.participant_code}. `
+                    + `Give your participant the code ${body.state.participant_key}.`
+                );
+            })
+            .catch(function (error) {
+                const errorNode = el('starting-error');
+                if (errorNode) {
+                    errorNode.hidden = false;
+                    errorNode.textContent = `Could not start a session: ${error.message}`;
                 }
-                announce(`Could not start the session. ${error.message}`);
+                announce(`Could not start a session. ${error.message}`);
             });
-        });
     }
 
     // -----------------------------------------------------------------------
@@ -326,9 +209,29 @@
         const model = step.model;
 
         const linkNode = el('participant-link');
-        if (linkNode) {
-            const path = state.participant_path || '/study';
-            linkNode.textContent = `${location.origin}${path}`;
+        if (linkNode) linkNode.textContent = `${location.origin}/study`;
+        const codeNode = el('participant-code');
+        if (codeNode) codeNode.textContent = state.participant_key || '--';
+
+        const others = (state.active_sessions || []).filter(o => !o.is_current);
+        const otherNotice = el('other-sessions-notice');
+        if (otherNotice) {
+            otherNotice.hidden = others.length === 0;
+            otherNotice.textContent = others.length
+                ? 'Also running on this server: '
+                  + others.map(o => o.participant_code).join(', ')
+                  + '. They are independent of this one.'
+                : '';
+        }
+
+        const warning = el('missing-models-warning');
+        if (warning) {
+            const missing = state.missing_models || [];
+            warning.hidden = missing.length === 0;
+            warning.textContent = missing.length
+                ? 'These protocol models are not on the server, and the steps that use '
+                  + `them will not load anything: ${missing.join(', ')}.`
+                : '';
         }
 
         el('summary-participant').textContent = state.participant_code || '--';
@@ -499,10 +402,8 @@
         if (!window.confirm('End this session? The record is closed and cannot be reopened.')) return;
         api('/study/session/end', { method: 'POST', body: JSON.stringify({ status: 'completed' }) })
             .then(function () {
-                bindSession(null);
                 announce('Session ended and recorded.');
                 refreshOnce();
-                loadPreviousSessions();
             })
             .catch(function (error) { announce(`Could not end the session. ${error.message}`); });
     });
@@ -516,14 +417,24 @@
         state = next;
 
         if (!state.active) {
-            enrollmentSection.hidden = false;
+            // The session this panel owns has ended. It does not silently start
+            // another -- that would be a second participant record created by a
+            // stray reload.
+            startingSection.hidden = false;
             sessionSection.hidden = true;
             lastStepId = null;
-            renderEnrollment();
+            const heading = el('starting-heading');
+            if (heading) heading.textContent = 'This session has ended';
+            const errorNode = el('starting-error');
+            if (errorNode) {
+                errorNode.hidden = false;
+                errorNode.textContent =
+                    'Open this page again in a new tab to run another participant.';
+            }
             return;
         }
 
-        enrollmentSection.hidden = true;
+        startingSection.hidden = true;
         sessionSection.hidden = false;
         renderSession();
 
@@ -597,14 +508,24 @@
         el('protocol-version').textContent =
             `Protocol version ${config.version}. Each participant explores a practice `
             + `Lego brick, then ${config.tasks_per_session} of the three model pairs.`;
-        renderLatinSquare();
-        refreshOnce();
-        connect();
-        loadPreviousSessions();
+
+        // A reload continues the session this tab already owns; a fresh tab
+        // starts one. Checked before starting, so refreshing mid-session cannot
+        // strand a participant on a session nobody is driving.
+        const resuming = boundSessionId
+            ? api('/study/state').then(function (state) {
+                  if (state && state.active) { applyState(state); return true; }
+                  bindSession(null);
+                  return false;
+              }).catch(function () { bindSession(null); return false; })
+            : Promise.resolve(false);
+
+        return resuming.then(function (resumed) {
+            const ready = resumed ? Promise.resolve() : startSession();
+            return ready.then(connect);
+        });
     }).catch(function (error) {
-        el('protocol-version').textContent =
-            `Could not load the protocol: ${error.message}. Check that the panel URL `
-            + `includes a valid token.`;
-        announce('Could not load the protocol. Check the panel token.');
+        el('protocol-version').textContent = `Could not load the protocol: ${error.message}`;
+        announce(`Could not load the protocol. ${error.message}`);
     });
 })();

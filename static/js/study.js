@@ -27,6 +27,9 @@
     const stepText = document.getElementById('study-step-text');
     const readyBtn = document.getElementById('study-ready-btn');
     const readyStatus = document.getElementById('study-ready-status');
+    const joinForm = document.getElementById('study-join-form');
+    const joinInput = document.getElementById('study-join-code');
+    const joinError = document.getElementById('study-join-error');
 
     if (region) region.hidden = false;
 
@@ -69,18 +72,64 @@
         }
     })();
 
-    /** Bind this browser to a session the first time it reaches one without a
-     * key. A page that attached during a single-session run would otherwise hold
-     * no key at all, and when that session ended and the next began it would
-     * silently join the new one -- putting one participant's interactions into
-     * another participant's record. Once bound, it stays bound: a stale page is
-     * refused rather than re-homed. */
+    /** Remember the code this browser joined with, so a reload does not ask for
+     * it again and a page whose session has ended is refused rather than being
+     * re-homed onto whatever is running now. */
     function rememberKey(key) {
-        if (!key || participantKey) return;
-        participantKey = key;
+        if (!key) return;
+        participantKey = String(key).trim().toUpperCase();
         try {
-            sessionStorage.setItem(KEY_STORAGE, key);
+            sessionStorage.setItem(KEY_STORAGE, participantKey);
         } catch (_) { /* still bound for this page's lifetime */ }
+    }
+
+    function forgetKey() {
+        participantKey = '';
+        try { sessionStorage.removeItem(KEY_STORAGE); } catch (_) {}
+    }
+
+    /** Show or hide the code prompt, and keep it out of the tab order once the
+     * participant is in a session. */
+    function showJoinPrompt(show) {
+        if (!joinForm) return;
+        joinForm.hidden = !show;
+        if (!show && joinError) { joinError.hidden = true; joinError.textContent = ''; }
+    }
+
+    if (joinForm) {
+        joinForm.addEventListener('submit', function (event) {
+            event.preventDefault();
+            const typed = (joinInput.value || '').trim().toUpperCase();
+            if (!typed) return;
+            if (joinError) { joinError.hidden = true; joinError.textContent = ''; }
+            rememberKey(typed);
+            fetch(withKey('/study/state'))
+                .then(function (res) { return res.ok ? res.json() : null; })
+                .then(function (state) {
+                    if (state && state.active) {
+                        applyState(state);
+                        // Reconnect the stream, which subscribed without a code.
+                        if (eventSource) { eventSource.close(); eventSource = null; }
+                        connect();
+                        return;
+                    }
+                    forgetKey();
+                    if (joinError) {
+                        joinError.hidden = false;
+                        joinError.textContent =
+                            'That code did not match a session that is running. '
+                            + 'Check it with your experimenter and try again.';
+                    }
+                    joinInput.focus();
+                })
+                .catch(function () {
+                    forgetKey();
+                    if (joinError) {
+                        joinError.hidden = false;
+                        joinError.textContent = 'Could not reach the server. Please try again.';
+                    }
+                });
+        });
     }
 
     /** Append the session key to a study URL, when this browser has one. */
@@ -123,8 +172,6 @@
     function applyState(state) {
         if (!state) return;
 
-        // Bind before anything else, so the very first state this page sees is
-        // the one it stays with.
         rememberKey(state.participant_key);
 
         const wasActive = sessionActive;
@@ -134,29 +181,27 @@
         if (!sessionActive) {
             currentStepId = null;
             currentModelStem = null;
-            if (state.ambiguous) {
-                // Several sessions are running and this browser did not say
-                // which it belongs to. Guessing is what used to log one
-                // participant's work against another, so it asks instead.
-                setHeading('This link is missing your session code');
+            const finished = state.status === 'completed' || state.status === 'abandoned';
+            if (finished) {
+                setHeading('The session has ended');
+                if (progressText) progressText.textContent = 'Finished';
+                if (stepText) stepText.textContent = 'That is everything. Thank you.';
+                showJoinPrompt(false);
+            } else {
+                setHeading('Enter your session code');
                 if (progressText) progressText.textContent = 'Not connected';
                 if (stepText) {
                     stepText.textContent =
-                        'More than one study session is running. Ask your experimenter '
-                        + 'for the link with your session code in it.';
+                        'Your experimenter will give you a four-character code. '
+                        + 'Enter it below to join your session.';
                 }
-            } else {
-                setHeading('Waiting for the session to start');
-                if (progressText) progressText.textContent = 'Not started';
-                if (stepText) {
-                    stepText.textContent = state.status === 'completed' || state.status === 'abandoned'
-                        ? 'The session has ended. Thank you.'
-                        : 'Your experimenter will start the session in a moment.';
-                }
+                showJoinPrompt(true);
             }
             if (readyBtn) readyBtn.disabled = true;
             return;
         }
+
+        showJoinPrompt(false);
 
         if (!wasActive) {
             report('page_load', { user_agent: navigator.userAgent, url: location.href });

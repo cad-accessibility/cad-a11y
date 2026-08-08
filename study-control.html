@@ -35,83 +35,17 @@
         <main id="main-content">
 
             <!-- ============================================================
-                 ENROLLMENT — shown until a session is running
-                 ============================================================ -->
-            <section id="enrollment-section" aria-labelledby="enrollment-heading">
-                <h2 id="enrollment-heading">Start a session</h2>
-
-                <div id="missing-models-warning" class="warning-box" role="status" hidden></div>
-
-                <!-- Someone else is already running a participant on this
-                     deployment. Not an error: sessions run side by side now. It
-                     is here so a second experimenter knows before they start. -->
-                <div id="other-sessions-notice" class="notice-box" role="status" hidden></div>
-
-                <form id="enrollment-form" novalidate>
-                    <div class="field">
-                        <label for="participant-code">Participant ID</label>
-                        <input type="text" id="participant-code" name="participant_code"
-                               autocomplete="off" spellcheck="false"
-                               aria-describedby="participant-code-hint">
-                        <span id="participant-code-hint" class="help-text">
-                            A new ID is suggested for each run. Type an existing ID to run a
-                            second session with the same participant; they keep the model
-                            pairs they were assigned the first time.
-                        </span>
-                    </div>
-
-                    <div class="field">
-                        <label for="session-number">Session number</label>
-                        <input type="number" id="session-number" name="session_number"
-                               value="1" min="1" step="1" aria-describedby="session-number-hint">
-                        <span id="session-number-hint" class="help-text">
-                            1 unless this participant has been run before.
-                        </span>
-                    </div>
-
-                    <fieldset class="field">
-                        <legend>Model pairs for this participant</legend>
-                        <p id="assignment-hint" class="help-text">
-                            Assigned by Latin square from the participant's enrollment
-                            position, so the three pairs stay balanced across participants.
-                            Change it only if you have a reason to.
-                        </p>
-                        <p id="assigned-pairs" role="status" class="assigned-pairs">Loading&hellip;</p>
-                        <div class="field">
-                            <label for="task-1">First pair</label>
-                            <select id="task-1" aria-describedby="assignment-hint"></select>
-                        </div>
-                        <div class="field">
-                            <label for="task-2">Second pair</label>
-                            <select id="task-2" aria-describedby="assignment-hint"></select>
-                        </div>
-                        <p class="help-text">
-                            The Lego brick is always the practice round and is not listed here.
-                        </p>
-                    </fieldset>
-
-                    <div class="button-group">
-                        <button type="submit" id="start-session-btn">Start session</button>
-                    </div>
-                    <p id="enrollment-error" class="error-text" role="alert" hidden></p>
-                </form>
-
-                <h3 id="latin-square-heading">Assignment reference</h3>
-                <table class="reference-table" aria-labelledby="latin-square-heading">
-                    <caption class="help-text">
-                        Which pairs each enrollment position receives. Repeats every six
-                        participants.
-                    </caption>
-                    <thead>
-                        <tr><th scope="col">Position</th><th scope="col">First pair</th><th scope="col">Second pair</th></tr>
-                    </thead>
-                    <tbody id="latin-square-body"></tbody>
-                </table>
-
-                <h3 id="previous-sessions-heading">Previous sessions</h3>
-                <div id="previous-sessions" aria-labelledby="previous-sessions-heading">
-                    <p class="help-text">Loading&hellip;</p>
-                </div>
+                 STARTING UP — shown only while the session is being created
+                 =============================================================
+                 There is no enrolment form. Opening this panel starts a session:
+                 the participant id, the session number and the model pairs are
+                 all decided by the protocol, so there was nothing on that form
+                 an experimenter had to answer. One instance of this page owns
+                 one session, and a reload stays on the same one.
+            -->
+            <section id="starting-section" aria-labelledby="starting-heading">
+                <h2 id="starting-heading">Starting a session&hellip;</h2>
+                <p id="starting-error" class="error-text" role="alert" hidden></p>
             </section>
 
             <!-- ============================================================
@@ -121,20 +55,23 @@
                 <h2 id="session-heading" tabindex="-1">Session in progress</h2>
 
                 <!--
-                    The link this participant opens. With several sessions
-                    running on one deployment a plain /study cannot tell which
-                    session a browser belongs to, so the code in this link is
-                    what binds them.
+                    The two things to say out loud. One address, always the same,
+                    and a four-character code that says which session this browser
+                    belongs to. Several sessions run at once on one server, so
+                    something has to distinguish them; the code is the smallest
+                    thing that can, and it is the same instruction every time
+                    rather than one that changes with how many sessions are up.
                 -->
                 <div id="participant-link-block" class="participant-link-block">
-                    <h3 id="participant-link-heading">Participant link</h3>
+                    <h3 id="participant-link-heading">Read this to your participant</h3>
+                    <p class="help-text">Ask them to open:</p>
                     <p id="participant-link" class="participant-link"></p>
-                    <p class="help-text">
-                        Send this to the participant, or read them the code at the end.
-                        A plain <code>/study</code> link works too while this is the only
-                        session running.
-                    </p>
+                    <p class="help-text">and enter this code:</p>
+                    <p id="participant-code" class="participant-code"></p>
                 </div>
+
+                <div id="missing-models-warning" class="warning-box" role="status" hidden></div>
+                <div id="other-sessions-notice" class="notice-box" role="status" hidden></div>
 
                 <dl class="session-summary">
                     <dt>Participant</dt><dd id="summary-participant">--</dd>

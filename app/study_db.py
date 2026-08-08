@@ -499,13 +499,15 @@ def _log_path_for(code: str, session_number: int) -> Path:
 def new_participant_key() -> str:
     """A short, unambiguous key identifying one session's participant view.
 
-    Short because an experimenter may have to read the link out; unambiguous
-    because they may have to read it to someone who cannot see the screen. The
-    alphabet drops the characters that sound or look alike -- 0/O, 1/I/L, 5/S,
-    2/Z -- so "did you say B or D" is the only confusion left to have.
+    Four characters, because the experimenter reads it out loud to someone who
+    may not be able to see their screen, and every extra character is another
+    chance to mishear. The alphabet drops the characters that sound or look
+    alike -- 0/O, 1/I/L, 5/S, 2/Z -- so "was that B or D" is the only confusion
+    left to have. 531,441 combinations against a handful of live sessions, and
+    create_session retries on the collision it will never see.
     """
     alphabet = "ABCDEFGHJKMNPQRTUVWXY346789"
-    return "".join(secrets.choice(alphabet) for _ in range(6))
+    return "".join(secrets.choice(alphabet) for _ in range(4))
 
 
 def create_session(

@@ -100,11 +100,25 @@ class TestStudyRegionMarkup:
         heading = _by_id(VIEWER_HTML)["study-step-heading"]
         assert heading["attrs"].get("aria-live") == "polite"
 
-    def test_no_assertive_live_region_in_the_study_region(self):
+    def test_nothing_in_a_running_session_interrupts_the_participant(self):
+        """No assertive live region on anything shown while the session is
+        running. A participant is reading braille with both hands while the
+        display refreshes, and an interruption mid-slice is the disruption the
+        study is trying not to introduce.
+
+        The join form is the exception, and it is only on screen before the
+        session starts: a code that did not match has to be heard, there is no
+        braille reading in progress to interrupt, and it is the same pattern the
+        consent dialog's email error already uses."""
         html = VIEWER_HTML.read_text(encoding="utf-8")
         region = html[html.index('id="study-region"'):html.index('<div class="layout">')]
-        assert 'aria-live="assertive"' not in region
-        assert 'role="alert"' not in region
+        join_form = region[region.index('id="study-join-form"'):region.index("</form>")]
+        during_session = region.replace(join_form, "")
+
+        assert 'aria-live="assertive"' not in during_session
+        assert 'role="alert"' not in during_session
+        # And the exception really is confined to the join form.
+        assert 'role="alert"' in join_form
 
     def test_ready_button_is_labelled_in_full(self):
         """Voice control users speak the visible label, so "Ready" alone is
@@ -256,11 +270,6 @@ class TestControlPanelAccessibility:
         assert toggle["attrs"].get("aria-expanded") == "false"
         assert toggle["attrs"].get("aria-controls") == "strategy-prompts-block"
 
-    def test_reference_table_has_a_caption_and_header_scopes(self):
-        html = CONTROL_HTML.read_text(encoding="utf-8")
-        assert "<caption" in html
-        assert 'scope="col"' in html
-
     def test_current_step_heading_can_receive_focus(self):
         """Focus moves here on every advance, so a screen reader user lands on the
         new script instead of hunting for it."""
@@ -293,16 +302,37 @@ class TestControlPanelAccessibility:
 
 
 class TestControlPanelBehaviour:
-    def test_token_is_taken_from_the_url_not_a_form_field(self):
-        """A token typed into a field would be read aloud and left on screen."""
+    def test_the_panel_needs_no_token_by_default(self):
+        """Running a session should be: open the app, start. A secret to find in
+        a server log was the single biggest piece of friction in this flow."""
         js = CONTROL_JS.read_text(encoding="utf-8")
-        assert "URLSearchParams(location.search).get('token')" in js
+        assert "if (TOKEN) opts.headers['X-Study-Token'] = TOKEN;" in js, (
+            "the panel should send a token only when the deployment sets one"
+        )
         html = CONTROL_HTML.read_text(encoding="utf-8")
         assert 'id="token' not in html
 
-    def test_every_request_carries_the_token(self):
+    def test_opening_the_panel_starts_a_session(self):
         js = CONTROL_JS.read_text(encoding="utf-8")
-        assert "'X-Study-Token': TOKEN" in js
+        assert "function startSession()" in js
+        assert "enrollment-form" not in js, "the enrolment form should be gone"
+        html = CONTROL_HTML.read_text(encoding="utf-8")
+        assert 'id="enrollment-form"' not in html
+        assert "Start session" not in html
+
+    def test_a_reload_does_not_start_a_second_session(self):
+        """One instance of the panel owns one session. A refresh mid-session must
+        not create a second participant record and strand the first."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "const resuming = boundSessionId" in js
+        assert "cadA11yStudyPanelSession" in js
+
+    def test_the_panel_shows_the_code_to_read_out(self):
+        html = CONTROL_HTML.read_text(encoding="utf-8")
+        assert 'id="participant-code"' in html
+        assert "Read this to your participant" in html
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "state.participant_key" in js
 
     def test_logging_health_is_reported_in_words(self):
         """A degraded log must not be conveyed by colour alone."""

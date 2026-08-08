@@ -116,107 +116,26 @@ def _repo_root() -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Token
+# Access
 #
-# The control panel is gated on a secret, and a public deployment cannot be left
-# without one. But asking an experimenter to generate and configure a secret
-# before their first session is a step that gets skipped, and a token that
-# changes on every deploy is a panel URL that stops working without explanation.
+# The control panel is open by default. Running a session should be: open the
+# app, start. Nothing to find in a log, nothing to paste into a URL.
 #
-# So the server manages it. Resolution order:
+# Setting STUDY_CONTROL_TOKEN turns a gate back on, for a deployment that wants
+# one. It is off unless that variable is set, and the whole mechanism is one
+# comparison -- there is deliberately no generated secret, no token file and no
+# startup banner to go hunting through.
 #
-#   1. STUDY_CONTROL_TOKEN, when set. An explicit choice always wins, and is how
-#      a deployment pins a token it already distributes some other way.
-#   2. A token file on the persistent volume, when one exists. This is what makes
-#      the URL survive restarts and redeploys without anyone configuring
-#      anything.
-#   3. Otherwise: generate one, store it in that file, and print it.
-#
-# Resolution is lazy and cached. Doing it at import would create a token file as
-# a side effect of importing this module -- during test collection, or a CLI
-# script that never serves a request.
+# What that leaves open on a public deployment: anyone with the URL can advance a
+# live session, read the answer key and download a participant's interaction log.
+# The destructive controls confirm before acting, which stops a misclick but not
+# a determined stranger.
 # ---------------------------------------------------------------------------
-
-_token_cache: str | None = None
-
-
-def _token_file() -> Path:
-    """Where the generated token is kept.
-
-    Beside the study database by default, so it lands on the same Docker volume:
-    a token written anywhere else is regenerated on the next deploy, which is the
-    problem this exists to solve.
-    """
-    configured = os.getenv("STUDY_CONTROL_TOKEN_FILE", "").strip()
-    if configured:
-        return Path(configured)
-    return study_db.DB_PATH.parent / "study_control_token"
-
-
-def _read_token_file(path: Path) -> str | None:
-    try:
-        if not path.is_file():
-            return None
-        return path.read_text(encoding="utf-8").strip() or None
-    except Exception as error:  # noqa: BLE001 - reported, falls through to generating
-        logger.warning("Could not read the study control token file: %s", error)
-        return None
-
-
-def _write_token_file(path: Path, token: str) -> bool:
-    """Write the token 0600. Returns False if the location is not writable."""
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # os.open with the mode set at creation, rather than write-then-chmod,
-        # so the secret is never briefly world-readable.
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(token + "\n")
-        return True
-    except Exception as error:  # noqa: BLE001 - reported, never fatal
-        logger.warning("Could not persist the study control token: %s", error)
-        return False
-
-
-def _resolve_token() -> str:
-    configured = os.getenv("STUDY_CONTROL_TOKEN", "").strip()
-    if configured:
-        return configured
-
-    path = _token_file()
-    existing = _read_token_file(path)
-    if existing:
-        return existing
-
-    generated = secrets.token_urlsafe(24)
-    if not _write_token_file(path, generated):
-        # Read-only volume, or a misconfigured path. The panel still works for
-        # this run; it just gets a new URL on the next restart, which is the old
-        # behaviour and better than refusing to serve the study at all.
-        logger.warning(
-            "Study control token could not be saved, so it will change on restart. "
-            "Set STUDY_CONTROL_TOKEN to pin one."
-        )
-    return generated
 
 
 def control_token() -> str:
-    global _token_cache
-    if _token_cache is None:
-        _token_cache = _resolve_token()
-    return _token_cache
-
-
-def control_panel_path() -> str:
-    """The panel URL, for printing at startup so it is findable in the log."""
-    return f"/study/control?token={control_token()}"
-
-
-def token_source() -> str:
-    """Where the active token came from, for the startup banner."""
-    if os.getenv("STUDY_CONTROL_TOKEN", "").strip():
-        return "STUDY_CONTROL_TOKEN"
-    return str(_token_file())
+    """The configured gate, or "" when the panel is open."""
+    return os.getenv("STUDY_CONTROL_TOKEN", "").strip()
 
 
 def _provided_token() -> str:
@@ -224,24 +143,24 @@ def _provided_token() -> str:
 
 
 def _token_valid() -> bool:
+    configured = control_token()
+    if not configured:
+        return True
     provided = _provided_token()
     # compare_digest so a wrong token cannot be found a character at a time by
     # timing the response.
-    return bool(provided) and secrets.compare_digest(provided, control_token())
+    return bool(provided) and secrets.compare_digest(provided, configured)
 
 
 def require_token(view):
     @wraps(view)
     def wrapper(*args, **kwargs):
         if not _token_valid():
-            # Says how to find the token, never where it is stored: this reply is
-            # unauthenticated, so it must not describe the server's filesystem.
             return jsonify(
                 {
                     "status": "error",
                     "message": (
-                        "Invalid or missing study token. The full panel URL is printed "
-                        "in the server log when it starts."
+                        "This deployment sets STUDY_CONTROL_TOKEN, so the panel needs it."
                     ),
                 }
             ), 403
@@ -349,17 +268,19 @@ def _participant_key() -> str:
 
 
 def _resolve_participant_session() -> dict[str, Any] | None:
-    """The session a participant's browser belongs to. Raises if ambiguous."""
+    """The session a participant's browser belongs to, by its join code.
+
+    The code is always required, even when only one session is running. It used
+    to fall back to "the single active session", which meant the procedure
+    changed depending on how many sessions happened to be up -- and a page that
+    attached that way held nothing of its own, so when its session ended it
+    drifted onto the next one. One rule, every time: enter the code.
+    """
     key = _participant_key()
-    if key:
-        session = study_db.get_session_by_key(key)
-        return session if session and session.get("status") == "active" else None
-    active = study_db.list_active_sessions()
-    if len(active) == 1:
-        return active[0]
-    if len(active) > 1:
-        raise SessionAmbiguous(len(active))
-    return None
+    if not key:
+        return None
+    session = study_db.get_session_by_key(key)
+    return session if session and session.get("status") == "active" else None
 
 
 def _resolve_experimenter_session() -> dict[str, Any] | None:
@@ -371,15 +292,45 @@ def _resolve_experimenter_session() -> dict[str, Any] | None:
     )
     if raw not in (None, ""):
         try:
-            return study_db.get_study_session(int(raw))
+            named = study_db.get_study_session(int(raw))
         except (TypeError, ValueError):
-            return None
+            named = None
+        if named:
+            return named
+        # A panel pointing at a session that no longer exists falls through to
+        # the rules below rather than showing nothing, so a stale tab recovers
+        # instead of sitting on an empty enrolment form beside a running session.
+
     active = study_db.list_active_sessions()
     if len(active) == 1:
         return active[0]
     if len(active) > 1:
         raise SessionAmbiguous(len(active))
     return None
+
+
+def _is_panel_request() -> bool:
+    """Whether this request is the control panel rather than a participant.
+
+    The token used to answer this: only the panel had one. With the panel open by
+    default that no longer distinguishes anything, so the request says which it
+    is by what it carries -- a panel names a session id, a participant carries a
+    join code. Neither means participant, because the participant payload is the
+    one that withholds the answer key, and the safe default when we cannot tell
+    is to reveal less.
+    """
+    if _participant_key():
+        return False
+    named = (
+        request.args.get("study_session_id")
+        or request.headers.get("X-Study-Session")
+        or ((request.get_json(silent=True) or {}).get("study_session_id") if request.is_json else None)
+    )
+    if named not in (None, ""):
+        return True
+    # A deployment that has turned the gate on still identifies its panel the
+    # old way, by presenting the token.
+    return bool(control_token()) and _token_valid()
 
 
 def _ambiguous_response(error: SessionAmbiguous):
@@ -496,16 +447,22 @@ def _experimenter_state(session: dict[str, Any] | None) -> dict[str, Any]:
         "suggested_task_order": study_protocol.assign_task_order(sequence_number),
         "next_sequence_number": sequence_number,
         "missing_models": _missing_models(),
-        # Shown before enrolling, so a second experimenter starting a session
-        # knows someone else is already running one on this deployment.
-        "other_active_sessions": [
+        # Every session currently running, so a panel that has just been opened
+        # can join one instead of only being able to start another. Opening the
+        # panel used to be a dead end when a session was already in progress:
+        # with two running it could not resolve one at all, and the only control
+        # on screen was "Start session".
+        "active_sessions": [
             {
                 "study_session_id": other["id"],
                 "participant_code": other["participant_code"],
+                "participant_key": other["participant_key"],
+                "session_number": other["session_number"],
+                "step_index": other["step_index"],
                 "started_at": other["started_at"],
+                "is_current": bool(session and other["id"] == session.get("id")),
             }
             for other in study_db.list_active_sessions()
-            if not session or other["id"] != session.get("id")
         ],
         "facilitator_prompts": protocol.get("facilitator_prompts"),
         "strategy_prompts": protocol.get("strategy_prompts"),
@@ -676,16 +633,11 @@ def study_state():
     and the participant view otherwise, so the participant page can call the same
     endpoint without being handed the answer key."""
     try:
-        if _token_valid():
+        if _is_panel_request():
             return jsonify(_experimenter_state(_resolve_experimenter_session())), 200
         return jsonify(_participant_state(_resolve_participant_session())), 200
     except SessionAmbiguous as error:
-        if _token_valid():
-            return _ambiguous_response(error)
-        # The participant view gets a state it can render rather than an error:
-        # "ask your experimenter for your link" is the actionable thing, and it
-        # must never guess which session it belongs to.
-        return jsonify({"active": False, "ambiguous": True, "active_sessions": error.count}), 200
+        return _ambiguous_response(error)
 
 
 @study_bp.route("/study/session/start", methods=["POST"])
@@ -975,7 +927,7 @@ def study_stream():
     there has to be a push channel; polling would mean a step change landing up to
     a poll interval late, under the participant's fingers, with no explanation.
     """
-    is_experimenter = _token_valid()
+    is_experimenter = _is_panel_request()
     role = "experimenter" if is_experimenter else "participant"
 
     # Resolved once, at subscribe time: a stream belongs to the session the

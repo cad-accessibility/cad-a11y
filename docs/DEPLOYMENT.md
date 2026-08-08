@@ -228,31 +228,17 @@ Two consequences that have caught us out before.
 
 ### The study control panel
 
-`/study/control` is gated on a token, and there is nothing to configure. On first start the server generates one, writes it to `study_control_token` in the `db` volume with mode 0600, and prints the full panel URL. Because it lives in a volume it survives restarts and redeploys, so the URL the experimenters have saved keeps working.
+`/study/control` is open. Opening it starts a session, which is the whole flow: no secret to find, nothing to paste into a URL. A tab owns one session, so a reload continues it and a new tab starts another.
 
-Find it at any time with:
-
-```bash
-docker compose logs app | grep 'Study control panel'
-```
-
-Two things follow from where it is stored.
-
-**It is in the `db` volume, so the backup below already covers it** — and `docker compose down -v` destroys it along with everything else. That is recoverable (the next start generates a new one) but it silently invalidates the URL everyone is using, so tell the team if it happens.
-
-**Rotating it is deleting the file:**
+That does mean anyone who reaches the address can advance a live session, read the answer key, and download a participant's interaction log. To gate it, set a token in `.env` on the server:
 
 ```bash
-docker compose exec app rm /project/data/db/study_control_token
-docker compose restart app
-docker compose logs app | grep 'Study control panel'
+STUDY_CONTROL_TOKEN=$(openssl rand -base64 24)
 ```
 
-To pin a token instead of letting the server manage one — for example to hand the same URL to a second deployment — set `STUDY_CONTROL_TOKEN` in `.env`. It overrides the stored file, which is left untouched.
+The panel then needs `/study/control?token=…`. It is off unless that variable is set, and setting it changes nothing else about how a session runs.
 
-If the volume is read-only, the server falls back to a token that lasts only for that run rather than refusing to serve the study, and says so in the log.
-
-The participant page at `/study` needs no token, by design: a participant should not have to type a secret, and it can only signal readiness and log its own interactions.
+The participant page at `/study` is always open. It carries a four-character code, shown in the panel, that says which session the browser belongs to — several run at once on one server, and that code is what keeps one participant's interactions out of another's record.
 
 ### Backing up
 
