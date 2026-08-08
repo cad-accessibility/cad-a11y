@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Study Control Panel — CAD A11y</title>
+    <meta name="description" content="Experimenter control panel for running a CAD A11y study session">
+    <link rel="stylesheet" href="/static/css/viewer.css">
+    <link rel="stylesheet" href="/static/css/study-control.css">
+</head>
+<!--
+    Experimenter-facing, and built to the same accessibility standard as the
+    participant view. Members of this team who run sessions use screen readers,
+    so "the experimenter is sighted" is not an assumption this page gets to make:
+    every state change lands in a live region, every control has a real label,
+    and nothing is conveyed by colour alone.
+-->
+<body class="study-control">
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <div class="container">
+        <header role="banner">
+            <h1 id="page-title" tabindex="-1">Study Control Panel</h1>
+            <p class="help-text" id="protocol-version">Loading protocol&hellip;</p>
+        </header>
+
+        <!--
+            Assertive: this is where the participant's readiness signal and any
+            failure to record data land. Both are things the experimenter needs
+            to hear during the session, not on their next pass through the page.
+        -->
+        <div id="alert-region" class="sr-only" role="alert" aria-atomic="true"></div>
+        <div id="status-region" class="sr-only" role="status" aria-atomic="true"></div>
+
+        <main id="main-content">
+
+            <!-- ============================================================
+                 STARTING UP — shown only while the session is being created
+                 =============================================================
+                 There is no enrolment form. Opening this panel starts a session:
+                 the participant id, the session number and the model pairs are
+                 all decided by the protocol, so there was nothing on that form
+                 an experimenter had to answer. One instance of this page owns
+                 one session, and a reload stays on the same one.
+            -->
+            <section id="starting-section" aria-labelledby="starting-heading">
+                <h2 id="starting-heading">Starting a session&hellip;</h2>
+                <p id="starting-error" class="error-text" role="alert" hidden></p>
+            </section>
+
+            <!-- ============================================================
+                 ACTIVE SESSION
+                 ============================================================ -->
+            <section id="session-section" aria-labelledby="session-heading" hidden>
+                <h2 id="session-heading" tabindex="-1">Session in progress</h2>
+
+                <!--
+                    The two things to say out loud. One address, always the same,
+                    and a four-character code that says which session this browser
+                    belongs to. Several sessions run at once on one server, so
+                    something has to distinguish them; the code is the smallest
+                    thing that can, and it is the same instruction every time
+                    rather than one that changes with how many sessions are up.
+                -->
+                <div id="participant-link-block" class="participant-link-block">
+                    <h3 id="participant-link-heading">Read this to your participant</h3>
+                    <p class="help-text">Ask them to open:</p>
+                    <p id="participant-link" class="participant-link"></p>
+                    <p class="help-text">and enter this code:</p>
+                    <p id="participant-code" class="participant-code"></p>
+
+                    <!-- One laptop between the two of you. This window becomes the
+                         participant's, and the session moves on when they press
+                         "I am ready to move on" rather than waiting for a Next
+                         button that is no longer reachable. -->
+                    <div class="button-group">
+                        <button type="button" id="run-here-btn">Run the study on this device</button>
+                    </div>
+                    <p class="help-text">
+                        Use this if you only have one computer. This window becomes the
+                        participant's view, and the session moves to the next step when
+                        they press "I am ready to move on". Have the protocol to hand:
+                        the script is not shown there.
+                    </p>
+                </div>
+
+                <div id="missing-models-warning" class="warning-box" role="status" hidden></div>
+                <div id="other-sessions-notice" class="notice-box" role="status" hidden></div>
+
+                <dl class="session-summary">
+                    <dt>Participant</dt><dd id="summary-participant">--</dd>
+                    <dt>Session</dt><dd id="summary-session-number">--</dd>
+                    <dt>Model pairs</dt><dd id="summary-tasks">--</dd>
+                    <dt>Recorded so far</dt><dd id="summary-counts">--</dd>
+                    <dt>Logging</dt><dd id="summary-logging">--</dd>
+                    <dt>Participant views connected</dt><dd id="summary-clients">--</dd>
+                </dl>
+
+                <!-- Participant readiness. role="status" rather than alert: it is
+                     information, not an error, and it is repeated visibly here so
+                     an experimenter who missed the announcement can still find it. -->
+                <p id="ready-indicator" class="ready-indicator" role="status">
+                    Participant has not signalled readiness on this step.
+                </p>
+
+                <section aria-labelledby="current-step-heading">
+                    <h3 id="current-step-heading" tabindex="-1">Current step</h3>
+                    <p id="step-progress" class="step-progress">--</p>
+                    <p id="step-part" class="step-part">--</p>
+
+                    <!--
+                        Not everything here is spoken. Each block declares whether
+                        it is something to do, something to say, something to ask,
+                        or a reminder, and the label is rendered as a <dt> so a
+                        screen reader announces "Say" before the words rather than
+                        leaving the distinction to how the text looks.
+                    -->
+                    <h4 id="script-heading">Experimenter notes</h4>
+                    <!--
+                        No tabindex: this does not scroll, so making it focusable
+                        would only add a tab stop that does nothing on the way to
+                        the controls below.
+                    -->
+                    <dl id="step-script" class="script-box" aria-labelledby="script-heading"></dl>
+
+                    <div id="physical-model-block" hidden>
+                        <h4>Hand over</h4>
+                        <p id="step-physical-model" class="physical-model"></p>
+                    </div>
+
+                    <div id="model-block" hidden>
+                        <h4>On the display</h4>
+                        <p id="step-model" class="help-text"></p>
+                        <p id="model-missing-warning" class="error-text" role="alert" hidden></p>
+                    </div>
+
+                    <div id="checklist-block" hidden>
+                        <h4 id="checklist-heading">Before moving on</h4>
+                        <ul id="step-checklist" aria-labelledby="checklist-heading"></ul>
+                    </div>
+
+                    <!--
+                        The object's description is read to the participant at the
+                        start of Part A, so it must not live under the answer key
+                        heading, which tells the experimenter not to read what
+                        follows. Its own block, above, with the instruction that
+                        it IS spoken.
+                    -->
+                    <div id="object-block" hidden>
+                        <h4 id="object-heading">This object</h4>
+                        <p id="object-label" class="physical-model"></p>
+                        <p id="object-description" class="object-description"></p>
+                        <p class="help-text">
+                            Read the description to the participant at the start of Part A,
+                            before anything goes on the display.
+                        </p>
+                    </div>
+
+                    <div id="answer-key-block" hidden>
+                        <h4 id="answer-key-heading">Answer key</h4>
+                        <p class="help-text">For your reference only. Do not read this out.</p>
+                        <h5>What changed</h5>
+                        <ul id="answer-key-differences" aria-labelledby="answer-key-heading"></ul>
+                        <h5>What did not change</h5>
+                        <ul id="answer-key-unchanged"></ul>
+                    </div>
+                </section>
+
+                <section aria-labelledby="prompts-heading">
+                    <h3 id="prompts-heading">Prompts</h3>
+                    <h4 id="facilitator-prompts-heading">Open-ended</h4>
+                    <ul id="facilitator-prompts" aria-labelledby="facilitator-prompts-heading"></ul>
+
+                    <div class="button-group">
+                        <button type="button" id="toggle-strategy-btn" aria-expanded="false"
+                                aria-controls="strategy-prompts-block">
+                            Show strategy prompts
+                        </button>
+                    </div>
+                    <div id="strategy-prompts-block" hidden>
+                        <p class="help-text">
+                            These name a specific control, so they steer the exploration.
+                            Use them only when the participant is stuck.
+                        </p>
+                        <ul id="strategy-prompts"></ul>
+                    </div>
+                </section>
+
+                <section aria-labelledby="navigation-heading">
+                    <h3 id="navigation-heading">Move through the protocol</h3>
+                    <div class="button-group">
+                        <button type="button" id="previous-step-btn">Previous step</button>
+                        <button type="button" id="next-step-btn">Next step</button>
+                    </div>
+                    <label class="checkbox-label" for="confirm-advance">
+                        <input type="checkbox" id="confirm-advance" checked>
+                        Ask me to confirm before moving
+                    </label>
+
+                    <div class="field">
+                        <label for="step-jump">Jump to a step</label>
+                        <select id="step-jump"></select>
+                    </div>
+
+                    <div class="button-group">
+                        <button type="button" id="end-session-btn" class="danger">End session</button>
+                    </div>
+                </section>
+            </section>
+        </main>
+    </div>
+
+    <script src="/static/js/study-control.js"></script>
+</body>
+</html>

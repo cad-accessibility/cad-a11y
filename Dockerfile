@@ -36,6 +36,7 @@ COPY src/ ./src/
 COPY static/ ./static/
 COPY accessible-3d-viewer.html ./
 COPY workshop-entry.html ./
+COPY study-control.html ./
 COPY examples/ ./examples/
 # Built-ins ship here, deliberately NOT into data/models. data/models is a mounted
 # volume, so anything copied there is shadowed on a real deployment, and copying
@@ -45,6 +46,13 @@ COPY builtin_models/ ./builtin_models/
 # Maintenance script an operator runs inside the container; the data directories
 # are Docker-managed volumes and are not conveniently reachable from the host.
 COPY scripts/cleanup_ingest_models.py ./scripts/
+
+# Python block-buffers stdout when it is a pipe, which is what it is under
+# Docker. A long-running server therefore fills an 8 KB buffer that never
+# flushes, so `docker compose logs` shows nothing at all -- not the startup
+# banner, not the study control-panel URL, not an error on the way down. Only a
+# crash or a print(flush=True) ever revealed any of it.
+ENV PYTHONUNBUFFERED=1
 
 # Runtime write directories are created here so the non-root user owns them.
 RUN mkdir -p data/models data/uploads data/renders data/logs data/db

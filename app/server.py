@@ -41,7 +41,7 @@ from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
 
-from . import db
+from . import db, study, study_db
 from .braille_display import (
     _pixels_to_braille_cells,
     _pixels_to_braille_cells_dotpad,
@@ -423,6 +423,15 @@ AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
 MODEL_NAME_LIST = [model_path.stem for model_path in AVAILABLE_MODELS]
 
 _MODEL_DIR_RESOLVED = MODEL_DIR.resolve()
+
+# The /study endpoints live in their own module. They need two things from here —
+# the current model list (to check the protocol's models are all present) and the
+# repo root (to serve the two HTML pages). Passed as callables rather than
+# imported, because MODEL_NAME_LIST is rebound whenever the model set changes,
+# and because study.py importing server.py would be a cycle.
+study.set_model_list_provider(lambda: MODEL_NAME_LIST)
+study.set_repo_root_provider(lambda: REPO_ROOT)
+app.register_blueprint(study.study_bp)
 
 
 def _is_builtin(model_path: Path) -> bool:
@@ -1339,6 +1348,8 @@ def home():
                 "/get_data": "GET - Optional cube/slider state",
                 "/render/dotpad-hex": "POST - Get render as DotPad hex string for Web SDK",
                 "/viewer": "GET - Serve the HTML viewer (required for DotPad Web SDK)",
+                "/study": "GET - Participant view for a study session; models load per protocol step",
+                "/study/control": "GET - Experimenter control panel (requires ?token=)",
                 "/session/me": "GET - Return current session metadata",
                 "/session/identify": "POST - Store email/consent for current session",
                 "/session/models": "GET - List uploaded models for current session",
@@ -1457,6 +1468,10 @@ def render_view():
                     }
                 )
                 cached_response["debug"] = debug
+                # Recorded on the cache path too: a cached response still put a
+                # new image under the participant's fingers, and dropping those
+                # would lose most of a fast arrow-key traversal from the record.
+                study.record_render_for_request(merged_params, model_stem=model_stem, cache_hit=True)
                 return jsonify(cached_response), 200
 
         response = _render_response(merged_params, source="http_render")
@@ -1469,6 +1484,7 @@ def render_view():
             }
         )
         response["debug"] = debug
+        study.record_render_for_request(merged_params, model_stem=model_stem, cache_hit=False)
 
         # A pan is not cacheable in either direction. "move left" means move from
         # wherever this window already was, and neither key carries that starting
@@ -2218,6 +2234,11 @@ def main() -> int:
         _log("Output mode: quiet (set SERVER_VERBOSE=1 for debug logs)", force=True)
 
     db.init_db()
+    # A separate database from the analytics one, so a study session that cannot
+    # be re-run is never at the mercy of a change to product telemetry.
+    study_db.init_db()
+    _log(f"Study database: {study_db.DB_PATH}", force=True)
+    _log("Study control panel: /study/control", force=True)
     initialize_default_braille_render()
     start_model_warmup()
     open_viewer_in_browser()

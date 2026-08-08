@@ -1044,3 +1044,53 @@ body.simple-ui #tactile-preview-section { display: block; }
     background: #1e6fa4;
     color: #fff;
 }
+
+/* ---------------------------------------------------------------------------
+   Study mode (/study).
+
+   The participant works in the ordinary viewer, so almost nothing is hidden:
+   the interface they were onboarded on has to be the interface they do the
+   tasks with, or the study measures the difference between the two.
+
+   Two things do go. The model chooser, because the model is decided by the
+   protocol step and a participant browsing to a later task's model would spoil
+   it, and the upload control, which has no meaning in a session. Both use
+   display:none rather than visibility, so they leave the accessibility tree
+   entirely instead of sitting in the tab order as invisible controls.
+   --------------------------------------------------------------------------- */
+body.study-ui section[aria-labelledby="model-list-heading"] { display: none; }
+
+.study-region {
+    border: 2px solid #1e6fa4;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    background: #f4f9fc;
+}
+.study-region h2 {
+    margin-top: 0;
+    /* Focus lands here on every step change; without a visible ring a sighted
+       facilitator watching over the participant's shoulder cannot tell the step
+       advanced. */
+    outline-offset: 2px;
+}
+.study-region .study-progress {
+    font-weight: 600;
+    margin: 4px 0;
+}
+.study-region .study-step-text {
+    margin: 8px 0;
+}
+
+@media (prefers-color-scheme: dark) {
+    .study-region {
+        background: #12222c;
+        border-color: #6cb6e0;
+    }
+}
+
+/* Windows High Contrast Mode drops the background and border colours above, so
+   the region would lose its boundary entirely. */
+@media (forced-colors: active) {
+    .study-region { border: 2px solid CanvasText; }
+}
