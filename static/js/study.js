@@ -56,7 +56,7 @@
     // sessionStorage so a reload, or the participant's screen reader restarting
     // the page, does not lose it.
     const KEY_STORAGE = 'cadA11yStudyKey';
-    const participantKey = (function () {
+    let participantKey = (function () {
         const fromUrl = (new URLSearchParams(location.search).get('s') || '').trim().toUpperCase();
         try {
             if (fromUrl) {
@@ -68,6 +68,20 @@
             return fromUrl;
         }
     })();
+
+    /** Bind this browser to a session the first time it reaches one without a
+     * key. A page that attached during a single-session run would otherwise hold
+     * no key at all, and when that session ended and the next began it would
+     * silently join the new one -- putting one participant's interactions into
+     * another participant's record. Once bound, it stays bound: a stale page is
+     * refused rather than re-homed. */
+    function rememberKey(key) {
+        if (!key || participantKey) return;
+        participantKey = key;
+        try {
+            sessionStorage.setItem(KEY_STORAGE, key);
+        } catch (_) { /* still bound for this page's lifetime */ }
+    }
 
     /** Append the session key to a study URL, when this browser has one. */
     function withKey(path) {
@@ -108,6 +122,10 @@
 
     function applyState(state) {
         if (!state) return;
+
+        // Bind before anything else, so the very first state this page sees is
+        // the one it stays with.
+        rememberKey(state.participant_key);
 
         const wasActive = sessionActive;
         sessionActive = Boolean(state.active);

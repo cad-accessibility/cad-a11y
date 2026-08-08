@@ -1050,3 +1050,131 @@ class TestUpgradingAnExistingDatabase:
         assert created["participant_key"]
         assert study_db.get_session_by_key(created["participant_key"])["participant_code"] == "P02"
         study_db._local.__dict__.clear()
+
+
+class TestNothingIsWrittenBetweenSessions:
+    """The boundary between one session and the next.
+
+    A participant's browser does not close when their session ends. It keeps
+    polling, keeps reporting keypresses, and keeps tagging renders. None of that
+    may reach the record -- not its own session's, and above all not the next
+    participant's.
+    """
+
+    def _run_and_end(self, client, code="AAA"):
+        state = _start(client, participant_code=code).get_json()["state"]
+        client.post(
+            f"/study/event?s={state['participant_key']}",
+            json={"event_type": "keyboard", "event_data": {"key": "during"}},
+        )
+        client.post(
+            "/study/session/end",
+            json={"study_session_id": state["study_session_id"]},
+            headers=_auth(),
+        )
+        return state
+
+    def _counts(self, session_id):
+        export = study_db.export_session(session_id)
+        return len(export["events"]), len(export["renders"])
+
+    def test_a_finished_session_stops_accepting_events(self, client):
+        state = self._run_and_end(client)
+        before = self._counts(state["study_session_id"])
+
+        response = client.post(
+            f"/study/event?s={state['participant_key']}",
+            json={"event_type": "keyboard", "event_data": {"key": "after-end"}},
+        )
+        assert response.get_json()["status"] == "ignored"
+        assert self._counts(state["study_session_id"]) == before
+
+    def test_a_finished_session_stops_accepting_renders(self, client):
+        state = self._run_and_end(client)
+        before = self._counts(state["study_session_id"])
+        with flask_app.test_request_context(
+            "/render", headers={"X-Study-Session": str(state["study_session_id"])}
+        ):
+            study_module.record_render_for_request({"depth": 50}, model_stem="mug", cache_hit=False)
+        assert self._counts(state["study_session_id"]) == before
+
+    def test_a_finished_session_stops_accepting_readiness(self, client):
+        state = self._run_and_end(client)
+        before = self._counts(state["study_session_id"])
+        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        assert self._counts(state["study_session_id"]) == before
+
+    def test_the_last_event_of_a_session_is_its_end(self, client):
+        state = self._run_and_end(client)
+        client.post(
+            f"/study/event?s={state['participant_key']}",
+            json={"event_type": "keyboard", "event_data": {"key": "after-end"}},
+        )
+        events = study_db.export_session(state["study_session_id"])["events"]
+        assert events[-1]["event_type"] == "session_end"
+
+    def test_a_stale_key_does_not_reach_the_next_session(self, client):
+        stale = self._run_and_end(client, code="AAA")
+        nxt = _start(client, participant_code="BBB").get_json()["state"]
+
+        client.post(
+            f"/study/event?s={stale['participant_key']}",
+            json={"event_type": "keyboard", "event_data": {"key": "stale"}},
+        )
+        keys = [
+            e["event_data"].get("key")
+            for e in study_db.export_session(nxt["study_session_id"])["events"]
+            if e["event_type"] == "keyboard"
+        ]
+        assert "stale" not in keys
+
+    def test_a_page_that_attached_without_a_key_is_given_one(self, client):
+        """The fix for the hole this class exists to close. A browser that
+        attached during a single-session run holds no key of its own, so when
+        that session ends and the next starts it would join the new one. The
+        state it receives carries the key, so it can bind itself."""
+        started = _start(client, participant_code="AAA").get_json()["state"]
+        payload = client.get("/study/state").get_json()  # no key, single session
+        assert payload["study_session_id"] == started["study_session_id"]
+        assert payload["participant_key"] == started["participant_key"], (
+            "a keyless participant must be told which session it reached, or it "
+            "cannot stay bound to it"
+        )
+
+    def test_a_bound_page_cannot_drift_onto_the_next_session(self, client):
+        """The whole boundary, end to end, the way a real tab behaves: attach
+        with no key, bind to what it is given, then keep sending after that
+        session ends and another starts."""
+        first = _start(client, participant_code="AAA").get_json()["state"]
+        bound_key = client.get("/study/state").get_json()["participant_key"]
+
+        client.post("/study/session/end",
+                    json={"study_session_id": first["study_session_id"]}, headers=_auth())
+        second = _start(client, participant_code="BBB").get_json()["state"]
+
+        # The stale tab now sends with the key it bound to, not bare.
+        response = client.post(
+            f"/study/event?s={bound_key}",
+            json={"event_type": "keyboard", "event_data": {"key": "from-the-old-tab"}},
+        )
+        assert response.get_json()["status"] == "ignored"
+
+        second_events = study_db.export_session(second["study_session_id"])["events"]
+        assert not [
+            e for e in second_events
+            if e["event_type"] == "keyboard"
+            and e["event_data"].get("key") == "from-the-old-tab"
+        ], "an old participant page leaked into the next participant's record"
+
+    def test_each_session_writes_only_its_own_participant_to_its_own_log(self, client):
+        first = self._run_and_end(client, code="AAA")
+        second = _start(client, participant_code="BBB").get_json()["state"]
+        client.post(
+            f"/study/event?s={second['participant_key']}",
+            json={"event_type": "keyboard", "event_data": {"key": "b"}},
+        )
+
+        for state, expected in ((first, "AAA"), (second, "BBB")):
+            path = study_db.get_study_session(state["study_session_id"])["log_path"]
+            codes = {json.loads(line)["participant_code"] for line in open(path, encoding="utf-8")}
+            assert codes == {expected}, f"{path} contains {codes}"

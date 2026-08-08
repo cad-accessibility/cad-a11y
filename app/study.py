@@ -459,6 +459,13 @@ def _participant_state(session: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "active": session.get("status") == "active",
         "study_session_id": session.get("id"),
+        # Handed back so a browser that attached without one can bind itself to
+        # this session and stay bound. Without that, a page opened during a
+        # single-session run holds no key, and when that session ends and the
+        # next begins it silently joins the new one -- logging one participant's
+        # keypresses into another participant's record. Not a secret: it
+        # identifies the session this participant is already in.
+        "participant_key": session.get("participant_key"),
         "status": session.get("status"),
         "step_index": _clamped_index(session, steps),
         "step_count": len(steps),
