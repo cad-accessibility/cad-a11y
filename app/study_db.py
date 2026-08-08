@@ -133,6 +133,14 @@ CREATE TABLE IF NOT EXISTS study_sessions (
     participant_code  TEXT NOT NULL,
     session_number    INTEGER NOT NULL DEFAULT 1,
     participant_key   TEXT,
+    -- 'paired': experimenter on their own machine, driving the steps from the
+    -- control panel. 'solo': one laptop between them, so the session moves on
+    -- when the participant says they are ready rather than waiting for a panel
+    -- nobody can reach without taking the screen reader off the participant.
+    --
+    -- A property of the session rather than of the URL, so a reload keeps it and
+    -- the log says which way the session was run.
+    mode              TEXT NOT NULL DEFAULT 'paired',
     task_order        TEXT NOT NULL,
     protocol_version  TEXT,
     step_index        INTEGER NOT NULL DEFAULT 0,
@@ -300,6 +308,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     # --- sessions and the two event tables: carry the numeric identity --------
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(study_sessions)")}
+    if columns and "mode" not in columns:
+        conn.execute("ALTER TABLE study_sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'paired'")
     if "participant_id" not in columns:
         conn.execute("ALTER TABLE study_sessions ADD COLUMN participant_id INTEGER")
         conn.execute(
@@ -628,6 +638,17 @@ def list_sessions(limit: int = 100) -> list[dict[str, Any]]:
         (limit,),
     ).fetchall()
     return [session for session in (_hydrate(row) for row in rows) if session]
+
+
+def set_mode(study_session_id: int, mode: str) -> None:
+    """Switch a session between running on two machines and running on one."""
+    with _write_lock:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE study_sessions SET mode = ? WHERE id = ?",
+            ("solo" if mode == "solo" else "paired", study_session_id),
+        )
+        conn.commit()
 
 
 def set_step_index(study_session_id: int, step_index: int) -> None:

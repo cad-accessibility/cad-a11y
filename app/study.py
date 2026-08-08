@@ -420,6 +420,7 @@ def _participant_state(session: dict[str, Any] | None) -> dict[str, Any]:
         "status": session.get("status"),
         "step_index": _clamped_index(session, steps),
         "step_count": len(steps),
+        "mode": session.get("mode"),
         "step_id": (step or {}).get("id"),
         "part_id": (step or {}).get("part_id"),
         "part_title": (step or {}).get("part_title"),
@@ -431,7 +432,7 @@ def _participant_state(session: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _experimenter_state(session: dict[str, Any] | None) -> dict[str, Any]:
-    """Everything, for the token-authenticated panel."""
+    """Everything, for the control panel."""
     protocol = study_protocol.load_protocol()
     # Advisory: what the next participant will most likely be called, and which
     # pairs they are due. The real code comes from the id the database assigns at
@@ -495,6 +496,7 @@ def _experimenter_state(session: dict[str, Any] | None) -> dict[str, Any]:
             "log_path": session.get("log_path"),
             # The link this session's participant opens. With several sessions
             # running, a plain /study cannot tell which one a browser belongs to.
+            "mode": session.get("mode"),
             "participant_key": session.get("participant_key"),
             "participant_path": (
                 f"/study?s={session['participant_key']}" if session.get("participant_key") else "/study"
@@ -745,6 +747,86 @@ def study_session_end():
     return jsonify({"status": "success"}), 200
 
 
+def _advance(session: dict[str, Any], target: int, *, source: str) -> dict[str, Any] | None:
+    """Move a session to a step, recording it. Shared by the panel's Next button
+    and by the participant's ready button in a single-device session, so both
+    produce exactly the same record -- how a session was driven must not change
+    what it logged."""
+    steps = _steps_for(session)
+    if not steps:
+        return None
+    current = _clamped_index(session, steps)
+    target = max(0, min(target, len(steps) - 1))
+
+    session_id = int(session["id"])
+    study_db.set_step_index(session_id, target)
+    step = steps[target]
+    study_db.record_event(
+        session_id,
+        "step_advance",
+        source=source,
+        event_data={
+            "from_index": current,
+            "from_step_id": steps[current]["id"],
+            "to_index": target,
+            "to_step_id": step["id"],
+        },
+        part_id=step.get("part_id"),
+        step_id=step.get("id"),
+        step_index=target,
+    )
+    if step.get("model"):
+        study_db.record_event(
+            session_id,
+            "model_autoload",
+            source="server",
+            event_data={
+                "model": (step.get("model") or {}).get("model"),
+                "pair_key": step.get("pair_key"),
+                "version": (step.get("model") or {}).get("version"),
+                "available": _model_index((step.get("model") or {}).get("model")) is not None,
+            },
+            part_id=step.get("part_id"),
+            step_id=step.get("id"),
+            step_index=target,
+        )
+    _ready_signals.pop(session_id, None)
+    return study_db.get_study_session(session_id)
+
+
+@study_bp.route("/study/session/mode", methods=["POST"])
+@require_token
+def study_session_mode():
+    """Switch a session between two machines and one.
+
+    In 'solo' the experimenter and the participant share a laptop, so the panel
+    is not reachable without taking the screen reader off the participant. The
+    session then moves on when the participant presses "I am ready to move on"
+    instead of waiting for a Next button nobody can get to.
+    """
+    try:
+        session = _resolve_experimenter_session()
+    except SessionAmbiguous as error:
+        return _ambiguous_response(error)
+    if not session:
+        return jsonify({"status": "error", "message": "No active session"}), 404
+
+    data = request.get_json(silent=True) or {}
+    mode = "solo" if str(data.get("mode")) == "solo" else "paired"
+    session_id = int(session["id"])
+    study_db.set_mode(session_id, mode)
+    study_db.record_event(
+        session_id,
+        "session_mode",
+        source="experimenter",
+        event_data={"mode": mode},
+        step_index=int(session.get("step_index") or 0),
+    )
+    refreshed = study_db.get_study_session(session_id)
+    _broadcast(refreshed)
+    return jsonify({"status": "success", "state": _experimenter_state(refreshed)}), 200
+
+
 @study_bp.route("/study/step/advance", methods=["POST"])
 @require_token
 def study_step_advance():
@@ -776,45 +858,9 @@ def study_step_advance():
         target = current - 1
     else:
         target = current + 1
-    target = max(0, min(target, len(steps) - 1))
-
-    session_id = int(session["id"])
-    study_db.set_step_index(session_id, target)
-    step = steps[target]
-    study_db.record_event(
-        session_id,
-        "step_advance",
-        source="experimenter",
-        event_data={
-            "from_index": current,
-            "from_step_id": steps[current]["id"],
-            "to_index": target,
-            "to_step_id": step["id"],
-        },
-        part_id=step.get("part_id"),
-        step_id=step.get("id"),
-        step_index=target,
-    )
-    if step.get("model"):
-        # Logged separately from the advance: "which model was on the display" is
-        # a question the analysis asks directly, and a step can be revisited.
-        study_db.record_event(
-            session_id,
-            "model_autoload",
-            source="server",
-            event_data={
-                "model": (step.get("model") or {}).get("model"),
-                "pair_key": step.get("pair_key"),
-                "version": (step.get("model") or {}).get("version"),
-                "available": _model_index((step.get("model") or {}).get("model")) is not None,
-            },
-            part_id=step.get("part_id"),
-            step_id=step.get("id"),
-            step_index=target,
-        )
-    # The readiness light belongs to the step it was raised on.
-    _ready_signals.pop(session_id, None)
-    refreshed = study_db.get_study_session(session_id)
+    refreshed = _advance(session, target, source="experimenter")
+    if refreshed is None:
+        return jsonify({"status": "error", "message": "Protocol has no steps"}), 500
     _broadcast(refreshed)
     return jsonify({"status": "success", "state": _experimenter_state(refreshed)}), 200
 
@@ -850,13 +896,25 @@ def study_step_ready():
         client_time=str(data.get("client_time") or "") or None,
         viewer_state=viewer_state if isinstance(viewer_state, dict) else None,
     )
+    if session.get("mode") == "solo":
+        # One laptop: the participant saying they are ready is the only signal
+        # available, so it is what moves the session on. The readiness event
+        # above is still recorded first, so the log reads the same as a session
+        # run from a panel -- the difference is who pressed the button, not what
+        # was written down.
+        steps = _steps_for(session)
+        current = _clamped_index(session, steps)
+        refreshed = _advance(session, current + 1, source="participant")
+        _broadcast(refreshed or session)
+        return jsonify({"status": "success", "advanced": True}), 200
+
     _ready_signals[session_id] = {
         "step_id": (step or {}).get("id"),
         "step_index": (step or {}).get("index"),
         "at": study_db.now(),
     }
     _push("experimenter", session_id, _experimenter_state(study_db.get_study_session(session_id)))
-    return jsonify({"status": "success"}), 200
+    return jsonify({"status": "success", "advanced": False}), 200
 
 
 # Events the participant's viewer may report. An allowlist, so a stray or

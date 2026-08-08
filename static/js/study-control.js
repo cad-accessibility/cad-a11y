@@ -398,6 +398,21 @@
         this.textContent = nowHidden ? 'Show strategy prompts' : 'Hide strategy prompts';
     });
 
+    el('run-here-btn')?.addEventListener('click', function () {
+        if (!window.confirm(
+            'Hand this window over to the participant?\n\n'
+            + 'The session will move to the next step when they press '
+            + '"I am ready to move on". You will not have the script on screen.'
+        )) return;
+        // The mode is set on the session, not carried in the URL, so a reload
+        // keeps it and the log records how the session was run.
+        api('/study/session/mode', { method: 'POST', body: JSON.stringify({ mode: 'solo' }) })
+            .then(function (body) {
+                location.href = `/study?s=${encodeURIComponent(body.state.participant_key)}`;
+            })
+            .catch(function (error) { announce(`Could not switch modes. ${error.message}`); });
+    });
+
     el('end-session-btn')?.addEventListener('click', function () {
         if (!window.confirm('End this session? The record is closed and cannot be reopened.')) return;
         api('/study/session/end', { method: 'POST', body: JSON.stringify({ status: 'completed' }) })

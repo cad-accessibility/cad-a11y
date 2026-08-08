@@ -1556,3 +1556,124 @@ class TestPanelAndParticipantAreToldApartWithoutAToken:
         assert open_client.get("/study/state").status_code == 200
         joined = open_client.get(f"/study/state?s={second['participant_key']}").get_json()
         assert joined["study_session_id"] == second["study_session_id"]
+
+
+class TestSingleDeviceMode:
+    """One laptop between the experimenter and the participant.
+
+    The panel is not reachable without taking the screen reader off someone
+    mid-exploration, so the session moves on when the participant presses "I am
+    ready to move on" instead of waiting for a Next button. Nothing else
+    changes: the page they see is the ordinary participant view, and the record
+    is the same one a two-machine session writes.
+    """
+
+    def _solo(self, client, **payload):
+        state = _start(client, **payload).get_json()["state"]
+        client.post(
+            "/study/session/mode",
+            json={"mode": "solo", "study_session_id": state["study_session_id"]},
+            headers=_auth(),
+        )
+        return state
+
+    def test_ready_advances_the_step(self, client):
+        state = self._solo(client)
+        before = study_db.get_study_session(state["study_session_id"])["step_index"]
+        response = client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        assert response.get_json()["advanced"] is True
+        after = study_db.get_study_session(state["study_session_id"])["step_index"]
+        assert after == before + 1
+
+    def test_ready_stays_advisory_on_two_machines(self, client):
+        """The default is unchanged: a stray press must not skip a step and lose
+        the exploration that was still in progress."""
+        state = _start(client).get_json()["state"]
+        before = study_db.get_study_session(state["study_session_id"])["step_index"]
+        response = client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        assert response.get_json()["advanced"] is False
+        assert study_db.get_study_session(state["study_session_id"])["step_index"] == before
+
+    def test_the_mode_survives_a_reload(self, client):
+        """It is a property of the session, not of the URL a browser happens to
+        be sitting on."""
+        state = self._solo(client)
+        assert study_db.get_study_session(state["study_session_id"])["mode"] == "solo"
+        payload = client.get(f"/study/state?s={state['participant_key']}").get_json()
+        assert payload["mode"] == "solo"
+
+    def test_the_participant_page_is_unchanged(self, client):
+        """Exactly /study. The mode changes what the ready button does, not what
+        is on screen -- and it must not start leaking the script or answer key
+        onto a page the participant's screen reader can read."""
+        solo = self._solo(client, participant_code="SOLO")
+        _advance_to(client, "task1.b.virtual")
+        payload = client.get(f"/study/state?s={solo['participant_key']}").get_json()
+
+        assert "script" not in payload
+        assert "pair" not in payload
+        assert "differences" not in json.dumps(payload)
+        # Same keys as an ordinary participant payload, plus the mode.
+        paired = _start(client, participant_code="PAIR").get_json()["state"]
+        ordinary = client.get(f"/study/state?s={paired['participant_key']}").get_json()
+        assert set(payload) == set(ordinary)
+
+    def test_the_record_is_the_same_as_a_two_machine_session(self, client):
+        """The point of this test: how a session was driven must not change what
+        it wrote down. Same event types, same order, same step context."""
+
+        def event_shape(session_id):
+            return [
+                (e["event_type"], e["step_id"], e["step_index"])
+                for e in study_db.export_session(session_id)["events"]
+            ]
+
+        # Two machines: the panel advances.
+        paired = _start(client, participant_code="PAIR").get_json()["state"]
+        client.post(f"/study/step/ready?s={paired['participant_key']}", json={})
+        client.post(
+            "/study/step/advance",
+            json={"direction": "next", "study_session_id": paired["study_session_id"]},
+            headers=_auth(),
+        )
+
+        # One machine: the ready button advances.
+        solo = self._solo(client, participant_code="SOLO")
+        client.post(f"/study/step/ready?s={solo['participant_key']}", json={})
+
+        paired_events = [e for e in event_shape(paired["study_session_id"])]
+        solo_events = [
+            e for e in event_shape(solo["study_session_id"]) if e[0] != "session_mode"
+        ]
+        assert solo_events == paired_events, (
+            f"solo wrote {solo_events}, a two-machine session wrote {paired_events}"
+        )
+
+    def test_the_advance_is_attributed_to_the_participant(self, client):
+        """They pressed the button, so the log should say so -- the only thing
+        that legitimately differs between the two modes."""
+        state = self._solo(client)
+        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        advances = [
+            e for e in study_db.export_session(state["study_session_id"])["events"]
+            if e["event_type"] == "step_advance"
+        ]
+        assert [e["source"] for e in advances] == ["participant"]
+
+    def test_switching_modes_is_recorded(self, client):
+        state = self._solo(client)
+        modes = [
+            e["event_data"]["mode"]
+            for e in study_db.export_session(state["study_session_id"])["events"]
+            if e["event_type"] == "session_mode"
+        ]
+        assert modes == ["solo"]
+
+    def test_ready_does_not_run_off_the_end_of_the_protocol(self, client):
+        state = self._solo(client)
+        steps = client.get(
+            f"/study/state?study_session_id={state['study_session_id']}", headers=_auth()
+        ).get_json()["step_count"]
+        for _ in range(steps + 5):
+            client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        assert study_db.get_study_session(state["study_session_id"])["step_index"] == steps - 1

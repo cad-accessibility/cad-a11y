@@ -68,6 +68,20 @@
                     <p id="participant-link" class="participant-link"></p>
                     <p class="help-text">and enter this code:</p>
                     <p id="participant-code" class="participant-code"></p>
+
+                    <!-- One laptop between the two of you. This window becomes the
+                         participant's, and the session moves on when they press
+                         "I am ready to move on" rather than waiting for a Next
+                         button that is no longer reachable. -->
+                    <div class="button-group">
+                        <button type="button" id="run-here-btn">Run the study on this device</button>
+                    </div>
+                    <p class="help-text">
+                        Use this if you only have one computer. This window becomes the
+                        participant's view, and the session moves to the next step when
+                        they press "I am ready to move on". Have the protocol to hand:
+                        the script is not shown there.
+                    </p>
                 </div>
 
                 <div id="missing-models-warning" class="warning-box" role="status" hidden></div>

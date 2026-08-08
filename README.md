@@ -176,6 +176,21 @@ The participant sees a practice round with the Lego brick, then two of the three
 model pairs, assigned by a Latin square so they stay balanced across
 participants. The panel shows the assignment.
 
+### If you only have one computer
+
+On the panel, **Run the study on this device**. That window becomes the
+participant's view — exactly `/study`, nothing added — and the session moves to
+the next step when they press "I am ready to move on" rather than waiting for a
+Next button you can no longer reach.
+
+Have the protocol to hand: the script is not shown there. Putting it on that page
+would put it where the participant's screen reader can read it, along with the
+answer key.
+
+Everything else is the same. The same events are recorded in the same order; the
+only difference in the log is that the step advances are attributed to the
+participant, because they are the one who pressed the button.
+
 ### One panel, one session
 
 A tab of `/study/control` owns exactly one session. Reloading stays on the same
