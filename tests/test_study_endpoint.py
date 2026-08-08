@@ -1677,3 +1677,117 @@ class TestSingleDeviceMode:
         for _ in range(steps + 5):
             client.post(f"/study/step/ready?s={state['participant_key']}", json={})
         assert study_db.get_study_session(state["study_session_id"])["step_index"] == steps - 1
+
+
+class TestTheEndOfASingleDeviceSession:
+    """The last step, with one laptop and no panel to close the session from.
+
+    Everything was already being recorded, but the session simply stopped: no
+    session_end, status left active, completed_at null, the database never
+    checkpointed -- and the page told the participant to keep exploring until an
+    experimenter moved them on.
+    """
+
+    def _solo_at_last_step(self, client):
+        state = _start(client).get_json()["state"]
+        session_id = state["study_session_id"]
+        client.post(
+            "/study/session/mode",
+            json={"mode": "solo", "study_session_id": session_id},
+            headers=_auth(),
+        )
+        steps = client.get(
+            f"/study/state?study_session_id={session_id}", headers=_auth()
+        ).get_json()["step_count"]
+        client.post(
+            "/study/step/advance",
+            json={"step_index": steps - 1, "study_session_id": session_id},
+            headers=_auth(),
+        )
+        return state, steps
+
+    def test_ready_on_the_last_step_ends_the_session(self, client):
+        state, _ = self._solo_at_last_step(client)
+        response = client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        assert response.get_json()["finished"] is True
+
+        session = study_db.get_study_session(state["study_session_id"])
+        assert session["status"] == "completed"
+        assert session["completed_at"] is not None
+
+    def test_the_end_is_recorded(self, client):
+        state, _ = self._solo_at_last_step(client)
+        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        events = study_db.export_session(state["study_session_id"])["events"]
+        ends = [e for e in events if e["event_type"] == "session_end"]
+        assert len(ends) == 1
+        assert ends[0]["source"] == "participant"
+        assert events[-1]["event_type"] == "session_end", "the end must be the last thing written"
+
+    def test_the_database_is_self_contained_afterwards(self, client, study_env):
+        """Ending checkpoints the WAL. A session that never ended left its rows
+        in study.db-wal, so copying study.db alone lost them."""
+        import shutil
+        import sqlite3
+
+        state, _ = self._solo_at_last_step(client)
+        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+
+        expected = len(study_db.export_session(state["study_session_id"])["events"])
+        alone = study_env / "copied-alone.db"
+        shutil.copy(study_db.DB_PATH, alone)
+        conn = sqlite3.connect(str(alone))
+        got = conn.execute("SELECT COUNT(*) FROM study_events").fetchone()[0]
+        conn.close()
+        assert got == expected
+
+    def test_nothing_is_recorded_after_the_end(self, client):
+        state, _ = self._solo_at_last_step(client)
+        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        before = len(study_db.export_session(state["study_session_id"])["events"])
+
+        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        client.post(
+            f"/study/event?s={state['participant_key']}", json={"event_type": "keyboard"}
+        )
+        assert len(study_db.export_session(state["study_session_id"])["events"]) == before
+
+    def test_the_participant_page_is_told_the_session_is_over(self, client):
+        state, _ = self._solo_at_last_step(client)
+        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        payload = client.get(f"/study/state?s={state['participant_key']}").get_json()
+        assert payload["active"] is False
+        assert payload["status"] == "completed"
+
+    def test_a_no_op_advance_is_not_recorded(self, client):
+        """Next on the last step, or Previous on the first, moves nothing. An
+        advance from a step to itself in the log is a move that never happened,
+        and "how many steps did this session take" would count it."""
+        state = _start(client).get_json()["state"]
+        session_id = state["study_session_id"]
+        before = len(study_db.export_session(session_id)["events"])
+
+        client.post(
+            "/study/step/advance",
+            json={"direction": "previous", "study_session_id": session_id},
+            headers=_auth(),
+        )
+        assert len(study_db.export_session(session_id)["events"]) == before
+
+    def test_two_machine_sessions_still_end_from_the_panel(self, client):
+        """Only the single-device case ends itself. With two machines the
+        experimenter closes the session, and a ready press must not do it."""
+        state = _start(client).get_json()["state"]
+        session_id = state["study_session_id"]
+        steps = client.get(
+            f"/study/state?study_session_id={session_id}", headers=_auth()
+        ).get_json()["step_count"]
+        client.post(
+            "/study/step/advance",
+            json={"step_index": steps - 1, "study_session_id": session_id},
+            headers=_auth(),
+        )
+
+        response = client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        assert response.get_json()["finished"] is False
+        assert study_db.get_study_session(session_id)["status"] == "active"

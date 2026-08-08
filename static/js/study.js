@@ -272,13 +272,27 @@
                     participant_key: participantKey || undefined,
                 }),
             }).then(function (res) {
-                // Confirm in a status region rather than a live alert: this is a
-                // deliberate action whose result the participant is waiting for,
-                // and it must not interrupt braille reading.
-                if (readyStatus) {
-                    readyStatus.textContent = res.ok
-                        ? 'Your experimenter has been told you are ready. Keep exploring until they move on.'
-                        : 'Could not send that. Please tell your experimenter you are ready.';
+                return res.ok ? res.json().catch(function () { return {}; }) : null;
+            }).then(function (body) {
+                // Say what actually happened. The message used to be the same
+                // either way, so in a single-device session -- where the button
+                // does move the session on -- it told the participant to keep
+                // exploring until an experimenter moved them, and on the last
+                // step it said that while nothing at all had happened.
+                if (!readyStatus) return;
+                if (!body) {
+                    readyStatus.textContent =
+                        'Could not send that. Please tell your experimenter you are ready.';
+                } else if (body.finished) {
+                    readyStatus.textContent = 'That is the end of the session. Thank you.';
+                } else if (body.advanced) {
+                    // The heading changes and focus moves to it, which is the
+                    // confirmation; a second message would be read out on top.
+                    readyStatus.textContent = '';
+                } else {
+                    readyStatus.textContent =
+                        'Your experimenter has been told you are ready. '
+                        + 'Keep exploring until they move on.';
                 }
             }).catch(function () {
                 if (readyStatus) {

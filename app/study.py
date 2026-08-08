@@ -283,6 +283,19 @@ def _resolve_participant_session() -> dict[str, Any] | None:
     return session if session and session.get("status") == "active" else None
 
 
+def _participant_session_for_display() -> dict[str, Any] | None:
+    """The session this browser is bound to, whatever state it is in.
+
+    The strict resolver above returns nothing once a session ends, which is right
+    for logging -- a finished session accepts no more events. But the page needs
+    to tell "your session is over" apart from "that code matched nothing", and
+    with only the strict answer it showed the code prompt again to a participant
+    who had just finished.
+    """
+    key = _participant_key()
+    return study_db.get_session_by_key(key) if key else None
+
+
 def _resolve_experimenter_session() -> dict[str, Any] | None:
     """The session a control panel is driving. Raises if ambiguous."""
     raw = (
@@ -637,7 +650,7 @@ def study_state():
     try:
         if _is_panel_request():
             return jsonify(_experimenter_state(_resolve_experimenter_session())), 200
-        return jsonify(_participant_state(_resolve_participant_session())), 200
+        return jsonify(_participant_state(_participant_session_for_display())), 200
     except SessionAmbiguous as error:
         return _ambiguous_response(error)
 
@@ -759,6 +772,11 @@ def _advance(session: dict[str, Any], target: int, *, source: str) -> dict[str, 
     target = max(0, min(target, len(steps) - 1))
 
     session_id = int(session["id"])
+    if target == current:
+        # Nothing moved -- Next on the last step, Previous on the first. Recording
+        # an advance from a step to itself puts a move in the log that never
+        # happened, and "how many steps did this session take" then counts it.
+        return study_db.get_study_session(session_id)
     study_db.set_step_index(session_id, target)
     step = steps[target]
     study_db.record_event(
@@ -904,9 +922,30 @@ def study_step_ready():
         # was written down.
         steps = _steps_for(session)
         current = _clamped_index(session, steps)
+
+        if current >= len(steps) - 1:
+            # The last step, and no panel to close the session from. Without
+            # this the session simply stopped: everything was recorded, but it
+            # stayed open with no session_end and no completed_at, and the page
+            # told the participant to keep exploring until an experimenter moved
+            # them on.
+            study_db.record_event(
+                session_id,
+                "session_end",
+                source="participant",
+                event_data={"status": "completed", "reason": "finished the last step"},
+                part_id=(step or {}).get("part_id"),
+                step_id=(step or {}).get("id"),
+                step_index=current,
+            )
+            study_db.complete_session(session_id, status="completed")
+            _ready_signals.pop(session_id, None)
+            _broadcast(study_db.get_study_session(session_id))
+            return jsonify({"status": "success", "advanced": False, "finished": True}), 200
+
         refreshed = _advance(session, current + 1, source="participant")
         _broadcast(refreshed or session)
-        return jsonify({"status": "success", "advanced": True}), 200
+        return jsonify({"status": "success", "advanced": True, "finished": False}), 200
 
     _ready_signals[session_id] = {
         "step_id": (step or {}).get("id"),
@@ -914,7 +953,7 @@ def study_step_ready():
         "at": study_db.now(),
     }
     _push("experimenter", session_id, _experimenter_state(study_db.get_study_session(session_id)))
-    return jsonify({"status": "success", "advanced": False}), 200
+    return jsonify({"status": "success", "advanced": False, "finished": False}), 200
 
 
 # Events the participant's viewer may report. An allowlist, so a stray or
