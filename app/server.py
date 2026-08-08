@@ -657,15 +657,24 @@ def start_model_warmup() -> None:
     threading.Thread(target=_warmup_worker, name="cad-model-warmup", daemon=True).start()
     with models_lock:
         models = list(AVAILABLE_MODELS)
-    for model_path in models:
-        enqueue_model_for_warmup(model_path)
+
+    # A fixed cache size smaller than the model count would otherwise have
+    # warmup evict its own earlier work before anyone's even hit the server —
+    # raising it here, once, at startup, so warming every model at boot
+    # actually keeps every model warm. Applies only to what's on disk at
+    # startup; a later upload that pushes the count higher still can trigger
+    # ordinary LRU eviction, same as before this existed.
+    global RENDERER_CACHE_MAX
     if len(models) > RENDERER_CACHE_MAX:
         _log(
-            f"Warming {len(models)} models but RENDERER_CACHE_MAX is "
-            f"{RENDERER_CACHE_MAX}: the renderer cache will start evicting models "
-            f"it just warmed. Raise RENDERER_CACHE_MAX to at least the model count.",
+            f"Raising RENDERER_CACHE_MAX from {RENDERER_CACHE_MAX} to {len(models)} "
+            "so warming every model at startup doesn't evict its own work.",
             force=True,
         )
+        RENDERER_CACHE_MAX = len(models)
+
+    for model_path in models:
+        enqueue_model_for_warmup(model_path)
     _log(f"Warming {len(models)} model(s) in the background", force=True)
 
 
@@ -1378,11 +1387,21 @@ def health():
 
     # Cached: this endpoint is unauthenticated by design and polled every 30s by
     # the container healthcheck, and each probe writes and unlinks a file.
+    #
+    # "logs" checks BRAILLE_LOG_PATH.parent — the directory the app actually
+    # resolved to and is using — not the hardcoded STUDY_LOG_DIR. The two can
+    # differ: _resolve_braille_log_path() already falls back to /tmp/cad-a11y/logs
+    # on a host where data/logs is not writable by the app user (root-owned bind
+    # mount, non-root container user, redeploy resets ownership, etc.), the same
+    # class of problem UPLOAD_DIR's own resolution (_resolve_upload_dir) already
+    # handles for uploads. Checking the un-resolved path here reported a
+    # deployment as unhealthy for a condition the app itself had already
+    # recovered from.
     writable = {
         "models": _is_writable_directory_cached(MODEL_DIR),
         "uploads": _is_writable_directory_cached(UPLOAD_DIR),
         "renders": _is_writable_directory_cached(RENDERS_DIR),
-        "logs": _is_writable_directory_cached(STUDY_LOG_DIR),
+        "logs": _is_writable_directory_cached(BRAILLE_LOG_PATH.parent),
     }
 
     # Opening the file is the thing that failed in the 2026-07-22 outage, and it

@@ -246,6 +246,30 @@ def test_health_degrades_when_storage_collapses(client, monkeypatch):
     assert payload["checks"]["storage_separated"] is False
 
 
+def test_health_checks_the_log_path_actually_in_use_not_the_default(client, monkeypatch, tmp_path):
+    """A host where data/logs is not writable by the app user is exactly what
+    _resolve_braille_log_path() already falls back for (root-owned bind mount,
+    non-root container user, redeploy resets ownership, etc.) — the same class
+    of problem UPLOAD_DIR's own resolution handles for uploads. /health used to
+    check the un-resolved STUDY_LOG_DIR directly, so a deployment that had
+    already recovered via the fallback was still reported unhealthy (503),
+    failing the container healthcheck and the deploy gate for a condition that
+    was not actually a problem.
+    """
+    import app.server as server
+
+    unwritable = tmp_path / "not-a-real-dir" / "data" / "logs"
+    fallback = tmp_path / "tmp-cad-a11y" / "logs"
+    fallback.mkdir(parents=True)
+    monkeypatch.setattr(server, "STUDY_LOG_DIR", unwritable)
+    monkeypatch.setattr(server, "BRAILLE_LOG_PATH", fallback / "braille_send_events.jsonl")
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.get_json()["checks"]["writable"]["logs"] is True
+
+
 def test_health_degrades_when_the_database_cannot_be_opened(client, monkeypatch, tmp_path):
     """The 2026-07-22 outage was the app being unable to open its database."""
     import app.db as db_module
