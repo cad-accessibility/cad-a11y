@@ -339,7 +339,7 @@ RENDERER_CACHE_MAX = int(os.getenv("RENDERER_CACHE_MAX", "24"))
 # library may never be opened in a given deployment's lifetime. Uploads still
 # enqueue for warmup immediately via enqueue_model_for_warmup, independent of
 # this limit — it only bounds what start_model_warmup() does at boot.
-STARTUP_WARMUP_LIMIT = int(os.getenv("STARTUP_WARMUP_LIMIT", "1"))
+STARTUP_WARMUP_LIMIT = max(0, int(os.getenv("STARTUP_WARMUP_LIMIT", "1")))
 renderers_by_model: OrderedDict[str, CADComparisonRenderer] = OrderedDict()
 models_lock = threading.Lock()
 # Serialize all engine.render() calls, because matplotlib is not thread-safe:
