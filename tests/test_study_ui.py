@@ -265,10 +265,45 @@ class TestControlPanelAccessibility:
                 f"section {el['id']} is an unlabelled landmark"
             )
 
-    def test_disclosure_button_declares_its_state(self):
-        toggle = _by_id(CONTROL_HTML)["toggle-strategy-btn"]
-        assert toggle["attrs"].get("aria-expanded") == "false"
-        assert toggle["attrs"].get("aria-controls") == "strategy-prompts-block"
+    def test_the_four_dialogs_share_the_viewers_info_dialog_pattern(self):
+        """Current Step (C), Strategy Prompts (S), Jump to Step (J) and Help (H
+        or ?) all follow the same accessible-dialog pattern established for the
+        participant viewer's Help/About/Settings dialogs: native <dialog>, the
+        shared .info-dialog chrome, and a heading that takes focus on open
+        rather than the first interactive control (ARIA APG dialog pattern)."""
+        by_id = _by_id(CONTROL_HTML)
+        for dialog_id, heading_id in (
+            ("current-step-dialog", "current-step-heading"),
+            ("strategy-dialog", "strategy-heading"),
+            ("jump-dialog", "jump-heading"),
+            ("help-dialog", "help-heading"),
+        ):
+            dialog = by_id.get(dialog_id)
+            assert dialog is not None, f"expected a #{dialog_id}"
+            assert dialog["tag"] == "dialog"
+            assert "info-dialog" in dialog["attrs"].get("class", "")
+            assert dialog["attrs"].get("aria-modal") == "true"
+
+            heading = by_id.get(heading_id)
+            assert heading is not None, f"expected a #{heading_id}"
+            assert heading["attrs"].get("tabindex") == "-1"
+
+    def test_shared_dialog_controller_is_used_for_all_four_dialogs(self):
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "function makeInfoDialogController(" in js
+        for dialog_id, heading_id in (
+            ("current-step-dialog", "current-step-heading"),
+            ("strategy-dialog", "strategy-heading"),
+            ("jump-dialog", "jump-heading"),
+            ("help-dialog", "help-heading"),
+        ):
+            assert f"makeInfoDialogController(el('{dialog_id}'), el('{heading_id}'))" in js
+
+    def test_help_dialog_documents_every_command(self):
+        html = CONTROL_HTML.read_text(encoding="utf-8")
+        help_block = html[html.index('id="help-dialog"'):html.index("</dialog>", html.index('id="help-dialog"'))]
+        for key in ("C", "S", "J", "N", "B", "R", "E"):
+            assert f"<kbd>{key}</kbd>" in help_block, f"help dialog does not document {key}"
 
     def test_current_step_heading_can_receive_focus(self):
         """Focus moves here on every advance, so a screen reader user lands on the
@@ -328,11 +363,55 @@ class TestControlPanelBehaviour:
         assert "cadA11yStudyPanelSession" in js
 
     def test_the_panel_shows_the_code_to_read_out(self):
+        """The home screen is just the identity dl (#180); the join code lives
+        there as its own row rather than in a separate block."""
         html = CONTROL_HTML.read_text(encoding="utf-8")
-        assert 'id="participant-code"' in html
-        assert "Read this to your participant" in html
+        assert 'id="summary-code"' in html
+        assert "Study code" in html
         js = CONTROL_JS.read_text(encoding="utf-8")
         assert "state.participant_key" in js
+
+    def test_the_home_screen_is_just_the_identity_summary(self):
+        """Everything else moved behind a keyboard command; the always-visible
+        content in the active session is the dl and nothing more."""
+        html = CONTROL_HTML.read_text(encoding="utf-8")
+        session_section = html[html.index('id="session-section"'):html.index("</section>", html.index('id="session-section"'))]
+        assert "<dl" in session_section
+        assert "<dialog" not in session_section, "a dialog should not be nested inside the section"
+        for removed in ("toggle-strategy-btn", "step-jump", "confirm-advance", "participant-link-block"):
+            assert removed not in session_section, f"#{removed} should have moved out of the home screen"
+
+    def test_nav_has_the_five_study_commands(self):
+        by_id = _by_id(CONTROL_HTML)
+        for button_id in (
+            "run-here-btn", "previous-step-btn", "next-step-btn", "help-btn", "end-session-btn",
+        ):
+            assert by_id.get(button_id) is not None, f"expected a #{button_id} in the nav"
+            assert by_id[button_id]["tag"] == "button"
+
+    def test_session_dependent_nav_buttons_start_hidden(self):
+        """Run/Back/Next/End need an active session; Help does not."""
+        by_id = _by_id(CONTROL_HTML)
+        for button_id in ("run-here-btn", "previous-step-btn", "next-step-btn", "end-session-btn"):
+            assert "hidden" in by_id[button_id]["attrs"], f"#{button_id} should start hidden"
+        assert "hidden" not in by_id["help-btn"]["attrs"]
+
+    def test_keyboard_commands_map_to_the_documented_keys(self):
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "currentStepDialogController.open();" in js
+        assert "strategyDialogController.open();" in js
+        assert "jumpDialogController.open();" in js
+        assert "helpDialogController.open();" in js
+        assert "advance({ direction: 'next' });" in js
+        assert "advance({ direction: 'previous' });" in js
+        assert "el('run-here-btn')?.click();" in js
+        assert "el('end-session-btn')?.click();" in js
+
+    def test_keyboard_commands_are_ignored_while_a_dialog_is_open(self):
+        """Same guard as the participant viewer: a modal dialog makes the rest
+        of the page inert, so Escape and Tab must stay scoped to it."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "if (document.querySelector('dialog[open]')) return;" in js
 
     def test_logging_health_is_reported_in_words(self):
         """A degraded log must not be conveyed by colour alone."""
@@ -425,10 +504,23 @@ class TestFocusIsMovedOnlyByWhoeverCausedTheChange:
             "with no focus move, the live region is the only thing announcing the step"
         )
 
-    def test_the_panel_moves_focus_to_the_new_step(self):
+    def test_advancing_does_not_open_a_popup_or_steal_focus(self):
+        """N/B/J move steps without a popup: the experimenter's focus and
+        whatever they're doing on screen must be left alone."""
         js = CONTROL_JS.read_text(encoding="utf-8")
-        assert "target.focus();" in js
-        assert _by_id(CONTROL_HTML)["current-step-heading"]["attrs"].get("tabindex") == "-1"
+        start = js.index("function advance(")
+        body = js[start:js.index("\n    }\n", start)]
+        assert "focus(" not in body
+        assert "confirm(" not in body
+
+    def test_opening_a_dialog_moves_focus_to_its_own_heading(self):
+        """Same ARIA APG pattern as the viewer's Help/About/Settings dialogs:
+        a read-only dialog focuses its own heading, not the first control."""
+        by_id = _by_id(CONTROL_HTML)
+        for heading_id in ("current-step-heading", "strategy-heading", "jump-heading", "help-heading"):
+            heading = by_id.get(heading_id)
+            assert heading is not None, f"expected a #{heading_id}"
+            assert heading["attrs"].get("tabindex") == "-1"
 
     def test_focus_is_never_deferred_to_an_animation_frame(self):
         """requestAnimationFrame does not run in a background tab. The move
