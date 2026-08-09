@@ -969,6 +969,36 @@ def study_step_ready():
     return jsonify({"status": "success", "advanced": False, "finished": False}), 200
 
 
+@study_bp.route("/study/step/back", methods=["POST"])
+def study_step_back():
+    """The participant's own "go back a step" command, solo sessions only.
+
+    In solo mode there is no separate panel to press Previous on, so the same
+    exception /study/step/ready already makes for moving forward applies here:
+    the person driving this browser is the only person running the session. A
+    paired session refuses this -- the token gate on /study/step/advance exists
+    precisely so a participant cannot rewind the protocol themselves, and that
+    must hold here too even though this route carries no token at all.
+    """
+    try:
+        session = _resolve_participant_session()
+    except SessionAmbiguous as error:
+        return _ambiguous_response(error)
+    if not session or session.get("mode") != "solo":
+        return jsonify({"status": "error", "message": "No active solo session"}), 404
+
+    steps = _steps_for(session)
+    if not steps:
+        return jsonify({"status": "error", "message": "Protocol has no steps"}), 500
+
+    current = _clamped_index(session, steps)
+    refreshed = _advance(session, current - 1, source="participant")
+    if refreshed is None:
+        return jsonify({"status": "error", "message": "Protocol has no steps"}), 500
+    _broadcast(refreshed)
+    return jsonify({"status": "success", "moved": current > 0}), 200
+
+
 # Events the participant's viewer may report. An allowlist, so a stray or
 # malicious client cannot fill the study database with arbitrary event types.
 _ALLOWED_PARTICIPANT_EVENTS = frozenset(

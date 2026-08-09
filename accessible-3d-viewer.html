@@ -118,8 +118,15 @@
                 protocol is trying to avoid measuring.
             -->
             <section id="study-region" class="study-region" aria-labelledby="study-step-heading" hidden>
-                <h2 id="study-step-heading" tabindex="-1" aria-live="polite">Waiting for the session to start</h2>
-                <p id="study-step-progress" role="status" class="study-progress">
+                <!-- Neither this heading nor the progress line below is a live
+                     region any more: a step change is announced once, as a
+                     single combined utterance, via the shared
+                     announcement-window-polite (see stepAnnouncement() in
+                     study.js). Both used to announce independently too, which
+                     read the title, then the step count, then the combined
+                     announcement again -- the same content three times over. -->
+                <h2 id="study-step-heading" tabindex="-1">Waiting for the session to start</h2>
+                <p id="study-step-progress" class="study-progress">
                     <span id="study-step-progress-text">Not started</span>
                 </p>
                 <p id="study-step-text" class="study-step-text">
@@ -456,10 +463,21 @@
         id="shortcuts-dialog"
         class="info-dialog"
         aria-labelledby="shortcuts-heading"
-        aria-modal="true"
     >
         <h2 id="shortcuts-heading" tabindex="-1">Keyboard Shortcuts</h2>
         <p class="help-text">Press <kbd>Esc</kbd> or activate Close to return to where you were.</p>
+
+        <!-- Only meaningful at /study; hidden elsewhere and revealed by
+             study.js the same way #study-region itself is (#180). Placed
+             first since it's the most relevant reference during a session. -->
+        <div id="study-shortcuts-section" hidden>
+            <h3>Study Session</h3>
+            <ul class="shortcuts-list">
+                <li><kbd>N</kbd> Tell your experimenter you're ready to move on (or, if you're running this session solo, move to the next step directly)</li>
+                <li><kbd>B</kbd> Move back a step (only when running solo, without a separate experimenter)</li>
+                <li><kbd>C</kbd> Repeat the current step's title and instructions</li>
+            </ul>
+        </div>
 
         <h3>Orientation</h3>
         <ul class="shortcuts-list">
@@ -530,7 +548,6 @@
         id="about-dialog"
         class="info-dialog"
         aria-labelledby="about-heading"
-        aria-modal="true"
     >
         <h2 id="about-heading" tabindex="-1">About</h2>
         <p>
@@ -552,7 +569,6 @@
         id="settings-dialog"
         class="info-dialog"
         aria-labelledby="settings-heading"
-        aria-modal="true"
     >
         <h2 id="settings-heading" tabindex="-1">Settings</h2>
         <p class="help-text">
@@ -628,7 +644,6 @@
         id="session-consent-dialog"
         aria-labelledby="consent-dialog-title"
         aria-describedby="consent-dialog-desc"
-        aria-modal="true"
     >
         <h2 id="consent-dialog-title">Welcome to CAD A11y</h2>
         <p id="consent-dialog-desc">
@@ -752,7 +767,7 @@
             if (emailInput) emailInput.addEventListener('input', clearError);
 
             // Hide the background from screen readers while the dialog is open. This backs up
-            // the native modal inertness (showModal + aria-modal="true") for older assistive tech.
+            // the native modal inertness showModal() already provides for older assistive tech.
             function restoreBackground() {
                 if (main) main.removeAttribute('aria-hidden');
             }

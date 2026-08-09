@@ -306,7 +306,7 @@ async function sendStateToServer() {
         const activeModelLoadTask = modelLoadAnnouncement
             ? { ...modelLoadAnnouncement }
             : null;
-        if (activeModelLoadTask) {
+        if (activeModelLoadTask && activeModelLoadTask.source !== 'study') {
             announce(`${activeModelLoadTask.label}: generating render.`);
         }
         pendingInputSource = 'keyboard'; // reset to default after consuming
@@ -354,7 +354,9 @@ async function sendStateToServer() {
                 if (isActiveModelLoadTask(activeModelLoadTask)) {
                     // One announcement per event: two calls in the same tick would
                     // land in the two swap slots and the first would be blanked
-                    // before AT reads it.
+                    // before AT reads it. Silent for a study load  -- the
+                    // one consolidated step announcement already covers it, and
+                    // the task still needs clearing either way.
                     announce(`${activeModelLoadTask.label} loaded. Tactile preview ready.`);
                     clearModelLoadTask(activeModelLoadTask);
                 }
@@ -589,7 +591,11 @@ function beginModelLoadAnnouncement(modelLabel, source = 'selection') {
         label,
         source,
     };
-    announce(`${label} processing started.`);
+    // Task tracking (isActiveModelLoadTask below) still applies to a study
+    // load -- silencing it here is only about not also speaking progress
+    // chatter on top of the one consolidated step announcement (#180)
+    // study.js already makes for this same model change.
+    if (source !== 'study') announce(`${label} processing started.`);
 }
 
 function isActiveModelLoadTask(task) {
@@ -750,8 +756,10 @@ function applyRelativeRotation(rotationName, emit = announceAlert) {
 
     }
 
-    const message = `${rotation.speech}, ${orientationMessage}. ${depthMessage}`;
-    const messageShort = `${orientationMessage}. ${depthMessage}`;
+    //const message = `${rotation.speech}, ${orientationMessage}. ${depthMessage}`;
+    const message = `${rotation.speech} ${depthMessage}`;
+    //const messageShort = `${orientationMessage}. ${depthMessage}`;
+    const messageShort = `${rotation.speech}`;
     announceParameterValue(rotationName, message, messageShort, emit);
 }
 
@@ -2660,6 +2668,14 @@ window.cadStudy = {
     snapshot: viewerStateSnapshot,
     // study.js subscribes; kept as a list so nothing here needs to know about it.
     onInteraction: [],
+    // The real polite-announcement pipeline (status bar refresh, tactile/
+    // braille display forwarding, the shared announcement-window-polite live
+    // region -- see EXPECTED_LIVE_ELEMENTS in test_live_regions.py), so a step
+    // change reaches a connected display too, not just an on-screen region,
+    // and reads as one coherent utterance instead of three separately-timed
+    // live regions (heading, step counter, and a step-text paragraph that was
+    // not a live region at all).
+    announcePolite: announce,
 };
 
 /** Report an interaction to study.js, if study mode is running. Deliberately

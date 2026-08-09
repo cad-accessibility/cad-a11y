@@ -7,11 +7,14 @@
  *
  * The home screen is deliberately just an identity summary (dl.session-summary).
  * Everything else is a keyboard command: C shows the current step, S shows
- * strategy prompts, J jumps to a step, H or ? lists every command, and N/B/R/E
- * move through or end the session directly, without opening anything. Each
- * dialog follows the same accessible pattern as the participant viewer's Help/
- * About/Settings dialogs (native <dialog> + showModal(), heading focus on
- * open, Esc/backdrop to close) via makeInfoDialogController below.
+ * strategy prompts, J jumps to a step, H or ? lists every command. N (next)
+ * and B or P (back/previous) move the session on and then open the Current
+ * Step dialog, so the new step's script is on screen immediately rather than
+ * a separate C press away. R runs the study on this device; E ends the
+ * session. Each dialog follows the same accessible pattern as the participant
+ * viewer's Help/About/Settings dialogs (native <dialog> + showModal(),
+ * heading focus on open, Esc/backdrop to close) via makeInfoDialogController
+ * below.
  *
  * Accessibility is not optional here. Experimenters on this project include
  * screen reader users, so every change of state reaches a live region, the
@@ -238,7 +241,8 @@
         return { open, close };
     }
 
-    const currentStepDialogController = makeInfoDialogController(el('current-step-dialog'), el('current-step-heading'));
+    const currentStepDialog = el('current-step-dialog');
+    const currentStepDialogController = makeInfoDialogController(currentStepDialog, el('current-step-heading'));
     const strategyDialogController = makeInfoDialogController(el('strategy-dialog'), el('strategy-heading'));
     const jumpDialogController = makeInfoDialogController(el('jump-dialog'), el('jump-heading'));
     const helpDialogController = makeInfoDialogController(el('help-dialog'), el('help-heading'));
@@ -467,9 +471,10 @@
         });
     }
 
-    /** Move to another step. No confirmation: N/B/J act immediately, without a
-     * popup, on the theory that opening the Jump dialog (or pressing N/B) is
-     * already the deliberate action. */
+    /** Move to another step. No confirmation: N/B/P/J act immediately, on the
+     * theory that pressing N/B/P or picking a step in the Jump dialog is
+     * already the deliberate action. Callers that want the Current Step
+     * dialog to follow the move do that themselves after calling this. */
     function advance(payload) {
         api('/study/step/advance', { method: 'POST', body: JSON.stringify(payload) })
             .then(function (body) { applyState(body.state); })
@@ -478,9 +483,11 @@
 
     el('next-step-btn')?.addEventListener('click', function () {
         advance({ direction: 'next' });
+        currentStepDialogController.open();
     });
     el('previous-step-btn')?.addEventListener('click', function () {
         advance({ direction: 'previous' });
+        currentStepDialogController.open();
     });
 
     el('run-here-btn')?.addEventListener('click', function () {
@@ -510,10 +517,14 @@
 
     // -----------------------------------------------------------------------
     // Keyboard commands — C (current step), S (strategy prompts), J (jump to a
-    // step), N (next), B (back/previous), R (run study here), E (end session),
-    // H or ? (this list). Mirrors the participant viewer's global shortcut
-    // guard: not while typing in a field, and not while a dialog already owns
-    // focus (Escape and Tab must stay scoped to it).
+    // step), N (next), B or P (back/previous), R (run study here), E (end
+    // session), H or ? (this list). Mirrors the participant viewer's global
+    // shortcut guard: not while typing in a field, and not while a dialog
+    // already owns focus (Escape and Tab must stay scoped to it) -- except N/
+    // B/P, which work even with a dialog open. Advancing is exactly the
+    // action that makes whatever dialog is currently showing stale, so rather
+    // than being blocked, N/B/P replace it with the Current Step dialog for
+    // the step just moved to.
     // -----------------------------------------------------------------------
 
     document.addEventListener('keydown', function (e) {
@@ -524,13 +535,15 @@
         );
         if (isTextEntryTarget) return;
 
-        if (document.querySelector('dialog[open]')) return;
-
         // Leave browser/app shortcuts untouched (Cmd/Ctrl/Alt combos).
         if (e.metaKey || e.ctrlKey || e.altKey) return;
 
         const rawKey = String(e.key || '');
         const key = rawKey.toLowerCase();
+        const isStepMoveKey = key === 'n' || key === 'b' || key === 'p';
+
+        const openDialog = document.querySelector('dialog[open]');
+        if (openDialog && !isStepMoveKey) return;
 
         if (key === 'h' || rawKey === '?') {
             e.preventDefault();
@@ -542,6 +555,18 @@
         // move through before one exists, and the nav buttons for these are
         // hidden until then too.
         if (sessionSection.hidden) return;
+
+        if (isStepMoveKey) {
+            e.preventDefault();
+            // Close whatever else is open first -- Current Step is the "next
+            // appropriate dialogue" for a step change, not an additional one
+            // stacked on top. Already-open Current Step is left alone; its
+            // content refreshes in place once the advance's state comes back.
+            if (openDialog && openDialog !== currentStepDialog) openDialog.close();
+            advance({ direction: key === 'n' ? 'next' : 'previous' });
+            currentStepDialogController.open();
+            return;
+        }
 
         switch (key) {
             case 'c':
@@ -555,14 +580,6 @@
             case 'j':
                 e.preventDefault();
                 jumpDialogController.open();
-                break;
-            case 'n':
-                e.preventDefault();
-                advance({ direction: 'next' });
-                break;
-            case 'b':
-                e.preventDefault();
-                advance({ direction: 'previous' });
                 break;
             case 'r':
                 e.preventDefault();
@@ -675,8 +692,7 @@
     api('/study/config').then(function (body) {
         config = body;
         el('protocol-version').textContent =
-            `Protocol version ${config.version}. Each participant explores a practice `
-            + `Lego brick, then ${config.tasks_per_session} of the three model pairs.`;
+            `Protocol version ${config.version}. Each participant explores a mug, then ${config.tasks_per_session} of the three model pairs.`;
 
         // A reload continues the session this tab already owns; a fresh tab
         // starts one. Checked before starting, so refreshing mid-session cannot

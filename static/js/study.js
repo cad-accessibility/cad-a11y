@@ -32,6 +32,11 @@
     const joinError = document.getElementById('study-join-error');
 
     if (region) region.hidden = false;
+    // The N/B/C section of the Keyboard Shortcuts dialog (H or ?) -- otherwise
+    // that dialog only lists the ordinary viewer shortcuts, and a participant
+    // has no way to discover the study commands at all.
+    const studyShortcuts = document.getElementById('study-shortcuts-section');
+    if (studyShortcuts) studyShortcuts.hidden = false;
 
     // Identifies this browser in the log. Sessions on a public deployment can in
     // principle pick up a stray visitor at /study; tagging every event means
@@ -52,6 +57,37 @@
     let currentStepId = null;
     let currentModelStem = null;
     let sessionActive = false;
+    // The last state applied, so the repeat command (C) can re-announce the
+    // current step without keeping its own separate copy of the same fields.
+    let lastState = null;
+
+    // Whether the step change about to arrive over SSE is a consequence of a
+    // request this browser just made (N or B), as opposed to the experimenter
+    // changing it from the panel. There is no id to correlate a broadcast with
+    // the request that caused it, so this is a short-lived guess instead: set
+    // just before sending the request, and it expires on its own if nothing
+    // moved (the paired-mode ready signal is advisory and never does).
+    let expectingOwnStepChange = false;
+    let expectingOwnStepChangeTimer = null;
+
+    function expectOwnStepChange() {
+        expectingOwnStepChange = true;
+        if (expectingOwnStepChangeTimer) clearTimeout(expectingOwnStepChangeTimer);
+        expectingOwnStepChangeTimer = setTimeout(function () {
+            expectingOwnStepChange = false;
+        }, 4000);
+    }
+
+    /** Consume the flag: true at most once per request that set it. */
+    function consumeExpectingOwnStepChange() {
+        const value = expectingOwnStepChange;
+        expectingOwnStepChange = false;
+        if (expectingOwnStepChangeTimer) {
+            clearTimeout(expectingOwnStepChangeTimer);
+            expectingOwnStepChangeTimer = null;
+        }
+        return value;
+    }
 
     // How this session is being run, remembered across reloads. In 'solo' the
     // experimenter and the participant share this laptop, so there is no second
@@ -189,8 +225,30 @@
     // Step rendering
     // -----------------------------------------------------------------------
 
+    /** Title, step number and content as one utterance, so a screen reader
+     * reads them together rather than as separately-timed live regions (which
+     * is what made the announcement inconsistent: the heading, the step
+     * counter and the step text used to update independently, and the step
+     * text was not a live region at all, so it was never read out). */
+    function stepAnnouncement(state) {
+        const stepNumber = `Step ${(state.step_index || 0) + 1} of ${state.step_count || 1}`;
+        const title = state.title || 'Study step';
+        const text = state.text || '';
+        return text ? `${stepNumber}: ${text}` : `${stepNumber}: ${title}.`;
+    }
+
+    /** Step number and title only -- no content. Used when the experimenter
+     * changed the step, not the participant: they did not ask for this, so the
+     * full instructions would be a lot to have read out over whatever they
+     * were already doing. Press C for the rest. */
+    function briefStepAnnouncement(state) {
+        const stepNumber = `Step ${(state.step_index || 0) + 1} of ${state.step_count || 1}`;
+        return `${stepNumber}: ${state.title || 'Study step'}.`;
+    }
+
     function applyState(state) {
         if (!state) return;
+        if (state.active) lastState = state;
 
         rememberKey(state.participant_key);
         rememberMode(state.mode);
@@ -277,18 +335,34 @@
         if (stepChanged) {
             // Announce, but do not steal focus.
             //
-            // The heading is a polite live region, so the new step is read out
-            // wherever the participant happens to be. Moving focus as well would
-            // take them out of the depth slider they were exploring with, and
-            // they would have to find their way back -- and it is the
-            // experimenter who advanced the step, not them. Focus belongs to
-            // whoever caused the change, and here that is not the person whose
-            // hands are on the display.
+            // The announcement below is what reads the new step out wherever
+            // the participant happens to be. Moving focus as well would take
+            // them out of the depth slider they were exploring with, and they
+            // would have to find their way back -- and it is the experimenter
+            // who advanced the step, not them. Focus belongs to whoever
+            // caused the change, and here that is not the person whose hands
+            // are on the display.
             //
             // This also used to be wrapped in requestAnimationFrame, which does
             // not run in a background tab: the move silently did not happen, and
             // then fired the moment the window came forward.
             setHeading(state.title || 'Study step');
+            // The heading/counter/text above are plain text now (#180): they
+            // used to each be their own live region, which read the title,
+            // then the step count, then this announcement repeating both plus
+            // the instructions -- the same content three times over. This is
+            // the one thing actually read out, as a single utterance. Full
+            // title-and-content on first joining a session or when this
+            // browser just asked to move on (N/B) -- both are the
+            // participant's own action, and they need the content
+            // immediately. Step-and-title only when the experimenter changed
+            // it: that was not asked for, so the full instructions would be
+            // unwelcome on top of whatever the participant was doing. Press C
+            // for the full announcement either way.
+            const ownStepChange = consumeExpectingOwnStepChange();
+            if (window.cadStudy.announcePolite) {
+                window.cadStudy.announcePolite(stepAnnouncement(state));
+            }
         }
     }
 
@@ -302,58 +376,130 @@
     }
 
     // -----------------------------------------------------------------------
-    // Ready button
+    // Ready / Back / Repeat -- available from the button (Ready only) and from
+    // the keyboard (N / B / C), so a participant never has to find a control
+    // with a screen reader mid-exploration to do any of these.
     // -----------------------------------------------------------------------
 
-    if (readyBtn) {
-        readyBtn.addEventListener('click', function () {
-            if (!sessionActive) return;
-            readyBtn.disabled = true;
-            fetch(withKey('/study/step/ready'), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    client_id: clientId,
-                    client_time: new Date().toISOString(),
-                    viewer_state: window.cadStudy.snapshot(),
-                    participant_key: participantKey || undefined,
-                }),
-            }).then(function (res) {
-                return res.ok ? res.json().catch(function () { return {}; }) : null;
-            }).then(function (body) {
-                // Say what actually happened. The message used to be the same
-                // either way, so in a single-device session -- where the button
-                // does move the session on -- it told the participant to keep
-                // exploring until an experimenter moved them, and on the last
-                // step it said that while nothing at all had happened.
-                if (!readyStatus) return;
-                if (!body) {
-                    readyStatus.textContent =
-                        'Could not send that. Please tell your experimenter you are ready.';
-                } else if (body.finished) {
-                    readyStatus.textContent = participantCode
-                        ? `Session ${participantCode} is complete and has been recorded.`
-                        : 'The session is complete and has been recorded.';
-                } else if (body.advanced) {
-                    // The heading changes and focus moves to it, which is the
-                    // confirmation; a second message would be read out on top.
-                    readyStatus.textContent = '';
-                } else {
-                    readyStatus.textContent =
-                        'Your experimenter has been told you are ready. '
-                        + 'Keep exploring until they move on.';
-                }
-            }).catch(function () {
-                if (readyStatus) {
-                    readyStatus.textContent = 'Could not send that. Please tell your experimenter you are ready.';
-                }
-            }).finally(function () {
-                // Re-enabled so a participant can signal again if the experimenter
-                // did not notice the first time.
-                readyBtn.disabled = !sessionActive;
-            });
+    /** "I am ready to move on." Advisory in a paired session -- it notifies the
+     * experimenter and does not move anything -- and the actual advance signal
+     * in a solo one, where there is no experimenter to notify. Same request
+     * either way; the server decides which it is. */
+    function signalReady() {
+        if (!sessionActive || (readyBtn && readyBtn.disabled)) return;
+        if (readyBtn) readyBtn.disabled = true;
+        // Only actually moves the step in a solo session; in a paired one this
+        // is advisory and the flag simply expires unused a few seconds from now.
+        expectOwnStepChange();
+        fetch(withKey('/study/step/ready'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                client_id: clientId,
+                client_time: new Date().toISOString(),
+                viewer_state: window.cadStudy.snapshot(),
+                participant_key: participantKey || undefined,
+            }),
+        }).then(function (res) {
+            return res.ok ? res.json().catch(function () { return {}; }) : null;
+        }).then(function (body) {
+            // Say what actually happened. The message used to be the same
+            // either way, so in a single-device session -- where the button
+            // does move the session on -- it told the participant to keep
+            // exploring until an experimenter moved them, and on the last
+            // step it said that while nothing at all had happened.
+            if (!readyStatus) return;
+            if (!body) {
+                readyStatus.textContent =
+                    'Could not send that. Please tell your experimenter you are ready.';
+            } else if (body.finished) {
+                readyStatus.textContent = participantCode
+                    ? `Session ${participantCode} is complete and has been recorded.`
+                    : 'The session is complete and has been recorded.';
+            } else if (body.advanced) {
+                // The new step is already announced by applyState (stepAnnouncement);
+                // a second message here would be read out on top of it.
+                readyStatus.textContent = '';
+            } else {
+                readyStatus.textContent =
+                    'Your experimenter has been told you are ready. '
+                    + 'Keep exploring until they move on.';
+            }
+        }).catch(function () {
+            if (readyStatus) {
+                readyStatus.textContent = 'Could not send that. Please tell your experimenter you are ready.';
+            }
+        }).finally(function () {
+            // Re-enabled so a participant can signal again if the experimenter
+            // did not notice the first time.
+            readyBtn.disabled = !sessionActive;
         });
     }
+
+    if (readyBtn) readyBtn.addEventListener('click', signalReady);
+
+    /** Go back a step. Solo sessions only -- in a paired session the
+     * experimenter paces the protocol, and the server refuses this request
+     * outright rather than the client deciding not to send it. */
+    function goBack() {
+        if (!sessionActive) return;
+        if (!isSolo()) {
+            window.cadStudy.announcePolite('Only your experimenter can move back a step.');
+            return;
+        }
+        expectOwnStepChange();
+        fetch(withKey('/study/step/back'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                client_id: clientId,
+                client_time: new Date().toISOString(),
+                participant_key: participantKey || undefined,
+            }),
+        }).catch(function () {
+            window.cadStudy.announcePolite('Could not go back. Please try again.');
+        });
+    }
+
+    /** Re-announce the current step. Read-only: nothing here changes session
+     * state, so it is always available regardless of mode. */
+    function repeatStep() {
+        if (!sessionActive || !lastState) return;
+        window.cadStudy.announcePolite(stepAnnouncement(lastState));
+    }
+
+    document.addEventListener('keydown', function (e) {
+        if (!sessionActive) return;
+
+        const target = e.target;
+        const tagName = target && target.tagName ? target.tagName.toLowerCase() : '';
+        const isTextEntryTarget = Boolean(
+            target && (target.isContentEditable || tagName === 'textarea' || tagName === 'input')
+        );
+        if (isTextEntryTarget) return;
+
+        // A modal dialog (e.g. the session consent dialog) makes the rest of
+        // the page inert -- same guard as viewer.js's own shortcut handler.
+        if (document.querySelector('dialog[open]')) return;
+
+        // Leave browser/app shortcuts untouched (Cmd/Ctrl/Alt combos).
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+        const key = String(e.key || '').toLowerCase();
+        if (key === 'n') {
+            e.preventDefault();
+            signalReady();
+        } else if (key === 'b') {
+            e.preventDefault();
+            goBack();
+        } else if (key === 'p') {
+            e.preventDefault();
+            goBack();
+        } else if (key === 'c') {
+            e.preventDefault();
+            repeatStep();
+        }
+    });
 
     // -----------------------------------------------------------------------
     // Sync

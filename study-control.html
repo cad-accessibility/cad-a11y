@@ -95,7 +95,6 @@
         id="current-step-dialog"
         class="info-dialog"
         aria-labelledby="current-step-heading"
-        aria-modal="true"
     >
         <h2 id="current-step-heading" tabindex="-1">Current Step</h2>
         <p class="help-text">Press <kbd>Esc</kbd> or activate Close to return to where you were.</p>
@@ -184,7 +183,6 @@
         id="strategy-dialog"
         class="info-dialog"
         aria-labelledby="strategy-heading"
-        aria-modal="true"
     >
         <h2 id="strategy-heading" tabindex="-1">Strategy Prompts</h2>
         <p class="help-text">
@@ -205,7 +203,6 @@
         id="jump-dialog"
         class="info-dialog"
         aria-labelledby="jump-heading"
-        aria-modal="true"
     >
         <h2 id="jump-heading" tabindex="-1">Jump to Step</h2>
         <p class="help-text">Choose a step to go there immediately.</p>
@@ -221,7 +218,6 @@
         id="help-dialog"
         class="info-dialog"
         aria-labelledby="help-heading"
-        aria-modal="true"
     >
         <h2 id="help-heading" tabindex="-1">Keyboard Commands</h2>
         <p class="help-text">Press <kbd>Esc</kbd> or activate Close to return to where you were.</p>
@@ -230,11 +226,12 @@
             <li><kbd>S</kbd> Show strategy prompts</li>
             <li><kbd>J</kbd> Jump to a step</li>
             <li><kbd>N</kbd> Next step</li>
-            <li><kbd>B</kbd> Back to the previous step</li>
+            <li><kbd>B</kbd> or <kbd>P</kbd> Back to the previous step</li>
             <li><kbd>R</kbd> Run the study on this device — hands this window to the participant; use if you have only one computer</li>
             <li><kbd>E</kbd> End session</li>
             <li><kbd>H</kbd> or <kbd>?</kbd> Open this help</li>
             <li><kbd>Esc</kbd> Close a dialog</li>
+            <li>N/B/P work even with another dialog open — they replace it with the current step</li>
         </ul>
         <div class="consent-actions">
             <button type="button" id="help-close-btn">Close</button>

@@ -402,8 +402,10 @@ class TestEventLogging:
         assert response.get_json()["status"] == "ignored"
 
     def test_step_context_is_attached_to_every_event(self, client):
-        session_id = _start(client).get_json()["state"]["study_session_id"]
-        state = _advance_to(client, "practice.a.virtual")
+        session_id = _start(
+            client, task_order=["cane_tip", "coat_rack"]
+        ).get_json()["state"]["study_session_id"]
+        state = _advance_to(client, "task1.a.virtual")
         client.post(
             f"/study/event?s={_key(session_id)}",
             json={"event_type": "keyboard", "event_data": {"key": "r"}},
@@ -411,7 +413,7 @@ class TestEventLogging:
         export = study_db.export_session(session_id)
         keyboard = [e for e in export["events"] if e["event_type"] == "keyboard"][0]
         assert keyboard["step_id"] == state["step"]["id"]
-        assert keyboard["part_id"] == "practice"
+        assert keyboard["part_id"] == "task1"
 
     def test_timings_are_recorded(self, client):
         session_id = _start(client).get_json()["state"]["study_session_id"]
@@ -450,11 +452,13 @@ class TestEventLogging:
         assert "session_end" in types
 
     def test_model_autoload_is_logged_with_the_real_model_name(self, client):
-        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
-        _advance_to(client, "practice.b.virtual")
+        session_id = _start(
+            client, participant_code="P01", task_order=["cane_tip", "coat_rack"]
+        ).get_json()["state"]["study_session_id"]
+        _advance_to(client, "task1.b.virtual")
         events = study_db.export_session(session_id)["events"]
         autoloads = [e for e in events if e["event_type"] == "model_autoload"]
-        assert any(e["event_data"]["model"] == "lego_2x4" for e in autoloads)
+        assert any(e["event_data"]["model"] == "cane_tip_fitted" for e in autoloads)
 
 
 class TestJsonlLog:
@@ -474,8 +478,10 @@ class TestJsonlLog:
     def test_every_line_is_self_describing(self, client):
         """The JSONL is the reconstruction record: a line has to be readable
         without joining it against anything else."""
-        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
-        _advance_to(client, "practice.a.virtual")
+        session_id = _start(
+            client, participant_code="P01", task_order=["cane_tip", "coat_rack"]
+        ).get_json()["state"]["study_session_id"]
+        _advance_to(client, "task1.a.virtual")
         client.post(
             f"/study/event?s={_key(session_id)}",
             json={"event_type": "keyboard", "viewer_state": {"depth": 60, "view": "x-"}},
@@ -781,11 +787,19 @@ class TestConcurrentSessions:
         """Two sessions running side by side, each at a different step."""
         first = _start(client, participant_code="AAA", task_order=["cane_tip", "coat_rack"])
         first_state = first.get_json()["state"]
+        # Looked up rather than a hard-coded index, so a protocol edit that
+        # changes the step count ahead of task 1 does not silently retarget
+        # this fixture onto a different step.
+        steps = client.get(
+            f"/study/state?study_session_id={first_state['study_session_id']}", headers=_auth()
+        ).get_json()["steps"]
+        target_index = next(s["index"] for s in steps if s["id"] == "task1.a.virtual")
         client.post(
             "/study/step/advance",
-            json={"step_index": 15, "study_session_id": first_state["study_session_id"]},
+            json={"step_index": target_index, "study_session_id": first_state["study_session_id"]},
             headers=_auth(),
         )
+        first_state["step_index"] = target_index
         second = _start(client, participant_code="BBB", task_order=["coat_rack", "pencil_holder"])
         second_state = second.get_json()["state"]
         return client, first_state, second_state
@@ -798,7 +812,7 @@ class TestConcurrentSessions:
     def test_the_first_session_keeps_its_place(self, two):
         """Starting the second must not rewind or end the first."""
         _, first, _ = two
-        assert study_db.get_study_session(first["study_session_id"])["step_index"] == 15
+        assert study_db.get_study_session(first["study_session_id"])["step_index"] == first["step_index"]
 
     def test_each_session_gets_its_own_participant_key(self, two):
         _, first, second = two
@@ -1677,6 +1691,63 @@ class TestSingleDeviceMode:
         for _ in range(steps + 5):
             client.post(f"/study/step/ready?s={state['participant_key']}", json={})
         assert study_db.get_study_session(state["study_session_id"])["step_index"] == steps - 1
+
+
+class TestSingleDeviceBackCommand:
+    """The participant's own "go back a step" command -- solo sessions only.
+
+    Mirrors TestSingleDeviceMode's ready-signal tests: same reasoning, same
+    exception (no separate panel to press Previous on), just the opposite
+    direction.
+    """
+
+    def _solo(self, client, **payload):
+        state = _start(client, **payload).get_json()["state"]
+        client.post(
+            "/study/session/mode",
+            json={"mode": "solo", "study_session_id": state["study_session_id"]},
+            headers=_auth(),
+        )
+        return state
+
+    def test_back_moves_to_the_previous_step(self, client):
+        state = self._solo(client)
+        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        before = study_db.get_study_session(state["study_session_id"])["step_index"]
+        response = client.post(f"/study/step/back?s={state['participant_key']}", json={})
+        assert response.get_json()["moved"] is True
+        after = study_db.get_study_session(state["study_session_id"])["step_index"]
+        assert after == before - 1
+
+    def test_back_is_refused_on_two_machines(self, client):
+        """The token gate on /study/step/advance exists so a participant cannot
+        rewind the protocol themselves; this route carries no token, so the
+        mode check is the only thing standing in for it."""
+        state = _start(client).get_json()["state"]
+        client.post("/study/step/advance", json={"direction": "next"}, headers=_auth())
+        before = study_db.get_study_session(state["study_session_id"])["step_index"]
+        response = client.post(f"/study/step/back?s={state['participant_key']}", json={})
+        assert response.status_code == 404
+        assert study_db.get_study_session(state["study_session_id"])["step_index"] == before
+
+    def test_back_does_not_run_off_the_start(self, client):
+        state = self._solo(client)
+        response = client.post(f"/study/step/back?s={state['participant_key']}", json={})
+        assert response.get_json()["moved"] is False
+        assert study_db.get_study_session(state["study_session_id"])["step_index"] == 0
+
+    def test_back_without_a_session_is_a_clean_404(self, client):
+        assert client.post("/study/step/back", json={}).status_code == 404
+
+    def test_the_back_is_attributed_to_the_participant(self, client):
+        state = self._solo(client)
+        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        client.post(f"/study/step/back?s={state['participant_key']}", json={})
+        advances = [
+            e for e in study_db.export_session(state["study_session_id"])["events"]
+            if e["event_type"] == "step_advance"
+        ]
+        assert [e["source"] for e in advances] == ["participant", "participant"]
 
 
 class TestTheEndOfASingleDeviceSession:

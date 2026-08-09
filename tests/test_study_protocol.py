@@ -96,11 +96,6 @@ class TestStepResolution:
         for position, step in enumerate(steps):
             assert step["index"] == position
 
-    def test_practice_always_uses_the_lego_pair(self, steps):
-        practice = {s["id"]: s for s in steps if s["part_id"] == "practice"}
-        assert practice["practice.a.virtual"]["model"]["model"] == "lego_2x3"
-        assert practice["practice.b.virtual"]["model"]["model"] == "lego_2x4"
-
     def test_task_slots_resolve_in_assigned_order(self, steps):
         by_id = {step["id"]: step for step in steps}
         assert by_id["task1.a.virtual"]["model"]["model"] == "cane_tip_hook"
@@ -235,28 +230,24 @@ class TestScriptContent:
         assert "press lightly" in text
         assert "not to scale" in text
 
-    def test_only_the_lego_round_is_called_practice(self, by_id):
-        """Everything after the Lego brick is a real task, so nothing there may
-        describe the participant's work as a rehearsal."""
+    def test_no_step_calls_a_real_task_practice(self, by_id):
+        """There is no rehearsal round any more; nothing may describe the
+        participant's work as one."""
         for step_id, step in by_id.items():
-            if step_id.startswith("practice") or step_id == "task1.intro":
-                continue
             spoken = _spoken_text(step).lower()
             assert "practice" not in spoken, f"{step_id} calls a real task practice"
 
-    def test_the_first_task_tells_them_the_lego_did_not_count(self, by_id):
-        spoken = _spoken_text(by_id["task1.intro"]).lower()
-        assert "practice round" in spoken
-
     def test_the_second_task_just_carries_on(self, by_id):
-        spoken = _spoken_text(by_id["task2.intro"]).lower()
+        """The intro line lives at the top of task2.a.virtual's script now
+        (#180 merged the standalone "introduce the object" step into it)."""
+        spoken = _spoken_text(by_id["task2.a.virtual"]).lower()
         assert "practice" not in spoken
-        assert "same again" in spoken
+        assert "same" in spoken and "again" in spoken
 
     def test_task_intros_are_not_conditional_on_the_experimenter(self, by_id):
         """The wording is fixed per slot. A branch to resolve mid-session is a
         branch to get wrong mid-session."""
-        for step_id in ("task1.intro", "task2.intro"):
+        for step_id in ("task1.a.virtual", "task2.a.virtual"):
             assert "if this is" not in _script_text(by_id[step_id]).lower()
 
     def test_background_questions_are_present_to_read(self, by_id):
@@ -284,7 +275,7 @@ class TestScriptContent:
         assert "real-world contexts" in text
 
     def test_part_b_reminds_the_experimenter_not_to_give_it_away(self, by_id):
-        for step_id in ("task1.b.virtual", "task2.b.virtual", "practice.b.virtual"):
+        for step_id in ("task1.b.virtual", "task2.b.virtual"):
             notes = " ".join(
                 block["text"] for block in by_id[step_id]["script"] if block["kind"] == "note"
             ).lower()

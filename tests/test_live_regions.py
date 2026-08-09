@@ -44,18 +44,17 @@ EXPECTED_LIVE_ELEMENTS = {
     # only by body.study-ui, so on the ordinary viewer these are hidden and never
     # written to.
     #
-    # The step heading is the one place the study region interrupts, and it is
-    # deliberately polite rather than assertive: it fires on a step change, and a
-    # participant is reading braille with both hands while the display refreshes.
-    # An assertive interruption there is exactly the disruption the study is
-    # trying not to introduce. aria-live rather than role="status" because the
-    # element is an h2 — it has to stay a heading so a screen reader user can
-    # jump to it, and role="status" would replace that.
-    "study-step-heading": {"aria-live": "polite", "role": None},
-    # Step counter and the confirmation after the ready button. Both polite, both
-    # written only in response to something the participant just did or something
-    # the experimenter just changed.
-    "study-step-progress": {"aria-live": None, "role": "status"},
+    # study-step-heading and study-step-progress used to each be their own live
+    # region (an aria-live h2 and a role="status" paragraph), which meant a step
+    # change was announced three times over: the title alone, then the step
+    # count alone, then the combined utterance below repeating both plus the
+    # instructions. Both are now plain text -- still real content for on-demand
+    # navigation (the heading is still a real h2, still a landmark to jump to),
+    # just not auto-announced. The single announcement lives in the shared
+    # announcement-window-polite instead (see stepAnnouncement() in study.js).
+    #
+    # The ready-button confirmation is the one still-live piece specific to this
+    # page: written only in response to something the participant just did.
     "study-ready-status": {"aria-live": None, "role": "status"},
     # Shown only before the session starts, while the participant is entering
     # their code. Assertive on purpose: a code that did not match has to be
