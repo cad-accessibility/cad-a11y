@@ -1,5 +1,3 @@
-import os
-import re
 import struct
 from io import StringIO
 
@@ -130,7 +128,7 @@ def _read_binary_stl(file):
 
     return solid_name, triangles
 
-def _write_ascii_stl(file, solid_name: str, triangles: list):
+def _write_ascii_stl(solid_name: str, triangles: list):
     f = StringIO()
 
     f.write(f"solid {solid_name}\n")
@@ -189,16 +187,3 @@ def execute(file):
 
     #     f"Successfully converted binary STL to ASCII STL.\n"
     #     f"  Solid name: {solid_name}\n"
-
-<<<<<<< HEAD
-    #     f"  Triangles: {len(triangles):,}"
-=======
-
-
-    #     f"  Triangles: {len(triangles):,}"
-
-
-    # )
-
-# testing access to push to repo
->>>>>>> c6d47a0caedb3ac3d3171f5eaba235bb3f3f89a7
