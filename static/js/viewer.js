@@ -2676,7 +2676,9 @@ window.cadStudy = {
     // change reaches a connected display too, not just an on-screen region,
     // and reads as one coherent utterance instead of three separately-timed
     // live regions (heading, step counter, and a step-text paragraph that was
-    // not a live region at all).
+    // not a live region at all). Exposed under both names: study.js calls it
+    // by either, and both must reach the same function.
+    announce: announce,
     announcePolite: announce,
 };
 
