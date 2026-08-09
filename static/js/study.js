@@ -237,15 +237,6 @@
         return text ? `${stepNumber}: ${text}` : `${stepNumber}: ${title}.`;
     }
 
-    /** Step number and title only -- no content. Used when the experimenter
-     * changed the step, not the participant: they did not ask for this, so the
-     * full instructions would be a lot to have read out over whatever they
-     * were already doing. Press C for the rest. */
-    function briefStepAnnouncement(state) {
-        const stepNumber = `Step ${(state.step_index || 0) + 1} of ${state.step_count || 1}`;
-        return `${stepNumber}: ${state.title || 'Study step'}.`;
-    }
-
     function applyState(state) {
         if (!state) return;
         if (state.active) lastState = state;

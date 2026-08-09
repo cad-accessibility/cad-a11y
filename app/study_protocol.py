@@ -691,7 +691,7 @@ def _build_steps() -> list[dict[str, Any]]:
                     "what you notice changing."
                 ),
                 _say(
-                    "You can also use Dot 1 2 together and Dot 4 5 togetheer  to move ten percent at a "
+                    "You can also use Dot 1 2 together and Dot 4 5 together  to move ten percent at a "
                     "time. "
                 ),
                 _note(
@@ -827,37 +827,8 @@ def _build_steps() -> list[dict[str, Any]]:
         }
     )
 
-    # # -- Part 5: the practice round, always the Lego brick -----------------
-    # steps.append(
-    #     {
-    #         "id": "practice.intro",
-    #         "part_id": "practice",
-    #         "part_title": "Practice round (Lego brick)",
-    #         "title": "Introduce the practice round",
-    #         "script": [
-    #             _say(
-    #                 "Now we'll move to the main part of the study. Imagine you "
-    #                 "downloaded a Lego brick to 3D print, and you want to explore it and "
-    #                 "compare it against another version."
-    #             ),
-    #             _say(
-    #                 "There's no time limit and nothing to get right. I'm interested in "
-    #                 "how you go about figuring it out, so please keep talking as you go."
-    #             ),
-    #             _note(
-    #                 "This one is the practice round, but do not say so yet -- knowing it "
-    #                 "does not count changes how people explore. You tell them at the "
-    #                 "start of the first real task."
-    #             ),
-    #         ],
-    #         "participant_text": "Your experimenter will introduce the next part.",
-    #     }
-    # )
-    # steps.extend(
-    #     _pair_steps("practice", "Practice round (Lego brick)", "practice", None, is_practice=True)
-    # )
 
-    # -- Parts 6 and 7: the two assigned model pairs -----------------------
+    # -- The two assigned model pairs -----------------------
     #
     # These are the real tasks. 
     for slot in range(1, TASKS_PER_SESSION + 1):
@@ -903,7 +874,7 @@ def _build_steps() -> list[dict[str, Any]]:
             }
         )
 
-    # -- Part 8: post-session discussion -----------------------------------
+    # -- Post-session discussion -----------------------------------
     steps.append(
         {
             "id": "discussion.approach",
