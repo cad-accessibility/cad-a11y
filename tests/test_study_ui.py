@@ -289,10 +289,12 @@ class TestStudyModeBehaviour:
         three separately-timed live regions (and the step text was not a live
         region at all), which is what made the announcement inconsistent."""
         js = STUDY_JS.read_text(encoding="utf-8")
-        assert "window.cadStudy.announcePolite" in js
+        # Either name reaches the same function (window.cadStudy exposes both,
+        # see test_the_bridge_exposes_a_polite_announcer).
+        assert "window.cadStudy.announce" in js
         step_change = js[js.index("if (stepChanged) {"):]
         step_change = step_change[:step_change.index("\n    }\n")]
-        assert "announcePolite(" in step_change
+        assert "announce(" in step_change
 
     def test_an_experimenter_driven_change_is_announced_briefly_not_in_full(self):
         """An advance the participant did not ask for must not read the whole
@@ -606,7 +608,7 @@ class TestFocusIsMovedOnlyByWhoeverCausedTheChange:
         assert "focus()" not in step_change, (
             "the participant page steals focus on a step change it did not cause"
         )
-        assert "announcePolite(" in step_change, (
+        assert "announce(" in step_change, (
             "with no focus move, the announcement is the only thing telling the participant"
         )
 
