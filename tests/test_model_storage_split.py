@@ -246,6 +246,42 @@ def test_health_degrades_when_storage_collapses(client, monkeypatch):
     assert payload["checks"]["storage_separated"] is False
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the mode bits this relies on")
+def test_health_reports_the_real_log_dir_not_the_braille_fallback(client, monkeypatch, tmp_path):
+    """An unwritable data/logs is degraded even once braille has fallen back.
+
+    The fallback is not equivalent to the real directory. /tmp/cad-a11y/logs
+    lives inside the container and is discarded on every redeploy, and
+    study_db writes participant session logs to data/logs/study with no
+    fallback at all, so those fail outright. Reporting the resolved path here
+    would turn /health green on a deployment that is quietly losing study
+    data, which is the one thing the endpoint exists to catch. The entrypoint
+    repairs the ownership that causes this, so it is now a real fault to
+    surface rather than a permanent condition to route around.
+    """
+    import app.server as server
+
+    unwritable = tmp_path / "data" / "logs"
+    unwritable.mkdir(parents=True)
+    unwritable.chmod(0o500)
+    fallback = tmp_path / "tmp-cad-a11y" / "logs"
+    fallback.mkdir(parents=True)
+
+    monkeypatch.setattr(server, "STUDY_LOG_DIR", unwritable)
+    monkeypatch.setattr(server, "BRAILLE_LOG_PATH", fallback / "braille_send_events.jsonl")
+    server._writability_cache.clear()
+
+    try:
+        response = client.get("/health")
+
+        assert response.status_code == 503
+        assert response.get_json()["checks"]["writable"]["logs"] is False
+    finally:
+        # Restore so pytest's tmp_path cleanup can remove it.
+        unwritable.chmod(0o700)
+        server._writability_cache.clear()
+
+
 def test_health_degrades_when_the_database_cannot_be_opened(client, monkeypatch, tmp_path):
     """The 2026-07-22 outage was the app being unable to open its database."""
     import app.db as db_module
