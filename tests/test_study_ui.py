@@ -88,17 +88,62 @@ class TestStudyRegionMarkup:
         assert html.index('id="study-region"') < html.index('id="left-col"')
         assert html.index('id="main-content"') < html.index('id="study-region"')
 
+    def test_study_shortcuts_section_exists_and_is_hidden_by_default(self):
+        """Otherwise H/? on the participant page opens the ordinary Keyboard
+        Shortcuts dialog with no mention of N/B/C at all -- a participant has
+        no way to discover the study commands."""
+        section = _by_id(VIEWER_HTML).get("study-shortcuts-section")
+        assert section is not None, "missing #study-shortcuts-section"
+        assert "hidden" in section["attrs"]
+
+    def test_study_shortcuts_section_lives_inside_the_shortcuts_dialog(self):
+        html = VIEWER_HTML.read_text(encoding="utf-8")
+        dialog_start = html.index('id="shortcuts-dialog"')
+        dialog_end = html.index("</dialog>", dialog_start)
+        assert dialog_start < html.index('id="study-shortcuts-section"') < dialog_end
+
+    def test_study_shortcuts_documents_next_back_and_repeat(self):
+        html = VIEWER_HTML.read_text(encoding="utf-8")
+        start = html.index('id="study-shortcuts-section"')
+        section = html[start:html.index("</div>", start)]
+        for key in ("N", "B", "C"):
+            assert f"<kbd>{key}</kbd>" in section, f"study shortcuts section does not document {key}"
+
+    def test_study_js_reveals_the_shortcuts_section(self):
+        js = STUDY_JS.read_text(encoding="utf-8")
+        assert "studyShortcuts.hidden = false" in js
+
+    def test_study_model_loads_do_not_announce_progress_chatter(self):
+        """A study-sourced model load used to also announce "processing
+        started", "generating render" and "loaded" on top of the one
+        consolidated step announcement -- the same event read up to four
+        times over. All three are now gated off for source === 'study'."""
+        js = VIEWER_JS.read_text(encoding="utf-8")
+        begin_fn = js.split("function beginModelLoadAnnouncement(")[1].split("\n}")[0]
+        assert "if (source !== 'study') announce(" in begin_fn
+
+        assert "if (activeModelLoadTask && activeModelLoadTask.source !== 'study') {" in js
+        assert "if (activeModelLoadTask.source !== 'study') {" in js
+
     def test_heading_can_receive_focus_without_joining_the_tab_order(self):
         heading = _by_id(VIEWER_HTML)["study-step-heading"]
         assert heading["tag"] == "h2"
         assert heading["attrs"].get("tabindex") == "-1"
 
-    def test_heading_is_polite_never_assertive(self):
-        """Participants read braille with both hands while the display refreshes.
-        An assertive interruption mid-slice is the disruption this study is
-        trying not to introduce."""
+    def test_heading_is_not_its_own_live_region(self):
+        """It used to be aria-live="polite" on its own, which meant a step
+        change announced the title once from here and then again as part of
+        the combined announcement below -- the same words twice. It is still a
+        real heading (landmark navigation still works), just not auto-read."""
         heading = _by_id(VIEWER_HTML)["study-step-heading"]
-        assert heading["attrs"].get("aria-live") == "polite"
+        assert heading["tag"] == "h2"
+        assert heading["attrs"].get("aria-live") is None
+
+    def test_step_progress_is_not_its_own_live_region_either(self):
+        """Same reasoning as the heading: role="status" here used to announce
+        the step count on its own, on top of the combined announcement."""
+        progress = _by_id(VIEWER_HTML)["study-step-progress"]
+        assert progress["attrs"].get("role") is None
 
     def test_nothing_in_a_running_session_interrupts_the_participant(self):
         """No assertive live region on anything shown while the session is
@@ -214,6 +259,60 @@ class TestStudyModeBehaviour:
         assert "sbModel.textContent = studyModelLabel" in loader
         assert "sbModel.textContent = stem" not in loader
 
+    def test_next_back_and_repeat_are_keyboard_commands(self):
+        """N/B/C so a participant never has to find a control with a screen
+        reader mid-exploration."""
+        js = STUDY_JS.read_text(encoding="utf-8")
+        keydown = js[js.index("document.addEventListener('keydown'"):]
+        assert "key === 'n'" in keydown and "signalReady();" in keydown
+        assert "key === 'b'" in keydown and "goBack();" in keydown
+        assert "key === 'c'" in keydown and "repeatStep();" in keydown
+
+    def test_repeat_is_read_only(self):
+        """C only re-announces; it must never reach the network."""
+        js = STUDY_JS.read_text(encoding="utf-8")
+        repeat_fn = js[js.index("function repeatStep("):]
+        repeat_fn = repeat_fn[:repeat_fn.index("\n    }")]
+        assert "fetch(" not in repeat_fn
+
+    def test_back_is_refused_client_side_outside_solo_mode(self):
+        """The server also refuses it (a paired session has no token to send),
+        but the client should not even try, and should say why."""
+        js = STUDY_JS.read_text(encoding="utf-8")
+        back_fn = js[js.index("function goBack("):]
+        back_fn = back_fn[:back_fn.index("\n    }")]
+        assert "if (!isSolo())" in back_fn
+        assert "Only your experimenter can move back a step." in back_fn
+
+    def test_a_step_change_is_announced_as_one_utterance(self):
+        """The heading, the step counter and the step text used to update as
+        three separately-timed live regions (and the step text was not a live
+        region at all), which is what made the announcement inconsistent."""
+        js = STUDY_JS.read_text(encoding="utf-8")
+        # Either name reaches the same function (window.cadStudy exposes both,
+        # see test_the_bridge_exposes_a_polite_announcer).
+        assert "window.cadStudy.announce" in js
+        step_change = js[js.index("if (stepChanged) {"):]
+        step_change = step_change[:step_change.index("\n    }\n")]
+        assert "announce(" in step_change
+
+    def test_every_step_change_uses_one_consolidated_announcement(self):
+        """Self-triggered and experimenter-driven changes used to get
+        different announcements (full title+content vs. a step-and-title-only
+        version); that distinction was simplified away in favor of always
+        announcing the step number plus the participant-facing text (falling
+        back to the title for a step with none)."""
+        js = STUDY_JS.read_text(encoding="utf-8")
+        step_fn = js[js.index("function stepAnnouncement("):]
+        step_fn = step_fn[:step_fn.index("\n    }")]
+        assert "state.text" in step_fn
+        assert "state.title" in step_fn
+
+    def test_the_bridge_exposes_a_polite_announcer(self):
+        js = VIEWER_JS.read_text(encoding="utf-8")
+        cad_study = js.split("window.cadStudy = {")[1].split("\n};")[0]
+        assert "announcePolite" in cad_study
+
 
 # ---------------------------------------------------------------------------
 # Experimenter panel
@@ -265,10 +364,48 @@ class TestControlPanelAccessibility:
                 f"section {el['id']} is an unlabelled landmark"
             )
 
-    def test_disclosure_button_declares_its_state(self):
-        toggle = _by_id(CONTROL_HTML)["toggle-strategy-btn"]
-        assert toggle["attrs"].get("aria-expanded") == "false"
-        assert toggle["attrs"].get("aria-controls") == "strategy-prompts-block"
+    def test_the_four_dialogs_share_the_viewers_info_dialog_pattern(self):
+        """Current Step (C), Strategy Prompts (S), Jump to Step (J) and Help (H
+        or ?) all follow the same accessible-dialog pattern established for the
+        participant viewer's Help/About/Settings dialogs: native <dialog>, the
+        shared .info-dialog chrome, and a heading that takes focus on open
+        rather than the first interactive control (ARIA APG dialog pattern)."""
+        by_id = _by_id(CONTROL_HTML)
+        for dialog_id, heading_id in (
+            ("current-step-dialog", "current-step-heading"),
+            ("strategy-dialog", "strategy-heading"),
+            ("jump-dialog", "jump-heading"),
+            ("help-dialog", "help-heading"),
+        ):
+            dialog = by_id.get(dialog_id)
+            assert dialog is not None, f"expected a #{dialog_id}"
+            assert dialog["tag"] == "dialog"
+            assert "info-dialog" in dialog["attrs"].get("class", "")
+            assert "aria-modal" not in dialog["attrs"]
+
+            heading = by_id.get(heading_id)
+            assert heading is not None, f"expected a #{heading_id}"
+            assert heading["attrs"].get("tabindex") == "-1"
+
+    def test_shared_dialog_controller_is_used_for_all_four_dialogs(self):
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "function makeInfoDialogController(" in js
+        # current-step-dialog is kept in its own named variable (it needs to be
+        # compared against elsewhere, to tell whether it's the dialog already
+        # open when N/B/P fire), so it is constructed slightly differently.
+        assert "makeInfoDialogController(currentStepDialog, el('current-step-heading'))" in js
+        for dialog_id, heading_id in (
+            ("strategy-dialog", "strategy-heading"),
+            ("jump-dialog", "jump-heading"),
+            ("help-dialog", "help-heading"),
+        ):
+            assert f"makeInfoDialogController(el('{dialog_id}'), el('{heading_id}'))" in js
+
+    def test_help_dialog_documents_every_command(self):
+        html = CONTROL_HTML.read_text(encoding="utf-8")
+        help_block = html[html.index('id="help-dialog"'):html.index("</dialog>", html.index('id="help-dialog"'))]
+        for key in ("C", "S", "J", "N", "B", "R", "E"):
+            assert f"<kbd>{key}</kbd>" in help_block, f"help dialog does not document {key}"
 
     def test_current_step_heading_can_receive_focus(self):
         """Focus moves here on every advance, so a screen reader user lands on the
@@ -328,11 +465,64 @@ class TestControlPanelBehaviour:
         assert "cadA11yStudyPanelSession" in js
 
     def test_the_panel_shows_the_code_to_read_out(self):
+        """The home screen is just the identity dl (#180); the join code lives
+        there as its own row rather than in a separate block."""
         html = CONTROL_HTML.read_text(encoding="utf-8")
-        assert 'id="participant-code"' in html
-        assert "Read this to your participant" in html
+        assert 'id="summary-code"' in html
+        assert "Study code" in html
         js = CONTROL_JS.read_text(encoding="utf-8")
         assert "state.participant_key" in js
+
+    def test_the_home_screen_is_just_the_identity_summary(self):
+        """Everything else moved behind a keyboard command; the always-visible
+        content in the active session is the dl and nothing more."""
+        html = CONTROL_HTML.read_text(encoding="utf-8")
+        session_section = html[html.index('id="session-section"'):html.index("</section>", html.index('id="session-section"'))]
+        assert "<dl" in session_section
+        assert "<dialog" not in session_section, "a dialog should not be nested inside the section"
+        for removed in ("toggle-strategy-btn", "step-jump", "confirm-advance", "participant-link-block"):
+            assert removed not in session_section, f"#{removed} should have moved out of the home screen"
+
+    def test_nav_has_the_five_study_commands(self):
+        by_id = _by_id(CONTROL_HTML)
+        for button_id in (
+            "run-here-btn", "previous-step-btn", "next-step-btn", "help-btn", "end-session-btn",
+        ):
+            assert by_id.get(button_id) is not None, f"expected a #{button_id} in the nav"
+            assert by_id[button_id]["tag"] == "button"
+
+    def test_session_dependent_nav_buttons_start_hidden(self):
+        """Run/Back/Next/End need an active session; Help does not."""
+        by_id = _by_id(CONTROL_HTML)
+        for button_id in ("run-here-btn", "previous-step-btn", "next-step-btn", "end-session-btn"):
+            assert "hidden" in by_id[button_id]["attrs"], f"#{button_id} should start hidden"
+        assert "hidden" not in by_id["help-btn"]["attrs"]
+
+    def test_keyboard_commands_map_to_the_documented_keys(self):
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "currentStepDialogController.open();" in js
+        assert "strategyDialogController.open();" in js
+        assert "jumpDialogController.open();" in js
+        assert "helpDialogController.open();" in js
+        assert "advance({ direction: 'next' });" in js
+        assert "advance({ direction: 'previous' });" in js
+        assert "el('run-here-btn')?.click();" in js
+        assert "el('end-session-btn')?.click();" in js
+
+    def test_most_keyboard_commands_are_ignored_while_a_dialog_is_open(self):
+        """Same guard as the participant viewer for everything except N/B/P:
+        a modal dialog makes the rest of the page inert, so Escape and Tab
+        must stay scoped to it."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "if (openDialog && !isStepMoveKey) return;" in js
+
+    def test_next_and_back_work_even_with_a_dialog_open(self):
+        """Advancing is exactly what makes a currently-open dialog stale, so
+        N/B/P are the one exception to the guard above: they replace whatever
+        is open with the Current Step dialog rather than being blocked."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "const isStepMoveKey = key === 'n' || key === 'b' || key === 'p';" in js
+        assert "if (openDialog && openDialog !== currentStepDialog) openDialog.close();" in js
 
     def test_logging_health_is_reported_in_words(self):
         """A degraded log must not be conveyed by colour alone."""
@@ -413,22 +603,42 @@ class TestFocusIsMovedOnlyByWhoeverCausedTheChange:
 
     def test_the_participant_is_announced_to_not_pulled_away(self):
         """A participant exploring with the depth slider must not be yanked out
-        of it because the experimenter advanced a step. The heading is a polite
-        live region, so the new step is read out wherever they are."""
+        of it because the experimenter advanced a step. The shared polite
+        announcement window is what reads the new step out wherever they are;
+        nothing here should also move focus."""
         js = STUDY_JS.read_text(encoding="utf-8")
         step_change = js.split("if (stepChanged) {")[-1].split("}")[0]
         assert "focus()" not in step_change, (
             "the participant page steals focus on a step change it did not cause"
         )
-        heading = _by_id(VIEWER_HTML)["study-step-heading"]
-        assert heading["attrs"].get("aria-live") == "polite", (
-            "with no focus move, the live region is the only thing announcing the step"
+        assert "announce(" in step_change, (
+            "with no focus move, the announcement is the only thing telling the participant"
         )
 
-    def test_the_panel_moves_focus_to_the_new_step(self):
+    def test_advancing_shows_the_current_step_dialog(self):
+        """N/B/P (keyboard and the nav buttons) move the step and then show
+        its script immediately, rather than leaving the experimenter to press
+        C separately for a step they just navigated to."""
         js = CONTROL_JS.read_text(encoding="utf-8")
-        assert "target.focus();" in js
-        assert _by_id(CONTROL_HTML)["current-step-heading"]["attrs"].get("tabindex") == "-1"
+        assert "advance(payload)" in js
+        assert "function advance(" in js and "confirm(" not in js[
+            js.index("function advance("):js.index("\n    }\n", js.index("function advance("))
+        ], "advance() itself must not show a popup -- callers decide that"
+
+        next_btn = js[js.index("el('next-step-btn')"):js.index("el('previous-step-btn')")]
+        assert "currentStepDialogController.open();" in next_btn
+
+        previous_btn = js[js.index("el('previous-step-btn')"):js.index("el('run-here-btn')")]
+        assert "currentStepDialogController.open();" in previous_btn
+
+    def test_opening_a_dialog_moves_focus_to_its_own_heading(self):
+        """Same ARIA APG pattern as the viewer's Help/About/Settings dialogs:
+        a read-only dialog focuses its own heading, not the first control."""
+        by_id = _by_id(CONTROL_HTML)
+        for heading_id in ("current-step-heading", "strategy-heading", "jump-heading", "help-heading"):
+            heading = by_id.get(heading_id)
+            assert heading is not None, f"expected a #{heading_id}"
+            assert heading["attrs"].get("tabindex") == "-1"
 
     def test_focus_is_never_deferred_to_an_animation_frame(self):
         """requestAnimationFrame does not run in a background tab. The move

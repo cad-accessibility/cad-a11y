@@ -174,14 +174,11 @@ button.danger { border-color: #a4341e; }
     margin: 8px 0;
 }
 
-.participant-link-block { margin-bottom: 16px; }
-.participant-link {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 1.05em;
-    font-weight: 600;
-    word-break: break-all;
-    margin: 4px 0;
-}
+/* Jump to Step dialog: one button per step, full width so the whole row is
+   the hit target rather than just the text. */
+.jump-step-list { list-style: none; margin: 0; padding: 0; }
+.jump-step-list li { margin: 0 0 6px; }
+.jump-step-list button { width: 100%; text-align: left; }
 
 @media (prefers-color-scheme: dark) {
     .notice-box { background: #12222c; border-color: #6cb6e0; }

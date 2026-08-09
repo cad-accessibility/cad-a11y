@@ -2276,7 +2276,16 @@ def main() -> int:
     study_db.init_db()
     _log(f"Study database: {study_db.DB_PATH}", force=True)
     _log("Study control panel: /study/control", force=True)
-    initialize_default_braille_render()
+    # Backgrounded rather than awaited: this used to run before app.run(), so
+    # nothing -- not even /health -- answered until the first default-params
+    # render finished. A cold model's mesh load and slice precompute is easily
+    # several seconds, which is several seconds the whole site was down for on
+    # every restart for no reason a visitor should ever wait on. The render
+    # path already builds a renderer on demand if this hasn't finished yet, the
+    # same fallback a model that missed warmup entirely already relies on.
+    threading.Thread(
+        target=initialize_default_braille_render, name="cad-initial-render", daemon=True
+    ).start()
     start_model_warmup()
     open_viewer_in_browser()
 

@@ -19,9 +19,7 @@ a ruined session.
 
 Counterbalancing
 ----------------
-The protocol has four model pairs. The Lego brick is always the trial (it is the
-practice round, where the participant learns the task rather than the model), and
-each participant then gets **two** of the remaining three, in an order fixed by a
+The protocol has three model pairs. Each participant  gets **two** of the three, in an order fixed by a
 Latin square rather than drawn at random -- randomising a sample this small
 routinely produces an unbalanced set, which is exactly what counterbalancing is
 for. See ``assign_task_order``.
@@ -139,7 +137,7 @@ MODEL_PAIRS: dict[str, dict[str, Any]] = {
     },
 }
 
-PRACTICE_PAIR = "lego"
+PRACTICE_PAIR = "cup"
 MAIN_PAIRS = ("pencil_holder", "cane_tip", "coat_rack")
 
 # The model used for onboarding. Not a pair: nothing is compared against it, it is
@@ -245,8 +243,7 @@ BACKGROUND_QUESTIONS: list[dict[str, Any]] = [
         "note": "Braille is not required for this study. This is for context only.",
     },
     {
-        "text": "How often do you currently use Braille?",
-        "note": "Skip if they have just said they do not use Braille.",
+        "text": "(If relevant) How often do you currently use Braille?",
         "options": ["Never", "Rarely", "Sometimes", "Often", "Daily"],
     },
     {
@@ -328,7 +325,7 @@ FACILITATOR_PROMPTS = [
 STRATEGY_PROMPTS = [
     "You might try turning the object to look at a different face; press I, K, J, "
     "L, U or O.",
-    "You might try returning to an earlier slice; press Arrow Up or Page Up to go "
+    "You might try returning to an earlier slice; press Dot 1 or Dot 4 to go "
     "shallower.",
     "You might try a different rendering; press R to cycle the render mode.",
     "You might check where you are; press the period key to hear the current state.",
@@ -399,6 +396,7 @@ def _pair_steps(
     slot: int | None,
     *,
     is_practice: bool = False,
+    intro_script: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """The four exploration steps every model pair shares (Part A on the display
     and in the hand, then Part B the same way), parameterised by which pair they
@@ -407,6 +405,11 @@ def _pair_steps(
     Written once rather than four times because the wording is identical across
     pairs by design -- the protocol keeps the prompts constant so that differences
     between tasks are differences between models, not between scripts.
+
+    ``intro_script`` is prepended to Part A's virtual step rather than living in
+    its own step: a separate "introduce the object" step that says nothing else
+    was a step change for one line of narration, with nothing for the
+    participant to do in it.
     """
 
     def ref(version: str) -> dict[str, Any]:
@@ -429,11 +432,8 @@ def _pair_steps(
             "part_title": part_title,
             "title": "Part A - explore the model on the display",
             "script": [
-                _say(
-                    "I'm going to describe an object, then put it on the display for "
-                    "you to explore."
-                ),
-                _say("{description}"),
+                *(intro_script or []),
+                _say("Imagine that you downloaded a {label} to print out. It is a {description}"),
                 _do("Advance the step so the model loads on the participant's display."),
                 _say(
                     "There's no time limit and nothing to get right. I'm interested in "
@@ -543,16 +543,15 @@ def _build_steps() -> list[dict[str, Any]]:
             "title": "Settle the participant in",
             "script": [
                 _note(
-                    "The participant consented before today. Do not re-take consent -- "
-                    "they would not have this link otherwise. This step is about "
-                    "putting them at ease."
+                    "Confirm that the participant consented before this session, using the google form. "
+                    "If not, walk them through the consent form. "
+                    "You should also work to put them at ease in this step."
                 ),
                 _do("Introduce yourself, and anyone else in the room or on the call."),
                 _say(
                     "Thanks for coming. Before we start, a quick sense of what we'll "
-                    "do: I'll show you how the system works on a mug, we'll practise "
-                    "on a Lego brick, and then you'll explore a couple of objects and "
-                    "compare two versions of each."
+                    "do: I'll show you how the system works on a mug, and then you'll "
+                    "explore a couple of objects and compare two versions of each."
                 ),
                 _say(
                     "There are no right answers and nothing is being tested about you. "
@@ -563,7 +562,7 @@ def _build_steps() -> list[dict[str, Any]]:
                 _do("Start the audio and video recording."),
                 _say("I'm starting the recording now, as we described when you signed up."),
             ],
-            "participant_text": "Your experimenter will get you set up in a moment.",
+            "participant_text": "Let's get started.",
             "checklist": [
                 "Introductions done",
                 "Participant knows what the session will involve",
@@ -581,13 +580,12 @@ def _build_steps() -> list[dict[str, Any]]:
             "title": "Set up the machine and the display",
             "script": [
                 _note(
-                    "The participant uses their own laptop and their own screen reader "
-                    "wherever possible. The braille display connects over Bluetooth, "
-                    "which only works in Chrome, so it has to be Chrome."
+                    "Confirm the pin display is connected. It connects over Bluetooth, "
+                    "which only works in Chrome, so it has to be Chrome. "
                 ),
-                _do("Check they are in Chrome, and help them pair the braille display."),
+                _do("Check they are in Chrome, and help them pair the pin display."),
                 _do(
-                    "Put the laptop to the right of the braille display. The arrow keys "
+                    "Put the laptop to the right of the pin display. The arrow keys "
                     "and IJKL are easier to reach with the right hand while the left "
                     "hand reads."
                 ),
@@ -602,7 +600,7 @@ def _build_steps() -> list[dict[str, Any]]:
                 ),
                 _do("Lay out the printed models for the onboarding and both tasks."),
             ],
-            "participant_text": "Your experimenter will get you set up in a moment.",
+            "participant_text": "Your experimenter will check that your display is connected.",
             "checklist": [
                 "Participant is in Chrome",
                 "Braille display paired and connected",
@@ -688,17 +686,17 @@ def _build_steps() -> list[dict[str, Any]]:
                 _do("Hand the computer back. The participant presses the keys, not you."),
                 _say(
                     "You're looking at a slice through the middle of the mug. Press "
-                    "Arrow Up to move the slice one way and Arrow Down to move it the "
+                    "Dot 1 to move the slice one way and Dot 4 to move it the "
                     "other. Each press moves it one percent. Try that now and tell me "
                     "what you notice changing."
                 ),
                 _say(
-                    "You can also use Page Up and Page Down to move ten percent at a "
-                    "time."
+                    "You can also use Dot 1 2 together and Dot 4 5 together  to move ten percent at a "
+                    "time. "
                 ),
                 _note(
-                    "Say that second line only if one percent is too slow to produce a "
-                    "noticeable change."
+                    "Show them where the dots are. Say that second line only if one percent is too slow to produce a "
+                    "noticeable change. "
                 ),
                 _note(
                     "Which direction reads as deeper depends on how the mug is facing, "
@@ -708,8 +706,8 @@ def _build_steps() -> list[dict[str, Any]]:
                 ),
             ],
             "participant_text": (
-                "Try Arrow Up and Arrow Down to move the slice, and Page Up and Page "
-                "Down for larger steps."
+                "Try Dot 1 and Dot 4 to move the slice, and Dot 1 2 or Dot 4 5  "
+                "for larger steps."
             ),
             "model": {"kind": "fixed", "model": ONBOARDING_MODEL},
             "checklist": ["Participant has moved the slice in both directions"],
@@ -724,9 +722,8 @@ def _build_steps() -> list[dict[str, Any]]:
             "title": "Turning the object",
             "script": [
                 _say(
-                    "Now let's look at it from somewhere else. There isn't a key that "
-                    "jumps to a particular side -- instead you turn the object, and the "
-                    "system slices whatever is now facing you."
+                    "Now let's look at it from somewhere else. you can turn the object"
+                    " around any axis to see it from a different direction"
                 ),
                 _ask(
                     "Before they press anything, ask:",
@@ -761,7 +758,7 @@ def _build_steps() -> list[dict[str, Any]]:
             "part_title": "System onboarding",
             "title": "Rendering mode and reading back position",
             "script": [
-                _say("Press R to change how the slice is drawn. Tell me what's different about it."),
+                _say("Press R to change how the slice is drawn (we call this a rendering mode). Tell me what's different about it."),
                 _say(
                     "Now press the period key. That reads back where you are. Does it "
                     "match where you thought you were?"
@@ -769,7 +766,7 @@ def _build_steps() -> list[dict[str, Any]]:
                 _note("If they ask for the full list of commands, point them at H."),
             ],
             "participant_text": (
-                "Press R to change how the slice is drawn, and the period key to hear "
+                "Press R to change how the slice is rendered, and the period key to hear "
                 "where you are. Press H for the full list of shortcuts."
             ),
             "model": {"kind": "fixed", "model": ONBOARDING_MODEL},
@@ -811,7 +808,7 @@ def _build_steps() -> list[dict[str, Any]]:
             "title": "Free exploration",
             "script": [
                 _say(
-                    "Now explore freely. Use any face, any slice position, any rendering "
+                    "Now explore freely. Rotate it, change slice position, and change rendering "
                     "mode. Tell me where you want to go and what you're finding."
                 ),
                 _note(
@@ -830,74 +827,25 @@ def _build_steps() -> list[dict[str, Any]]:
         }
     )
 
-    # -- Part 5: the practice round, always the Lego brick -----------------
-    steps.append(
-        {
-            "id": "practice.intro",
-            "part_id": "practice",
-            "part_title": "Practice round (Lego brick)",
-            "title": "Introduce the practice round",
-            "script": [
-                _say(
-                    "Now we'll move to the main part of the study. Imagine you "
-                    "downloaded a Lego brick to 3D print, and you want to explore it and "
-                    "compare it against another version."
-                ),
-                _say(
-                    "There's no time limit and nothing to get right. I'm interested in "
-                    "how you go about figuring it out, so please keep talking as you go."
-                ),
-                _note(
-                    "This one is the practice round, but do not say so yet -- knowing it "
-                    "does not count changes how people explore. You tell them at the "
-                    "start of the first real task."
-                ),
-            ],
-            "participant_text": "Your experimenter will introduce the next part.",
-        }
-    )
-    steps.extend(
-        _pair_steps("practice", "Practice round (Lego brick)", "practice", None, is_practice=True)
-    )
 
-    # -- Parts 6 and 7: the two assigned model pairs -----------------------
+    # -- The two assigned model pairs -----------------------
     #
-    # Only the Lego brick above is practice; these are real tasks. The first one
-    # is where the participant is told the Lego did not count, and the second
-    # simply carries on -- so the wording is fixed per slot rather than left as a
-    # conditional for the experimenter to resolve mid-session.
+    # These are the real tasks. 
     for slot in range(1, TASKS_PER_SESSION + 1):
         part_id = f"task{slot}"
         part_title = f"Task {slot}"
         if slot == 1:
             intro_script = [
                 _say(
-                    "That was a practice round, to get used to how this works. Now "
-                    "we'll do the same thing for real, with a different object: "
-                    "{label}."
-                ),
-                _say(
-                    "Same shape as before -- a description first, then the model on the "
-                    "display, then the printed version."
+                    "Now that you've seen how this works on the mug, we'll do the same "
+                    "thing for real, with a different object."
                 ),
             ]
         else:
             intro_script = [
-                _say("Same again with one more object: {label}."),
-                _say("Description first, then the model on the display, then the print."),
+                _say("Now we will do the same thing again with one more object."),
             ]
-        steps.append(
-            {
-                "id": f"{part_id}.intro",
-                "part_id": part_id,
-                "part_title": part_title,
-                "title": "Introduce the object",
-                "script": intro_script,
-                "participant_text": "Your experimenter will introduce the next object.",
-                "task_slot": slot,
-            }
-        )
-        steps.extend(_pair_steps(part_id, part_title, "task", slot))
+        steps.extend(_pair_steps(part_id, part_title, "task", slot, intro_script=intro_script))
         steps.append(
             {
                 "id": f"{part_id}.rating",
@@ -926,7 +874,7 @@ def _build_steps() -> list[dict[str, Any]]:
             }
         )
 
-    # -- Part 8: post-session discussion -----------------------------------
+    # -- Post-session discussion -----------------------------------
     steps.append(
         {
             "id": "discussion.approach",

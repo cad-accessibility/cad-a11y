@@ -5,6 +5,17 @@
  * step, and moves through the protocol. The participant's view follows over the
  * same Server-Sent Events stream, so the two stay in step across two machines.
  *
+ * The home screen is deliberately just an identity summary (dl.session-summary).
+ * Everything else is a keyboard command: C shows the current step, S shows
+ * strategy prompts, J jumps to a step, H or ? lists every command. N (next)
+ * and B or P (back/previous) move the session on and then open the Current
+ * Step dialog, so the new step's script is on screen immediately rather than
+ * a separate C press away. R runs the study on this device; E ends the
+ * session. Each dialog follows the same accessible pattern as the participant
+ * viewer's Help/About/Settings dialogs (native <dialog> + showModal(),
+ * heading focus on open, Esc/backdrop to close) via makeInfoDialogController
+ * below.
+ *
  * Accessibility is not optional here. Experimenters on this project include
  * screen reader users, so every change of state reaches a live region, the
  * participant's readiness signal is announced rather than only lit up, and a
@@ -24,6 +35,7 @@
     const statusRegion = el('status-region');
     const startingSection = el('starting-section');
     const sessionSection = el('session-section');
+    const mainContent = el('main-content');
 
     let config = null;
     let state = null;
@@ -168,6 +180,80 @@
     }
 
     // -----------------------------------------------------------------------
+    // Dialogs — Current Step (C), Strategy Prompts (S), Jump to Step (J), and
+    // Help (H or ?). Same accessible pattern as the participant viewer's Help/
+    // About/Settings dialogs: native <dialog> + showModal() supplies focus
+    // containment, background inertness, and Escape-to-close for free; the one
+    // thing that isn't automatic is returning focus to whatever triggered the
+    // dialog once it closes, which is what each controller's `trigger` is for.
+    // See the ARIA APG pattern:
+    // https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/examples/dialog/
+    // -----------------------------------------------------------------------
+
+    function makeInfoDialogController(dialog, headingEl) {
+        let trigger = null;
+
+        function open() {
+            if (!dialog || !dialog.showModal || dialog.open) {
+                return;
+            }
+            trigger = document.activeElement;
+            if (mainContent) mainContent.setAttribute('aria-hidden', 'true');
+            dialog.showModal();
+            // showModal() defaults to focusing the first focusable element, which
+            // here is the Close button at the very end of the content — reading
+            // forward from there reads nothing. Per the ARIA APG dialog pattern, a
+            // read-only dialog like this one should instead land on a static
+            // element at the top (the heading, made focusable via tabindex="-1"),
+            // so reading forward covers the whole dialog.
+            if (headingEl) headingEl.focus({ preventScroll: true });
+        }
+
+        function close() {
+            if (!dialog || !dialog.open) {
+                return;
+            }
+            dialog.close();
+        }
+
+        function restoreAfterClose() {
+            if (mainContent) mainContent.removeAttribute('aria-hidden');
+            if (trigger && document.contains(trigger)) {
+                trigger.focus();
+            }
+            trigger = null;
+        }
+
+        if (dialog) {
+            // Cleanup after the dialog has actually closed. (Escape triggers
+            // `cancel`, whose default action closes the dialog and then fires
+            // `close`.)
+            dialog.addEventListener('close', restoreAfterClose);
+            // Clicking outside the dialog's own content (i.e. the backdrop, since
+            // <dialog> occupies the full viewport once open) closes it the same
+            // way Escape does.
+            dialog.addEventListener('click', function (e) {
+                if (e.target !== dialog) return;
+                dialog.close();
+            });
+        }
+
+        return { open, close };
+    }
+
+    const currentStepDialog = el('current-step-dialog');
+    const currentStepDialogController = makeInfoDialogController(currentStepDialog, el('current-step-heading'));
+    const strategyDialogController = makeInfoDialogController(el('strategy-dialog'), el('strategy-heading'));
+    const jumpDialogController = makeInfoDialogController(el('jump-dialog'), el('jump-heading'));
+    const helpDialogController = makeInfoDialogController(el('help-dialog'), el('help-heading'));
+
+    el('current-step-close-btn')?.addEventListener('click', () => currentStepDialogController.close());
+    el('strategy-close-btn')?.addEventListener('click', () => strategyDialogController.close());
+    el('jump-close-btn')?.addEventListener('click', () => jumpDialogController.close());
+    el('help-close-btn')?.addEventListener('click', () => helpDialogController.close());
+    el('help-btn')?.addEventListener('click', () => helpDialogController.open());
+
+    // -----------------------------------------------------------------------
     // Enrollment
     // -----------------------------------------------------------------------
 
@@ -208,11 +294,6 @@
         const pair = step.pair;
         const model = step.model;
 
-        const linkNode = el('participant-link');
-        if (linkNode) linkNode.textContent = `${location.origin}/study`;
-        const codeNode = el('participant-code');
-        if (codeNode) codeNode.textContent = state.participant_key || '--';
-
         const others = (state.active_sessions || []).filter(o => !o.is_current);
         const otherNotice = el('other-sessions-notice');
         if (otherNotice) {
@@ -236,6 +317,7 @@
 
         el('summary-participant').textContent = state.participant_code || '--';
         el('summary-session-number').textContent = String(state.session_number || '--');
+        el('summary-code').textContent = state.participant_key || '--';
         el('summary-tasks').textContent = (state.task_labels || []).join(', then ') || '--';
 
         const counts = state.counts || {};
@@ -312,7 +394,7 @@
         setList(el('facilitator-prompts'), step.facilitator_prompts || state.facilitator_prompts);
         setList(el('strategy-prompts'), step.strategy_prompts || state.strategy_prompts);
 
-        renderStepJump();
+        renderJumpList();
         renderReadiness();
     }
 
@@ -354,48 +436,58 @@
         }
     }
 
-    function renderStepJump() {
-        const select = el('step-jump');
-        if (!select) return;
-        const signature = (state.steps || []).map(function (s) { return s.id; }).join('|');
-        if (select.dataset.signature !== signature) {
-            select.innerHTML = '';
-            (state.steps || []).forEach(function (s) {
-                const option = document.createElement('option');
-                option.value = String(s.index);
-                option.textContent = `${s.index + 1}. ${s.part_title} — ${s.title}`;
-                select.appendChild(option);
+    /** The Jump to Step dialog's list: one button per step. Rebuilt only when
+     * the set of steps changes; the current step is marked (and disabled, since
+     * jumping to where you already are is a no-op) on every render instead. */
+    function renderJumpList() {
+        const list = el('jump-step-list');
+        if (!list) return;
+        const steps = state.steps || [];
+        const signature = steps.map(function (s) { return s.id; }).join('|');
+        if (list.dataset.signature !== signature) {
+            list.innerHTML = '';
+            steps.forEach(function (s) {
+                const item = document.createElement('li');
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.dataset.stepIndex = String(s.index);
+                button.dataset.label = `${s.index + 1}. ${s.part_title} — ${s.title}`;
+                button.addEventListener('click', function () {
+                    const index = Number(this.dataset.stepIndex);
+                    jumpDialogController.close();
+                    advance({ step_index: index });
+                });
+                item.appendChild(button);
+                list.appendChild(item);
             });
-            select.dataset.signature = signature;
+            list.dataset.signature = signature;
         }
-        select.value = String(state.step_index || 0);
+        Array.prototype.forEach.call(list.querySelectorAll('button'), function (button) {
+            const isCurrent = Number(button.dataset.stepIndex) === (state.step_index || 0);
+            button.disabled = isCurrent;
+            button.textContent = button.dataset.label + (isCurrent ? ' (current)' : '');
+            if (isCurrent) button.setAttribute('aria-current', 'step');
+            else button.removeAttribute('aria-current');
+        });
     }
 
-    function advance(payload, description) {
-        if (el('confirm-advance') && el('confirm-advance').checked) {
-            if (!window.confirm(`${description}?`)) return;
-        }
+    /** Move to another step. No confirmation: N/B/P/J act immediately, on the
+     * theory that pressing N/B/P or picking a step in the Jump dialog is
+     * already the deliberate action. Callers that want the Current Step
+     * dialog to follow the move do that themselves after calling this. */
+    function advance(payload) {
         api('/study/step/advance', { method: 'POST', body: JSON.stringify(payload) })
             .then(function (body) { applyState(body.state); })
             .catch(function (error) { announce(`Could not move step. ${error.message}`); });
     }
 
     el('next-step-btn')?.addEventListener('click', function () {
-        advance({ direction: 'next' }, 'Move to the next step');
+        advance({ direction: 'next' });
+        currentStepDialogController.open();
     });
     el('previous-step-btn')?.addEventListener('click', function () {
-        advance({ direction: 'previous' }, 'Go back to the previous step');
-    });
-    el('step-jump')?.addEventListener('change', function () {
-        advance({ step_index: Number(this.value) }, `Jump to step ${Number(this.value) + 1}`);
-    });
-
-    el('toggle-strategy-btn')?.addEventListener('click', function () {
-        const block = el('strategy-prompts-block');
-        const nowHidden = !block.hidden;
-        block.hidden = nowHidden;
-        this.setAttribute('aria-expanded', String(!nowHidden));
-        this.textContent = nowHidden ? 'Show strategy prompts' : 'Hide strategy prompts';
+        advance({ direction: 'previous' });
+        currentStepDialogController.open();
     });
 
     el('run-here-btn')?.addEventListener('click', function () {
@@ -424,8 +516,94 @@
     });
 
     // -----------------------------------------------------------------------
+    // Keyboard commands — C (current step), S (strategy prompts), J (jump to a
+    // step), N (next), B or P (back/previous), R (run study here), E (end
+    // session), H or ? (this list). Mirrors the participant viewer's global
+    // shortcut guard: not while typing in a field, and not while a dialog
+    // already owns focus (Escape and Tab must stay scoped to it) -- except N/
+    // B/P, which work even with a dialog open. Advancing is exactly the
+    // action that makes whatever dialog is currently showing stale, so rather
+    // than being blocked, N/B/P replace it with the Current Step dialog for
+    // the step just moved to.
+    // -----------------------------------------------------------------------
+
+    document.addEventListener('keydown', function (e) {
+        const target = e.target;
+        const tagName = target && target.tagName ? target.tagName.toLowerCase() : '';
+        const isTextEntryTarget = Boolean(
+            target && (target.isContentEditable || tagName === 'textarea' || tagName === 'input')
+        );
+        if (isTextEntryTarget) return;
+
+        // Leave browser/app shortcuts untouched (Cmd/Ctrl/Alt combos).
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+        const rawKey = String(e.key || '');
+        const key = rawKey.toLowerCase();
+        const isStepMoveKey = key === 'n' || key === 'b' || key === 'p';
+
+        const openDialog = document.querySelector('dialog[open]');
+        if (openDialog && !isStepMoveKey) return;
+
+        if (key === 'h' || rawKey === '?') {
+            e.preventDefault();
+            helpDialogController.open();
+            return;
+        }
+
+        // Everything else needs an active session: there is nothing to show or
+        // move through before one exists, and the nav buttons for these are
+        // hidden until then too.
+        if (sessionSection.hidden) return;
+
+        if (isStepMoveKey) {
+            e.preventDefault();
+            // Close whatever else is open first -- Current Step is the "next
+            // appropriate dialogue" for a step change, not an additional one
+            // stacked on top. Already-open Current Step is left alone; its
+            // content refreshes in place once the advance's state comes back.
+            if (openDialog && openDialog !== currentStepDialog) openDialog.close();
+            advance({ direction: key === 'n' ? 'next' : 'previous' });
+            currentStepDialogController.open();
+            return;
+        }
+
+        switch (key) {
+            case 'c':
+                e.preventDefault();
+                currentStepDialogController.open();
+                break;
+            case 's':
+                e.preventDefault();
+                strategyDialogController.open();
+                break;
+            case 'j':
+                e.preventDefault();
+                jumpDialogController.open();
+                break;
+            case 'r':
+                e.preventDefault();
+                el('run-here-btn')?.click();
+                break;
+            case 'e':
+                e.preventDefault();
+                el('end-session-btn')?.click();
+                break;
+            default:
+                break;
+        }
+    });
+
+    // -----------------------------------------------------------------------
     // State
     // -----------------------------------------------------------------------
+
+    function setNavButtonsVisible(visible) {
+        ['run-here-btn', 'previous-step-btn', 'next-step-btn', 'end-session-btn'].forEach(function (id) {
+            const button = el(id);
+            if (button) button.hidden = !visible;
+        });
+    }
 
     function applyState(next) {
         if (!next) return;
@@ -437,6 +615,7 @@
             // stray reload.
             startingSection.hidden = false;
             sessionSection.hidden = true;
+            setNavButtonsVisible(false);
             lastStepId = null;
             const heading = el('starting-heading');
             if (heading) heading.textContent = 'This session has ended';
@@ -451,29 +630,14 @@
 
         startingSection.hidden = true;
         sessionSection.hidden = false;
+        setNavButtonsVisible(true);
         renderSession();
 
         const stepId = (state.step || {}).id;
         if (stepId !== lastStepId) {
-            const wasFirstRender = lastStepId === null;
             lastStepId = stepId;
             status(`Step ${(state.step_index || 0) + 1} of ${state.step_count}: `
                    + `${(state.step || {}).title || ''}`);
-            // Move focus to the step heading on a real advance, so a screen
-            // reader user lands on the new script instead of hunting for it.
-            // Here that is right: the experimenter pressed Next, so the change
-            // is theirs and the focus should follow it. Not on the first render,
-            // which would yank focus away from the page heading the moment the
-            // panel loaded.
-            //
-            // Called directly, not through requestAnimationFrame: the heading is
-            // already laid out, and rAF does not run in a background tab -- the
-            // panel can easily be behind the participant's window, and the move
-            // would then fire whenever it next came forward.
-            if (!wasFirstRender) {
-                const target = el('current-step-heading');
-                if (target) target.focus();
-            }
         }
     }
 
@@ -528,8 +692,7 @@
     api('/study/config').then(function (body) {
         config = body;
         el('protocol-version').textContent =
-            `Protocol version ${config.version}. Each participant explores a practice `
-            + `Lego brick, then ${config.tasks_per_session} of the three model pairs.`;
+            `Protocol version ${config.version}. Each participant explores a mug, then ${config.tasks_per_session} of the three model pairs.`;
 
         // A reload continues the session this tab already owns; a fresh tab
         // starts one. Checked before starting, so refreshing mid-session cannot
