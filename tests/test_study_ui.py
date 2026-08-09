@@ -296,14 +296,17 @@ class TestStudyModeBehaviour:
         step_change = step_change[:step_change.index("\n    }\n")]
         assert "announce(" in step_change
 
-    def test_an_experimenter_driven_change_is_announced_briefly_not_in_full(self):
-        """An advance the participant did not ask for must not read the whole
-        step's instructions out over whatever they were already doing."""
+    def test_every_step_change_uses_one_consolidated_announcement(self):
+        """Self-triggered and experimenter-driven changes used to get
+        different announcements (full title+content vs. a step-and-title-only
+        version); that distinction was simplified away in favor of always
+        announcing the step number plus the participant-facing text (falling
+        back to the title for a step with none)."""
         js = STUDY_JS.read_text(encoding="utf-8")
-        brief_fn = js[js.index("function briefStepAnnouncement("):]
-        brief_fn = brief_fn[:brief_fn.index("\n    }")]
-        assert "state.text" not in brief_fn
-        assert "ownStepChange" in js and "wasActive" in js
+        step_fn = js[js.index("function stepAnnouncement("):]
+        step_fn = step_fn[:step_fn.index("\n    }")]
+        assert "state.text" in step_fn
+        assert "state.title" in step_fn
 
     def test_the_bridge_exposes_a_polite_announcer(self):
         js = VIEWER_JS.read_text(encoding="utf-8")
