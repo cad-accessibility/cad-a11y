@@ -580,7 +580,7 @@ def _build_steps() -> list[dict[str, Any]]:
             "title": "Set up the machine and the display",
             "script": [
                 _note(
-                    "Confirm the pin display is connected.d It connects over Bluetooth, "
+                    "Confirm the pin display is connected. It connects over Bluetooth, "
                     "which only works in Chrome, so it has to be Chrome. "
                 ),
                 _do("Check they are in Chrome, and help them pair the pin display."),
