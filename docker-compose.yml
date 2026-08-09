@@ -1,6 +1,12 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      # Override with `DOCKERFILE=Dockerfile.legacy docker compose up -d --build`
+      # on a host whose Docker is too old for BuildKit cache mounts — the main
+      # Dockerfile uses `RUN --mount=type=cache`, which older Docker fails to
+      # parse at all.
+      dockerfile: ${DOCKERFILE:-Dockerfile}
     restart: unless-stopped
     ports:
       - "${HOST_PORT:-8635}:6969"

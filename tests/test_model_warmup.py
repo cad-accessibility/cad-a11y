@@ -1,8 +1,12 @@
-"""Every model is processed up front, not when someone first opens it.
+"""A bounded number of models are processed up front, not when someone first opens them.
 
 Loading a mesh and precomputing its slice graphs is seconds of work. Doing it
 lazily meant whoever opened a model first paid for it, which on a tactile display
-is a silence with nothing to explain it.
+is a silence with nothing to explain it. But warming every model at boot doesn't
+scale as the model count grows and most of a large library may never be opened
+in a given deployment's lifetime, so only STARTUP_WARMUP_LIMIT models are queued
+at startup; the rest build on demand, same as a model that failed warmup already
+did.
 
 The constraint that shapes the design: this work is CPU-bound and Flask serves
 renders from other threads, so it has to yield. One model at a time, not a pool.
@@ -45,16 +49,32 @@ def test_warming_up_does_not_make_the_server_unhealthy(client, monkeypatch):
     assert response.get_json()["checks"]["warmup"]["complete"] is False
 
 
-def test_every_model_is_queued_at_startup(monkeypatch):
+def test_only_the_startup_limit_is_queued_at_startup(monkeypatch):
     queued = []
     monkeypatch.setattr(server, "enqueue_model_for_warmup", queued.append)
     monkeypatch.setattr(server, "_warmup_state", {"total": 0, "processed": 0,
                                                   "current": None, "started": False})
     monkeypatch.setattr(threading, "Thread", lambda *a, **k: type(
         "T", (), {"start": lambda self: None})())
+    monkeypatch.setattr(server, "STARTUP_WARMUP_LIMIT", 2)
+    assert len(server.AVAILABLE_MODELS) > 2, "test needs more models than the limit to be meaningful"
 
     server.start_model_warmup()
-    assert set(queued) == set(server.AVAILABLE_MODELS), "not every model was queued"
+    assert queued == list(server.AVAILABLE_MODELS)[:2], "startup queued something other than the first 2"
+
+
+def test_startup_limit_of_one_leaves_the_rest_to_build_on_demand(monkeypatch):
+    """The default: boot fast, warm one model, build everything else lazily."""
+    queued = []
+    monkeypatch.setattr(server, "enqueue_model_for_warmup", queued.append)
+    monkeypatch.setattr(server, "_warmup_state", {"total": 0, "processed": 0,
+                                                  "current": None, "started": False})
+    monkeypatch.setattr(threading, "Thread", lambda *a, **k: type(
+        "T", (), {"start": lambda self: None})())
+    monkeypatch.setattr(server, "STARTUP_WARMUP_LIMIT", 1)
+
+    server.start_model_warmup()
+    assert queued == list(server.AVAILABLE_MODELS)[:1]
 
 
 def test_starting_twice_does_not_queue_everything_again(monkeypatch):

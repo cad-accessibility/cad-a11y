@@ -331,6 +331,15 @@ DEFAULT_RENDER_PARAMS: dict[str, Any] = {
 # otherwise hold every mesh anyone had ever opened. Least recently used goes
 # first; rebuilding one is a mesh load, not a correctness problem.
 RENDERER_CACHE_MAX = int(os.getenv("RENDERER_CACHE_MAX", "24"))
+
+# Startup only warms this many models; the rest stay cold until the render path
+# builds them on demand the first time someone actually opens them (same
+# fallback that already covers a model a warmup pass failed on). Warming every
+# model up front doesn't scale as the model count grows, and most of a large
+# library may never be opened in a given deployment's lifetime. Uploads still
+# enqueue for warmup immediately via enqueue_model_for_warmup, independent of
+# this limit — it only bounds what start_model_warmup() does at boot.
+STARTUP_WARMUP_LIMIT = int(os.getenv("STARTUP_WARMUP_LIMIT", "1"))
 renderers_by_model: OrderedDict[str, CADComparisonRenderer] = OrderedDict()
 models_lock = threading.Lock()
 # Serialize all engine.render() calls, because matplotlib is not thread-safe:
@@ -648,7 +657,11 @@ def _warmup_worker() -> None:
 
 
 def start_model_warmup() -> None:
-    """Start the worker and hand it every model currently on disk."""
+    """Start the worker and hand it up to STARTUP_WARMUP_LIMIT models on disk.
+
+    The rest are left cold; the render path builds one the first time someone
+    actually asks for it, same as a model that failed warmup already did.
+    """
     with _warmup_state_lock:
         if _warmup_state["started"]:
             return
@@ -658,24 +671,29 @@ def start_model_warmup() -> None:
     with models_lock:
         models = list(AVAILABLE_MODELS)
 
-    # A fixed cache size smaller than the model count would otherwise have
+    to_warm = models[:STARTUP_WARMUP_LIMIT]
+
+    # A fixed cache size smaller than the warmup batch would otherwise have
     # warmup evict its own earlier work before anyone's even hit the server —
-    # raising it here, once, at startup, so warming every model at boot
-    # actually keeps every model warm. Applies only to what's on disk at
-    # startup; a later upload that pushes the count higher still can trigger
-    # ordinary LRU eviction, same as before this existed.
+    # raising it here, once, at startup, so warming a batch at boot actually
+    # keeps that batch warm. A later upload that pushes the count higher still
+    # can trigger ordinary LRU eviction, same as before this existed.
     global RENDERER_CACHE_MAX
-    if len(models) > RENDERER_CACHE_MAX:
+    if len(to_warm) > RENDERER_CACHE_MAX:
         _log(
-            f"Raising RENDERER_CACHE_MAX from {RENDERER_CACHE_MAX} to {len(models)} "
-            "so warming every model at startup doesn't evict its own work.",
+            f"Raising RENDERER_CACHE_MAX from {RENDERER_CACHE_MAX} to {len(to_warm)} "
+            "so warming the startup batch doesn't evict its own work.",
             force=True,
         )
-        RENDERER_CACHE_MAX = len(models)
+        RENDERER_CACHE_MAX = len(to_warm)
 
-    for model_path in models:
+    for model_path in to_warm:
         enqueue_model_for_warmup(model_path)
-    _log(f"Warming {len(models)} model(s) in the background", force=True)
+    _log(
+        f"Warming {len(to_warm)} of {len(models)} model(s) in the background at startup; "
+        "the rest build on demand when first requested.",
+        force=True,
+    )
 
 
 def _ensure_minimum_feature_thickness(mask: np.ndarray) -> np.ndarray:
