@@ -1406,20 +1406,20 @@ def health():
     # Cached: this endpoint is unauthenticated by design and polled every 30s by
     # the container healthcheck, and each probe writes and unlinks a file.
     #
-    # "logs" checks BRAILLE_LOG_PATH.parent — the directory the app actually
-    # resolved to and is using — not the hardcoded STUDY_LOG_DIR. The two can
-    # differ: _resolve_braille_log_path() already falls back to /tmp/cad-a11y/logs
-    # on a host where data/logs is not writable by the app user (root-owned bind
-    # mount, non-root container user, redeploy resets ownership, etc.), the same
-    # class of problem UPLOAD_DIR's own resolution (_resolve_upload_dir) already
-    # handles for uploads. Checking the un-resolved path here reported a
-    # deployment as unhealthy for a condition the app itself had already
-    # recovered from.
+    # "logs" deliberately checks STUDY_LOG_DIR, the real directory, and not the
+    # resolved BRAILLE_LOG_PATH.parent. Reporting the resolved path would make
+    # /health green whenever braille telemetry had fallen back to /tmp, and the
+    # fallback is not equivalent: /tmp is inside the container and is discarded
+    # on every redeploy, and study_db writes participant session logs to
+    # data/logs/study with no fallback at all, so they fail outright while the
+    # deployment still looked healthy. The entrypoint repairs the ownership that
+    # made the directory unwritable, so this reports a condition that is now
+    # fixable rather than one we have to live with.
     writable = {
         "models": _is_writable_directory_cached(MODEL_DIR),
         "uploads": _is_writable_directory_cached(UPLOAD_DIR),
         "renders": _is_writable_directory_cached(RENDERS_DIR),
-        "logs": _is_writable_directory_cached(BRAILLE_LOG_PATH.parent),
+        "logs": _is_writable_directory_cached(STUDY_LOG_DIR),
     }
 
     # Opening the file is the thing that failed in the 2026-07-22 outage, and it

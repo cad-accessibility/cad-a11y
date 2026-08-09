@@ -54,6 +54,12 @@ COPY builtin_models/ ./builtin_models/
 # are Docker-managed volumes and are not conveniently reachable from the host.
 COPY scripts/cleanup_ingest_models.py ./scripts/
 
+# Repairs volume ownership before dropping to the app user. chmod as a separate
+# RUN rather than COPY --chmod: the deploy host builds with the classic builder,
+# which does not support that flag.
+COPY scripts/docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 # Python block-buffers stdout when it is a pipe, which is what it is under
 # Docker. A long-running server therefore fills an 8 KB buffer that never
 # flushes, so `docker compose logs` shows nothing at all -- not the startup
@@ -66,11 +72,17 @@ RUN mkdir -p data/models data/uploads data/renders data/logs data/db
 
 # --- Non-root user ---
 # UID 48 matches the apache user the hosting NFS server grants write access to.
-# The chown must run before USER so it still executes as root.
+# The chown must run as root, so it stays ahead of the privilege drop.
 RUN useradd -d /home/apache -u 48 -m apache \
     && chown -R apache /project
 
-USER apache
+# Deliberately no USER line. The container starts as root so the entrypoint can
+# repair the ownership of volumes that Docker created owned by root, then drops
+# to UID 48 via setpriv before exec'ing the server. A USER line here would run
+# the whole container unprivileged and leave those volumes unwritable, which is
+# what blocked every deploy from 30 July onward. The server itself never runs as
+# root: see scripts/docker-entrypoint.sh.
+ENV HOME=/home/apache
 
 # --- Runtime ---
 
@@ -84,4 +96,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:6969/health || exit 1
 
 # Exec-form ENTRYPOINT for correct signal handling (SIGTERM reaches the process).
-ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "cad-a11y", "python", "-m", "app.server"]
+# The entrypoint exec's this command, so the server is still PID 1.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh", "conda", "run", "--no-capture-output", "-n", "cad-a11y", "python", "-m", "app.server"]

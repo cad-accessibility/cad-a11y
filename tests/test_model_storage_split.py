@@ -246,28 +246,40 @@ def test_health_degrades_when_storage_collapses(client, monkeypatch):
     assert payload["checks"]["storage_separated"] is False
 
 
-def test_health_checks_the_log_path_actually_in_use_not_the_default(client, monkeypatch, tmp_path):
-    """A host where data/logs is not writable by the app user is exactly what
-    _resolve_braille_log_path() already falls back for (root-owned bind mount,
-    non-root container user, redeploy resets ownership, etc.) — the same class
-    of problem UPLOAD_DIR's own resolution handles for uploads. /health used to
-    check the un-resolved STUDY_LOG_DIR directly, so a deployment that had
-    already recovered via the fallback was still reported unhealthy (503),
-    failing the container healthcheck and the deploy gate for a condition that
-    was not actually a problem.
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the mode bits this relies on")
+def test_health_reports_the_real_log_dir_not_the_braille_fallback(client, monkeypatch, tmp_path):
+    """An unwritable data/logs is degraded even once braille has fallen back.
+
+    The fallback is not equivalent to the real directory. /tmp/cad-a11y/logs
+    lives inside the container and is discarded on every redeploy, and
+    study_db writes participant session logs to data/logs/study with no
+    fallback at all, so those fail outright. Reporting the resolved path here
+    would turn /health green on a deployment that is quietly losing study
+    data, which is the one thing the endpoint exists to catch. The entrypoint
+    repairs the ownership that causes this, so it is now a real fault to
+    surface rather than a permanent condition to route around.
     """
     import app.server as server
 
-    unwritable = tmp_path / "not-a-real-dir" / "data" / "logs"
+    unwritable = tmp_path / "data" / "logs"
+    unwritable.mkdir(parents=True)
+    unwritable.chmod(0o500)
     fallback = tmp_path / "tmp-cad-a11y" / "logs"
     fallback.mkdir(parents=True)
+
     monkeypatch.setattr(server, "STUDY_LOG_DIR", unwritable)
     monkeypatch.setattr(server, "BRAILLE_LOG_PATH", fallback / "braille_send_events.jsonl")
+    server._writability_cache.clear()
 
-    response = client.get("/health")
+    try:
+        response = client.get("/health")
 
-    assert response.status_code == 200
-    assert response.get_json()["checks"]["writable"]["logs"] is True
+        assert response.status_code == 503
+        assert response.get_json()["checks"]["writable"]["logs"] is False
+    finally:
+        # Restore so pytest's tmp_path cleanup can remove it.
+        unwritable.chmod(0o700)
+        server._writability_cache.clear()
 
 
 def test_health_degrades_when_the_database_cannot_be_opened(client, monkeypatch, tmp_path):
