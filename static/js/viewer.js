@@ -354,10 +354,12 @@ async function sendStateToServer() {
                 if (isActiveModelLoadTask(activeModelLoadTask)) {
                     // One announcement per event: two calls in the same tick would
                     // land in the two swap slots and the first would be blanked
-                    // before AT reads it. Silent for a study load  -- the
+                    // before AT reads it. Silent for a study load -- the
                     // one consolidated step announcement already covers it, and
                     // the task still needs clearing either way.
-                    announce(`${activeModelLoadTask.label} loaded. Tactile preview ready.`);
+                    if (activeModelLoadTask.source !== 'study') {
+                        announce(`${activeModelLoadTask.label} loaded. Tactile preview ready.`);
+                    }
                     clearModelLoadTask(activeModelLoadTask);
                 }
             }

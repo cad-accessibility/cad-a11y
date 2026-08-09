@@ -360,8 +360,8 @@
             // unwelcome on top of whatever the participant was doing. Press C
             // for the full announcement either way.
             const ownStepChange = consumeExpectingOwnStepChange();
-            if (window.cadStudy.announcePolite) {
-                window.cadStudy.announcePolite(stepAnnouncement(state));
+            if (window.cadStudy.announce) {
+                window.cadStudy.announce(stepAnnouncement(state));
             }
         }
     }
@@ -444,7 +444,7 @@
     function goBack() {
         if (!sessionActive) return;
         if (!isSolo()) {
-            window.cadStudy.announcePolite('Only your experimenter can move back a step.');
+            window.cadStudy.announce('Only your experimenter can move back a step.');
             return;
         }
         expectOwnStepChange();
@@ -457,7 +457,7 @@
                 participant_key: participantKey || undefined,
             }),
         }).catch(function () {
-            window.cadStudy.announcePolite('Could not go back. Please try again.');
+            window.cadStudy.announce('Could not go back. Please try again.');
         });
     }
 
@@ -465,7 +465,7 @@
      * state, so it is always available regardless of mode. */
     function repeatStep() {
         if (!sessionActive || !lastState) return;
-        window.cadStudy.announcePolite(stepAnnouncement(lastState));
+        window.cadStudy.announce(stepAnnouncement(lastState));
     }
 
     document.addEventListener('keydown', function (e) {
