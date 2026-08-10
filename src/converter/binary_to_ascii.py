@@ -151,20 +151,13 @@ def _write_ascii_stl(solid_name: str, triangles: list):
         f.write("  endfacet\n")
 
     f.write(f"endsolid {solid_name}\n")
-
-    return f
+    # change stringIO into string
+    f_text = f.getvalue()
+    return f_text
 
 def execute(file):
     if not file:
          raise ValueError("Could not find input STL file. Please provide a valid .stl file.")
-
-    # if not os.path.exists(stl_path):
-    #     return f"Error: File not found: {stl_path}"
-
-    # file_size = os.path.getsize(input_file)
-    # if file_size < 84:
-
-         # return "Error: File is too small to be a valid STL file (minimum 84 bytes for binary STL)"
 
     if _is_ascii_stl_upload(file):
         return file
@@ -184,6 +177,3 @@ def execute(file):
         raise ValueError(f"Error writing ASCII STL: {e}")
 
     return new_file
-
-    #     f"Successfully converted binary STL to ASCII STL.\n"
-    #     f"  Solid name: {solid_name}\n"
