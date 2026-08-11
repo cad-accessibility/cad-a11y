@@ -571,6 +571,36 @@ class TestControlPanelBehaviour:
         assert "const isStepMoveKey = key === 'n' || key === 'b' || key === 'p';" in js
         assert "if (openDialog && openDialog !== currentStepDialog) openDialog.close();" in js
 
+    def test_next_finishes_the_session_on_the_last_step(self):
+        """Next on the last step used to do nothing, leaving the only way to
+        close a session as a separate End button the script asks the
+        experimenter to remember. Across the two deployed servers, twelve of
+        fourteen sessions were still open."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "function nextOrFinish()" in js
+        assert "function onLastStep()" in js
+        assert "endSession('That was the last step" in js
+        # The keyboard route must not be the one that leaves sessions open.
+        assert "nextOrFinish();" in js
+        assert "advance({ direction: key === 'n' ? 'next' : 'previous' });" not in js
+
+    def test_the_button_says_which_of_the_two_it_will_do(self):
+        """Whether Next advances or ends the session must not have to be
+        inferred from the step number."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "onLastStep() ? 'Finish session' : 'Next'" in js
+
+    def test_finishing_still_confirms_first(self):
+        """Ending is irreversible, so the gesture that ends it keeps the same
+        confirmation the End button has."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        block = js[js.index("function endSession("):js.index("el('end-session-btn')")]
+        assert "window.confirm(prompt)" in block
+
+    def test_help_documents_that_n_finishes(self):
+        html = CONTROL_HTML.read_text(encoding="utf-8")
+        assert "finish the session when you are on the last one" in html
+
     def test_logging_health_is_reported_in_words(self):
         """A degraded log must not be conveyed by colour alone."""
         js = CONTROL_JS.read_text(encoding="utf-8")

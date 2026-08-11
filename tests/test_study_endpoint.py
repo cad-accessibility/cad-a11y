@@ -8,6 +8,7 @@ and the answer key reaching the participant's browser.
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 
 import pytest
 
@@ -34,6 +35,9 @@ def study_env(tmp_path, monkeypatch):
         {"db_writes": 0, "db_reads": 0, "jsonl_writes": 0, "last_error": None}
     )
     study_module._ready_signals.clear()
+    # The idle sweep throttles itself with a module-level timestamp, so it has
+    # to be reset or one test's sweep suppresses the next test's.
+    study_module._last_sweep_at = 0.0
     study_db.init_db()
     yield tmp_path
     study_db._local.__dict__.clear()
@@ -895,6 +899,167 @@ class TestModelSets:
         response = _start(client, task_order=["cane_tip", "coat_rack"])
         assert response.status_code == 400
         assert "coat_rack" in response.get_json()["message"]
+
+
+class TestAbandonedSessionsAreClosed:
+    """Sessions nobody closed.
+
+    A session ends when the experimenter presses End, or when a solo
+    participant finishes the last step. Neither happens if the panel tab is just
+    closed, and on both deployed servers that is what usually happened: 12 of 14
+    sessions were still 'active', one stuck at step 19 of 22 and several at step
+    0 for days. Every one was reported to the next experimenter as a session
+    running on that model set.
+    """
+
+    def _age_session(self, session_id, seconds):
+        """Backdate everything that counts as activity for this session."""
+        old = study_db._parse(study_db.now())
+        assert old is not None
+        stamp = (old - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        conn = study_db._get_conn()
+        conn.execute(
+            "UPDATE study_sessions SET started_at = ?, step_started_at = ? WHERE id = ?",
+            (stamp, stamp, session_id),
+        )
+        conn.execute(
+            "UPDATE study_events SET created_at = ? WHERE study_session_id = ?",
+            (stamp, session_id),
+        )
+        conn.execute(
+            "UPDATE study_renders SET created_at = ? WHERE study_session_id = ?",
+            (stamp, session_id),
+        )
+        conn.commit()
+
+    def test_a_long_idle_session_is_closed(self, client):
+        state = _start(client).get_json()["state"]
+        session_id = state["study_session_id"]
+        self._age_session(session_id, 13 * 3600)
+
+        closed = study_module.sweep_idle_sessions(force=True)
+        assert [int(c["id"]) for c in closed] == [session_id]
+        assert study_db.get_study_session(session_id)["status"] == "abandoned"
+
+    def test_it_is_abandoned_never_completed(self, client):
+        """The distinction is not cosmetic. A completed session counts as having
+        used its model set, so inventing one for a session nobody finished would
+        quietly take a cell out of the counterbalanced design."""
+        state = _start(client, task_order=["cane_tip", "lego"]).get_json()["state"]
+        self._age_session(state["study_session_id"], 13 * 3600)
+        study_module.sweep_idle_sessions(force=True)
+
+        assert study_db.get_study_session(state["study_session_id"])["status"] == "abandoned"
+        sets = {
+            entry["id"]: entry
+            for entry in client.get("/study/sets", headers=_auth()).get_json()["sets"]
+        }
+        assert sets["cane_tip+lego"]["used"] is False
+        assert sets["cane_tip+lego"]["in_progress"] == 0
+
+    def test_a_live_session_is_left_alone(self, client):
+        """The one bug here that would cost real data is closing a session
+        somebody is sitting in front of."""
+        state = _start(client).get_json()["state"]
+        assert study_module.sweep_idle_sessions(force=True) == []
+        assert study_db.get_study_session(state["study_session_id"])["status"] == "active"
+
+    def test_recent_activity_keeps_a_session_alive(self, client):
+        """Liveness is the last thing that happened in the session, not when it
+        started. A session running past the timeout must not be closed under the
+        participant."""
+        state = _start(client).get_json()["state"]
+        session_id = state["study_session_id"]
+        self._age_session(session_id, 13 * 3600)
+        # One interaction, now.
+        client.post(
+            f"/study/event?s={_key(session_id)}",
+            json={"event_type": "keyboard", "event_data": {"key": "r"}},
+        )
+
+        assert study_module.sweep_idle_sessions(force=True) == []
+        assert study_db.get_study_session(session_id)["status"] == "active"
+
+    def test_closing_keeps_every_recorded_interaction(self, client):
+        """Nothing is deleted. A session that ran for an hour before being
+        abandoned keeps its whole record; all that changes is that it stops
+        claiming to be in progress."""
+        state = _start(client).get_json()["state"]
+        session_id = state["study_session_id"]
+        for _ in range(5):
+            client.post(
+                f"/study/event?s={_key(session_id)}",
+                json={"event_type": "keyboard", "event_data": {"key": "i"}},
+            )
+        before = study_db.session_counts(session_id)["events"]
+        self._age_session(session_id, 13 * 3600)
+        study_module.sweep_idle_sessions(force=True)
+
+        after = study_db.session_counts(session_id)["events"]
+        assert after >= before, "closing a session must not remove its events"
+        keys = [
+            e
+            for e in study_db.export_session(session_id)["events"]
+            if e["event_type"] == "keyboard"
+        ]
+        assert len(keys) == 5
+
+    def test_the_closure_says_it_was_automatic(self, client):
+        """A session closed by disuse must read differently in the log from one
+        an experimenter deliberately ended."""
+        state = _start(client).get_json()["state"]
+        session_id = state["study_session_id"]
+        self._age_session(session_id, 13 * 3600)
+        study_module.sweep_idle_sessions(force=True)
+
+        ends = [
+            e
+            for e in study_db.export_session(session_id)["events"]
+            if e["event_type"] == "session_end"
+        ]
+        assert ends, "no session_end recorded"
+        assert ends[-1]["event_data"]["closed_automatically"] is True
+        assert ends[-1]["source"] == "server"
+
+    def test_the_sweep_is_throttled(self, client):
+        """It runs from ordinary requests, so it must not rescan on every poll."""
+        study_module.sweep_idle_sessions(force=True)
+        state = _start(client).get_json()["state"]
+        self._age_session(state["study_session_id"], 13 * 3600)
+        # Not forced, and one just ran: this must be a no-op.
+        assert study_module.sweep_idle_sessions() == []
+        assert study_db.get_study_session(state["study_session_id"])["status"] == "active"
+
+    def test_the_timeout_is_configurable(self, client, monkeypatch):
+        monkeypatch.setenv("STUDY_SESSION_IDLE_HOURS", "2")
+        assert study_module.idle_timeout_seconds() == 7200
+
+    @pytest.mark.parametrize("bad", ["", "nonsense", "0", "-3"])
+    def test_a_broken_timeout_falls_back_rather_than_closing_everything(
+        self, client, monkeypatch, bad
+    ):
+        """A zero or unparseable setting must not mean "close every session"."""
+        monkeypatch.setenv("STUDY_SESSION_IDLE_HOURS", bad)
+        assert study_module.idle_timeout_seconds() == int(12 * 3600)
+
+    def test_an_unreadable_timestamp_leaves_the_session_alone(self, client):
+        """Closing a session because its clock is unreadable is the one failure
+        here that would cost a live session."""
+        state = _start(client).get_json()["state"]
+        session_id = state["study_session_id"]
+        conn = study_db._get_conn()
+        conn.execute(
+            "UPDATE study_sessions SET started_at = ?, step_started_at = ? WHERE id = ?",
+            ("not-a-timestamp", None, session_id),
+        )
+        conn.execute(
+            "UPDATE study_events SET created_at = ? WHERE study_session_id = ?",
+            ("not-a-timestamp", session_id),
+        )
+        conn.commit()
+
+        assert study_module.sweep_idle_sessions(force=True) == []
+        assert study_db.get_study_session(session_id)["status"] == "active"
 
 
 class TestConfig:

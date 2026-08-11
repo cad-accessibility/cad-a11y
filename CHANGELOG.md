@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-08-11
+
+#### Fixed
+*   Sessions now close when the experimenter reaches the end of them. "Next" on the final step used to do nothing at all, which left the only way to close a session as a separate "End" button that the last step asks you to remember. On the two deployed servers, twelve of fourteen sessions were still sitting open, one of them nineteen steps into a twenty-two step protocol. "Next" on the last step now reads "Finish session" and closes the record, after asking first.
+*   Sessions that were started and walked away from no longer claim to be in progress forever. A session with no activity for twelve hours is marked as abandoned, which is what it is. Nothing is deleted: it keeps every interaction it recorded, and it simply stops being offered to the next experimenter as a session running on that set of models. The wait can be changed with `STUDY_SESSION_IDLE_HOURS`.
+*   An abandoned session is never counted as having used its models. Only a session someone actually finished does, so a run that was cut short leaves its combination free for the next participant rather than quietly dropping it out of the balanced design.
+
 ### 2026-08-10
 
 #### Changed

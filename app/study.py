@@ -64,6 +64,7 @@ import os
 import queue as _queue_module
 import secrets
 import threading
+import time
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
@@ -655,6 +656,78 @@ def study_config():
     return jsonify(payload), 200
 
 
+# ---------------------------------------------------------------------------
+# Closing sessions nobody closed
+#
+# A session ends when the experimenter presses End, or -- in a solo session --
+# when the participant finishes the last step. Neither happens if the panel tab
+# is simply closed, and on both deployed servers that is what usually happened:
+# of 14 sessions across staging and production, 12 were still 'active', one of
+# them stuck at step 19 of 22 and one at step 0 for three days. They are not
+# running, but every one of them was reported to the next experimenter as a
+# session in progress on that model set.
+#
+# So sessions are also closed by disuse. The sweep is lazy rather than a
+# background thread: this server is a handful of requests an hour during a
+# session and none between, so a thread would spend its life asleep, and a
+# thread that dies takes the cleanup with it silently. Throttled, because
+# otherwise every poll of the panel would re-scan.
+# ---------------------------------------------------------------------------
+
+# Twelve hours. A session is 60-90 minutes and produces events throughout, so
+# this is far beyond any real gap; the point is to catch the abandoned ones by
+# the next working day, not to reclaim them promptly.
+_DEFAULT_IDLE_HOURS = 12.0
+
+_last_sweep_at: float = 0.0
+_sweep_lock = threading.Lock()
+_SWEEP_INTERVAL_SECONDS = 300
+
+
+def idle_timeout_seconds() -> int:
+    """How long an active session may go quiet before it is treated as gone."""
+    raw = os.getenv("STUDY_SESSION_IDLE_HOURS", "").strip()
+    try:
+        hours = float(raw) if raw else _DEFAULT_IDLE_HOURS
+    except ValueError:
+        hours = _DEFAULT_IDLE_HOURS
+    # Zero or negative would close sessions the moment they were created.
+    if hours <= 0:
+        hours = _DEFAULT_IDLE_HOURS
+    return int(hours * 3600)
+
+
+def sweep_idle_sessions(*, force: bool = False) -> list[dict[str, Any]]:
+    """Close abandoned sessions, at most once every few minutes.
+
+    Never raises: this runs at the top of ordinary requests, and a cleanup fault
+    must not take down the panel or the participant's page with it.
+    """
+    global _last_sweep_at
+    with _sweep_lock:
+        now_ts = time.monotonic()
+        if not force and now_ts - _last_sweep_at < _SWEEP_INTERVAL_SECONDS:
+            return []
+        _last_sweep_at = now_ts
+
+    try:
+        closed = study_db.close_idle_sessions(idle_timeout_seconds())
+    except Exception as error:  # noqa: BLE001 - counted, never fatal
+        study_db.note_external_failure(error)
+        return []
+    for session in closed:
+        logger.info(
+            "study: closed abandoned session %s (%s), idle %ss",
+            session.get("id"),
+            session.get("participant_code"),
+            session.get("idle_seconds"),
+        )
+        # A panel or participant page still attached is told, rather than being
+        # left showing a session the database no longer considers open.
+        _broadcast(study_db.get_study_session(int(session["id"])))
+    return closed
+
+
 def task_set_status() -> dict[str, Any]:
     """Which model sets this round has already run, and which are still to do.
 
@@ -677,6 +750,11 @@ def task_set_status() -> dict[str, Any]:
     sessions are running on that set right now. Two panels open at once both see
     the same free sets, and without this they would both pick the first one.
     """
+    # Before counting, not after: an abandoned session that still says it is
+    # active is exactly what makes "running on it now" untrustworthy, and this
+    # is the screen where that claim is acted on.
+    sweep_idle_sessions()
+
     sets = study_protocol.task_sets()
     completed = study_db.count_task_orders("completed")
 
@@ -756,6 +834,10 @@ def study_session_start():
         return jsonify({"status": "error", "message": "session_number must be a number"}), 400
     if session_number < 1:
         return jsonify({"status": "error", "message": "session_number must be 1 or more"}), 400
+
+    # Tidy before enrolling, so a new session is not started alongside a row of
+    # abandoned ones that will be reported to this experimenter as running.
+    sweep_idle_sessions()
 
     participant = study_db.create_participant(code or None)
     code = str(participant["code"])

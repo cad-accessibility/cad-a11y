@@ -483,6 +483,12 @@
 
         renderLoggingHealth();
 
+        // The button says which of the two things it will do, so an
+        // experimenter is not asked to infer from the step number that Next has
+        // become the end of the session.
+        const nextButton = el('next-step-btn');
+        if (nextButton) nextButton.textContent = onLastStep() ? 'Finish session' : 'Next';
+
         el('step-progress').textContent =
             `Step ${(state.step_index || 0) + 1} of ${state.step_count || 1}`;
         el('step-part').textContent = `${step.part_title || ''} — ${step.title || ''}`;
@@ -615,10 +621,31 @@
             .catch(function (error) { announce(`Could not move step. ${error.message}`); });
     }
 
-    el('next-step-btn')?.addEventListener('click', function () {
+    /** True when the session is sitting on the last step of the protocol. */
+    function onLastStep() {
+        if (!state || !state.step_count) return false;
+        return (state.step_index || 0) >= state.step_count - 1;
+    }
+
+    /** Next, or Finish when there is nowhere further to go.
+     *
+     * Pressing Next on the last step used to do nothing at all, which left the
+     * only way to close a session as a separate End button the last step's
+     * script asks the experimenter to remember. They did not: across the two
+     * deployed servers, twelve of fourteen sessions were still open, one of
+     * them at step 19 of 22. Carrying on forwards is the gesture people
+     * actually make, so it is the one that finishes the session.
+     */
+    function nextOrFinish() {
+        if (onLastStep()) {
+            endSession('That was the last step. End the session and close the record?');
+            return;
+        }
         advance({ direction: 'next' });
         currentStepDialogController.open();
-    });
+    }
+
+    el('next-step-btn')?.addEventListener('click', nextOrFinish);
     el('previous-step-btn')?.addEventListener('click', function () {
         advance({ direction: 'previous' });
         currentStepDialogController.open();
@@ -639,14 +666,18 @@
             .catch(function (error) { announce(`Could not switch modes. ${error.message}`); });
     });
 
-    el('end-session-btn')?.addEventListener('click', function () {
-        if (!window.confirm('End this session? The record is closed and cannot be reopened.')) return;
+    function endSession(prompt) {
+        if (!window.confirm(prompt)) return;
         api('/study/session/end', { method: 'POST', body: JSON.stringify({ status: 'completed' }) })
             .then(function () {
                 announce('Session ended and recorded.');
                 refreshOnce();
             })
             .catch(function (error) { announce(`Could not end the session. ${error.message}`); });
+    }
+
+    el('end-session-btn')?.addEventListener('click', function () {
+        endSession('End this session? The record is closed and cannot be reopened.');
     });
 
     // -----------------------------------------------------------------------
@@ -697,7 +728,14 @@
             // stacked on top. Already-open Current Step is left alone; its
             // content refreshes in place once the advance's state comes back.
             if (openDialog && openDialog !== currentStepDialog) openDialog.close();
-            advance({ direction: key === 'n' ? 'next' : 'previous' });
+            if (key === 'n') {
+                // Same as the Next button, finish included: the keyboard route
+                // through the protocol must not be the one that leaves sessions
+                // open.
+                nextOrFinish();
+                return;
+            }
+            advance({ direction: 'previous' });
             currentStepDialogController.open();
             return;
         }

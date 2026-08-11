@@ -630,6 +630,89 @@ def get_session_by_key(participant_key: str) -> dict[str, Any] | None:
         return None
 
 
+def stale_active_sessions(max_idle_seconds: int) -> list[dict[str, Any]]:
+    """Active sessions that have shown no sign of life for ``max_idle_seconds``.
+
+    Liveness is the last thing that happened *in* the session, not when it
+    started: the newest event or render belonging to it, falling back to when
+    its current step began and then to when it began. A session being run right
+    now produces events constantly -- keypresses, renders, step advances -- so a
+    gap of hours means nobody is there.
+
+    Read-only. ``close_idle_sessions`` is what acts on the answer.
+    """
+    try:
+        rows = _get_conn().execute(
+            """SELECT s.id, s.participant_code, s.task_order, s.step_index,
+                      MAX(
+                          COALESCE((SELECT MAX(created_at) FROM study_events
+                                    WHERE study_session_id = s.id), ''),
+                          COALESCE((SELECT MAX(created_at) FROM study_renders
+                                    WHERE study_session_id = s.id), ''),
+                          COALESCE(s.step_started_at, ''),
+                          COALESCE(s.started_at, '')
+                      ) AS last_at
+               FROM study_sessions s
+               WHERE s.status = 'active'"""
+        ).fetchall()
+    except Exception as error:  # noqa: BLE001 - counted, never fatal
+        _note_failure("db_reads", error)
+        return []
+
+    cutoff = _parse(now())
+    stale: list[dict[str, Any]] = []
+    for row in rows:
+        last = _parse(row["last_at"])
+        # An unparseable or missing timestamp is left alone rather than treated
+        # as infinitely old. Closing a session because its clock is unreadable
+        # would be the one bug here that costs a live session.
+        if last is None or cutoff is None:
+            continue
+        idle = (cutoff - last).total_seconds()
+        if idle >= max_idle_seconds:
+            entry = dict(row)
+            try:
+                entry["task_order"] = json.loads(entry.get("task_order") or "[]")
+            except (TypeError, ValueError):
+                entry["task_order"] = []
+            entry["idle_seconds"] = int(idle)
+            stale.append(entry)
+    return stale
+
+
+def close_idle_sessions(max_idle_seconds: int) -> list[dict[str, Any]]:
+    """Mark long-idle active sessions as abandoned, and return what was closed.
+
+    'abandoned', never 'completed'. The difference is not cosmetic: a completed
+    session counts as having used its model set, and inventing that for a
+    session nobody finished would quietly take a cell out of the counterbalanced
+    design. Abandoning says what actually happened -- it was started and left.
+
+    Nothing is deleted, and no event rows are touched. A session that ran for an
+    hour before being abandoned keeps every one of its events and its JSONL log;
+    all that changes is that it stops claiming to be in progress.
+    """
+    closed: list[dict[str, Any]] = []
+    for session in stale_active_sessions(max_idle_seconds):
+        session_id = int(session["id"])
+        # Recorded before the status change, so the log of a session that was
+        # closed automatically reads differently from one an experimenter ended.
+        record_event(
+            session_id,
+            "session_end",
+            source="server",
+            event_data={
+                "status": "abandoned",
+                "reason": "no activity for %d seconds" % session["idle_seconds"],
+                "closed_automatically": True,
+            },
+            step_index=int(session.get("step_index") or 0),
+        )
+        complete_session(session_id, status="abandoned")
+        closed.append(session)
+    return closed
+
+
 def count_task_orders(status: str = "completed") -> dict[str, int]:
     """How many sessions of ``status`` ran each task order, keyed by the order
     joined with ``+``.
