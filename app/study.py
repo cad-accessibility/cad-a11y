@@ -404,7 +404,7 @@ def _participant_model(step: dict[str, Any] | None) -> dict[str, Any] | None:
     if not stem or _model_index(stem) is None:
         return None
     version = model.get("version")
-    label = {"a": "First object", "b": "Second object"}.get(str(version), "Practice model")
+    label = {"a": "First object", "b": "Second object"}.get(str(version), "Object")
     return {"stem": stem, "label": label}
 
 
@@ -655,6 +655,63 @@ def study_config():
     return jsonify(payload), 200
 
 
+def task_set_status() -> dict[str, Any]:
+    """Which model sets this round has already run, and which are still to do.
+
+    A round is the six sets run once each. "Used" is not a stored flag -- there
+    is nothing to keep in step and nothing to reset -- it is derived from the
+    completed sessions in the database: a set counts as used when it has been
+    completed more often than the least-run set has. So the moment every set has
+    been through once, they are all level again and the whole list comes back
+    unstruck, which is the fresh round. Nobody has to notice the rollover or
+    press anything to make it happen.
+
+    Deriving it also means the two things that go wrong in a study do the right
+    thing on their own. A session started and abandoned did not consume its set,
+    because only completed sessions are counted. And an experimenter who has to
+    deviate -- a print is missing, the participant saw one of these in a pilot --
+    just picks a struck-through set; the counts absorb it, and the list keeps
+    telling the truth about what has actually been run.
+
+    ``in_progress`` is the one thing not derived from history: it is how many
+    sessions are running on that set right now. Two panels open at once both see
+    the same free sets, and without this they would both pick the first one.
+    """
+    sets = study_protocol.task_sets()
+    completed = study_db.count_task_orders("completed")
+
+    running: dict[str, int] = {}
+    for other in study_db.list_active_sessions():
+        key = study_protocol.set_id(other.get("task_order") or [])
+        running[key] = running.get(key, 0) + 1
+
+    counts = [completed.get(entry["id"], 0) for entry in sets]
+    # The least-run set defines the current round. Every set level with it is
+    # still to do; anything above it has been used since the last rollover.
+    floor = min(counts) if counts else 0
+    return {
+        "round": floor + 1,
+        "sets_per_round": len(sets),
+        "remaining": sum(1 for count in counts if count == floor),
+        "sets": [
+            {
+                **entry,
+                "completed_count": completed.get(entry["id"], 0),
+                "used": completed.get(entry["id"], 0) > floor,
+                "in_progress": running.get(entry["id"], 0),
+            }
+            for entry in sets
+        ],
+    }
+
+
+@study_bp.route("/study/sets", methods=["GET"])
+@require_token
+def study_sets():
+    """The model sets the experimenter chooses from when starting a session."""
+    return jsonify(task_set_status()), 200
+
+
 @study_bp.route("/study/state", methods=["GET"])
 def study_state():
     """Current state. Returns the experimenter view when a valid token is present
@@ -707,7 +764,20 @@ def study_session_start():
     known_pairs = set(protocol.get("model_pairs", {}))
     requested_order = data.get("task_order")
     if isinstance(requested_order, list) and requested_order:
-        task_order = [str(key) for key in requested_order if str(key) in known_pairs]
+        task_order = [str(key) for key in requested_order]
+        # All or nothing. Unknown names used to be filtered out and the rest
+        # accepted, so a request naming a pair the protocol no longer has -- a
+        # stale panel, a bookmarked call, the coat rack after it was retired --
+        # started a session one task short instead of failing, and the shortfall
+        # was only visible as a task 2 that put nothing on the display.
+        unknown = [key for key in task_order if key not in known_pairs]
+        if unknown:
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": f"task_order names unknown model pairs: {', '.join(unknown)}",
+                }
+            ), 400
     else:
         task_order = study_protocol.assign_task_order(int(participant["id"]))
     if not task_order:

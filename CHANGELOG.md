@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-08-10
+
+#### Changed
+*   The objects in the study have changed. The Lego brick is now one of the objects a participant is asked to explore and compare, rather than the warm-up it used to be, and the coat rack has been taken out. The three objects are now the Lego brick, the pencil holder and the cane tip, and each participant still gets two of them. The coat rack's models still ship with the app; they are simply not part of a session any more.
+*   The experimenter now chooses which two objects a participant gets, instead of the panel deciding. Opening the control panel lists all six combinations, and picking one starts the session on it. This is the only thing the panel asks for before a session begins.
+*   Combinations that have already been run are struck through in that list, and each one says in words that it has been run, so the list is as clear read aloud as it is on screen. It also says when a session is running on a combination right now, which is what stops two experimenters starting on the same one at the same time.
+*   Once every combination has been run, the list comes back with all six available again as a new round. Nothing has to be reset, and nobody has to keep count: the list is worked out from the sessions that have actually been completed. A session that was started and then abandoned does not use up its combination, and a combination deliberately run twice is shown as run twice rather than quietly evened out.
+*   A combination that has already been run can still be picked. It is marked, not blocked, so an experimenter can deviate when they have to, for a missing print or a participant who has seen one of the objects before.
+*   Starting a session on an object the study no longer has is now refused outright. It used to be accepted with the unknown object silently dropped, which produced a session one task short, and the only sign of it was a second task that put nothing on the display.
+
 ### 2026-08-07
 
 #### Added

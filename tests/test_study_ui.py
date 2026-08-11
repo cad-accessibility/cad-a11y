@@ -449,13 +449,60 @@ class TestControlPanelBehaviour:
         html = CONTROL_HTML.read_text(encoding="utf-8")
         assert 'id="token' not in html
 
-    def test_opening_the_panel_starts_a_session(self):
+    def test_opening_the_panel_asks_for_the_model_set_then_starts(self):
+        """Which two objects the participant gets is the one thing starting a
+        session needs a human to answer, so it is the whole of the opening
+        screen. The old enrolment form asked for things the protocol had already
+        decided; none of it should have come back with the picker."""
         js = CONTROL_JS.read_text(encoding="utf-8")
-        assert "function startSession()" in js
+        assert "function showSetPicker()" in js
+        assert "function startSession(taskOrder" in js
+        assert "'/study/sets'" in js
         assert "enrollment-form" not in js, "the enrolment form should be gone"
         html = CONTROL_HTML.read_text(encoding="utf-8")
         assert 'id="enrollment-form"' not in html
         assert "Start session" not in html
+
+    def test_the_chosen_set_is_what_the_session_starts_on(self):
+        """A picker that did not send the choice would look right and quietly
+        run the rotation's set instead."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "JSON.stringify({ task_order: taskOrder })" in js
+        assert "startSession(entry.task_order" in js
+
+    def test_used_sets_say_so_rather_than_only_being_struck_through(self):
+        """A line through text is decoration: it reaches nobody using a screen
+        reader. Whatever it means has to be in the button's text too."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "already run once this round" in js
+        assert "set-choice-note" in js
+        css = _css_rules(CONTROL_CSS)
+        assert ".set-choice.is-used .set-choice-label" in css
+        assert "line-through" in css
+
+    def test_a_used_set_is_still_selectable(self):
+        """An experimenter who has to deviate -- a missing print, a participant
+        who saw one of these in a pilot -- must not be locked out by the panel."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        picker = js[js.index("function renderSetPicker("):js.index("/** Start the session")]
+        assert "disabled" not in picker, "used sets should be marked, not disabled"
+
+    def test_the_picker_heading_takes_focus_rather_than_the_first_choice(self):
+        """Landing on a button says nothing about what is being chosen; the
+        heading reads forward over the round summary and the whole list."""
+        heading = _by_id(CONTROL_HTML)["set-heading"]
+        assert heading["attrs"].get("tabindex") == "-1"
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "el('set-heading')?.focus({ preventScroll: true })" in js
+
+    def test_the_round_is_reported_in_words(self):
+        """Where the round has got to is the reason the list looks the way it
+        does, so it has to be readable rather than inferred from which entries
+        happen to be struck through."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "sets still to run" in js
+        assert "Nothing has been run yet" in js
+        assert "The previous round is complete" in js
 
     def test_a_reload_does_not_start_a_second_session(self):
         """One instance of the panel owns one session. A refresh mid-session must
@@ -660,6 +707,15 @@ class TestBothStudyPagesAreCheckedByAxe:
         assert "/study (in a session)" in ci
         assert "/study/control" in ci
         assert "/study (waiting for a code)" in ci
+
+    def test_both_panel_states_are_checked(self):
+        """The panel opens on the model-set picker and only reaches the session
+        by being used, so checking the page it lands on covers roughly none of
+        the markup a session renders."""
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        assert "/study/control (choosing a model set)" in ci
+        assert "/study/control (running a session)" in ci
+        assert "page.click('#set-list button')" in ci
 
     def test_the_study_pages_are_checked_in_a_real_session(self):
         """An empty panel and a participant page with no session exercise almost

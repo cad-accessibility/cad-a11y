@@ -19,10 +19,20 @@ a ruined session.
 
 Counterbalancing
 ----------------
-The protocol has three model pairs. Each participant  gets **two** of the three, in an order fixed by a
-Latin square rather than drawn at random -- randomising a sample this small
-routinely produces an unbalanced set, which is exactly what counterbalancing is
-for. See ``assign_task_order``.
+The protocol has three model pairs -- the Lego brick, the pencil holder and the
+cane tip -- and each participant gets **two** of the three. Taking three objects
+two at a time in order gives six sets, and running all six once is one balanced
+round: every object appears twice first and twice second, so "found more in the
+second task" cannot be confounded with "the second task was always the cane tip".
+Randomising a sample this small routinely produces an unbalanced set, which is
+exactly what counterbalancing is for.
+
+Which set a participant gets is the experimenter's choice, made in the control
+panel from a list of the six with the ones already run struck through (see
+``task_sets``, and ``task_set_status`` in ``study.py`` for the used/unused
+bookkeeping). ``assign_task_order`` remains as the fallback for a session started
+without a set named -- the API still accepts one, and a session has to get some
+assignment.
 """
 
 from __future__ import annotations
@@ -35,9 +45,10 @@ from typing import Any
 
 PROTOCOL_VERSION = "2026-08-04"
 
-# How many of the three main model pairs one participant sees. The trial pair is
-# extra and is not counted here. Two is what fits a 60-90 minute session: the
-# 2026-08-04 pilot spent most of an hour reaching the end of the first pair.
+# How many of the three model pairs one participant sees. Two is what fits a
+# 60-90 minute session: the 2026-08-04 pilot spent most of an hour reaching the
+# end of the first pair. Three taken two at a time is also what makes a round
+# six sets long -- see ``task_sets``.
 TASKS_PER_SESSION = 2
 
 
@@ -113,61 +124,78 @@ MODEL_PAIRS: dict[str, dict[str, Any]] = {
         ],
         "unchanged": ["Marshmallow"],
     },
-    "coat_rack": {
-        "key": "coat_rack",
-        "label": "Coat rack",
-        "description": "A miniature of a wall-mounted coat rack with pegs",
-        "a": {
-            "model": "coat_hanger_30",
-            "label": "30 mm peg coat rack",
-            "physical": "Printed 30 mm peg coat rack",
-        },
-        "b": {
-            "model": "coat_hanger_40",
-            "label": "40 mm peg coat rack",
-            "physical": "Printed 40 mm peg coat rack",
-        },
-        "differences": [
-            "30 mm pegs become 40 mm pegs",
-            "The rack is taller",
-            "Peg taper is more gradual",
-            "Peg angle changed slightly",
-        ],
-        "unchanged": ["Backplate", "Peg count", "Peg spacing", "Ball size"],
-    },
 }
 
-PRACTICE_PAIR = "cup"
-MAIN_PAIRS = ("pencil_holder", "cane_tip", "coat_rack")
+# The coat rack was a fourth pair and is no longer part of the study. Its STLs
+# still ship, because they are used by the render-cache tests and are perfectly
+# good models -- they are simply not something a participant is asked to explore.
+# Sessions already recorded against it keep their task_order; those keys resolve
+# to no pair, which is what the resolver already does for an unassigned slot.
+MAIN_PAIRS = ("pencil_holder", "cane_tip", "lego")
 
 # The model used for onboarding. Not a pair: nothing is compared against it, it is
 # the object the participant is given in the hand while the controls are explained.
 ONBOARDING_MODEL = "mug"
 
 # A balanced design over the three main pairs, taken two at a time. Rows 1-3 are
-# the cyclic Latin square; rows 4-6 are those rows reversed. Across six
+# the cyclic Latin square; rows 4-6 swap the last two of each. Across six
 # participants every pair appears twice in first position and twice in second,
 # and every ordered pair of distinct models occurs exactly once -- which is what
 # stops "found more differences in the second task" from being confounded with
-# "the second task was always the coat rack".
+# "the second task was always the cane tip".
 _LATIN_SQUARE_ROWS: tuple[tuple[str, ...], ...] = (
-    ("pencil_holder", "cane_tip", "coat_rack"),
-    ("cane_tip", "coat_rack", "pencil_holder"),
-    ("coat_rack", "pencil_holder", "cane_tip"),
-    ("pencil_holder", "coat_rack", "cane_tip"),
-    ("cane_tip", "pencil_holder", "coat_rack"),
-    ("coat_rack", "cane_tip", "pencil_holder"),
+    ("pencil_holder", "cane_tip", "lego"),
+    ("cane_tip", "lego", "pencil_holder"),
+    ("lego", "pencil_holder", "cane_tip"),
+    ("pencil_holder", "lego", "cane_tip"),
+    ("cane_tip", "pencil_holder", "lego"),
+    ("lego", "cane_tip", "pencil_holder"),
 )
 
 
-def assign_task_order(sequence_number: int) -> list[str]:
-    """Return the main model pairs for the ``sequence_number``-th participant.
+def set_id(task_order: list[str] | tuple[str, ...]) -> str:
+    """The stable name for one model set.
 
-    ``sequence_number`` is 1-based enrollment order, assigned by the database when
-    the participant code is first seen, so the balance holds automatically as long
-    as participants are enrolled through the control panel. The experimenter can
-    still override the result at enrollment (someone has already seen the coat
-    rack in a pilot, a print is missing) -- this is the default, not a constraint.
+    Order matters -- "pencil holder then cane tip" is a different cell of the
+    design from "cane tip then pencil holder" -- so the id is the order joined,
+    not a sorted key. It is also what the used/unused bookkeeping counts by, so a
+    session's stored ``task_order`` maps onto a set without a lookup table.
+    """
+    return "+".join(str(key) for key in task_order)
+
+
+def task_sets() -> list[dict[str, Any]]:
+    """The six model sets, in Latin-square order, for the experimenter to pick from.
+
+    One round of the study is these six run once each. The panel lists them all
+    and strikes through the ones already recorded, so choosing is reading a list
+    rather than working out where a counter has got to -- and an experimenter can
+    deviate deliberately (a print is missing, a participant has seen one of these
+    in a pilot) without that silently unbalancing the design, because the list
+    still shows what it cost.
+    """
+    return [
+        {
+            "id": set_id(row[:TASKS_PER_SESSION]),
+            "position": index + 1,
+            "task_order": list(row[:TASKS_PER_SESSION]),
+            "labels": [
+                (MODEL_PAIRS.get(key) or {}).get("label", key)
+                for key in row[:TASKS_PER_SESSION]
+            ],
+        }
+        for index, row in enumerate(_LATIN_SQUARE_ROWS)
+    ]
+
+
+def assign_task_order(sequence_number: int) -> list[str]:
+    """The set the ``sequence_number``-th participant would get by rotation.
+
+    The experimenter picks the set in the panel, so this is not the ordinary
+    path any more. It stays because a session must always end up with some
+    assignment: ``POST /study/session/start`` accepts a request that names no
+    set, and answering that with an empty task order would produce a session
+    whose task steps load nothing.
     """
     if sequence_number < 1:
         sequence_number = 1
@@ -176,16 +204,11 @@ def assign_task_order(sequence_number: int) -> list[str]:
 
 
 def latin_square_preview() -> list[dict[str, Any]]:
-    """The full assignment table, so the control panel can show the experimenter
-    which pairs a participant is due before enrolling them -- the "cheat sheet for
-    which two models to show people" the protocol asks for."""
+    """The full assignment table -- the "cheat sheet for which two models to show
+    people" the protocol asks for. Same six sets as ``task_sets``, keyed by the
+    rotation position ``assign_task_order`` uses."""
     return [
-        {
-            "sequence_number": index + 1,
-            "task_order": list(row[:TASKS_PER_SESSION]),
-            "labels": [MODEL_PAIRS[key]["label"] for key in row[:TASKS_PER_SESSION]],
-        }
-        for index, row in enumerate(_LATIN_SQUARE_ROWS)
+        {"sequence_number": entry["position"], **entry} for entry in task_sets()
     ]
 
 
@@ -395,15 +418,14 @@ def _pair_steps(
     model_ref_kind: str,
     slot: int | None,
     *,
-    is_practice: bool = False,
     intro_script: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """The four exploration steps every model pair shares (Part A on the display
     and in the hand, then Part B the same way), parameterised by which pair they
     are for.
 
-    Written once rather than four times because the wording is identical across
-    pairs by design -- the protocol keeps the prompts constant so that differences
+    Written once rather than twice because the wording is identical across pairs
+    by design -- the protocol keeps the prompts constant so that differences
     between tasks are differences between models, not between scripts.
 
     ``intro_script`` is prepended to Part A's virtual step rather than living in
@@ -413,17 +435,12 @@ def _pair_steps(
     """
 
     def ref(version: str) -> dict[str, Any]:
-        if model_ref_kind == "practice":
-            return {"kind": "practice", "version": version}
-        return {"kind": "task", "slot": slot, "version": version}
+        return {"kind": model_ref_kind, "slot": slot, "version": version}
 
-    # Only the Lego brick is practice. Everything after it is a real task, so
-    # nothing here may describe the participant's work as a rehearsal.
-    closing_note = (
-        "This is the practice round. Do not say so until it is over."
-        if is_practice
-        else "This is a real task. Take as long as the participant needs."
-    )
+    # There is no rehearsal round: onboarding on the mug is where the participant
+    # learns the system, and both tasks after it are real. Nothing here may
+    # describe the participant's work as practice.
+    closing_note = "This is a real task. Take as long as the participant needs."
 
     return [
         {
@@ -974,8 +991,9 @@ STEPS: list[dict[str, Any]] = _build_steps()
 
 def _resolve_pair_key(ref: dict[str, Any], task_order: list[str]) -> str | None:
     kind = ref.get("kind")
-    if kind == "practice":
-        return PRACTICE_PAIR
+    # A {"kind": "practice"} reference resolves to nothing, which is deliberate:
+    # the rehearsal round was removed, and a protocol override still carrying one
+    # should leave the display alone rather than load something arbitrary.
     if kind == "task":
         slot = int(ref.get("slot") or 0)
         if 1 <= slot <= len(task_order):
@@ -1136,7 +1154,6 @@ _BUILTIN_PROTOCOL: dict[str, Any] = {
     "version": PROTOCOL_VERSION,
     "source": "builtin",
     "tasks_per_session": TASKS_PER_SESSION,
-    "practice_pair": PRACTICE_PAIR,
     "main_pairs": list(MAIN_PAIRS),
     "onboarding_model": ONBOARDING_MODEL,
     "model_pairs": MODEL_PAIRS,
@@ -1203,7 +1220,6 @@ def config_payload() -> dict[str, Any]:
         "source": protocol.get("source"),
         "override_error": override_error(),
         "tasks_per_session": protocol.get("tasks_per_session"),
-        "practice_pair": protocol.get("practice_pair"),
         "main_pairs": protocol.get("main_pairs"),
         "model_pairs": protocol.get("model_pairs"),
         "facilitator_prompts": protocol.get("facilitator_prompts"),

@@ -630,6 +630,40 @@ def get_session_by_key(participant_key: str) -> dict[str, Any] | None:
         return None
 
 
+def count_task_orders(status: str = "completed") -> dict[str, int]:
+    """How many sessions of ``status`` ran each task order, keyed by the order
+    joined with ``+``.
+
+    This is what tells the control panel which model sets a round has already
+    got through. It counts *sessions*, not participants: a session that was
+    started and abandoned did not consume its set, and a set that was genuinely
+    run twice should show as run twice.
+
+    Counted in Python rather than with GROUP BY on the stored JSON, because
+    grouping on the text would treat ``["a", "b"]`` and ``["a","b"]`` as
+    different sets -- true of every row this code writes, but not of a row
+    inserted by hand or by an older version.
+    """
+    counts: dict[str, int] = {}
+    try:
+        rows = _get_conn().execute(
+            "SELECT task_order FROM study_sessions WHERE status = ?", (status,)
+        ).fetchall()
+    except Exception as error:  # noqa: BLE001 - counted, never fatal
+        _note_failure("db_reads", error)
+        return {}
+    for row in rows:
+        try:
+            order = json.loads(row["task_order"] or "[]")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(order, list):
+            continue
+        key = "+".join(str(item) for item in order)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def list_sessions(limit: int = 100) -> list[dict[str, Any]]:
     rows = _get_conn().execute(
         """SELECT id, participant_id, participant_code, session_number, task_order,

@@ -114,11 +114,24 @@ jobs:
               return (await res.json()).state;
             }, base);
 
+            // The panel remembers its session in sessionStorage, not in the URL,
+            // so a fresh context always opens on the model-set picker. Both of
+            // its states are checked: the picker, and the running session
+            // reached by choosing a set from it. Checking only the first would
+            // leave the whole of the in-session panel unexamined.
             const pages = [
               { name: '/viewer', url: `${base}/viewer` },
               { name: '/study (waiting for a code)', url: `${base}/study` },
               { name: '/study (in a session)', url: `${base}/study?s=${started.participant_key}` },
-              { name: '/study/control', url: `${base}/study/control?study_session_id=${started.study_session_id}` },
+              { name: '/study/control (choosing a model set)', url: `${base}/study/control` },
+              {
+                name: '/study/control (running a session)',
+                url: `${base}/study/control`,
+                after: async () => {
+                  await page.click('#set-list button');
+                  await page.waitForSelector('#session-section:not([hidden])');
+                },
+              },
             ];
 
             let failed = false;
@@ -126,6 +139,7 @@ jobs:
               consoleErrors.length = 0;
               await page.goto(target.url, { waitUntil: 'domcontentloaded' });
               await page.waitForTimeout(2000);
+              if (target.after) await target.after();
 
               if (consoleErrors.length > 0) {
                 console.error(`Console/page errors found on ${target.name}:`);
