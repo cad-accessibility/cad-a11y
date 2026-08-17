@@ -83,7 +83,7 @@ def apply_pan_step(center, camera_move, pan_step_scale, horizontal_dist, vertica
     """Apply one pan step to a (x, y) camera center, returning the new center.
 
     Pulled out of render() for the same reason as compute_imposed_zoom_limits
-    below: so the pan step size (25% of the active viewport — see #153) and
+    below: so the pan step size (25% of the active viewport) and
     the direction mapping can be verified directly, instead of only
     indirectly through a full render().
     """
@@ -101,7 +101,7 @@ def apply_pan_step(center, camera_move, pan_step_scale, horizontal_dist, vertica
 
 def compute_pan_guidance(obj_x_range, obj_y_range, viewport_center, viewport_half_w, viewport_half_h):
     """Whether the object is fully outside the viewport, and if so, which
-    way(s) (in "move object" terms — see #153) would bring it back.
+    way(s) (in "move object" terms) would bring it back.
 
     Pulled out as a standalone function, like compute_imposed_zoom_limits
     above, so it can be unit-tested directly rather than only indirectly
@@ -220,7 +220,7 @@ class RenderResult:
     `pan_guidance_directions` travel back to the client: a pan resolves to a
     new centre and the window sends it again next time, which is what keeps
     panning inside the window that did it, and the out-of-frame guidance
-    (#153) is per-window for the same reason the centre is — the renderer is
+    is per-window for the same reason the centre is — the renderer is
     shared by every window on a model, so neither can live on it as instance
     state. The remaining fields are what the render settled on for its
     inputs and are read only on the server.
@@ -238,7 +238,7 @@ class RenderResult:
         self.camera_center = camera_center
         # Echoed to the client: whether the object is fully outside the
         # viewport this render settled on, and if so which direction(s) (in
-        # "move object" terms — see #153) would bring it back. Up to two
+        # "move object" terms) would bring it back. Up to two
         # entries -- an object out on both axes needs both a horizontal and
         # a vertical pan to fully recover. Neither a pan nor a rotation is
         # blocked for going out of frame; this only tells the client what
@@ -449,7 +449,7 @@ class CADComparisonRenderer:
     @staticmethod
     def _object_pan_guidance(view_limits, camera_center, zoom_scale, horizontal_dist, vertical_dist):
         """Whether the object is fully outside the viewport for this render,
-        and if so which way(s) would bring it back (#153).
+        and if so which way(s) would bring it back.
 
         A return value, not stored state, for the same reason camera_center is
         now one (see its comment above): the renderer is shared by every
@@ -474,7 +474,7 @@ class CADComparisonRenderer:
 
     def _draw_pan_guidance_arrow(self, img_array, render_screen_size, direction):
         """Draw a small filled-triangle arrow at the edge of the frame, tip
-        pointing the way to pan to bring the object back into view (#153).
+        pointing the way to pan to bring the object back into view.
 
         Sighted-preview only — a blind/low-vision user gets this from the
         announcement built from pan_guidance_directions in the server
@@ -1248,7 +1248,7 @@ class CADComparisonRenderer:
         vertical_dist = np.abs(view_limits[1][1] - view_limits[1][0])
         # arrow-key stepping. 0.25, not 0.5: a pan moves by 25% of the active
         # (zoom-scaled) viewport, so 75% of what was visible before is still
-        # visible after (#153).
+        # visible after.
         pan_step_scale = 0.25 * zoom_scale
         camera_center = apply_pan_step(camera_center, camera_move, pan_step_scale, horizontal_dist, vertical_dist)
 
@@ -1484,7 +1484,7 @@ class CADComparisonRenderer:
         if object_out_of_frame and pan_guidance_directions:
             # Sighted-preview-only guidance — the announcement (built from
             # pan_guidance_directions in the server response) is what actually
-            # conveys this to someone not looking at the screen (#153). One
+            # conveys this to someone not looking at the screen. One
             # arrow per direction: out on both axes draws two (e.g. top edge
             # and right edge), not a single diagonal one the controls can't
             # act on in a single press.
