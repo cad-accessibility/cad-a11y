@@ -3118,8 +3118,10 @@ document.addEventListener('keydown', function(e) {
             // see the comment on pendingPanDirection / sendStateToServer (#153).
             viewerState.currentMoveCamera = "down";
             pendingPanDirection = 'up';
-            sendStateToServer();
-            viewerState.currentMoveCamera = "none";
+            sendStateToServer().finally(() => {
+                viewerState.currentMoveCamera = "none";
+                pendingPanDirection = null;
+            });
             break;
         case 'd':
             viewerState.currentMoveCamera = "left";
