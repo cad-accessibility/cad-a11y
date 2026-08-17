@@ -1,6 +1,12 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      # Override with `DOCKERFILE=Dockerfile.legacy docker compose up -d --build`
+      # on a host whose Docker is too old for BuildKit cache mounts — the main
+      # Dockerfile uses `RUN --mount=type=cache`, which older Docker fails to
+      # parse at all.
+      dockerfile: ${DOCKERFILE:-Dockerfile}
     restart: unless-stopped
     ports:
       - "${HOST_PORT:-8635}:6969"
@@ -13,6 +19,11 @@ services:
       # Uploads must never land in data/models: that directory is the built-in
       # set and everything in it is public to every visitor (#102).
       UPLOAD_MODEL_DIR: /project/data/uploads
+      # Optional gate on the experimenter control panel. Unset -- the normal
+      # case -- the panel is open: opening it starts a session, which is the
+      # whole flow. Set it in .env to require /study/control?token=<value>, at
+      # the cost of having something to distribute again.
+      STUDY_CONTROL_TOKEN: "${STUDY_CONTROL_TOKEN:-}"
     volumes:
       # Docker-managed named volumes (not host bind mounts). On first mount,
       # Docker seeds each volume from the image's /project/data/<name>, which

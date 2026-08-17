@@ -5,9 +5,14 @@
 
     let monarchHidDevice = null;
 
-    const connectBtn = document.getElementById('monarch-hid-connect-btn');
-    const disconnectBtn = document.getElementById('monarch-hid-disconnect-btn');
     const statusEl = document.getElementById('monarch-hid-status');
+
+    // There is no Monarch-specific connect/disconnect button in the page:
+    // the generic "Connect"/"Disconnect" pair in the nav calls connectMonarchHid()
+    // / disconnectMonarchHid() directly, exposed at the bottom of this file, when
+    // the Output Device setting names Monarch. `connecting` stands in for the
+    // disabled-while-connecting state a dedicated button used to carry.
+    let connecting = false;
 
     const MONARCH_COMMANDS = {
         '32:0,32,0': { type: 'move', dCol: -1, dRow: 0 },
@@ -25,19 +30,22 @@
 
     if (!('hid' in navigator)) {
         setStatus('Web HID API not supported in this browser.');
-        if (connectBtn) connectBtn.disabled = true;
     }
 
-    connectBtn.addEventListener('click', async () => {
+    async function connectMonarchHid() {
+        if (connecting || monarchHidDevice) return;
+        if (!('hid' in navigator)) {
+            if (typeof window.announceAlert === 'function') window.announceAlert('Web HID is not supported in this browser.');
+            return;
+        }
+        connecting = true;
         try {
-            connectBtn.disabled = true;
             setStatus('Requesting Monarch USB device…');
             const devices = await navigator.hid.requestDevice({
                 filters: [{ vendorId: MONARCH_VENDOR_ID, productId: MONARCH_PRODUCT_ID }],
             });
             if (!devices || devices.length === 0) {
                 setStatus('No device selected.');
-                connectBtn.disabled = false;
                 return;
             }
             monarchHidDevice = devices[0];
@@ -45,11 +53,9 @@
                 await monarchHidDevice.open();
             }
             setStatus(`Connected: ${monarchHidDevice.productName || 'Monarch'}`);
-            disconnectBtn.disabled = false;
-            // Only flip the connection flag; leave the output-device radio as the
-            // user set it. getEffectiveOutputDevice() already routes to the Monarch
-            // when it's connected and the user's choice is 'monarch' or 'auto', so
-            // connecting shouldn't override an explicit selection.
+            // A successful connect selects Monarch as the output device and syncs
+            // the radios to match (see setMonarchHidConnected in viewer.js), so
+            // output routes to the display that was just connected.
             if (typeof setMonarchHidConnected === 'function') setMonarchHidConnected(true);
             if (typeof window.announce === 'function') window.announce('Monarch connected via USB.');
             // A Monarch is 48 cells x 10 lines and a braille cell is 2x4 pixels,
@@ -65,7 +71,7 @@
                 cellRows: 10,
                 pixelWidth: 96,
                 pixelHeight: 40,
-                label: 'Monarch 48\u00d710 cells',
+                label: 'Monarch 48×10 cells',
             });
 
             monarchHidDevice.addEventListener('inputreport', (e) => {
@@ -76,23 +82,28 @@
                 handleMonarchCommand(command);
             });
         } catch (err) {
+            monarchHidDevice = null;
             setStatus('Error: ' + err.message);
             if (typeof window.announceAlert === 'function') window.announceAlert('Monarch connection error: ' + err.message);
-            connectBtn.disabled = false;
+        } finally {
+            connecting = false;
         }
-    });
+    }
 
-    disconnectBtn.addEventListener('click', async () => {
+    async function disconnectMonarchHid() {
         if (monarchHidDevice) {
             try { await monarchHidDevice.close(); } catch (_) {}
             monarchHidDevice = null;
         }
         setStatus('Not connected.');
-        disconnectBtn.disabled = true;
-        connectBtn.disabled = false;
         if (typeof setMonarchHidConnected === 'function') setMonarchHidConnected(false);
         if (typeof window.announce === 'function') window.announce('Monarch USB disconnected.');
-    });
+    }
+
+    // Called directly by the generic Connect/Disconnect pair in viewer.js
+    // (#145) — see deviceConnectBtn / deviceDisconnectBtn.
+    window.connectMonarchHid = connectMonarchHid;
+    window.disconnectMonarchHid = disconnectMonarchHid;
 
     async function sendCellsToMonarch(monarchCellsHex) {
         if (!monarchHidDevice || !monarchHidDevice.opened) return;

@@ -35,6 +35,9 @@ scripts/*
 # directories are Docker-managed volumes, so they are not conveniently reachable
 # from the host and this cannot be run from outside.
 !scripts/cleanup_ingest_models.py
+# The container's entrypoint. Without this exception the COPY above it fails the
+# build outright, since scripts/* has already pruned it from the context.
+!scripts/docker-entrypoint.sh
 tests/
 server_cube_slider.py
 requirements-dev.txt

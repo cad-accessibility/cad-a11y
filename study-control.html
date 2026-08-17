@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Study Control Panel — CAD A11y</title>
+    <meta name="description" content="Experimenter control panel for running a CAD A11y study session">
+    <link rel="stylesheet" href="/static/css/viewer.css">
+    <link rel="stylesheet" href="/static/css/study-control.css">
+</head>
+<!--
+    Experimenter-facing, and built to the same accessibility standard as the
+    participant view. Members of this team who run sessions use screen readers,
+    so "the experimenter is sighted" is not an assumption this page gets to make:
+    every state change lands in a live region, every control has a real label,
+    and nothing is conveyed by colour alone.
+
+    The home screen is deliberately just an identity summary (dl.session-summary).
+    Everything else -- the script, the prompts, jumping to a step -- lives behind
+    a keyboard command and opens in a dialog, following the same accessible-dialog
+    pattern as the participant viewer's Help/About/Settings dialogs (native
+    <dialog> + showModal(), heading focus on open, Esc/backdrop to close). See
+    makeInfoDialogController in study-control.js.
+-->
+<body class="study-control">
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <div class="container">
+        <header role="banner">
+            <h1 id="page-title" tabindex="-1">Study Control Panel</h1>
+            <nav aria-label="Study controls" class="site-nav">
+                <div class="button-group">
+                    <button type="button" id="run-here-btn" hidden>Run study on this device</button>
+                    <button type="button" id="previous-step-btn" hidden>Back</button>
+                    <button type="button" id="next-step-btn" hidden>Next</button>
+                    <button type="button" id="help-btn">Help</button>
+                    <button type="button" id="end-session-btn" class="danger" hidden>End</button>
+                </div>
+            </nav>
+            <p class="help-text" id="protocol-version">Loading protocol&hellip;</p>
+        </header>
+
+        <!--
+            Assertive: this is where the participant's readiness signal and any
+            failure to record data land. Both are things the experimenter needs
+            to hear during the session, not on their next pass through the page.
+        -->
+        <div id="alert-region" class="sr-only" role="alert" aria-atomic="true"></div>
+        <div id="status-region" class="sr-only" role="status" aria-atomic="true"></div>
+
+        <main id="main-content">
+
+            <!-- ============================================================
+                 STARTING UP — shown only while the session is being created
+                 =============================================================
+                 There is no enrolment form. Opening this panel starts a session:
+                 the participant id, the session number and the model pairs are
+                 all decided by the protocol, so there was nothing on that form
+                 an experimenter had to answer. One instance of this page owns
+                 one session, and a reload stays on the same one.
+            -->
+            <section id="starting-section" aria-labelledby="starting-heading">
+                <h2 id="starting-heading">Starting a session&hellip;</h2>
+                <p id="starting-error" class="error-text" role="alert" hidden></p>
+            </section>
+
+            <!-- ============================================================
+                 ACTIVE SESSION — just the identity summary. The script, the
+                 prompts and moving through the protocol are all one keyboard
+                 command away (press H or ? for the full list) rather than
+                 always on screen.
+                 ============================================================ -->
+            <section id="session-section" aria-labelledby="session-heading" hidden>
+                <h2 id="session-heading" tabindex="-1">Session in progress</h2>
+
+                <dl class="session-summary">
+                    <dt>Participant</dt><dd id="summary-participant">--</dd>
+                    <dt>Session</dt><dd id="summary-session-number">--</dd>
+                    <dt>Study code</dt><dd id="summary-code">--</dd>
+                    <dt>Model pairs</dt><dd id="summary-tasks">--</dd>
+                    <dt>Recorded so far</dt><dd id="summary-counts">--</dd>
+                    <dt>Logging</dt><dd id="summary-logging">--</dd>
+                    <dt>Participant views connected</dt><dd id="summary-clients">--</dd>
+                </dl>
+            </section>
+        </main>
+    </div>
+
+    <!-- Current Step dialog — opened via C. Everything about running the step
+         that used to sit inline on the page: the script, what to hand over or
+         load, the checklist, the object description and answer key, the
+         open-ended prompts, and the readiness/logging/session status that used
+         to be separate boxes on the page. -->
+    <dialog
+        id="current-step-dialog"
+        class="info-dialog"
+        aria-labelledby="current-step-heading"
+    >
+        <h2 id="current-step-heading" tabindex="-1">Current Step</h2>
+        <p class="help-text">Press <kbd>Esc</kbd> or activate Close to return to where you were.</p>
+
+        <div id="other-sessions-notice" class="notice-box" role="status" hidden></div>
+        <div id="missing-models-warning" class="warning-box" role="status" hidden></div>
+
+        <!-- role="status" rather than alert: it is information, not an error,
+             and it is repeated here in words so an experimenter who missed the
+             live announcement can still find it. -->
+        <p id="ready-indicator" class="ready-indicator" role="status">
+            Participant has not signalled readiness on this step.
+        </p>
+
+        <p id="step-progress" class="step-progress">--</p>
+        <p id="step-part" class="step-part">--</p>
+
+        <!--
+            Not everything here is spoken. Each block declares whether it is
+            something to do, something to say, something to ask, or a reminder,
+            and the label is rendered as a <dt> so a screen reader announces
+            "Say" before the words rather than leaving the distinction to how
+            the text looks.
+        -->
+        <h3 id="script-heading">Experimenter notes</h3>
+        <!--
+            No tabindex: this does not scroll on its own (the dialog does), so
+            making it focusable would only add a tab stop that does nothing.
+        -->
+        <dl id="step-script" class="script-box" aria-labelledby="script-heading"></dl>
+
+        <div id="physical-model-block" hidden>
+            <h3>Hand over</h3>
+            <p id="step-physical-model" class="physical-model"></p>
+        </div>
+
+        <div id="model-block" hidden>
+            <h3>On the display</h3>
+            <p id="step-model" class="help-text"></p>
+            <p id="model-missing-warning" class="error-text" role="alert" hidden></p>
+        </div>
+
+        <div id="checklist-block" hidden>
+            <h3 id="checklist-heading">Before moving on</h3>
+            <ul id="step-checklist" aria-labelledby="checklist-heading"></ul>
+        </div>
+
+        <!--
+            The object's description is read to the participant at the start of
+            Part A, so it must not live under the answer key heading, which
+            tells the experimenter not to read what follows. Its own block,
+            above, with the instruction that it IS spoken.
+        -->
+        <div id="object-block" hidden>
+            <h3 id="object-heading">This object</h3>
+            <p id="object-label" class="physical-model"></p>
+            <p id="object-description" class="object-description"></p>
+            <p class="help-text">
+                Read the description to the participant at the start of Part A,
+                before anything goes on the display.
+            </p>
+        </div>
+
+        <div id="answer-key-block" hidden>
+            <h3 id="answer-key-heading">Answer key</h3>
+            <p class="help-text">For your reference only. Do not read this out.</p>
+            <h4>What changed</h4>
+            <ul id="answer-key-differences" aria-labelledby="answer-key-heading"></ul>
+            <h4>What did not change</h4>
+            <ul id="answer-key-unchanged"></ul>
+        </div>
+
+        <h3 id="facilitator-prompts-heading">Open-ended prompts</h3>
+        <ul id="facilitator-prompts" aria-labelledby="facilitator-prompts-heading"></ul>
+
+        <div class="consent-actions">
+            <button type="button" id="current-step-close-btn">Close</button>
+        </div>
+    </dialog>
+
+    <!-- Strategy Prompts dialog — opened via S. Kept separate from the Current
+         Step dialog, same as the old disclosure button did, so a prompt that
+         names a specific control is never on screen by accident: use it only
+         when the participant is stuck. -->
+    <dialog
+        id="strategy-dialog"
+        class="info-dialog"
+        aria-labelledby="strategy-heading"
+    >
+        <h2 id="strategy-heading" tabindex="-1">Strategy Prompts</h2>
+        <p class="help-text">
+            These name a specific control, so they steer the exploration. Use
+            them only when the participant is stuck. Press <kbd>Esc</kbd> or
+            activate Close to return to where you were.
+        </p>
+        <ul id="strategy-prompts"></ul>
+        <div class="consent-actions">
+            <button type="button" id="strategy-close-btn">Close</button>
+        </div>
+    </dialog>
+
+    <!-- Jump to Step dialog — opened via J. Picking a step jumps immediately;
+         opening the dialog is the deliberate action, so a second confirmation
+         would be redundant. -->
+    <dialog
+        id="jump-dialog"
+        class="info-dialog"
+        aria-labelledby="jump-heading"
+    >
+        <h2 id="jump-heading" tabindex="-1">Jump to Step</h2>
+        <p class="help-text">Choose a step to go there immediately.</p>
+        <ul id="jump-step-list" class="jump-step-list"></ul>
+        <div class="consent-actions">
+            <button type="button" id="jump-close-btn">Close</button>
+        </div>
+    </dialog>
+
+    <!-- Help dialog — opened via H or ?, same as the participant viewer's
+         keyboard shortcuts reference. -->
+    <dialog
+        id="help-dialog"
+        class="info-dialog"
+        aria-labelledby="help-heading"
+    >
+        <h2 id="help-heading" tabindex="-1">Keyboard Commands</h2>
+        <p class="help-text">Press <kbd>Esc</kbd> or activate Close to return to where you were.</p>
+        <ul class="shortcuts-list">
+            <li><kbd>C</kbd> Show the current step: script, prompts, and status</li>
+            <li><kbd>S</kbd> Show strategy prompts</li>
+            <li><kbd>J</kbd> Jump to a step</li>
+            <li><kbd>N</kbd> Next step</li>
+            <li><kbd>B</kbd> or <kbd>P</kbd> Back to the previous step</li>
+            <li><kbd>R</kbd> Run the study on this device — hands this window to the participant; use if you have only one computer</li>
+            <li><kbd>E</kbd> End session</li>
+            <li><kbd>H</kbd> or <kbd>?</kbd> Open this help</li>
+            <li><kbd>Esc</kbd> Close a dialog</li>
+            <li>N/B/P work even with another dialog open — they replace it with the current step</li>
+        </ul>
+        <div class="consent-actions">
+            <button type="button" id="help-close-btn">Close</button>
+        </div>
+    </dialog>
+
+    <script src="/static/js/study-control.js"></script>
+</body>
+</html>

@@ -1,7 +1,8 @@
 """Guardrails on the screen-reader live-region structure in the viewer markup.
 
 The announcement layer has exactly two message windows, and nothing else
-should be a live region:
+should be a live region beyond the small set declared in
+EXPECTED_LIVE_ELEMENTS below:
 
   * #announcement-window: role="alert" (implies aria-live="assertive"), with
     no explicit aria-live attribute alongside it (redundant, and double-speaks
@@ -39,17 +40,40 @@ EXPECTED_LIVE_ELEMENTS = {
     # the announcement layer, hidden until the email field actually fails to
     # validate.
     "consent-email-error": {"aria-live": None, "role": "alert"},
+    # --- Study mode (/study). Present in the markup on every page but revealed
+    # only by body.study-ui, so on the ordinary viewer these are hidden and never
+    # written to.
+    #
+    # study-step-heading and study-step-progress used to each be their own live
+    # region (an aria-live h2 and a role="status" paragraph), which meant a step
+    # change was announced three times over: the title alone, then the step
+    # count alone, then the combined utterance below repeating both plus the
+    # instructions. Both are now plain text -- still real content for on-demand
+    # navigation (the heading is still a real h2, still a landmark to jump to),
+    # just not auto-announced. The single announcement lives in the shared
+    # announcement-window-polite instead (see stepAnnouncement() in study.js).
+    #
+    # The ready-button confirmation is the one still-live piece specific to this
+    # page: written only in response to something the participant just did.
+    "study-ready-status": {"aria-live": None, "role": "status"},
+    # Shown only before the session starts, while the participant is entering
+    # their code. Assertive on purpose: a code that did not match has to be
+    # heard, and there is no braille reading in progress to interrupt yet. Same
+    # pattern as the consent dialog's email error above.
+    "study-join-error": {"aria-live": None, "role": "alert"},
 }
 
 # Divs demoted to plain visual text; each must stay free of aria-live and of
 # the implicit live-region roles.
+#
+# monarch-hid-status and dotpad-status were dropped from this list (#145):
+# the standalone Monarch USB / DotPad sections they lived in were removed from
+# the page when Connect/Disconnect became the single generic pair in the nav.
 DEMOTED_STATUS_IDS = [
     "slice-graph-lock-status",
     "upload-model-status",
-    "monarch-hid-status",
     "trinkey-status",
     "witmotion-status",
-    "dotpad-status",
     "debug-stage-list",
 ]
 

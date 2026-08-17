@@ -99,36 +99,67 @@ jobs:
             });
             page.on('pageerror', (err) => consoleErrors.push(err.message));
 
-            await page.goto('http://localhost:8635/viewer', { waitUntil: 'domcontentloaded' });
-            await page.waitForTimeout(2000);
+            // The study pages are checked as well as the viewer, and in the
+            // states they are actually used in. A session has to exist first:
+            // the participant page asks for a code, and the panel is only
+            // interesting once it is running a session.
+            const base = 'http://localhost:8635';
+            await page.goto(`${base}/viewer`, { waitUntil: 'domcontentloaded' });
+            const started = await page.evaluate(async (origin) => {
+              const res = await fetch(`${origin}/study/session/start`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}',
+              });
+              return (await res.json()).state;
+            }, base);
 
-            if (consoleErrors.length > 0) {
-              console.error('Console/page errors found on /viewer:');
-              for (const message of consoleErrors) {
-                console.error(`- ${message}`);
-              }
-              await browser.close();
-              process.exit(1);
-            }
+            const pages = [
+              { name: '/viewer', url: `${base}/viewer` },
+              { name: '/study (waiting for a code)', url: `${base}/study` },
+              { name: '/study (in a session)', url: `${base}/study?s=${started.participant_key}` },
+              { name: '/study/control', url: `${base}/study/control?study_session_id=${started.study_session_id}` },
+            ];
 
-            const results = await new AxeBuilder({ page }).analyze();
-            const blocking = results.violations.filter((v) =>
-              ['serious', 'critical'].includes(v.impact)
-            );
+            let failed = false;
+            for (const target of pages) {
+              consoleErrors.length = 0;
+              await page.goto(target.url, { waitUntil: 'domcontentloaded' });
+              await page.waitForTimeout(2000);
 
-            if (blocking.length > 0) {
-              console.error('Axe found serious/critical violations:');
-              for (const violation of blocking) {
-                console.error(`- ${violation.id} (${violation.impact}): ${violation.help}`);
-                for (const node of violation.nodes) {
-                  console.error(`  target: ${node.target.join(', ')}`);
+              if (consoleErrors.length > 0) {
+                console.error(`Console/page errors found on ${target.name}:`);
+                for (const message of consoleErrors) {
+                  console.error(`- ${message}`);
                 }
+                failed = true;
               }
+
+              const results = await new AxeBuilder({ page }).analyze();
+              const blocking = results.violations.filter((v) =>
+                ['serious', 'critical'].includes(v.impact)
+              );
+
+              if (blocking.length > 0) {
+                console.error(`Axe found serious/critical violations on ${target.name}:`);
+                for (const violation of blocking) {
+                  console.error(`- ${violation.id} (${violation.impact}): ${violation.help}`);
+                  for (const node of violation.nodes) {
+                    console.error(`  target: ${node.target.join(', ')}`);
+                  }
+                }
+                failed = true;
+              }
+
+              if (!failed) console.log(`ok: ${target.name}`);
+            }
+
+            if (failed) {
               await browser.close();
               process.exit(1);
             }
 
-            console.log('Console-error and axe checks passed: no console errors, no serious or critical a11y violations.');
+            console.log('Console-error and axe checks passed on every page: no console errors, no serious or critical a11y violations.');
             await browser.close();
           })().catch((err) => {
             console.error(err);

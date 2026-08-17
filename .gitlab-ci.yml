@@ -4,7 +4,7 @@ stages:
 deploy_research_test:
   stage: deploy
   script:
-    - docker compose up -d --build
+    - bash scripts/docker_compose_build.sh
     # `up -d` returns once the container is created, not once the app works, so
     # without this the job goes green on a site that is returning 503.
     - bash scripts/wait_for_deploy.sh https://cada11y-test.cs.washington.edu/
@@ -19,7 +19,7 @@ deploy_research_test:
 deploy_research_prod:
   stage: deploy
   script:
-    - docker compose up -d --build
+    - bash scripts/docker_compose_build.sh
     - bash scripts/wait_for_deploy.sh https://cada11y.cs.washington.edu/
   environment:
     name: research prod

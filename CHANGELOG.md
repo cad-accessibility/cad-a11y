@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-08-07
+
+#### Added
+*   A new `/study` page runs a study session from beginning to end. It is the same viewer participants are onboarded on, with the model list taken away and a small study area added at the top: the current step, how far through the session they are, and an "I am ready to move on" button. Models load themselves at each step, so nobody has to find one in a list while a participant waits.
+*   An experimenter control panel at `/study/control` shows what to read aloud at each step, which printed model to hand over, and what actually differs between the two versions of the current object. Moving to the next step moves the participant's page and loads the next model onto their braille display. The two pages stay in step across two machines, so the experimenter can run the session from their own laptop.
+*   Each run records the participant under a new participant ID, and every interaction with the application is recorded against it: which keys were pressed, what reached the braille display, what the screen reader was told, when each step began, and how long everything took. This goes to its own database, kept apart from the usage database so that ordinary maintenance can never reach a session that has already been run.
+*   Alongside the database, each session is written to its own log file, one line per event, each line carrying the full state of the viewer at that moment. It is written independently of the database, so a session can still be reconstructed if the database write is the thing that failed.
+*   The control panel says whether recording is actually working while the session is running. Previously the only way to find out that data had not been captured would have been to look for it afterwards.
+*   Each participant explores a practice Lego brick, then two of the three model pairs. Which two, and in which order, follows a fixed balanced design rather than being drawn at random, which at this number of participants would routinely produce a lopsided set. The panel shows the whole assignment table, so it is clear in advance which objects to have printed and ready.
+*   Every model loads into the same starting state: the object upright, cut through the middle, zoomed out and centred. The second version of an object therefore starts exactly where the first did, so what a participant notices is a difference between the models rather than between viewpoints.
+*   Session data can be downloaded from the control panel as a single file, so analysis does not begin with getting a database off the server.
+*   Running a session is now: open the panel, read two things out. Opening `/study/control` starts a session straight away — there is no form to fill in first, because the participant number, the model pairs and the session number are all decided by the protocol. The panel then shows the address for the participant to open and a four-character code for them to enter, and that is the whole setup.
+*   The panel no longer needs a secret. It used to be reachable only with a token that had to be found in the server's own log, which was the most confusing part of running a session. Anyone who can reach the address can now open it. A deployment that wants the old behaviour can still require a token by setting one.
+*   The code the participant enters is asked for every time, whether one session is running or several, so there is a single instruction to give rather than one that changes with circumstances. It avoids letters and numbers that sound or look alike, since it is usually read out to someone who cannot see the screen.
+*   Each browser tab of the panel runs one session, so two people can each open the panel and run a participant at the same time without affecting each other.
+*   Sessions can be run with only one computer. "Run the study on this device" hands the window over to the participant, and from then on the session moves to the next step when they say they are ready, instead of waiting for a control the experimenter can no longer reach without taking the screen reader away from them. What the participant sees is the ordinary participant view, unchanged, and the session is recorded exactly as it would be on two machines. Keep the protocol to hand, as the script is not shown on that page.
+
+*   Each step tells the experimenter what to do, what to say, and what to ask, labelled separately rather than run together as one block of text to interpret mid-session. Spoken lines are shown in quotes; actions and reminders are not.
+*   The background questions, the rating scale after each object, and the closing discussion questions are all in the panel to be read from, so there is no second document to keep open. They are asked out loud and the answers are written on the experimenter's own sheet: the panel offers nowhere to type them and records none of them.
+
+*   Two experimenters can now run participants at the same time on the same server. Sessions are independent: each keeps its own place in the protocol, loads its own models, writes its own log, and drives only its own participant's page. The panel says when another session is already running, and warns if more than one participant view is connected to yours, since that would record every interaction twice.
+
+The participant is never shown the model's name, since a name like "2x4 brick" answers the question they are being asked to work out by touch. Consent is not part of the session: it is given beforehand, so the first step is about settling the participant in and the second about setting up the machine and the display.
+
 ### 2026-07-28
 
 #### Fixed

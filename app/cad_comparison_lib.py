@@ -6,6 +6,10 @@ It processes STEP files and returns rendered image arrays based on specified par
 """
 
 import numpy as np
+import contextlib
+import gzip
+import hashlib
+import re
 import threading
 import time
 import os
@@ -30,7 +34,7 @@ from shapely.geometry import Polygon, MultiPolygon, box
 from shapely.ops import unary_union
 from shapely import union_all
 from shapely.plotting import plot_polygon
-from shapely import symmetric_difference
+from shapely import symmetric_difference, from_wkb, to_wkb
 import matplotlib.pyplot as plt
 import io, PIL, json
 from PIL import Image
@@ -136,6 +140,47 @@ MAX_RENDER_FACES = 40000
 DEFAULT_SCREEN_SIZE = (96, 40)
 
 
+class RenderResult:
+    """The output of one render: the image, plus the values that describe it.
+
+    This is a return value, not stored state. Which view, orientation, camera
+    centre, depth and zoom a window is looking at lives in the client and arrives
+    in the request; nothing about an individual window is kept here, or on the
+    renderer, which is shared by every window looking at the same model.
+
+    Of these fields, only `camera_center` travels back to the client: a pan
+    resolves to a new centre and the window sends it again next time, which is
+    what keeps panning inside the window that did it. The others are what the
+    render settled on for its inputs and are read only on the server.
+    """
+
+    __slots__ = ("image", "camera_center", "framing_bounds", "view_axis",
+                 "cut_depth", "render_mode", "zoom_level", "screen_size")
+
+    def __init__(self, image, *, camera_center, framing_bounds, view_axis,
+                 cut_depth, render_mode, zoom_level, screen_size):
+        self.image = image
+        # Echoed to the client, which stores it per view + orientation.
+        self.camera_center = camera_center
+        # The world-space rectangle [[x_min, x_max], [y_min, y_max]] this render
+        # framed, once the view, the orientation basis and the zoom were applied:
+        # the outer edges of what reached the image. Model-derived, so identical
+        # for every window in the same state. Server-only; its one use is naming
+        # saved print files so two differently framed prints cannot collide.
+        # (Previously `axis_limits`.)
+        self.framing_bounds = framing_bounds
+        # A coarse label for the view, e.g. "x+". A summary of the orientation
+        # the request carried, not the orientation itself: the full
+        # forward/up/right basis stays in the request and is what frames the
+        # image above.
+        self.view_axis = view_axis
+        # The single slice depth, 0..1, along the axis the view looks down.
+        self.cut_depth = cut_depth
+        self.render_mode = render_mode
+        self.zoom_level = zoom_level
+        self.screen_size = screen_size
+
+
 def _decimate_for_display(mesh):
     """Reduce face count to roughly what the display can resolve.
 
@@ -157,11 +202,12 @@ class CADComparisonRenderer:
     Renderer for CAD model comparisons.
     """
 
-    # Framing state, at class level so an instance built without __init__ still
-    # has it. Composition tests do exactly that, to exercise a single stage
-    # without paying to load a mesh.
-    _orientation_frame_key = None
-    _canonical_view_limits = None
+    # Memo of a pure computation, at class level so an instance built without
+    # __init__ still has it. Composition tests do exactly that, to exercise a
+    # single stage without paying to load a mesh. Shared safely because the value
+    # depends only on the model, the view and the basis, never on who asked.
+    _oriented_limits: dict = {}
+    _oriented_limits_lock = threading.Lock()
 
 
     def __init__(self, before_model_path, after_model_path):
@@ -177,31 +223,32 @@ class CADComparisonRenderer:
         self.shapes = []
         self.bbox = None
         self.view_limits = None
-        self.view_current_camera_center = []
-        self.view_current_axis = -1
-        self.view_current_view_limits = -1
-        self.current_render_mode = None
+        self.view_default_camera_center = []
         self.screen_size = list(DEFAULT_SCREEN_SIZE)
         self.view_diff_mats = {}
         self.view_cut_polygons = {}
-        self.current_render = None
-        self.current_ax_limits = []
-        self.current_zoom_level = None
         self._slice_graphs_ready = False
         self._precompute_in_progress = False
         self._precompute_lock = threading.Lock()
         self._precompute_done = threading.Event()
         self._precompute_done.set()
-        self.cache_version = 2
-        self.cache_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "renders",
-            "cad_precompute_cache.json",
-        )
+        # Set by _get_zoom_filtered_slice_profile on every slice-graph render:
+        # whether the profile it returned was real (precompute finished for this
+        # view) or the flat placeholder precompute hands back while it's still
+        # running. The client uses this to refresh automatically, instead
+        # of a blind horizontal line sitting there until something else happens
+        # to trigger a re-render.
+        self.slicegraph_ready = True
+        # Bumped from 2: the file is per model now, lives on the data volume
+        # rather than inside the image, and carries the cut polygons as well as
+        # the difference matrices. An older file is unreadable on all three
+        # counts, so it must not be mistaken for a warm start.
+        self.cache_version = 3
+        self.cache_path = self._precompute_cache_path()
         self._model_signature_value = None
         # The framing in force, so a turn reframes but a redraw does not.
-        self._orientation_frame_key = None
-        self._canonical_view_limits = None
+        self._oriented_limits = {}
+        self._oriented_limits_lock = threading.Lock()
         
         # Load and normalize shapes
         self._load_models()
@@ -271,41 +318,50 @@ class CADComparisonRenderer:
         self._calculate_view_limits(same_shapes=same_file)
         #self._compute_slice_graphs()
 
-    def _reframe_for_orientation(self, orientation_basis, view_index, view_key):
-        """Fit the window to the model as it is currently turned.
+    def _limits_for_orientation(self, orientation_basis, view_index, view_key):
+        """The window to draw, for this view at this orientation.
 
-        Only when the orientation has actually changed. Recomputing on every
-        render would throw away panning, since the camera centre has to be reset
-        to the middle of the new extent: there is nowhere sensible to carry a pan
-        offset to when the model has turned under it.
+        Pure: it reads the model and returns limits, and mutates nothing. It used
+        to write self.view_limits[view_index] in place and memoize on an instance
+        key, which meant two windows looking at one model from different
+        orientations fought over the framing and each intermittently rendered
+        with the other's.
 
-        Returning to a named view restores that view's precomputed limits, so
-        nothing about the six named views changes.
+        The named views keep their precomputed limits. A rotated model projects
+        somewhere else entirely, so it gets limits measured along the axes it is
+        actually turned to: pitching a chair to look down on it otherwise framed
+        a region it no longer occupied and rendered an empty display.
+
+        The memo is kept, but as a cache of a pure result keyed by the basis, so
+        it is a saving rather than a piece of state. Two windows asking the same
+        question share the answer, which is correct.
         """
-        key = None
-        if not _is_canonical_orientation(view_key, orientation_basis):
-            resolved = _resolve_orientation_basis(orientation_basis)
-            key = (view_index, tuple(np.round(np.concatenate(resolved), 6)))
-        if key == self._orientation_frame_key:
-            return
-        self._orientation_frame_key = key
+        if _is_canonical_orientation(view_key, orientation_basis):
+            return self.view_limits[view_index]
 
-        if key is None:
-            self.view_limits[view_index] = self._canonical_view_limits[view_index]
-        else:
-            limits = _projected_view_axis_limits(self.shapes[0], view_key, orientation_basis)
-            for other in self.shapes[1:]:
-                other_limits = _projected_view_axis_limits(other, view_key, orientation_basis)
-                limits = [
-                    [min(limits[0][0], other_limits[0][0]), max(limits[0][1], other_limits[0][1])],
-                    [min(limits[1][0], other_limits[1][0]), max(limits[1][1], other_limits[1][1])],
-                ]
-            self.view_limits[view_index] = np.array(limits)
+        resolved = _resolve_orientation_basis(orientation_basis)
+        key = (view_index, tuple(np.round(np.concatenate(resolved), 6)))
+        with self._oriented_limits_lock:
+            cached = self._oriented_limits.get(key)
+        if cached is not None:
+            return cached
 
-        self.view_current_camera_center[view_index] = [
-            float(np.mean(self.view_limits[view_index][0])),
-            float(np.mean(self.view_limits[view_index][1])),
-        ]
+        limits = _projected_view_axis_limits(self.shapes[0], view_key, orientation_basis)
+        for other in self.shapes[1:]:
+            other_limits = _projected_view_axis_limits(other, view_key, orientation_basis)
+            limits = [
+                [min(limits[0][0], other_limits[0][0]), max(limits[0][1], other_limits[0][1])],
+                [min(limits[1][0], other_limits[1][0]), max(limits[1][1], other_limits[1][1])],
+            ]
+        limits = np.array(limits)
+        with self._oriented_limits_lock:
+            self._oriented_limits[key] = limits
+        return limits
+
+    @staticmethod
+    def _default_camera_center(limits):
+        """The middle of the window, which is where a view starts before any pan."""
+        return [float(np.mean(limits[0])), float(np.mean(limits[1]))]
 
     def _calculate_view_limits(self, same_shapes=False):
         """Calculate axis limits for all views for both shapes."""
@@ -323,7 +379,7 @@ class CADComparisonRenderer:
             [[xmin, xmax], [ymin, ymax]],  # front
             [[xmin, xmax], [ymin, ymax]],  # side
         ]
-        self.view_current_camera_center = [
+        self.view_default_camera_center = [
             [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
             [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
             [(xmin+xmax)/2.0, (ymin+ymax)/2.0],
@@ -346,13 +402,11 @@ class CADComparisonRenderer:
             view_limits[i][0][1] = max(ax_limits_before[0][1], ax_limits_after[0][1])
             view_limits[i][1][0] = min(ax_limits_before[1][0], ax_limits_after[1][0])
             view_limits[i][1][1] = max(ax_limits_before[1][1], ax_limits_after[1][1])
-            self.view_current_camera_center[i][0] = (view_limits[i][0][0] + view_limits[i][0][1])/2.0
-            self.view_current_camera_center[i][1] = (view_limits[i][1][0] + view_limits[i][1][1])/2.0
+            self.view_default_camera_center[i][0] = (view_limits[i][0][0] + view_limits[i][0][1])/2.0
+            self.view_default_camera_center[i][1] = (view_limits[i][1][0] + view_limits[i][1][1])/2.0
         
         self.view_limits = np.array(view_limits)
-        self._canonical_view_limits = self.view_limits.copy()
-        self._orientation_frame_key = None
-        self.view_current_camera_center = np.array(self.view_current_camera_center)
+        self.view_default_camera_center = np.array(self.view_default_camera_center)
 
     # Background precompute is CPU-bound and runs in a plain thread, so without
     # yielding here it can hold the GIL long enough to starve Flask's other
@@ -419,7 +473,6 @@ class CADComparisonRenderer:
                     pair_count += 1
                     if pair_count % self._PRECOMPUTE_DIFF_YIELD_EVERY == 0:
                         time.sleep(self._PRECOMPUTE_YIELD_SECONDS)
-
             max_diff = np.max(diff_mat)
             if max_diff > 0:
                 diff_mat /= max_diff
@@ -427,12 +480,24 @@ class CADComparisonRenderer:
             self.view_cut_polygons[view_key] = cut_faces_list
 
     def start_background_slice_precompute(self):
-        """Kick off slice-graph precompute without blocking first render."""
+        """Make the slice data available, computing it only if it is not on disk.
+
+        A previous run's result is loaded in the caller's thread rather than a
+        worker: it is a file read, and doing it here means a warm model is ready
+        the moment this returns instead of some milliseconds later.
+        """
         with self._precompute_lock:
             if self._slice_graphs_ready or self._precompute_in_progress:
                 return False
             self._precompute_in_progress = True
             self._precompute_done.clear()
+
+        if self.load_precompute_cache():
+            with self._precompute_lock:
+                self._slice_graphs_ready = True
+                self._precompute_in_progress = False
+                self._precompute_done.set()
+            return False
 
         worker = threading.Thread(
             target=self._finish_slice_graph_precompute,
@@ -447,31 +512,123 @@ class CADComparisonRenderer:
             self._compute_slice_graphs()
             self._save_precompute_cache(self._model_signature_value or self._model_signature())
             self._slice_graphs_ready = True
+        except Exception as error:
+            # A daemon thread's uncaught exception is otherwise invisible: it
+            # neither surfaces to a caller nor appears in quiet-mode's redirected
+            # stdout/stderr, so slicegraph_ready would stay False forever with no
+            # trace of why. sys.__stderr__ bypasses that redirect deliberately.
+            import sys, traceback
+            print(f"Slice-graph precompute failed: {error!r}", file=sys.__stderr__, flush=True)
+            traceback.print_exc(file=sys.__stderr__)
         finally:
             with self._precompute_lock:
                 self._precompute_in_progress = False
                 self._precompute_done.set()
 
-    def _save_precompute_cache(self, signature):
-        os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
+    def _precompute_cache_path(self):
+        """Where this model's precomputed slice data lives.
 
-        orthographic_view_limits = np.asarray(self.view_limits, dtype=float)
-        orthographic_centers = np.asarray(self.view_current_camera_center, dtype=float)
-        slice_diff_mats = {
-            key: np.asarray(value, dtype=float).tolist()
-            for key, value in self.view_diff_mats.items()
-        }
+        One file per model, named from the model and a hash of its signature, so
+        a changed file simply misses rather than reading somebody else's data.
+        There used to be a single shared filename with no model in it, so every
+        renderer overwrote the same file and the last one to finish won.
+
+        Under data/ because that is the mounted volume. The old location was
+        inside the image, so anything written there vanished on the next build,
+        which would have made this cache worthless even once it was read.
+        """
+        signature = json.dumps(self._model_signature(), sort_keys=True)
+        digest = hashlib.sha256(signature.encode()).hexdigest()[:12]
+        stem = os.path.splitext(os.path.basename(self.after_model_path))[0]
+        safe_stem = re.sub(r"[^A-Za-z0-9._-]", "_", stem)[:80]
+        return os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "data", "renders", "precompute", f"{safe_stem}-{digest}.json.gz",
+        )
+
+    def load_precompute_cache(self):
+        """Restore a previous run's slice data, or return False.
+
+        Gzipped JSON: the difference matrices compress about thirty to one, so a
+        model costs roughly 16 KB on disk instead of half a megabyte. Polygons go
+        as WKB rather than pickle, so reading a cache file cannot execute
+        anything.
+
+        Anything unreadable, stale or the wrong shape is treated as a miss and
+        recomputed. A cache that lies is worse than no cache.
+        """
+        try:
+            with gzip.open(self.cache_path, "rt", encoding="utf-8") as fp:
+                payload = json.load(fp)
+        except (OSError, ValueError):
+            return False
+
+        if payload.get("cache_version") != self.cache_version:
+            return False
+        if payload.get("model_signature") != self._model_signature():
+            return False
+
+        try:
+            diff_mats = {
+                key: np.asarray(value, dtype=float)
+                for key, value in payload["slice_diff_mats"].items()
+            }
+            cut_polygons = {
+                key: [from_wkb(bytes.fromhex(blob)) for blob in blobs]
+                for key, blobs in payload["slice_cut_polygons"].items()
+            }
+        except (KeyError, TypeError, ValueError):
+            return False
+
+        if not diff_mats or set(diff_mats) != set(cut_polygons):
+            return False
+
+        self.view_diff_mats = diff_mats
+        self.view_cut_polygons = cut_polygons
+        return True
+
+    def _save_precompute_cache(self, signature):
+        """Persist what the precompute produced, so a restart does not redo it.
+
+        Both halves are needed: the difference matrices alone leave the slice
+        graph on its flat fallback, because the zoom-filtered profile is computed
+        from the cut polygons.
+
+        Best effort. A model that cannot be cached still works, just slowly, so a
+        read-only or full disk must not break rendering.
+        """
+        # The model may have been deleted (its renderer forgotten) while this
+        # precompute was still running. Writing now would leave an orphan cache
+        # file for a model that no longer exists.
+        if getattr(self, "_discarded", False):
+            return
 
         cache_payload = {
             "cache_version": self.cache_version,
             "model_signature": signature,
-            "orthographic_view_limits": orthographic_view_limits.tolist(),
-            "orthographic_view_centers": orthographic_centers.tolist(),
-            "slice_diff_mats": slice_diff_mats,
+            "slice_diff_mats": {
+                key: np.asarray(value, dtype=float).tolist()
+                for key, value in self.view_diff_mats.items()
+            },
+            "slice_cut_polygons": {
+                key: [to_wkb(polygon).hex() for polygon in polygons]
+                for key, polygons in self.view_cut_polygons.items()
+            },
         }
 
-        with open(self.cache_path, "w", encoding="utf-8") as fp:
-            json.dump(cache_payload, fp)
+        temporary = f"{self.cache_path}.{os.getpid()}.tmp"
+        try:
+            os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
+            with gzip.open(temporary, "wt", encoding="utf-8") as fp:
+                json.dump(cache_payload, fp)
+            # Renamed into place so a reader never sees a half-written file.
+            os.replace(temporary, self.cache_path)
+        except Exception:
+            # Deliberately broad. This is a speed-up, and every way it can fail
+            # (read-only mount, full disk, a path the filesystem rejects) must
+            # cost the next start some seconds rather than cost this render.
+            with contextlib.suppress(Exception):
+                os.unlink(temporary)
 
     def _model_signature(self):
         """Build a lightweight signature that changes when source STL files change."""
@@ -509,10 +666,16 @@ class CADComparisonRenderer:
             # view_cut_polygons for a view are always populated together, so this
             # is effectively "nothing ready"); return a flat profile so the graph
             # shows something sane instead of crashing while precompute runs.
+            # slicegraph_ready flags this render's profile as the placeholder,
+            # not a real one, so the client knows to refresh once precompute
+            # actually finishes instead of leaving a flat line on screen.
+            self.slicegraph_ready = False
             diff_row = self.view_diff_mats.get(view_key)
             if diff_row is None:
                 return np.zeros(101, dtype=float)
             return diff_row[anchor_depth_percent]
+
+        self.slicegraph_ready = True
 
         x0 = min(float(zoom_ax_limits[0][0]), float(zoom_ax_limits[0][1]))
         x1 = max(float(zoom_ax_limits[0][0]), float(zoom_ax_limits[0][1]))
@@ -533,7 +696,7 @@ class CADComparisonRenderer:
             profile /= max_profile
         return profile
 
-    def compute_fit_view(self, params):
+    def compute_fit_view(self, params, *, screen_size=None):
         """Compute a zoom and camera center that fits the current slice on the tactile display."""
         view_name = self._map_view_name(params.get("view", "Top"))
         depth_percent = float(params.get("depth", 0))
@@ -556,7 +719,7 @@ class CADComparisonRenderer:
             # Fallback: do not invent a weird camera if there is no slice to fit.
             return {
                 "zoom": float(params.get("zoom", 0.0)),
-                "camera_center": self.view_current_camera_center[view_index].tolist(),
+                "camera_center": self.view_default_camera_center[view_index].tolist(),
             }
 
         used_vertex_ids = np.unique(slice_faces.faces.reshape(-1))
@@ -577,15 +740,16 @@ class CADComparisonRenderer:
             # Fallback: if empty slice
             return {
                 "zoom": float(params.get("zoom", 0.0)),
-                "camera_center": self.view_current_camera_center[view_index].tolist(),
+                "camera_center": self.view_default_camera_center[view_index].tolist(),
             }
         slice_aspect = slice_width / slice_height
         
-        render_screen_size = [self.screen_size[0], self.screen_size[1]]
+        screen_size = list(screen_size) if screen_size else list(self.screen_size)
+        render_screen_size = [screen_size[0], screen_size[1]]
         if bool(params.get("compose_scrollbar", False)):
             render_screen_size = [
-                max(1, self.screen_size[0] - 2),
-                max(1, self.screen_size[1] - 2),
+                max(1, screen_size[0] - 2),
+                max(1, screen_size[1] - 2),
             ]
         device_aspect = render_screen_size[0] / render_screen_size[1]
 
@@ -608,8 +772,8 @@ class CADComparisonRenderer:
         base_x_lim, base_y_lim = compute_imposed_zoom_limits(
             horizontal_dist,
             vertical_dist,
-            self.view_current_camera_center[view_index][0],
-            self.view_current_camera_center[view_index][1],
+            self.view_default_camera_center[view_index][0],
+            self.view_default_camera_center[view_index][1],
             0.0,
             screen_w_for_ratio,
             render_screen_size[1],
@@ -786,7 +950,7 @@ class CADComparisonRenderer:
         if len(axis_text) >= 2 and axis_text[1] in char_to_dots:
             self._draw_braille_cell(img_array, box_x0 + 4, box_y0 + 1, char_to_dots[axis_text[1]])
     
-    def render(self, params):
+    def render(self, params, *, screen_size=None):
         """
         Render a view of the CAD model comparison based on provided parameters.
         
@@ -801,7 +965,8 @@ class CADComparisonRenderer:
                 - superpositionMode: (optional) "outline", "intersection", "difference before", "difference after"
         
         Returns:
-            numpy array: RGBA image array
+            RenderResult: the image, plus the camera centre and framing this
+            request resolved to, so the caller can send them back next time.
         
         Example:
             params = {
@@ -809,7 +974,8 @@ class CADComparisonRenderer:
                 "depth": 30,
                 "renderMode": "Shaded"
             }
-            img_array = renderer.render(params)
+            result = renderer.render(params)
+            img_array = result.image
         """
         # Extract and map parameters
         view_name = self._map_view_name(params.get("view", "Top"))
@@ -818,6 +984,9 @@ class CADComparisonRenderer:
         shape_choice = params.get("shape", "after").lower()
         comparison_mode = params.get("mode", "single").lower()
         superposition_mode = params.get("superpositionMode", "outline").lower()
+
+        zoom_level = float(params.get("zoom", 0.0))
+        zoom_level = max(0.0, min(10.0, zoom_level))
 
         if "compose_scrollbar" in params.keys():
             compose_scrollbar = params["compose_scrollbar"]
@@ -828,11 +997,17 @@ class CADComparisonRenderer:
         if comparison_mode == "slice-graph":
             compose_scrollbar = False
 
+        # At zoom_level 0 the whole model extent is already visible, so a
+        # scrollbar would have nothing meaningful to show (#150).
+        if zoom_level == 0.0:
+            compose_scrollbar = False
+
         # Define a per-view viewing window. When scrollbars are enabled we reserve
         # the last row/column for bars and the second-to-last row/column as spacer.
-        render_screen_size = [self.screen_size[0], self.screen_size[1]]
+        screen_size = list(screen_size) if screen_size else list(self.screen_size)
+        render_screen_size = [screen_size[0], screen_size[1]]
         if compose_scrollbar:
-            render_screen_size = [max(1, self.screen_size[0] - 2), max(1, self.screen_size[1] - 2)]
+            render_screen_size = [max(1, screen_size[0] - 2), max(1, screen_size[1] - 2)]
 
         # Cursor coordinates are display-space row/column values from the frontend.
         # They are relative to the current drawable render area, not CAD x/y/z.
@@ -887,42 +1062,50 @@ class CADComparisonRenderer:
         if comparison_mode == "side-by-side":
             view_index = self._get_view_index(view_name_cut)
 
-        zoom_level = float(params.get("zoom", 0.0))
-        zoom_level = max(0.0, min(10.0, zoom_level))
         # Linear zoom mapping: 0 -> full window, 1 -> half, 2 -> one-third, etc.
         zoom_scale = 1.0 / (zoom_level + 1.0)
         camera_move = params.get("move_camera_center", "none")
 
-        # Reframe when the model has been turned off the named views. The limits
-        # for each named view are precomputed from the model's extent along that
-        # view's own axes, so a rotated model projects somewhere else entirely:
-        # pitching a chair to look down on it framed a region it no longer
-        # occupied and rendered an empty display.
-        self._reframe_for_orientation(params.get("orientation"), view_index, view_name)
+        # The window to draw for this view at this orientation. A rotated model
+        # projects somewhere else entirely, so it is measured along the axes it
+        # is actually turned to.
+        view_limits = self._limits_for_orientation(
+            params.get("orientation"), view_index, view_name
+        )
 
-        camera_center = params.get("camera_center")
-        if isinstance(camera_center, list) and len(camera_center) == 2:
-            self.view_current_camera_center[view_index] = camera_center
+        # Where this request is looking, as a local. The caller owns it: it is
+        # handed back in the result and sent again next time. It used to live on
+        # this instance, which is shared by every window on this model, so one
+        # window's pan moved another's view and the pans accumulated.
+        #
+        # No camera centre means "wherever this view starts". The caller keys its
+        # stored centre by view *and* orientation, so turning the model gives it
+        # nothing to send and the framing resets to the middle of the new extent,
+        # which is the only sensible place once the model has turned underneath.
+        requested_center = params.get("camera_center")
+        if isinstance(requested_center, (list, tuple)) and len(requested_center) == 2:
+            camera_center = [float(requested_center[0]), float(requested_center[1])]
+        else:
+            camera_center = self._default_camera_center(view_limits)
 
-        horizontal_dist = np.abs((self.view_limits[view_index][0][1] - self.view_limits[view_index][0][0]))
-        vertical_dist = np.abs((self.view_limits[view_index][1][1] - self.view_limits[view_index][1][0]))
+        horizontal_dist = np.abs(view_limits[0][1] - view_limits[0][0])
+        vertical_dist = np.abs(view_limits[1][1] - view_limits[1][0])
         # arrow-key stepping
         pan_step_scale = 0.5 * zoom_scale
-        #self.view_current_camera_center[view_index][1] -= pan_step_scale*vertical_dist
         if camera_move == "left":
-            self.view_current_camera_center[view_index][0] -= pan_step_scale*horizontal_dist
+            camera_center[0] -= pan_step_scale*horizontal_dist
         if camera_move == "right":
-            self.view_current_camera_center[view_index][0] += pan_step_scale*horizontal_dist
+            camera_center[0] += pan_step_scale*horizontal_dist
         if camera_move == "up":
-            self.view_current_camera_center[view_index][1] += pan_step_scale*vertical_dist
+            camera_center[1] += pan_step_scale*vertical_dist
         if camera_move == "down":
-            self.view_current_camera_center[view_index][1] -= pan_step_scale*vertical_dist
+            camera_center[1] -= pan_step_scale*vertical_dist
 
         translational_ax_limits = [
-            [self.view_current_camera_center[view_index][0] - 0.5*horizontal_dist,
-            self.view_current_camera_center[view_index][0] + 0.5*horizontal_dist],
-            [self.view_current_camera_center[view_index][1] - 0.5*vertical_dist,
-            self.view_current_camera_center[view_index][1] + 0.5*vertical_dist],
+            [camera_center[0] - 0.5*horizontal_dist,
+            camera_center[0] + 0.5*horizontal_dist],
+            [camera_center[1] - 0.5*vertical_dist,
+            camera_center[1] + 0.5*vertical_dist],
             ]
 
         # Compute scrollbar dimensions after final zoom/aspect correction so
@@ -939,15 +1122,15 @@ class CADComparisonRenderer:
         imposed_zoom_ax_limits = list(compute_imposed_zoom_limits(
             horizontal_dist,
             vertical_dist,
-            self.view_current_camera_center[view_index][0],
-            self.view_current_camera_center[view_index][1],
+            camera_center[0],
+            camera_center[1],
             zoom_level,
             screen_w_for_ratio,
             render_screen_size[1],
         ))
 
-        x_min = self.view_limits[view_index][1][0]
-        x_max = self.view_limits[view_index][1][1]
+        x_min = view_limits[1][0]
+        x_max = view_limits[1][1]
         x_range = x_max - x_min
         if x_range != 0:
             x_zoom_min = imposed_zoom_ax_limits[1][0]
@@ -955,8 +1138,8 @@ class CADComparisonRenderer:
             x_scroll_max = 1.0 - (x_zoom_min - x_min) / x_range
             x_scroll_min = 1.0 - (x_zoom_max - x_min) / x_range
 
-        y_min = self.view_limits[view_index][0][0]
-        y_max = self.view_limits[view_index][0][1]
+        y_min = view_limits[0][0]
+        y_max = view_limits[0][1]
         y_range = y_max - y_min
         if y_range != 0:
             y_zoom_min = imposed_zoom_ax_limits[0][0]
@@ -979,7 +1162,7 @@ class CADComparisonRenderer:
                 1.0 - cut_depth,
                 view_name,
                 render_mode,
-                imposed_ax_limits=self.view_limits[view_index],
+                imposed_ax_limits=view_limits,
                 superposition_key=superposition_key,
                 screen_size=render_screen_size
             )
@@ -1042,13 +1225,12 @@ class CADComparisonRenderer:
                 screen_size=render_screen_size
             )
         else:  # single mode
-            #print(self.view_limits[view_index])
-            #print(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0])
+            #print(view_limits)
+            #print(view_limits[1][0], view_limits[1][1], imposed_zoom_ax_limits[1][0])
             #print(
-            #        [self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][0]),
-            #         self._linear_interpolation(self.view_limits[view_index][1][0], self.view_limits[view_index][1][1], imposed_zoom_ax_limits[1][1])]
+            #        [self._linear_interpolation(view_limits[1][0], view_limits[1][1], imposed_zoom_ax_limits[1][0]),
+            #         self._linear_interpolation(view_limits[1][0], view_limits[1][1], imposed_zoom_ax_limits[1][1])]
             #)
-            print("params", params)
             # The orientation the viewer is holding the model at. Without this the
             # renderer only ever saw the six named views, so the roll, pitch and
             # yaw keys could move the camera but never change the picture.
@@ -1062,19 +1244,13 @@ class CADComparisonRenderer:
                 screen_size=render_screen_size,
                 orientation_basis=params.get("orientation"),
             )
-            self.current_cut_depth = 1.0-cut_depth
-            self.view_current_axis = view_name
-            self.current_render_mode = render_mode
-            self.view_current_view_limits = imposed_zoom_ax_limits
-        self.current_ax_limits = copy(imposed_zoom_ax_limits)
-        self.current_zoom_level = zoom_level
         #plt.imshow(img_array)
         #plt.savefig("payload_before.png")
         
         # COMPOSITION STAGE
         if compose_scrollbar:
             draw_w, draw_h = render_screen_size[0], render_screen_size[1]
-            full_img = np.full((self.screen_size[1], self.screen_size[0], img_array.shape[2]), 255, dtype=np.uint8)
+            full_img = np.full((screen_size[1], screen_size[0], img_array.shape[2]), 255, dtype=np.uint8)
             if full_img.shape[2] > 3:
                 full_img[:, :, 3] = 255
             copy_h = min(draw_h, img_array.shape[0], full_img.shape[0])
@@ -1193,7 +1369,7 @@ class CADComparisonRenderer:
             marker_position_int = int(current_depth_percent)
 
             # Render line-graph edge-to-edge in the graph band width.
-            width_px, height_px = self.screen_size[0], self.screen_size[1]
+            width_px, height_px = screen_size[0], screen_size[1]
             graph_height_px = 10
             dpi = 100 
 
@@ -1252,16 +1428,16 @@ class CADComparisonRenderer:
             axis_text = params.get("view", "top").lower()
             self._overlay_view_info_box(img_array, axis_text)
 
-        return img_array
-
-    def init_device(self, device):
-        if device is None:
-            return
-        if device.kind == "monarch":
-            self.screen_size = list(DEFAULT_SCREEN_SIZE)
-        if device.kind == "dotpad":
-            self.screen_size = [60, 40]
-
+        return RenderResult(
+            img_array,
+            camera_center=list(camera_center),
+            framing_bounds=imposed_zoom_ax_limits,
+            view_axis=view_name,
+            cut_depth=1.0 - cut_depth,
+            render_mode=render_mode,
+            zoom_level=zoom_level,
+            screen_size=list(screen_size),
+        )
 
 # Convenience function for simple usage
 def render_cad_comparison(before_model_path, after_model_path, params):
@@ -1284,4 +1460,4 @@ def render_cad_comparison(before_model_path, after_model_path, params):
         )
     """
     renderer = CADComparisonRenderer(before_model_path, after_model_path)
-    return renderer.render(params)
+    return renderer.render(params).image
