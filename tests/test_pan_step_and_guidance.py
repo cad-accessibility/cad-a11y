@@ -10,9 +10,8 @@ back. This covers the two server-side pieces of the fix:
     0.25 * zoom_scale, not 0.5 * zoom_scale, so 75% of what was visible
     stays visible after one press.
   * Guidance: compute_pan_guidance flags when the object has gone fully out
-    of frame and reports which way to move the OBJECT to bring it back with
-    the fewest pans, so the client can announce that instead of leaving the
-    reader stuck.
+    of frame and reports which way to move the OBJECT to bring it back, so
+    the client can announce that instead of leaving the reader stuck.
 
 See tests/test_pan_direction_wording.py for the browser-side half: the w/a/s/d
 handlers send the OPPOSITE literal camera_move from the direction they
