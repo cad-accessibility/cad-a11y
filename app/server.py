@@ -1252,6 +1252,12 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
         # it back next time. This is what keeps a pan inside the window that
         # made it: the renderer no longer remembers, and must not.
         "camera_center": render_result.camera_center,
+        # Whether the object is fully outside the viewport this render settled
+        # on, and if so which way(s) to pan to bring it back (#153). Up to two
+        # entries -- an object out on both axes needs both a horizontal and a
+        # vertical pan. Same per-window reasoning as camera_center above.
+        "object_out_of_frame": render_result.object_out_of_frame,
+        "pan_guidance_directions": render_result.pan_guidance_directions,
     }
     if bbox is not None:
         response["bbox"] = bbox

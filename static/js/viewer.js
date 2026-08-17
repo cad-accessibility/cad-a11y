@@ -310,6 +310,11 @@ async function sendStateToServer() {
             announce(`${activeModelLoadTask.label}: generating render.`);
         }
         pendingInputSource = 'keyboard'; // reset to default after consuming
+        // Captured now (synchronously) and cleared immediately, same reasoning
+        // as activeModelLoadTask above: a second sendStateToServer call before
+        // this one's response arrives must not steal or duplicate this direction.
+        const activePanDirection = pendingPanDirection;
+        pendingPanDirection = null;
 
         // Send to server and process response
         renderRequestInFlight = true;
@@ -347,6 +352,20 @@ async function sendStateToServer() {
                 updateModelList(data.model_list);
             }
             syncCameraCenterFromResponse(data, state);
+            // Only known once the server has recomputed the object's position
+            // relative to the viewport (#153), hence deferred to here rather
+            // than announced immediately when the w/a/s/d key was pressed.
+            if (activePanDirection) {
+                if (data.object_out_of_frame && Array.isArray(data.pan_guidance_directions)
+                        && data.pan_guidance_directions.length) {
+                    // Out on both axes names both directions (e.g. "pan up
+                    // and left"), matching the two arrows drawn in the
+                    // dotpad frame
+                    announceAlert(`pan ${data.pan_guidance_directions.join(' and ')}, object out of frame`);
+                } else {
+                    announceAlert(`move object ${activePanDirection}`);
+                }
+            }
             // Update tactile display preview
             if (data.image_base64) {
                 lastRenderedGrid = gridForSize(state.target_pixel_width, state.target_pixel_height);
@@ -510,6 +529,10 @@ let lastAnnouncedParameterKey = null;
 let pendingInputSource = 'keyboard'; // consumed once per sendStateToServer call
 let modelLoadAnnouncement = null;
 let modelLoadAnnouncementSeq = 0;
+// The direction word for a pending w/a/s/d move-object press ("up"/"down"/
+// "left"/"right"), consumed once the /render response says whether the object
+// is still in frame afterward (#153) — see sendStateToServer's response handler.
+let pendingPanDirection = null;
 
 // Cursor position is in 2D display coordinates, not CAD/world coordinates.
 // Mapping to CAD X/Y/Z depends on viewerState.currentView and viewerState.currentSliceDepth.
@@ -3091,22 +3114,24 @@ document.addEventListener('keydown', function(e) {
             break;
 
         case 'w':
-            viewerState.currentMoveCamera = "up";
+            // "Move object up" means the viewport has to shift the other way —
+            // see the comment on pendingPanDirection / sendStateToServer (#153).
+            viewerState.currentMoveCamera = "down";
+            pendingPanDirection = 'up';
             sendStateToServer();
             viewerState.currentMoveCamera = "none";
-            announceAlert('up');
             break;
         case 'd':
-            viewerState.currentMoveCamera = "right";
+            viewerState.currentMoveCamera = "left";
+            pendingPanDirection = 'right';
             sendStateToServer();
             viewerState.currentMoveCamera = "none";
-            announceAlert('right');
             break;
         case 's':
-            viewerState.currentMoveCamera = "down";
+            viewerState.currentMoveCamera = "up";
+            pendingPanDirection = 'down';
             sendStateToServer();
             viewerState.currentMoveCamera = "none";
-            announceAlert('down');
             break;
         case '[':
             viewerState.composeScrollbar = !viewerState.composeScrollbar;
@@ -3120,10 +3145,10 @@ document.addEventListener('keydown', function(e) {
             break;
 
         case 'a':
-            viewerState.currentMoveCamera = "left";
+            viewerState.currentMoveCamera = "right";
+            pendingPanDirection = 'left';
             sendStateToServer();
             viewerState.currentMoveCamera = "none";
-            announceAlert('left');
             break;
 
         case '4':
