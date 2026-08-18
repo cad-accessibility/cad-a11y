@@ -112,9 +112,8 @@ def test_response_handler_announces_move_object_or_out_of_frame_guidance():
     assert "announceAlert(`move object ${activePanDirection}`);" in js, (
         "normal pan should announce 'move object <dir>', not raw camera/pan wording"
     )
-    assert "announceAlert(`pan ${data.pan_guidance_directions.join(' and ')}, object out of frame`);" in js, (
-        "an out-of-frame pan should announce every recovery direction (joined with "
-        "'and'), not just one -- an object out on both axes needs both named"
+    assert "announceAlert(`move object ${data.pan_guidance_directions.join(' and ')}, object out of frame`);" in js, (
+        "an out-of-frame move should announce every recovery direction"
     )
     assert "data.object_out_of_frame && Array.isArray(data.pan_guidance_directions)" in js, (
         "the out-of-frame branch should be gated on both flags from the server, "

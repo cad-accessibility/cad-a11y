@@ -358,10 +358,10 @@ async function sendStateToServer() {
             if (activePanDirection) {
                 if (data.object_out_of_frame && Array.isArray(data.pan_guidance_directions)
                         && data.pan_guidance_directions.length) {
-                    // Out on both axes names both directions (e.g. "pan up
-                    // and left"), matching the two arrows drawn in the
-                    // dotpad frame
-                    announceAlert(`pan ${data.pan_guidance_directions.join(' and ')}, object out of frame`);
+                    // Out on both axes names both directions (e.g. "move
+                    // object up and left"), matching the two arrows drawn in
+                    // the dotpad frame
+                    announceAlert(`move object ${data.pan_guidance_directions.join(' and ')}, object out of frame`);
                 } else {
                     announceAlert(`move object ${activePanDirection}`);
                 }
