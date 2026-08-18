@@ -58,6 +58,8 @@ logging.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import logging
 import os
@@ -1286,3 +1288,88 @@ def study_session_export(study_session_id: int):
     if not payload:
         return jsonify({"status": "error", "message": "No such session"}), 404
     return jsonify(payload), 200
+
+
+@study_bp.route("/study/export/long.csv", methods=["GET"])
+def study_export_long_csv():
+    """Every completed session as one long-format CSV, one row per interaction.
+
+    Deliberately not behind ``require_token``, unlike the rest of the panel. This
+    is a plain address someone opens in a browser and gets a spreadsheet from:
+
+        https://<host>/study/export/long.csv
+
+    A token here would be a token to look up, keep somewhere, and paste into a
+    terminal, on the one route whose whole value is that re-running the analysis
+    costs nothing. That is the same friction that made the control panel's own
+    token the most confusing part of running a session, and it was removed there
+    for the same reason. The consequence is real and worth stating plainly: on a
+    deployment reachable from the internet, anyone who knows this address can
+    download the interaction data of every completed session. What that is, is
+    the deliberately narrow thing recorded in ``study_db`` -- keys pressed, what
+    reached the display, timings, all under participant codes. It is not names,
+    not anything anyone said, and not the questionnaire answers, none of which
+    this application ever stores.
+
+    Completed sessions only, and that is not a filter the caller can turn off. An
+    active session is still being written to, so including it would make the file
+    depend on the moment it was asked for; an abandoned one stopped partway with
+    nothing recording why. Deciding either is usable is a judgement about a
+    specific participant, and it belongs to whoever is doing the analysis, not to
+    a default in an endpoint. ``?session=<id>`` narrows the file to one session,
+    still only if that session is completed.
+    """
+    raw_session = (request.args.get("session") or "").strip()
+    study_session_id: int | None = None
+    if raw_session:
+        try:
+            study_session_id = int(raw_session)
+        except ValueError:
+            return jsonify(
+                {"status": "error", "message": "session must be a session id"}
+            ), 400
+        session = study_db.get_study_session(study_session_id)
+        if not session:
+            return jsonify({"status": "error", "message": "No such session"}), 404
+        if session.get("status") != "completed":
+            # 409 rather than 404: the session is real, and saying so is what tells
+            # the experimenter the difference between a typo and a session that
+            # nobody finished.
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": (
+                        f"Session {study_session_id} is {session.get('status')}, and the "
+                        "export covers completed sessions only."
+                    ),
+                }
+            ), 409
+
+    rows = study_db.export_long_rows(study_session_id)
+
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer,
+        fieldnames=list(study_db.LONG_EXPORT_COLUMNS),
+        extrasaction="ignore",
+        lineterminator="\n",
+    )
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({column: row.get(column) for column in study_db.LONG_EXPORT_COLUMNS})
+
+    # A header even when there are no completed sessions yet, so the file opens in
+    # a spreadsheet and says what it would have contained, rather than being empty
+    # and looking like the download failed.
+    filename = (
+        f"study_long_session_{study_session_id}.csv" if study_session_id else "study_long.csv"
+    )
+    return Response(
+        buffer.getvalue(),
+        status=200,
+        mimetype="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )

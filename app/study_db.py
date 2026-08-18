@@ -47,6 +47,7 @@ counter assigned under ``_write_lock`` so two threads cannot interleave it.
 from __future__ import annotations
 
 import json
+import math
 import os
 import secrets
 import sqlite3
@@ -1104,3 +1105,243 @@ def export_session(study_session_id: int) -> dict[str, Any] | None:
         "events": events,
         "renders": renders,
     }
+
+
+# The long-format export. One row per recorded interaction, with the state of the
+# viewer at that moment beside it, so "what fraction of task 1 was spent in cut
+# mode" is a pivot table rather than a program.
+LONG_EXPORT_COLUMNS: tuple[str, ...] = (
+    "participant_code",
+    "session_number",
+    "study_session_id",
+    "seq",
+    "timestamp",
+    "elapsed_ms",
+    "step_elapsed_ms",
+    "phase",
+    "step_id",
+    "step_index",
+    "event_type",
+    "source",
+    "input_source",
+    "model",
+    "view",
+    "render_mode",
+    "layout_mode",
+    "depth",
+    "zoom",
+    "cache_hit",
+    "orientation_x",
+    "orientation_y",
+    "orientation_z",
+    "orientation_basis",
+)
+
+
+def _orientation_angles(
+    raw: str | None,
+) -> tuple[float | None, float | None, float | None]:
+    """Rotation about X, Y and Z in degrees, from the stored orientation basis.
+
+    The viewer stores an orientation as the three vectors it is looking along --
+    ``right``, ``up``, ``forward`` -- because that is what the renderer takes.
+    Analysis asks the other question: how far round each axis the object had been
+    turned. The two are the same fact in different clothes, and converting here
+    rather than in a spreadsheet formula means every reader gets the same answer.
+
+    The matrix is built with ``right``, ``up`` and ``forward`` as its rows, and
+    decomposed as Rz then Ry then Rx. Rotation in the viewer happens in whole
+    quarter turns, so the basis is a signed permutation and every angle comes back
+    an exact multiple of 90, reported in [0, 360).
+
+    The one ambiguity is the familiar one. With the object pitched to straight up
+    or straight down, turning about X and turning about Z are the same motion, and
+    the basis alone cannot say which the participant used to get there. Z is
+    reported as 0 in that case and the whole turn is put on X. That is a
+    convention rather than a measurement, which is why ``orientation_basis``
+    carries the untouched vectors in its own column: anything that cannot afford
+    the convention can read them instead.
+
+    A basis that is missing, unparseable or not three vectors of three numbers
+    gives three blanks. Reconstructing an orientation from a partial one would put
+    a number in the spreadsheet that nothing measured.
+    """
+    if not raw:
+        return (None, None, None)
+    try:
+        basis = json.loads(raw)
+    except Exception:
+        return (None, None, None)
+    if not isinstance(basis, dict):
+        return (None, None, None)
+
+    def _row(key: str) -> list[float] | None:
+        value = basis.get(key)
+        if not isinstance(value, (list, tuple)) or len(value) != 3:
+            return None
+        try:
+            return [float(component) for component in value]
+        except (TypeError, ValueError):
+            return None
+
+    right, up, forward = _row("right"), _row("up"), _row("forward")
+    if right is None or up is None or forward is None:
+        return (None, None, None)
+
+    matrix = [right, up, forward]
+    # Clamped because a basis that has been through JSON can arrive at 1.0000000002,
+    # and asin does not forgive that.
+    sin_y = max(-1.0, min(1.0, -matrix[2][0]))
+    angle_y = math.asin(sin_y)
+    if abs(matrix[2][0]) < 0.999999:
+        angle_x = math.atan2(matrix[2][1], matrix[2][2])
+        angle_z = math.atan2(matrix[1][0], matrix[0][0])
+    else:
+        angle_x = math.atan2(-matrix[1][2], matrix[1][1])
+        angle_z = 0.0
+
+    def _degrees(radians: float) -> float:
+        degrees = round(math.degrees(radians), 6) % 360.0
+        # -0.0 and 359.9999999 both mean "no rotation" and should read as one.
+        return round(degrees, 6) % 360.0
+
+    return (_degrees(angle_x), _degrees(angle_y), _degrees(angle_z))
+
+
+def completed_sessions() -> list[dict[str, Any]]:
+    """Every session someone actually finished, oldest first.
+
+    'completed' is the only status the export accepts. An active session is still
+    being written to, so exporting it produces a different file every time it is
+    asked for, and an abandoned one is a session that stopped partway with no
+    record of why. Both belong in the analysis only after a person has looked at
+    them and said so.
+    """
+    try:
+        rows = _get_conn().execute(
+            """SELECT * FROM study_sessions
+               WHERE status = 'completed'
+               ORDER BY id""",
+        ).fetchall()
+    except Exception as error:  # noqa: BLE001 - counted, never fatal
+        _note_failure("db_reads", error)
+        return []
+    return [session for session in (_hydrate(row) for row in rows) if session]
+
+
+def _long_rows_for_session(session: dict[str, Any]) -> list[dict[str, Any]]:
+    """One session's interactions as long-format rows, in the order they happened."""
+    study_session_id = int(session["id"])
+    conn = _get_conn()
+    events = conn.execute(
+        """SELECT seq, part_id, step_id, step_index, event_type, source, created_at,
+                  elapsed_ms, step_elapsed_ms
+           FROM study_events WHERE study_session_id = ?""",
+        (study_session_id,),
+    ).fetchall()
+    renders = conn.execute(
+        """SELECT seq, part_id, step_id, step_index, model, view, render_mode,
+                  layout_mode, depth, zoom, input_source, cache_hit, orientation,
+                  created_at, elapsed_ms, step_elapsed_ms
+           FROM study_renders WHERE study_session_id = ?""",
+        (study_session_id,),
+    ).fetchall()
+
+    # seq is one counter across both tables, so this puts a keypress and the render
+    # it caused in the order they actually happened. Ties keep the event first: the
+    # command comes before the picture it produced.
+    merged = [("event", row) for row in events] + [("render", row) for row in renders]
+    merged.sort(key=lambda item: (item[1]["seq"] or 0, 0 if item[0] == "event" else 1))
+
+    # Only renders carry viewer state in the database; an event row would otherwise
+    # have blanks where the analysis needs to know which model was under their
+    # hands. Carried forward from the last render of this session, never across
+    # sessions, and blank until the first render because nothing was on the display
+    # yet.
+    state: dict[str, Any] = {
+        "model": None,
+        "view": None,
+        "render_mode": None,
+        "layout_mode": None,
+        "depth": None,
+        "zoom": None,
+        "orientation_x": None,
+        "orientation_y": None,
+        "orientation_z": None,
+        "orientation_basis": None,
+    }
+    rows: list[dict[str, Any]] = []
+    for kind, row in merged:
+        if kind == "render":
+            angle_x, angle_y, angle_z = _orientation_angles(row["orientation"])
+            state = {
+                "model": row["model"],
+                "view": row["view"],
+                "render_mode": row["render_mode"],
+                "layout_mode": row["layout_mode"],
+                "depth": row["depth"],
+                "zoom": row["zoom"],
+                "orientation_x": angle_x,
+                "orientation_y": angle_y,
+                "orientation_z": angle_z,
+                "orientation_basis": row["orientation"],
+            }
+            event_type = "render"
+            source = "server"
+            input_source = row["input_source"]
+            cache_hit = bool(row["cache_hit"])
+        else:
+            event_type = row["event_type"]
+            source = row["source"]
+            input_source = None
+            cache_hit = None
+
+        rows.append(
+            {
+                "participant_code": session.get("participant_code"),
+                "session_number": session.get("session_number"),
+                "study_session_id": study_session_id,
+                "seq": row["seq"],
+                "timestamp": row["created_at"],
+                "elapsed_ms": row["elapsed_ms"],
+                "step_elapsed_ms": row["step_elapsed_ms"],
+                # part_id is the phase: onboarding, task1, task2, discussion. It is
+                # what keeps a rotation during onboarding from being counted as a
+                # participant working out a model.
+                "phase": row["part_id"],
+                "step_id": row["step_id"],
+                "step_index": row["step_index"],
+                "event_type": event_type,
+                "source": source,
+                "input_source": input_source,
+                "cache_hit": cache_hit,
+                **state,
+            }
+        )
+    return rows
+
+
+def export_long_rows(study_session_id: int | None = None) -> list[dict[str, Any]]:
+    """Long-format rows for every completed session, or for one of them.
+
+    One row per recorded interaction rather than one per session, because every
+    question the analysis asks -- time in each render mode, rotations per phase,
+    how often the view was switched -- is a count over interactions grouped some
+    way. A wide table would have to guess the groupings in advance.
+
+    Passing a session id that is not a completed session returns nothing. That is
+    the same answer as a session with no interactions, so callers that need to
+    tell those apart should check the status themselves.
+    """
+    if study_session_id is None:
+        sessions = completed_sessions()
+    else:
+        session = get_study_session(study_session_id)
+        sessions = [session] if session and session.get("status") == "completed" else []
+    rows: list[dict[str, Any]] = []
+    for session in sessions:
+        try:
+            rows.extend(_long_rows_for_session(session))
+        except Exception as error:  # noqa: BLE001 - counted, never fatal
+            _note_failure("db_reads", error)
+    return rows

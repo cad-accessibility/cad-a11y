@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-08-17
+
+#### Added
+*   Study logs can now be downloaded as a single spreadsheet, covering every session that has been completed, at `/study/export/long.csv`. It is an ordinary address that can be opened in a browser, with nothing to find or paste first. It is one row per interaction rather than one per session, with the time, the phase of the study, the model, the render mode and the orientation on each row, so counting how much of a task was spent in each render mode is a matter of sorting a column rather than writing a program. It is one request, so it can be run again unchanged each time another participant is added.
+*   The download covers completed sessions only. A session still running is being written to as it is read, so the file would differ every time it was asked for, and a session that was abandoned stopped partway with nothing recording why. Asking for one of those by name says which of the two it is rather than returning an empty file, so that a participant is never quietly missing from the analysis.
+*   That address asks for no token, on a deployment that requires one everywhere else in the panel. Worth knowing what that means: anyone who can reach the server and knows the address can download the interaction data of every completed session. That data is keys pressed, what reached the display, and timings, recorded under participant codes. Names, anything a participant said, and the questionnaire answers are not in it, because the application does not store them anywhere.
+*   Orientation, which the viewer keeps as the directions it is looking along, is written out as a rotation in degrees about each of the three axes. The original directions are kept in a column of their own, so the one case where angles are ambiguous, an object pitched to straight up or straight down, can still be read exactly.
+
 ### 2026-08-11
 
 #### Fixed

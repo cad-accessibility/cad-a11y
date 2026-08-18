@@ -7,6 +7,8 @@ and the answer key reaching the participant's browser.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 from datetime import timedelta
 
@@ -2267,3 +2269,290 @@ class TestReconnectingToAFinishedSession:
             f"the stream opened with {opening}, contradicting the direct answer"
         )
         assert opening.get("unknown_code") is None
+
+
+# Bases as the viewer sends them: right, up and forward, always axis aligned
+# because rotation happens in whole quarter turns.
+_IDENTITY_BASIS = {"scheme": "basis-v1", "right": [1, 0, 0], "up": [0, 1, 0], "forward": [0, 0, 1]}
+_QUARTER_TURN_ABOUT_Z = {
+    "scheme": "basis-v1", "right": [0, -1, 0], "up": [1, 0, 0], "forward": [0, 0, 1],
+}
+_QUARTER_TURN_ABOUT_Y = {
+    "scheme": "basis-v1", "right": [0, 0, 1], "up": [0, 1, 0], "forward": [-1, 0, 0],
+}
+
+
+def _render(session_id, **overrides):
+    """Record one render against a session, the way /render does."""
+    params = {
+        "model": "lego_2x4", "view": "x-", "render_mode": "Cut", "layout_mode": "single",
+        "depth": 50, "zoom": 0, "input_source": "keyboard", "cache_hit": False,
+    }
+    params.update(overrides)
+    return study_db.record_render(session_id, **params)
+
+
+def _end(client, session_id, status="completed"):
+    return client.post(
+        "/study/session/end",
+        json={"study_session_id": session_id, "status": status},
+        headers=_auth(),
+    )
+
+
+def _long_csv(client, query=""):
+    """The export, as (response, parsed rows)."""
+    response = client.get(f"/study/export/long.csv{query}", headers=_auth())
+    text = response.get_data(as_text=True)
+    return response, list(csv.DictReader(io.StringIO(text)))
+
+
+class TestLongExportCoversCompletedSessionsOnly:
+    """The constraint the endpoint exists to enforce. An active session is still
+    being written to, so exporting it gives a different file every time it is
+    asked for; an abandoned one stopped partway with nothing recording why."""
+
+    def test_an_active_session_is_not_in_the_file(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id)
+        _, rows = _long_csv(client)
+        assert rows == [], "a session still running must not reach the analysis file"
+
+    def test_an_abandoned_session_is_not_in_the_file(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id)
+        _end(client, session_id, status="abandoned")
+        _, rows = _long_csv(client)
+        assert rows == []
+
+    def test_a_completed_session_is(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id)
+        _end(client, session_id)
+        _, rows = _long_csv(client)
+        assert rows, "a finished session is the whole point of the export"
+        assert {row["participant_code"] for row in rows} == {"P01"}
+
+    def test_the_three_are_told_apart_in_one_file(self, client):
+        """The case that matters on the real server, where twelve of fourteen
+        sessions were sitting in a state nobody meant them to be in."""
+        finished = _start(client, participant_code="P01").get_json()["state"]
+        abandoned = _start(client, participant_code="P02").get_json()["state"]
+        running = _start(client, participant_code="P03").get_json()["state"]
+        for state in (finished, abandoned, running):
+            _render(state["study_session_id"])
+        _end(client, finished["study_session_id"])
+        _end(client, abandoned["study_session_id"], status="abandoned")
+
+        _, rows = _long_csv(client)
+        assert {row["participant_code"] for row in rows} == {"P01"}
+
+    def test_asking_for_one_unfinished_session_by_id_is_refused_and_says_why(self, client):
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        _render(session_id)
+        response = client.get(f"/study/export/long.csv?session={session_id}", headers=_auth())
+        assert response.status_code == 409
+        # Named status, so the experimenter can tell a typo from a session that
+        # nobody finished.
+        assert "active" in response.get_json()["message"]
+
+    def test_asking_for_one_finished_session_by_id_returns_just_that_one(self, client):
+        first = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        second = _start(client, participant_code="P02").get_json()["state"]["study_session_id"]
+        for session_id in (first, second):
+            _render(session_id)
+            _end(client, session_id)
+
+        _, rows = _long_csv(client, f"?session={first}")
+        assert {row["participant_code"] for row in rows} == {"P01"}
+
+    def test_an_unknown_session_is_a_clean_404(self, client):
+        assert client.get("/study/export/long.csv?session=999", headers=_auth()).status_code == 404
+
+    def test_a_session_that_is_not_a_number_is_a_400(self, client):
+        assert client.get("/study/export/long.csv?session=P01", headers=_auth()).status_code == 400
+
+    def test_the_export_is_a_plain_address_with_no_token(self, client):
+        """Opened in a browser, not fetched with a header. The fixture turns the
+        optional gate on, and this route is open regardless: a token to look up
+        and paste is the friction the panel's own token was removed for."""
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id)
+        _end(client, session_id)
+
+        response = client.get("/study/export/long.csv")
+        assert response.status_code == 200
+        assert response.mimetype == "text/csv"
+        rows = list(csv.DictReader(io.StringIO(response.get_data(as_text=True))))
+        assert {row["participant_code"] for row in rows} == {"P01"}
+
+    def test_one_session_by_id_needs_no_token_either(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id)
+        _end(client, session_id)
+        assert client.get(f"/study/export/long.csv?session={session_id}").status_code == 200
+
+    def test_the_rest_of_the_panel_is_still_gated(self, client):
+        """Opening this one route must not have opened the others."""
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        assert client.get(f"/study/sessions/{session_id}/export").status_code == 403
+        assert client.get("/study/sessions").status_code == 403
+
+
+class TestLongExportShape:
+    def test_it_is_a_csv_download_with_a_header_even_when_empty(self, client):
+        """An empty file looks like a failed download. A header says the request
+        worked and no session has been finished yet."""
+        response, rows = _long_csv(client)
+        assert response.status_code == 200
+        assert response.mimetype == "text/csv"
+        assert "attachment" in response.headers["Content-Disposition"]
+        assert rows == []
+        header = response.get_data(as_text=True).splitlines()[0]
+        assert header.split(",") == list(study_db.LONG_EXPORT_COLUMNS)
+
+    def test_one_row_per_interaction_not_one_per_session(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        _render(session_id)
+        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        commands = [row["event_type"] for row in rows]
+        assert commands.count("keyboard") == 2
+        assert "session_start" in commands and "session_end" in commands
+        assert any(row["event_type"] == "render" for row in rows)
+
+    def test_rows_are_in_the_order_they_happened(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        _render(session_id)
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        sequences = [int(row["seq"]) for row in rows]
+        assert sequences == sorted(sequences)
+
+    def test_the_phase_comes_through_so_onboarding_can_be_separated(self, client):
+        """The reason the column exists: a rotation during onboarding is someone
+        being taught the controls, not someone working out a model."""
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, part_id="onboarding", step_id="onboarding.depth", step_index=4)
+        _render(session_id, part_id="task1", step_id="task1.a.virtual", step_index=9)
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        phases = [row["phase"] for row in rows if row["event_type"] == "render"]
+        assert phases == ["onboarding", "task1"]
+
+    def test_the_model_and_render_mode_are_on_the_row(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, model="cane_tip_fitted", render_mode="Outline")
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        render_row = next(row for row in rows if row["event_type"] == "render")
+        assert render_row["model"] == "cane_tip_fitted"
+        assert render_row["render_mode"] == "Outline"
+
+
+class TestLongExportViewerState:
+    def test_an_event_carries_the_state_of_the_last_render(self, client):
+        """Only renders store viewer state, so an event row would otherwise have
+        a blank where the analysis needs to know what was under their hands."""
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, model="pencil_holder_2x3", render_mode="Filled")
+        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        keypress = next(row for row in rows if row["event_type"] == "keyboard")
+        assert keypress["model"] == "pencil_holder_2x3"
+        assert keypress["render_mode"] == "Filled"
+
+    def test_state_before_the_first_render_is_blank_rather_than_guessed(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        start_row = next(row for row in rows if row["event_type"] == "session_start")
+        assert start_row["model"] == ""
+        assert start_row["render_mode"] == ""
+
+    def test_state_does_not_leak_from_one_session_into_the_next(self, client):
+        """Carrying forward is per session. One participant's model appearing on
+        another participant's first rows would be invisible and wrong."""
+        first = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(first, model="lego_2x4")
+        _end(client, first)
+
+        second = _start(client, participant_code="P02").get_json()["state"]["study_session_id"]
+        client.post(f"/study/event?s={_key(second)}", json={"event_type": "keyboard"})
+        _end(client, second)
+
+        _, rows = _long_csv(client)
+        second_rows = [row for row in rows if row["participant_code"] == "P02"]
+        assert second_rows, "the second session should be in the file"
+        assert all(row["model"] == "" for row in second_rows)
+
+
+class TestLongExportOrientation:
+    def test_an_unturned_object_reads_as_zero_on_every_axis(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, orientation=_IDENTITY_BASIS)
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        row = next(r for r in rows if r["event_type"] == "render")
+        assert (row["orientation_x"], row["orientation_y"], row["orientation_z"]) == (
+            "0.0", "0.0", "0.0",
+        )
+
+    def test_a_quarter_turn_reads_as_ninety_on_the_axis_it_was_turned_about(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, orientation=_QUARTER_TURN_ABOUT_Z)
+        _render(session_id, orientation=_QUARTER_TURN_ABOUT_Y)
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        turned = [r for r in rows if r["event_type"] == "render"]
+        about_z, about_y = turned[0], turned[1]
+        assert (about_z["orientation_x"], about_z["orientation_y"], about_z["orientation_z"]) == (
+            "0.0", "0.0", "90.0",
+        )
+        assert (about_y["orientation_x"], about_y["orientation_y"], about_y["orientation_z"]) == (
+            "0.0", "90.0", "0.0",
+        )
+
+    def test_the_raw_basis_is_kept_so_nothing_depends_on_the_decomposition(self, client):
+        """Pitched to straight up, a turn about X and a turn about Z are the same
+        motion and the angles cannot tell them apart. The vectors still can."""
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, orientation=_QUARTER_TURN_ABOUT_Y)
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        row = next(r for r in rows if r["event_type"] == "render")
+        assert json.loads(row["orientation_basis"])["forward"] == [-1, 0, 0]
+
+    def test_a_render_with_no_orientation_leaves_the_columns_blank(self, client):
+        """Blank, not zero. Zero is a measurement, and there was not one."""
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, orientation=None)
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        row = next(r for r in rows if r["event_type"] == "render")
+        assert row["orientation_x"] == ""
+        assert row["orientation_y"] == ""
+        assert row["orientation_z"] == ""
+
+    def test_a_half_written_basis_is_blank_rather_than_invented(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, orientation={"scheme": "basis-v1", "forward": [0, 0, 1]})
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        row = next(r for r in rows if r["event_type"] == "render")
+        assert row["orientation_x"] == ""
