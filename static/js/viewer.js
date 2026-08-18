@@ -3126,14 +3126,18 @@ document.addEventListener('keydown', function(e) {
         case 'd':
             viewerState.currentMoveCamera = "left";
             pendingPanDirection = 'right';
-            sendStateToServer();
-            viewerState.currentMoveCamera = "none";
+            sendStateToServer().finally(() => {
+                viewerState.currentMoveCamera = "none";
+                pendingPanDirection = null;
+            });
             break;
         case 's':
             viewerState.currentMoveCamera = "up";
             pendingPanDirection = 'down';
-            sendStateToServer();
-            viewerState.currentMoveCamera = "none";
+            sendStateToServer().finally(() => {
+                viewerState.currentMoveCamera = "none";
+                pendingPanDirection = null;
+            });
             break;
         case '[':
             viewerState.composeScrollbar = !viewerState.composeScrollbar;
@@ -3149,8 +3153,10 @@ document.addEventListener('keydown', function(e) {
         case 'a':
             viewerState.currentMoveCamera = "right";
             pendingPanDirection = 'left';
-            sendStateToServer();
-            viewerState.currentMoveCamera = "none";
+            sendStateToServer().finally(() => {
+                viewerState.currentMoveCamera = "none";
+                pendingPanDirection = null;
+            });
             break;
 
         case '4':
