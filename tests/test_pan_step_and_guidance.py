@@ -60,7 +60,11 @@ def test_each_direction_moves_the_expected_axis_the_expected_way(camera_move, ex
 
 
 def test_none_and_unrecognized_moves_leave_the_center_unchanged():
-    for camera_move in ("none", "sideways", ""):
+    """"reset" is included here deliberately: apply_pan_step has no case for
+    it at all (it's just another unrecognized string as far as this function
+    is concerned) -- render() is responsible for overriding camera_center to
+    the default *before* calling this, not this function."""
+    for camera_move in ("none", "sideways", "", "reset"):
         center = apply_pan_step([1.5, -2.5], camera_move, pan_step_scale=1.0,
                                  horizontal_dist=10.0, vertical_dist=10.0)
         assert center == [1.5, -2.5]
@@ -199,6 +203,28 @@ def test_render_actually_uses_a_25_percent_step(renderer):
     # horizontal_dist.
     expected_delta = 0.25 * horizontal_dist
     assert math.isclose(result.camera_center[0] - start_center[0], expected_delta, rel_tol=1e-6)
+
+
+def test_omitting_camera_center_recenters_regardless_of_move_camera_center(renderer):
+    """Reset is the client's responsibility, not render()'s: viewer.js's 'z'
+    handler and reset button both call clearCameraCenterState() before
+    sending, so a reset request omits camera_center entirely rather than
+    sending the stale remembered value -- the *existing* "no camera_center
+    supplied" default path (used for e.g. a first-ever render, or turning to
+    an orientation with no remembered centre of its own) is what actually
+    recenters it. move_camera_center="reset" carries no meaning of its own
+    to render()/apply_pan_step (see the "unrecognized moves" test above);
+    it's just along for the ride so the request bypasses the render cache
+    (is_pan_request in server.py) like any other pan does."""
+    limits, _ = _front_horizontal_dist(renderer)
+    start_center = renderer._default_camera_center(limits)
+
+    panned = renderer.render(dict(BASE_PARAMS, move_camera_center="left"))
+    assert not math.isclose(panned.camera_center[0], start_center[0])
+
+    reset = renderer.render(dict(BASE_PARAMS, move_camera_center="reset"))
+    assert math.isclose(reset.camera_center[0], start_center[0], abs_tol=1e-9)
+    assert math.isclose(reset.camera_center[1], start_center[1], abs_tol=1e-9)
 
 
 def test_a_single_pan_at_zero_zoom_does_not_lose_the_object(renderer):

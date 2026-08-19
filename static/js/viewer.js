@@ -2858,6 +2858,9 @@ sliceGraphModeRadios().forEach((radio) => {
 if (resetPositionBtn) {
     resetPositionBtn.addEventListener('click', function() {
         pendingInputSource = 'ui';
+        // Drop the remembered per-view centre -- see the 'z' case in the
+        // keydown handler for why.
+        clearCameraCenterState();
         // currentMoveCamera is reset inside sendStateToServer itself, only
         // once actually consumed -- see the 'z' case in the keydown handler.
         viewerState.currentMoveCamera = "reset";
@@ -3208,6 +3211,10 @@ document.addEventListener('keydown', function(e) {
 
         case 'z':
             e.preventDefault();
+            // Drop the remembered per-view centre so this request omits
+            // camera_center entirely. Without this, the stale remembered centre still went out on
+            // this same request and silently overrode the reset.
+            clearCameraCenterState();
             // currentMoveCamera is reset inside sendStateToServer itself, only
             // once actually consumed -- resetting it here raced ahead of
             // that when a render was already in flight (the coalescing guard
