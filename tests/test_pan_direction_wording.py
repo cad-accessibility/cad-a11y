@@ -16,8 +16,9 @@ The fix has three parts, all in viewer.js:
     only known once the server has recomputed it (#153) -- announcing at
     keydown, before that response, was possible before but would be
     announcing a guess.
-  * The wording is "move object <dir>" normally, or "pan <dir>, object out of
-    frame" when the server reports the object went fully out of frame.
+  * The wording is "move object <dir>" normally, or "move object <dir>,
+    object out of frame" when the server reports the object went fully out
+    of frame.
 
 These parse the shipped viewer.js/server.py source directly (same convention
 as test_orientation_controls.py), rather than re-implementing the browser.

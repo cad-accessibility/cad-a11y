@@ -262,6 +262,12 @@ async function sendStateToServer() {
         const renderPipelineParams = getRenderPipelineParams(viewerState.currentRenderMode);
         const orientationPayload = getOrientationPayload();
         const moveCamera = viewerState.currentMoveCamera;
+        const printView = viewerState.currentPrintView;
+        // Capture now and reset immediately: the coalescing guard above returns before this line runs, so a
+        // one-shot request parameter (a queued pan, or a print_view request) is
+        // never lost to an early reset racing the eventual coalesced resend.
+        viewerState.currentMoveCamera = "none";
+        viewerState.currentPrintView = false;
         const cameraCenter = getCurrentCameraCenter(viewerState.currentView, orientationPayload);
         const worldCameraCenter = viewerState.currentWorldCameraCenter;
 
@@ -276,7 +282,7 @@ async function sendStateToServer() {
             projectionMode: renderPipelineParams.projectionMode,
             mode: getServerRepresentationMode(),
             move_camera_center: moveCamera,
-            print_view: viewerState.currentPrintView,
+            print_view: printView,
             model: viewerState.currentModel,
             current_model: viewerState.currentModel,
             compose_cursor: true, // for now always true, maybe later make it configurable
@@ -428,6 +434,13 @@ async function sendStateToServer() {
             // use. Connection state is managed exclusively by the health poll below so that
             // only sustained, confirmed outages interrupt the user.
             console.warn('Render request failed:', error.message);
+            // A pending move-object press waits for this response to know
+            // whether the object stayed in frame -- if the request
+            // itself failed, that never arrives, so say so rather than
+            // leaving the reader with no feedback at all for the keypress.
+            if (activePanDirection) {
+                announceAlert('Move failed, try again.');
+            }
             if (isActiveModelLoadTask(activeModelLoadTask)) {
                 announceAlert(`Processing failed for ${activeModelLoadTask.label}.`);
                 clearModelLoadTask(activeModelLoadTask);
@@ -1171,9 +1184,10 @@ function toggleSliceGraphLock() {
 }
 
 function print_view(){
+    // currentPrintView is reset inside sendStateToServer itself, only once
+    // actually consumed -- see the moveCamera/printView comment there.
     viewerState.currentPrintView = true;
     sendStateToServer();
-    viewerState.currentPrintView = !viewerState.currentPrintView;
 }
 
 function formatDebugValue(value) {
@@ -2660,11 +2674,10 @@ function loadStudyModel(stem, label, defaults) {
     beginModelLoadAnnouncement(studyModelLabel, 'study');
     // "reset" centres the object, the last of the study defaults. It is a render
     // parameter rather than viewer state, so it is set for this one request and
-    // cleared straight after, the same way the Z shortcut does it.
+    // reset inside sendStateToServer itself once actually consumed 
     pendingInputSource = 'study';
     viewerState.currentMoveCamera = 'reset';
     sendStateToServer();
-    viewerState.currentMoveCamera = 'none';
     return true;
 }
 
@@ -2845,9 +2858,10 @@ sliceGraphModeRadios().forEach((radio) => {
 if (resetPositionBtn) {
     resetPositionBtn.addEventListener('click', function() {
         pendingInputSource = 'ui';
+        // currentMoveCamera is reset inside sendStateToServer itself, only
+        // once actually consumed -- see the 'z' case in the keydown handler.
         viewerState.currentMoveCamera = "reset";
         sendStateToServer();
-        viewerState.currentMoveCamera = "none";
         announce('Position reset');
     });
 }
@@ -3116,28 +3130,22 @@ document.addEventListener('keydown', function(e) {
         case 'w':
             // "Move object up" means the viewport has to shift the other way —
             // see the comment on pendingPanDirection / sendStateToServer (#153).
+            // currentMoveCamera and pendingPanDirection are reset inside
+            // sendStateToServer itself, only once actually consumed, so a
+            // press that gets coalesced into a later resend isn't lost.
             viewerState.currentMoveCamera = "down";
             pendingPanDirection = 'up';
-            sendStateToServer().finally(() => {
-                viewerState.currentMoveCamera = "none";
-                pendingPanDirection = null;
-            });
+            sendStateToServer();
             break;
         case 'd':
             viewerState.currentMoveCamera = "left";
             pendingPanDirection = 'right';
-            sendStateToServer().finally(() => {
-                viewerState.currentMoveCamera = "none";
-                pendingPanDirection = null;
-            });
+            sendStateToServer();
             break;
         case 's':
             viewerState.currentMoveCamera = "up";
             pendingPanDirection = 'down';
-            sendStateToServer().finally(() => {
-                viewerState.currentMoveCamera = "none";
-                pendingPanDirection = null;
-            });
+            sendStateToServer();
             break;
         case '[':
             viewerState.composeScrollbar = !viewerState.composeScrollbar;
@@ -3153,10 +3161,7 @@ document.addEventListener('keydown', function(e) {
         case 'a':
             viewerState.currentMoveCamera = "right";
             pendingPanDirection = 'left';
-            sendStateToServer().finally(() => {
-                viewerState.currentMoveCamera = "none";
-                pendingPanDirection = null;
-            });
+            sendStateToServer();
             break;
 
         case '4':
@@ -3203,9 +3208,12 @@ document.addEventListener('keydown', function(e) {
 
         case 'z':
             e.preventDefault();
+            // currentMoveCamera is reset inside sendStateToServer itself, only
+            // once actually consumed -- resetting it here raced ahead of
+            // that when a render was already in flight (the coalescing guard
+            // returns before consuming it), silently dropping the reset.
             viewerState.currentMoveCamera = "reset";
             sendStateToServer();
-            viewerState.currentMoveCamera = "none";
             announceAlert('Position reset');
             break;
 
