@@ -2454,7 +2454,7 @@ class TestLongExportShape:
         _, rows = _long_csv(client)
         render_row = next(row for row in rows if row["event_type"] == "render")
         assert render_row["model"] == "cane_tip_fitted"
-        assert render_row["render_mode"] == "Outline"
+        assert render_row["render_mode"] == "outline"  # canonical spelling, not the wire casing
 
 
 class TestLongExportViewerState:
@@ -2469,7 +2469,7 @@ class TestLongExportViewerState:
         _, rows = _long_csv(client)
         keypress = next(row for row in rows if row["event_type"] == "keyboard")
         assert keypress["model"] == "pencil_holder_2x3"
-        assert keypress["render_mode"] == "Filled"
+        assert keypress["render_mode"] == "filled"
 
     def test_state_before_the_first_render_is_blank_rather_than_guessed(self, client):
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
@@ -2556,3 +2556,135 @@ class TestLongExportOrientation:
         _, rows = _long_csv(client)
         row = next(r for r in rows if r["event_type"] == "render")
         assert row["orientation_x"] == ""
+
+
+class TestLongExportRecordsWhichKey:
+    """`event_type=keyboard` says a key was pressed, not which one. Without the
+    key there is no honest per-command count: the viewer has no view-switching
+    command, and the view label follows the depth axis, so a rotation and a
+    change of view always move together and cannot be told apart by diffing
+    viewer state between renders."""
+
+    def test_the_key_is_on_the_row(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        for pressed in ("i", "j", "r"):
+            client.post(
+                f"/study/event?s={_key(session_id)}",
+                json={"event_type": "keyboard", "event_data": {"key": pressed}},
+            )
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        assert [row["key"] for row in rows if row["event_type"] == "keyboard"] == ["i", "j", "r"]
+
+    def test_rotation_and_render_mode_keys_are_countable_separately(self, client):
+        """The count Jen asked for. Pitch and yaw turn the object and take the
+        view label with them; roll turns it and does not. Only the key says
+        which happened."""
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        for pressed in ("i", "i", "k", "u", "o", "r"):
+            client.post(
+                f"/study/event?s={_key(session_id)}",
+                json={"event_type": "keyboard", "event_data": {"key": pressed}},
+            )
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        keys = [row["key"] for row in rows if row["event_type"] == "keyboard"]
+        assert sum(1 for k in keys if k in {"i", "k", "j", "l"}) == 3   # pitch and yaw
+        assert sum(1 for k in keys if k in {"u", "o"}) == 2             # roll
+        assert keys.count("r") == 1                                     # render mode
+
+    def test_a_held_key_is_marked_as_a_repeat(self, client):
+        """A held arrow key repeats. Counting those as deliberate presses would
+        overstate every continuous control."""
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        client.post(
+            f"/study/event?s={_key(session_id)}",
+            json={"event_type": "keyboard", "event_data": {"key": "arrowup", "repeat": False}},
+        )
+        client.post(
+            f"/study/event?s={_key(session_id)}",
+            json={"event_type": "keyboard", "event_data": {"key": "arrowup", "repeat": True}},
+        )
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        presses = [row["key_repeat"] for row in rows if row["key"] == "arrowup"]
+        assert presses == ["False", "True"]
+
+    def test_rows_that_are_not_keypresses_leave_the_columns_blank(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id)
+        client.post(
+            f"/study/event?s={_key(session_id)}",
+            json={"event_type": "braille_send", "event_data": {"cells": 32}},
+        )
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        for row in rows:
+            if row["event_type"] in ("render", "braille_send"):
+                assert row["key"] == ""
+                assert row["key_repeat"] == ""
+
+    def test_an_unreadable_payload_does_not_take_the_row_with_it(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        keypress = next(row for row in rows if row["event_type"] == "keyboard")
+        assert keypress["key"] == ""
+        assert keypress["participant_code"] == "P01"
+
+
+class TestLongExportRenderModeSpelling:
+    """The viewer sends Filled, Outline and Cut capitalised and x-ray lowercase.
+    Grouping an analysis by a column that splits on casing is how a figure ends
+    up counting one mode twice."""
+
+    def test_every_mode_comes_out_in_one_spelling(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        for mode in ("Cut", "Filled", "Outline", "x-ray"):
+            _render(session_id, render_mode=mode)
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        modes = [row["render_mode"] for row in rows if row["event_type"] == "render"]
+        assert modes == ["cut", "filled", "outline", "x-ray"]
+
+    def test_x_ray_stays_its_own_mode(self, client):
+        """R cycles through four modes, so a row recording x-ray is a participant
+        who was in it. Folding it into one of the other three would invent data.
+        The protocol teaching three modes is a question for the write-up."""
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, render_mode="x-ray")
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        assert [row["render_mode"] for row in rows if row["event_type"] == "render"] == ["x-ray"]
+
+    def test_the_older_wire_names_land_on_the_mode_they_became(self, client):
+        """'slice' was renamed to 'cut' and 'shaded' to 'filled'. Both are still
+        in sessions that have already been run."""
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, render_mode="slice")
+        _render(session_id, render_mode="shaded")
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        modes = [row["render_mode"] for row in rows if row["event_type"] == "render"]
+        assert modes == ["cut", "filled"]
+
+    def test_a_mode_nobody_recognises_is_passed_through_not_defaulted(self, client):
+        """The renderer falls back to outline when it does not recognise a mode,
+        which is right when something has to be drawn on a display and wrong
+        here. A mode invented by the export is worse than an odd value in a
+        column someone can go and look at."""
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, render_mode="Hologram")
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        assert [row["render_mode"] for row in rows if row["event_type"] == "render"] == ["hologram"]

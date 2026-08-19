@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-08-19
+
+#### Added
+*   The study spreadsheet now says which key was pressed, not just that a key was pressed. Counting how often people rotated, changed the rendering, or read their position back is now a matter of counting a column, where before it had to be guessed at by looking for changes in what was on the display between one drawing and the next. The viewer has always recorded this, so it fills in for the sessions that have already been run.
+*   A held-down key is marked as such, so a key held to move continuously is not counted as a person pressing it fifty times.
+
+#### Changed
+*   Rendering modes are written out in one consistent spelling. Three of them used to come out with a capital letter and one without, which meant a spreadsheet grouping on that column could count the same mode twice. Anything reading the old spellings will need updating, and the two names that were used before a rename now come out as the modes they became.
+*   X-Ray is reported as the fourth rendering mode it is, rather than being folded into one of the other three. The study script teaches three, but pressing R cycles through four, so a participant can be in X-Ray without having been told about it. It is left as its own value so that the choice of what to do about it is made in the open rather than settled inside the export.
+
 ### 2026-08-17
 
 #### Added
