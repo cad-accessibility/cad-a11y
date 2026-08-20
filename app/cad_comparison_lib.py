@@ -79,6 +79,74 @@ def compute_imposed_zoom_limits(horizontal_dist, vertical_dist, center_x, center
     return x_lim, y_lim
 
 
+def apply_pan_step(center, camera_move, pan_step_scale, horizontal_dist, vertical_dist):
+    """Apply one pan step to a (x, y) camera center, returning the new center.
+
+    Pulled out of render() for the same reason as compute_imposed_zoom_limits
+    below: so the pan step size (25% of the active viewport) and
+    the direction mapping can be verified directly, instead of only
+    indirectly through a full render().
+    """
+    x, y = center
+    if camera_move == "left":
+        x -= pan_step_scale * horizontal_dist
+    elif camera_move == "right":
+        x += pan_step_scale * horizontal_dist
+    elif camera_move == "up":
+        y += pan_step_scale * vertical_dist
+    elif camera_move == "down":
+        y -= pan_step_scale * vertical_dist
+    return [x, y]
+
+
+def compute_pan_guidance(obj_x_range, obj_y_range, viewport_center, viewport_half_w, viewport_half_h):
+    """Whether the object is fully outside the viewport, and if so, which
+    way(s) (in "move object" terms) would bring it back.
+
+    Pulled out as a standalone function, like compute_imposed_zoom_limits
+    above, so it can be unit-tested directly rather than only indirectly
+    through a full render().
+
+    Args:
+        obj_x_range, obj_y_range: (min, max) of the object's own projected
+            extent on each axis.
+        viewport_center: (x, y) of the current camera center.
+        viewport_half_w, viewport_half_h: half-width/height of the current
+            (zoom-scaled) viewport.
+
+    Returns:
+        (out_of_frame: bool, directions: tuple[str, ...]) — the direction(s)
+        to move the OBJECT to bring it back into view, or an empty tuple if
+        it isn't out of frame. Contains up to one entry per axis (i.e. horizontal
+        and vertical). 
+    """
+    obj_x_min, obj_x_max = obj_x_range
+    obj_y_min, obj_y_max = obj_y_range
+    center_x, center_y = viewport_center
+    viewport_x_min, viewport_x_max = center_x - viewport_half_w, center_x + viewport_half_w
+    viewport_y_min, viewport_y_max = center_y - viewport_half_h, center_y + viewport_half_h
+
+    # (direction to move the OBJECT to bring it back, how far out it is)
+    horizontal_overhang = None
+    if obj_x_max < viewport_x_min:
+        horizontal_overhang = ("right", viewport_x_min - obj_x_max)
+    elif obj_x_min > viewport_x_max:
+        horizontal_overhang = ("left", obj_x_min - viewport_x_max)
+
+    vertical_overhang = None
+    if obj_y_max < viewport_y_min:
+        vertical_overhang = ("up", viewport_y_min - obj_y_max)
+    elif obj_y_min > viewport_y_max:
+        vertical_overhang = ("down", obj_y_min - viewport_y_max)
+
+    candidates = [c for c in (horizontal_overhang, vertical_overhang) if c is not None]
+    if not candidates:
+        return False, ()
+
+    candidates.sort(key=lambda c: c[1])
+    return True, tuple(direction for direction, _overhang in candidates)
+
+
 VIEW_KEYS = ("top", "front", "left", "bottom", "back", "right")
 
 
@@ -148,20 +216,35 @@ class RenderResult:
     in the request; nothing about an individual window is kept here, or on the
     renderer, which is shared by every window looking at the same model.
 
-    Of these fields, only `camera_center` travels back to the client: a pan
-    resolves to a new centre and the window sends it again next time, which is
-    what keeps panning inside the window that did it. The others are what the
-    render settled on for its inputs and are read only on the server.
+    Of these fields, `camera_center`, `object_out_of_frame` and
+    `pan_guidance_directions` travel back to the client: a pan resolves to a
+    new centre and the window sends it again next time, which is what keeps
+    panning inside the window that did it, and the out-of-frame guidance
+    is per-window for the same reason the centre is — the renderer is
+    shared by every window on a model, so neither can live on it as instance
+    state. The remaining fields are what the render settled on for its
+    inputs and are read only on the server.
     """
 
     __slots__ = ("image", "camera_center", "framing_bounds", "view_axis",
-                 "cut_depth", "render_mode", "zoom_level", "screen_size")
+                 "cut_depth", "render_mode", "zoom_level", "screen_size",
+                 "object_out_of_frame", "pan_guidance_directions")
 
     def __init__(self, image, *, camera_center, framing_bounds, view_axis,
-                 cut_depth, render_mode, zoom_level, screen_size):
+                 cut_depth, render_mode, zoom_level, screen_size,
+                 object_out_of_frame, pan_guidance_directions):
         self.image = image
         # Echoed to the client, which stores it per view + orientation.
         self.camera_center = camera_center
+        # Echoed to the client: whether the object is fully outside the
+        # viewport this render settled on, and if so which direction(s) (in
+        # "move object" terms) would bring it back. Up to two
+        # entries -- an object out on both axes needs both a horizontal and
+        # a vertical pan to fully recover. Neither a pan nor a rotation is
+        # blocked for going out of frame; this only tells the client what
+        # guidance to announce/draw.
+        self.object_out_of_frame = object_out_of_frame
+        self.pan_guidance_directions = pan_guidance_directions
         # The world-space rectangle [[x_min, x_max], [y_min, y_max]] this render
         # framed, once the view, the orientation basis and the zoom were applied:
         # the outer edges of what reached the image. Model-derived, so identical
@@ -362,6 +445,79 @@ class CADComparisonRenderer:
     def _default_camera_center(limits):
         """The middle of the window, which is where a view starts before any pan."""
         return [float(np.mean(limits[0])), float(np.mean(limits[1]))]
+
+    @staticmethod
+    def _object_pan_guidance(view_limits, camera_center, zoom_scale, horizontal_dist, vertical_dist):
+        """Whether the object is fully outside the viewport for this render,
+        and if so which way(s) would bring it back.
+
+        A return value, not stored state, for the same reason camera_center is
+        now one (see its comment above): the renderer is shared by every
+        window on a model, so instance attributes here would let one window's
+        framing overwrite the guidance another window is about to read.
+
+        Checked unconditionally on every render, not just after a pan: a
+        rotation changes the object's projected extent (view_limits) just as
+        easily as a pan changes the camera center, so either can be the reason
+        the object and the viewport no longer overlap. Neither is blocked —
+        this only decides what guidance, if any, to hand back to the caller.
+        """
+        viewport_half_w = 0.5 * zoom_scale * horizontal_dist
+        viewport_half_h = 0.5 * zoom_scale * vertical_dist
+        return compute_pan_guidance(
+            obj_x_range=tuple(view_limits[0]),
+            obj_y_range=tuple(view_limits[1]),
+            viewport_center=tuple(camera_center),
+            viewport_half_w=viewport_half_w,
+            viewport_half_h=viewport_half_h,
+        )
+
+    def _draw_pan_guidance_arrow(self, img_array, render_screen_size, direction):
+        """Draw a small filled-triangle arrow at the edge of the frame, tip
+        pointing the way to pan to bring the object back into view.
+
+        Sighted-preview only — a blind/low-vision user gets this from the
+        announcement built from pan_guidance_directions in the server
+        response, not from the image. Called once per direction when the
+        object is out on both axes, so two arrows (e.g. one at the top edge,
+        one at the right edge) rather than a single diagonal one: the
+        controls are strictly up/down/left/right, so a diagonal arrow would
+        point somewhere no single keypress reaches.
+        """
+        draw_w, draw_h = render_screen_size[0], render_screen_size[1]
+        if draw_w < 4 or draw_h < 4:
+            return
+        size = max(6, min(draw_w, draw_h) // 12)
+        color = [220, 30, 30]
+        has_alpha = img_array.shape[2] > 3
+        mid_x, mid_y = draw_w // 2, draw_h // 2
+        margin = 2
+
+        def paint(y0, y1, x0, x1):
+            img_array[y0:y1, x0:x1, 0:3] = color
+            if has_alpha:
+                img_array[y0:y1, x0:x1, 3] = 255
+
+        if direction in ("right", "left"):
+            tip_x = (draw_w - 1 - margin) if direction == "right" else margin
+            step = -1 if direction == "right" else 1
+            for i in range(size):
+                x = tip_x + step * i
+                if x < 0 or x >= draw_w:
+                    break
+                y0 = max(0, mid_y - i)
+                y1 = min(draw_h, mid_y + i + 1)
+                paint(y0, y1, x, x + 1)
+        elif direction in ("up", "down"):
+            tip_y = margin if direction == "up" else (draw_h - 1 - margin)
+            step = 1 if direction == "up" else -1
+            for i in range(size):
+                y = tip_y + step * i
+                if y < 0 or y >= draw_h:
+                    break
+                x0 = max(0, mid_x - i)
+                x1 = min(draw_w, mid_x + i + 1)
+                paint(y, y + 1, x0, x1)
 
     def _calculate_view_limits(self, same_shapes=False):
         """Calculate axis limits for all views for both shapes."""
@@ -1090,23 +1246,15 @@ class CADComparisonRenderer:
 
         horizontal_dist = np.abs(view_limits[0][1] - view_limits[0][0])
         vertical_dist = np.abs(view_limits[1][1] - view_limits[1][0])
-        # arrow-key stepping
-        pan_step_scale = 0.5 * zoom_scale
-        if camera_move == "left":
-            camera_center[0] -= pan_step_scale*horizontal_dist
-        if camera_move == "right":
-            camera_center[0] += pan_step_scale*horizontal_dist
-        if camera_move == "up":
-            camera_center[1] += pan_step_scale*vertical_dist
-        if camera_move == "down":
-            camera_center[1] -= pan_step_scale*vertical_dist
+        # arrow-key stepping. 0.25, not 0.5: a pan moves by 25% of the active
+        # (zoom-scaled) viewport, so 75% of what was visible before is still
+        # visible after.
+        pan_step_scale = 0.25 * zoom_scale
+        camera_center = apply_pan_step(camera_center, camera_move, pan_step_scale, horizontal_dist, vertical_dist)
 
-        translational_ax_limits = [
-            [camera_center[0] - 0.5*horizontal_dist,
-            camera_center[0] + 0.5*horizontal_dist],
-            [camera_center[1] - 0.5*vertical_dist,
-            camera_center[1] + 0.5*vertical_dist],
-            ]
+        object_out_of_frame, pan_guidance_directions = self._object_pan_guidance(
+            view_limits, camera_center, zoom_scale, horizontal_dist, vertical_dist
+        )
 
         # Compute scrollbar dimensions after final zoom/aspect correction so
         # scrollbar thumb size/position track zoom changes continuously.
@@ -1333,6 +1481,16 @@ class CADComparisonRenderer:
                 if img_array.shape[2] > 3:
                     img_array[:, col, 3] = 255
 
+        if object_out_of_frame and pan_guidance_directions:
+            # Sighted-preview-only guidance — the announcement (built from
+            # pan_guidance_directions in the server response) is what actually
+            # conveys this to someone not looking at the screen. One
+            # arrow per direction: out on both axes draws two (e.g. top edge
+            # and right edge), not a single diagonal one the controls can't
+            # act on in a single press.
+            for direction in pan_guidance_directions:
+                self._draw_pan_guidance_arrow(img_array, render_screen_size, direction)
+
         if "compose_scrollbar" in params.keys():
             compose_slice_graph = params["compose_slicegraph"]
         else:
@@ -1437,6 +1595,8 @@ class CADComparisonRenderer:
             render_mode=render_mode,
             zoom_level=zoom_level,
             screen_size=list(screen_size),
+            object_out_of_frame=object_out_of_frame,
+            pan_guidance_directions=list(pan_guidance_directions),
         )
 
 # Convenience function for simple usage
