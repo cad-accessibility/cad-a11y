@@ -749,8 +749,6 @@ function resetOrientationZoomAndDepth() {
     // settles on 50% regardless of which axis that turns out to be.
     syncSliceDepthFromPlanes();
     updateZoom(0, false, false);
-    refreshViewInfoSummary();
-    updateButtonLabels();
 }
 
 const RELATIVE_ROTATIONS = {
