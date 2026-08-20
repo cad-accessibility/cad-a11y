@@ -1123,6 +1123,8 @@ LONG_EXPORT_COLUMNS: tuple[str, ...] = (
     "step_index",
     "event_type",
     "source",
+    "key",
+    "key_repeat",
     "input_source",
     "model",
     "view",
@@ -1136,6 +1138,50 @@ LONG_EXPORT_COLUMNS: tuple[str, ...] = (
     "orientation_z",
     "orientation_basis",
 )
+
+
+# 'Filled', 'Outline' and 'Cut' go over the wire capitalised and 'x-ray' does not.
+# That is a detail of the wire format, and a column that splits on casing is how a
+# figure ends up counting one mode twice.
+#
+# X-Ray is not folded into anything. It is a fourth render mode the viewer really
+# has, R cycles through all four, and a row recording it is a participant who was
+# in it. The protocol teaches three, so an analysis may want to report x-ray
+# separately or set it aside, but that is a decision to take in the open rather
+# than one to bury in an export.
+_RENDER_MODE_ALIASES = {
+    # Earlier wire names, still present in sessions already run.
+    "shaded": "filled",
+    "slice": "cut",
+}
+
+
+def _canonical_render_mode(value: str | None) -> str | None:
+    """The render mode in one spelling: filled, outline, cut, x-ray.
+
+    An unrecognised value is lowercased and passed through rather than mapped to
+    a default. The renderer's own mapping falls back to outline, which is right
+    when something has to be drawn and wrong here: an export that turns a mode it
+    does not recognise into 'outline' puts a value in the spreadsheet that nothing
+    recorded.
+    """
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    return _RENDER_MODE_ALIASES.get(text, text)
+
+
+def _event_payload(raw: str | None) -> dict[str, Any]:
+    """The stored event_data as a dict, or an empty one if it cannot be read."""
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _orientation_angles(
@@ -1234,8 +1280,8 @@ def _long_rows_for_session(session: dict[str, Any]) -> list[dict[str, Any]]:
     study_session_id = int(session["id"])
     conn = _get_conn()
     events = conn.execute(
-        """SELECT seq, part_id, step_id, step_index, event_type, source, created_at,
-                  elapsed_ms, step_elapsed_ms
+        """SELECT seq, part_id, step_id, step_index, event_type, source, event_data,
+                  created_at, elapsed_ms, step_elapsed_ms
            FROM study_events WHERE study_session_id = ?""",
         (study_session_id,),
     ).fetchall()
@@ -1277,7 +1323,7 @@ def _long_rows_for_session(session: dict[str, Any]) -> list[dict[str, Any]]:
             state = {
                 "model": row["model"],
                 "view": row["view"],
-                "render_mode": row["render_mode"],
+                "render_mode": _canonical_render_mode(row["render_mode"]),
                 "layout_mode": row["layout_mode"],
                 "depth": row["depth"],
                 "zoom": row["zoom"],
@@ -1290,11 +1336,25 @@ def _long_rows_for_session(session: dict[str, Any]) -> list[dict[str, Any]]:
             source = "server"
             input_source = row["input_source"]
             cache_hit = bool(row["cache_hit"])
+            key = None
+            key_repeat = None
         else:
             event_type = row["event_type"]
             source = row["source"]
             input_source = None
             cache_hit = None
+            # Which key, not just that a key was pressed. The viewer has recorded
+            # this in event_data since study mode existed, so the column fills in
+            # for sessions already run; it was simply never lifted out into one.
+            # Without it a rotation and a change of view cannot be separated at
+            # all: there is no view-switching command in the viewer, and the view
+            # label follows the depth axis, so the two necessarily move together.
+            payload = _event_payload(row["event_data"])
+            raw_key = payload.get("key")
+            key = None if raw_key is None else str(raw_key)
+            # A held arrow key repeats, and counting repeats as separate commands
+            # overstates deliberate presses. Blank on anything that is not a key.
+            key_repeat = bool(payload.get("repeat")) if key is not None else None
 
         rows.append(
             {
@@ -1313,6 +1373,8 @@ def _long_rows_for_session(session: dict[str, Any]) -> list[dict[str, Any]]:
                 "step_index": row["step_index"],
                 "event_type": event_type,
                 "source": source,
+                "key": key,
+                "key_repeat": key_repeat,
                 "input_source": input_source,
                 "cache_hit": cache_hit,
                 **state,
