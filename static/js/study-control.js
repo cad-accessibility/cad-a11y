@@ -254,29 +254,163 @@
     el('help-btn')?.addEventListener('click', () => helpDialogController.open());
 
     // -----------------------------------------------------------------------
-    // Enrollment
+    // Choosing the model set, and enrolment
+    //
+    // Which two objects a participant gets is the one thing starting a session
+    // needs a human to decide, so it is the first thing on screen. Everything
+    // else the old enrolment form asked for was already settled -- the
+    // participant id comes from the database, the session number is 1 -- so it
+    // asked questions with only one answer and stood between the experimenter
+    // and the session they came to run.
     // -----------------------------------------------------------------------
 
-    /** Opening this page starts a session. Every field the old enrolment form
-     * asked for was already decided by the protocol -- the participant id comes
-     * from the database, the model pairs from the Latin square, the session
-     * number is 1 -- so it asked questions with only one answer and stood
-     * between the experimenter and the session they came to run.
+    const setSection = el('set-section');
+
+    /** Fetch the six sets with their used/unused state and draw the picker. */
+    function showSetPicker() {
+        return api('/study/sets')
+            .then(function (body) {
+                renderSetPicker(body);
+                startingSection.hidden = true;
+                setSection.hidden = false;
+                // The heading, not the first button: reading forward from here
+                // covers the round summary as well as the choices, and landing
+                // straight on a button says nothing about what is being chosen.
+                el('set-heading')?.focus({ preventScroll: true });
+            })
+            .catch(function (error) {
+                const heading = el('starting-heading');
+                if (heading) heading.textContent = 'Could not load the model sets';
+                const errorNode = el('starting-error');
+                if (errorNode) {
+                    errorNode.hidden = false;
+                    errorNode.textContent = error.message;
+                }
+                announce(`Could not load the model sets. ${error.message}`);
+            });
+    }
+
+    function renderSetPicker(sets) {
+        const entries = sets.sets || [];
+        const remaining = sets.remaining || 0;
+        const perRound = sets.sets_per_round || entries.length;
+
+        const summary = el('set-round');
+        if (summary) {
+            const anyRun = entries.some(function (entry) { return entry.completed_count > 0; });
+            if (!anyRun) {
+                summary.textContent =
+                    `Round ${sets.round}. Nothing has been run yet, so all ${perRound} are available.`;
+            } else if (remaining === perRound) {
+                // Every set level with every other, which is what finishing a
+                // round looks like. Said as a completed round rather than as
+                // "an equal number of times", which is true on an empty
+                // database too and reads like nothing has happened.
+                summary.textContent =
+                    `Round ${sets.round}. The previous round is complete, so all ${perRound} `
+                    + `are available again.`;
+            } else {
+                summary.textContent =
+                    `Round ${sets.round}. ${remaining} of ${perRound} sets still to run; `
+                    + `the rest have been run already and are struck through.`;
+            }
+        }
+
+        const list = el('set-list');
+        if (!list) return;
+        list.innerHTML = '';
+        entries.forEach(function (entry) {
+            const item = document.createElement('li');
+
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'set-choice' + (entry.used ? ' is-used' : '');
+            button.dataset.setId = entry.id;
+
+            const label = document.createElement('span');
+            label.className = 'set-choice-label';
+            label.textContent = (entry.labels || entry.task_order).join(', then ');
+            button.appendChild(label);
+
+            // The strikethrough is decoration and is not announced, so whatever
+            // it means has to be in the text as well. Same rule as everywhere
+            // else on this page: no state conveyed by looks alone.
+            const notes = [];
+            if (entry.used) {
+                notes.push(entry.completed_count === 1
+                    ? 'already run once this round'
+                    : `already run ${entry.completed_count} times`);
+            }
+            if (entry.in_progress) {
+                notes.push(entry.in_progress === 1
+                    ? 'a session is running on it now'
+                    : `${entry.in_progress} sessions are running on it now`);
+            }
+            if (notes.length) {
+                const note = document.createElement('span');
+                note.className = 'set-choice-note';
+                // Capitalised for reading, joined so the button's accessible
+                // name is one sentence rather than two fragments.
+                const text = notes.join('; ');
+                note.textContent = ' — ' + text.charAt(0).toUpperCase() + text.slice(1) + '.';
+                button.appendChild(note);
+            }
+
+            // Used sets stay selectable. Striking one through says what it
+            // costs; refusing it would mean an experimenter who has to deviate
+            // -- a missing print, a participant who saw one of these in a pilot
+            // -- has no way through the panel at all.
+            button.addEventListener('click', function () {
+                startSession(entry.task_order, label.textContent);
+            });
+
+            item.appendChild(button);
+            list.appendChild(item);
+        });
+    }
+
+    /** Start the session on the chosen set.
      *
      * A reload does not start another: the session is remembered per tab, so one
      * instance of this page owns exactly one session. */
-    function startSession() {
-        return api('/study/session/start', { method: 'POST', body: JSON.stringify({}) })
+    function startSession(taskOrder, setLabel) {
+        // Cleared before the attempt, not only on success: #set-error is an
+        // alert region, and leaving a failed attempt's message standing while
+        // the next one runs reads as though this one failed too.
+        const previousError = el('set-error');
+        if (previousError) {
+            previousError.hidden = true;
+            previousError.textContent = '';
+        }
+        setSection.hidden = true;
+        startingSection.hidden = false;
+        const heading = el('starting-heading');
+        if (heading) heading.textContent = 'Starting a session…';
+        status(`Starting a session on ${setLabel}.`);
+
+        return api('/study/session/start', {
+            method: 'POST',
+            body: JSON.stringify({ task_order: taskOrder }),
+        })
             .then(function (body) {
                 bindSession(body.state.study_session_id);
                 applyState(body.state);
+                // Subscribed only now, and only once: the stream is scoped to
+                // the session named at subscribe time, so opening it while the
+                // panel was still on the picker would attach it to nothing.
+                connect();
                 announce(
-                    `Session started for ${body.state.participant_code}. `
+                    `Session started for ${body.state.participant_code}, on ${setLabel}. `
                     + `Give your participant the code ${body.state.participant_key}.`
                 );
             })
             .catch(function (error) {
-                const errorNode = el('starting-error');
+                // Back to the picker: the set was never consumed, so the
+                // experimenter should be choosing again rather than stuck on a
+                // dead page.
+                startingSection.hidden = true;
+                setSection.hidden = false;
+                const errorNode = el('set-error');
                 if (errorNode) {
                     errorNode.hidden = false;
                     errorNode.textContent = `Could not start a session: ${error.message}`;
@@ -348,6 +482,12 @@
         lastClientCount = clients;
 
         renderLoggingHealth();
+
+        // The button says which of the two things it will do, so an
+        // experimenter is not asked to infer from the step number that Next has
+        // become the end of the session.
+        const nextButton = el('next-step-btn');
+        if (nextButton) nextButton.textContent = onLastStep() ? 'Finish session' : 'Next';
 
         el('step-progress').textContent =
             `Step ${(state.step_index || 0) + 1} of ${state.step_count || 1}`;
@@ -481,10 +621,31 @@
             .catch(function (error) { announce(`Could not move step. ${error.message}`); });
     }
 
-    el('next-step-btn')?.addEventListener('click', function () {
+    /** True when the session is sitting on the last step of the protocol. */
+    function onLastStep() {
+        if (!state || !state.step_count) return false;
+        return (state.step_index || 0) >= state.step_count - 1;
+    }
+
+    /** Next, or Finish when there is nowhere further to go.
+     *
+     * Pressing Next on the last step used to do nothing at all, which left the
+     * only way to close a session as a separate End button the last step's
+     * script asks the experimenter to remember. They did not: across the two
+     * deployed servers, twelve of fourteen sessions were still open, one of
+     * them at step 19 of 22. Carrying on forwards is the gesture people
+     * actually make, so it is the one that finishes the session.
+     */
+    function nextOrFinish() {
+        if (onLastStep()) {
+            endSession('That was the last step. End the session and close the record?');
+            return;
+        }
         advance({ direction: 'next' });
         currentStepDialogController.open();
-    });
+    }
+
+    el('next-step-btn')?.addEventListener('click', nextOrFinish);
     el('previous-step-btn')?.addEventListener('click', function () {
         advance({ direction: 'previous' });
         currentStepDialogController.open();
@@ -505,14 +666,18 @@
             .catch(function (error) { announce(`Could not switch modes. ${error.message}`); });
     });
 
-    el('end-session-btn')?.addEventListener('click', function () {
-        if (!window.confirm('End this session? The record is closed and cannot be reopened.')) return;
+    function endSession(prompt) {
+        if (!window.confirm(prompt)) return;
         api('/study/session/end', { method: 'POST', body: JSON.stringify({ status: 'completed' }) })
             .then(function () {
                 announce('Session ended and recorded.');
                 refreshOnce();
             })
             .catch(function (error) { announce(`Could not end the session. ${error.message}`); });
+    }
+
+    el('end-session-btn')?.addEventListener('click', function () {
+        endSession('End this session? The record is closed and cannot be reopened.');
     });
 
     // -----------------------------------------------------------------------
@@ -563,7 +728,14 @@
             // stacked on top. Already-open Current Step is left alone; its
             // content refreshes in place once the advance's state comes back.
             if (openDialog && openDialog !== currentStepDialog) openDialog.close();
-            advance({ direction: key === 'n' ? 'next' : 'previous' });
+            if (key === 'n') {
+                // Same as the Next button, finish included: the keyboard route
+                // through the protocol must not be the one that leaves sessions
+                // open.
+                nextOrFinish();
+                return;
+            }
+            advance({ direction: 'previous' });
             currentStepDialogController.open();
             return;
         }
@@ -612,8 +784,10 @@
         if (!state.active) {
             // The session this panel owns has ended. It does not silently start
             // another -- that would be a second participant record created by a
-            // stray reload.
+            // stray reload -- and it does not offer the set picker again either,
+            // for the same reason.
             startingSection.hidden = false;
+            setSection.hidden = true;
             sessionSection.hidden = true;
             setNavButtonsVisible(false);
             lastStepId = null;
@@ -629,6 +803,7 @@
         }
 
         startingSection.hidden = true;
+        setSection.hidden = true;
         sessionSection.hidden = false;
         setNavButtonsVisible(true);
         renderSession();
@@ -695,8 +870,9 @@
             `Protocol version ${config.version}. Each participant explores a mug, then ${config.tasks_per_session} of the three model pairs.`;
 
         // A reload continues the session this tab already owns; a fresh tab
-        // starts one. Checked before starting, so refreshing mid-session cannot
-        // strand a participant on a session nobody is driving.
+        // asks which model set to run. Checked before offering the picker, so
+        // refreshing mid-session cannot strand a participant on a session
+        // nobody is driving.
         const resuming = boundSessionId
             ? api('/study/state').then(function (state) {
                   if (state && state.active) { applyState(state); return true; }
@@ -706,8 +882,11 @@
             : Promise.resolve(false);
 
         return resuming.then(function (resumed) {
-            const ready = resumed ? Promise.resolve() : startSession();
-            return ready.then(connect);
+            // connect() subscribes to the session this panel is bound to, and a
+            // panel still on the picker is bound to nothing. It is opened here
+            // for the resumed case and after the session starts otherwise.
+            if (resumed) { connect(); return; }
+            return showSetPicker();
         });
     }).catch(function (error) {
         el('protocol-version').textContent = `Could not load the protocol: ${error.message}`;

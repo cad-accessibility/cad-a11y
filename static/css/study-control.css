@@ -180,6 +180,18 @@ button.danger { border-color: #a4341e; }
 .jump-step-list li { margin: 0 0 6px; }
 .jump-step-list button { width: 100%; text-align: left; }
 
+/* Choosing the model set: one button per set, laid out like the Jump list. */
+.set-list { list-style: none; margin: 0 0 16px; padding: 0; }
+.set-list li { margin: 0 0 6px; }
+.set-choice { width: 100%; text-align: left; }
+
+/* Sets already run this round are struck through. The button text says so as
+   well -- a line through text is decoration and is announced by nothing -- so
+   this only reinforces what is already readable. It survives forced colours
+   for the same reason: it is not a colour. */
+.set-choice.is-used .set-choice-label { text-decoration: line-through; }
+.set-choice-note { font-size: 0.9em; }
+
 @media (prefers-color-scheme: dark) {
     .notice-box { background: #12222c; border-color: #6cb6e0; }
 }

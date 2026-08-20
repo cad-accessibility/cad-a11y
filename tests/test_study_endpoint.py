@@ -7,12 +7,16 @@ and the answer key reaching the participant's browser.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
+from datetime import timedelta
 
 import pytest
 
 import app.study as study_module
 import app.study_db as study_db
+import app.study_protocol as study_protocol
 from app.server import app as flask_app
 
 
@@ -33,6 +37,9 @@ def study_env(tmp_path, monkeypatch):
         {"db_writes": 0, "db_reads": 0, "jsonl_writes": 0, "last_error": None}
     )
     study_module._ready_signals.clear()
+    # The idle sweep throttles itself with a module-level timestamp, so it has
+    # to be reset or one test's sweep suppresses the next test's.
+    study_module._last_sweep_at = 0.0
     study_db.init_db()
     yield tmp_path
     study_db._local.__dict__.clear()
@@ -91,6 +98,7 @@ class TestAccessControl:
         [
             "/study/config",
             "/study/sessions",
+            "/study/sets",
         ],
     )
     def test_experimenter_endpoints_require_a_token(self, client, path):
@@ -209,7 +217,7 @@ class TestParticipantPayloadWithholdsTheAnswer:
     def test_experimenter_does_get_the_answer_key(self, client):
         """The withholding must be about the audience, not about the data being
         missing -- otherwise the panel is useless."""
-        _start(client, participant_code="P01", task_order=["cane_tip", "coat_rack"])
+        _start(client, participant_code="P01", task_order=["cane_tip", "lego"])
         state = _advance_to(client, "task1.b.virtual")
         assert state["step"]["pair"]["differences"]
         assert state["step"]["model"]["model"] == "cane_tip_fitted"
@@ -237,7 +245,7 @@ class TestEnrollment:
         client.post("/study/session/end", json={}, headers=_auth())
         second = _start(client).get_json()["state"]["task_order"]
         assert first == ["pencil_holder", "cane_tip"]
-        assert second == ["cane_tip", "coat_rack"]
+        assert second == ["cane_tip", "lego"]
 
     def test_a_returning_participant_keeps_their_assignment(self, client):
         first = _start(client, participant_code="P01").get_json()["state"]["task_order"]
@@ -250,8 +258,8 @@ class TestEnrollment:
         assert again == first
 
     def test_explicit_task_order_is_honoured(self, client):
-        body = _start(client, task_order=["coat_rack", "pencil_holder"]).get_json()
-        assert body["state"]["task_order"] == ["coat_rack", "pencil_holder"]
+        body = _start(client, task_order=["lego", "pencil_holder"]).get_json()
+        assert body["state"]["task_order"] == ["lego", "pencil_holder"]
 
     def test_unknown_pairs_are_rejected_rather_than_silently_dropped(self, client):
         response = _start(client, task_order=["not_a_model"])
@@ -403,7 +411,7 @@ class TestEventLogging:
 
     def test_step_context_is_attached_to_every_event(self, client):
         session_id = _start(
-            client, task_order=["cane_tip", "coat_rack"]
+            client, task_order=["cane_tip", "lego"]
         ).get_json()["state"]["study_session_id"]
         state = _advance_to(client, "task1.a.virtual")
         client.post(
@@ -453,7 +461,7 @@ class TestEventLogging:
 
     def test_model_autoload_is_logged_with_the_real_model_name(self, client):
         session_id = _start(
-            client, participant_code="P01", task_order=["cane_tip", "coat_rack"]
+            client, participant_code="P01", task_order=["cane_tip", "lego"]
         ).get_json()["state"]["study_session_id"]
         _advance_to(client, "task1.b.virtual")
         events = study_db.export_session(session_id)["events"]
@@ -479,7 +487,7 @@ class TestJsonlLog:
         """The JSONL is the reconstruction record: a line has to be readable
         without joining it against anything else."""
         session_id = _start(
-            client, participant_code="P01", task_order=["cane_tip", "coat_rack"]
+            client, participant_code="P01", task_order=["cane_tip", "lego"]
         ).get_json()["state"]["study_session_id"]
         _advance_to(client, "task1.a.virtual")
         client.post(
@@ -757,6 +765,305 @@ class TestExport:
         assert client.get("/study/sessions/999/export", headers=_auth()).status_code == 404
 
 
+class TestModelSets:
+    """The list the experimenter picks a set from, and how it knows which sets a
+    round has already been through.
+
+    "Used" is derived from completed sessions rather than stored, so these tests
+    are mostly about the derivation holding up under the things that actually
+    happen: a session abandoned, a set deliberately run twice, a round finishing.
+    """
+
+    def _sets(self, client):
+        return {
+            entry["id"]: entry
+            for entry in client.get("/study/sets", headers=_auth()).get_json()["sets"]
+        }
+
+    def _finish(self, client, **payload):
+        state = _start(client, **payload).get_json()["state"]
+        client.post(
+            "/study/session/end",
+            json={"study_session_id": state["study_session_id"], "status": "completed"},
+            headers=_auth(),
+        )
+        return state
+
+    def test_a_fresh_database_offers_every_set(self, client):
+        body = client.get("/study/sets", headers=_auth()).get_json()
+        assert body["round"] == 1
+        assert body["sets_per_round"] == 6
+        assert body["remaining"] == 6
+        assert len(body["sets"]) == 6
+        assert not any(entry["used"] for entry in body["sets"])
+
+    def test_a_completed_session_strikes_its_set_out(self, client):
+        self._finish(client, task_order=["cane_tip", "lego"])
+        sets = self._sets(client)
+        assert sets["cane_tip+lego"]["used"] is True
+        assert sets["cane_tip+lego"]["completed_count"] == 1
+        assert sets["lego+cane_tip"]["used"] is False, "the reverse order is its own set"
+        assert client.get("/study/sets", headers=_auth()).get_json()["remaining"] == 5
+
+    def test_an_unfinished_session_does_not_consume_its_set(self, client):
+        """A session that was started and never completed did not run that set.
+        Marking it used would quietly drop a cell out of the design."""
+        _start(client, task_order=["cane_tip", "lego"])
+        sets = self._sets(client)
+        assert sets["cane_tip+lego"]["used"] is False
+        assert sets["cane_tip+lego"]["in_progress"] == 1
+
+    def test_an_abandoned_session_does_not_consume_its_set_either(self, client):
+        state = _start(client, task_order=["cane_tip", "lego"]).get_json()["state"]
+        client.post(
+            "/study/session/end",
+            json={"study_session_id": state["study_session_id"], "status": "abandoned"},
+            headers=_auth(),
+        )
+        sets = self._sets(client)
+        assert sets["cane_tip+lego"]["used"] is False
+        assert sets["cane_tip+lego"]["in_progress"] == 0
+
+    def test_a_full_round_repopulates_the_whole_list(self, client):
+        """The rollover the experimenter never has to trigger: once every set has
+        been run, they all come back unstruck as a new round."""
+        for entry in study_protocol.task_sets():
+            self._finish(client, task_order=entry["task_order"])
+
+        body = client.get("/study/sets", headers=_auth()).get_json()
+        assert body["round"] == 2
+        assert body["remaining"] == 6
+        assert not any(entry["used"] for entry in body["sets"]), (
+            "a finished round should look like a fresh one"
+        )
+        assert all(entry["completed_count"] == 1 for entry in body["sets"])
+
+    def test_a_partly_finished_second_round_strikes_only_what_it_ran(self, client):
+        for entry in study_protocol.task_sets():
+            self._finish(client, task_order=entry["task_order"])
+        self._finish(client, task_order=["cane_tip", "lego"])
+
+        body = client.get("/study/sets", headers=_auth()).get_json()
+        sets = {entry["id"]: entry for entry in body["sets"]}
+        assert body["round"] == 2
+        assert body["remaining"] == 5
+        assert sets["cane_tip+lego"]["used"] is True
+        assert sets["cane_tip+lego"]["completed_count"] == 2
+        assert sets["lego+cane_tip"]["used"] is False
+
+    def test_a_deliberate_repeat_is_absorbed_rather_than_hidden(self, client):
+        """An experimenter can pick a struck-through set -- a missing print, a
+        participant who saw one of these in a pilot. The list has to keep telling
+        the truth about what was run rather than silently levelling out."""
+        self._finish(client, task_order=["cane_tip", "lego"])
+        self._finish(client, task_order=["cane_tip", "lego"])
+        sets = self._sets(client)
+        assert sets["cane_tip+lego"]["completed_count"] == 2
+        assert sets["cane_tip+lego"]["used"] is True
+        assert client.get("/study/sets", headers=_auth()).get_json()["remaining"] == 5
+
+    def test_sessions_on_retired_pairs_are_ignored_not_counted(self, client):
+        """Old sessions in a real database name the coat rack. They belong to no
+        current set and must not shift the round on."""
+        study_db.create_participant("PX1")
+        participant = study_db.get_participant_by_code("PX1")
+        session = study_db.create_session(
+            participant_id=int(participant["id"]),
+            participant_code="PX1",
+            session_number=1,
+            task_order=["cane_tip", "coat_rack"],
+            protocol_version="old",
+        )
+        study_db.complete_session(int(session["id"]))
+
+        body = client.get("/study/sets", headers=_auth()).get_json()
+        assert body["round"] == 1
+        assert body["remaining"] == 6
+
+    def test_a_set_names_its_models_in_words(self, client):
+        """The panel reads these out; a key like pencil_holder is not a label."""
+        sets = self._sets(client)
+        assert sets["cane_tip+lego"]["labels"] == ["Cane tip", "Lego brick"]
+        assert sets["cane_tip+lego"]["task_order"] == ["cane_tip", "lego"]
+
+    def test_starting_a_session_on_a_chosen_set_uses_it(self, client):
+        """The whole point: the panel sends the set, and that is what the session
+        runs -- not whatever the rotation would have handed out."""
+        rotation = study_protocol.assign_task_order(1)
+        chosen = ["lego", "cane_tip"]
+        assert chosen != rotation
+        state = _start(client, task_order=chosen).get_json()["state"]
+        assert state["task_order"] == chosen
+
+    def test_a_set_named_with_a_retired_pair_is_refused(self, client):
+        """A stale panel or a bookmarked call naming the coat rack used to start a
+        session one task short, visible only as a task 2 that loaded nothing."""
+        response = _start(client, task_order=["cane_tip", "coat_rack"])
+        assert response.status_code == 400
+        assert "coat_rack" in response.get_json()["message"]
+
+
+class TestAbandonedSessionsAreClosed:
+    """Sessions nobody closed.
+
+    A session ends when the experimenter presses End, or when a solo
+    participant finishes the last step. Neither happens if the panel tab is just
+    closed, and on both deployed servers that is what usually happened: 12 of 14
+    sessions were still 'active', one stuck at step 19 of 22 and several at step
+    0 for days. Every one was reported to the next experimenter as a session
+    running on that model set.
+    """
+
+    def _age_session(self, session_id, seconds):
+        """Backdate everything that counts as activity for this session."""
+        old = study_db._parse(study_db.now())
+        assert old is not None
+        stamp = (old - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        conn = study_db._get_conn()
+        conn.execute(
+            "UPDATE study_sessions SET started_at = ?, step_started_at = ? WHERE id = ?",
+            (stamp, stamp, session_id),
+        )
+        conn.execute(
+            "UPDATE study_events SET created_at = ? WHERE study_session_id = ?",
+            (stamp, session_id),
+        )
+        conn.execute(
+            "UPDATE study_renders SET created_at = ? WHERE study_session_id = ?",
+            (stamp, session_id),
+        )
+        conn.commit()
+
+    def test_a_long_idle_session_is_closed(self, client):
+        state = _start(client).get_json()["state"]
+        session_id = state["study_session_id"]
+        self._age_session(session_id, 13 * 3600)
+
+        closed = study_module.sweep_idle_sessions(force=True)
+        assert [int(c["id"]) for c in closed] == [session_id]
+        assert study_db.get_study_session(session_id)["status"] == "abandoned"
+
+    def test_it_is_abandoned_never_completed(self, client):
+        """The distinction is not cosmetic. A completed session counts as having
+        used its model set, so inventing one for a session nobody finished would
+        quietly take a cell out of the counterbalanced design."""
+        state = _start(client, task_order=["cane_tip", "lego"]).get_json()["state"]
+        self._age_session(state["study_session_id"], 13 * 3600)
+        study_module.sweep_idle_sessions(force=True)
+
+        assert study_db.get_study_session(state["study_session_id"])["status"] == "abandoned"
+        sets = {
+            entry["id"]: entry
+            for entry in client.get("/study/sets", headers=_auth()).get_json()["sets"]
+        }
+        assert sets["cane_tip+lego"]["used"] is False
+        assert sets["cane_tip+lego"]["in_progress"] == 0
+
+    def test_a_live_session_is_left_alone(self, client):
+        """The one bug here that would cost real data is closing a session
+        somebody is sitting in front of."""
+        state = _start(client).get_json()["state"]
+        assert study_module.sweep_idle_sessions(force=True) == []
+        assert study_db.get_study_session(state["study_session_id"])["status"] == "active"
+
+    def test_recent_activity_keeps_a_session_alive(self, client):
+        """Liveness is the last thing that happened in the session, not when it
+        started. A session running past the timeout must not be closed under the
+        participant."""
+        state = _start(client).get_json()["state"]
+        session_id = state["study_session_id"]
+        self._age_session(session_id, 13 * 3600)
+        # One interaction, now.
+        client.post(
+            f"/study/event?s={_key(session_id)}",
+            json={"event_type": "keyboard", "event_data": {"key": "r"}},
+        )
+
+        assert study_module.sweep_idle_sessions(force=True) == []
+        assert study_db.get_study_session(session_id)["status"] == "active"
+
+    def test_closing_keeps_every_recorded_interaction(self, client):
+        """Nothing is deleted. A session that ran for an hour before being
+        abandoned keeps its whole record; all that changes is that it stops
+        claiming to be in progress."""
+        state = _start(client).get_json()["state"]
+        session_id = state["study_session_id"]
+        for _ in range(5):
+            client.post(
+                f"/study/event?s={_key(session_id)}",
+                json={"event_type": "keyboard", "event_data": {"key": "i"}},
+            )
+        before = study_db.session_counts(session_id)["events"]
+        self._age_session(session_id, 13 * 3600)
+        study_module.sweep_idle_sessions(force=True)
+
+        after = study_db.session_counts(session_id)["events"]
+        assert after >= before, "closing a session must not remove its events"
+        keys = [
+            e
+            for e in study_db.export_session(session_id)["events"]
+            if e["event_type"] == "keyboard"
+        ]
+        assert len(keys) == 5
+
+    def test_the_closure_says_it_was_automatic(self, client):
+        """A session closed by disuse must read differently in the log from one
+        an experimenter deliberately ended."""
+        state = _start(client).get_json()["state"]
+        session_id = state["study_session_id"]
+        self._age_session(session_id, 13 * 3600)
+        study_module.sweep_idle_sessions(force=True)
+
+        ends = [
+            e
+            for e in study_db.export_session(session_id)["events"]
+            if e["event_type"] == "session_end"
+        ]
+        assert ends, "no session_end recorded"
+        assert ends[-1]["event_data"]["closed_automatically"] is True
+        assert ends[-1]["source"] == "server"
+
+    def test_the_sweep_is_throttled(self, client):
+        """It runs from ordinary requests, so it must not rescan on every poll."""
+        study_module.sweep_idle_sessions(force=True)
+        state = _start(client).get_json()["state"]
+        self._age_session(state["study_session_id"], 13 * 3600)
+        # Not forced, and one just ran: this must be a no-op.
+        assert study_module.sweep_idle_sessions() == []
+        assert study_db.get_study_session(state["study_session_id"])["status"] == "active"
+
+    def test_the_timeout_is_configurable(self, client, monkeypatch):
+        monkeypatch.setenv("STUDY_SESSION_IDLE_HOURS", "2")
+        assert study_module.idle_timeout_seconds() == 7200
+
+    @pytest.mark.parametrize("bad", ["", "nonsense", "0", "-3"])
+    def test_a_broken_timeout_falls_back_rather_than_closing_everything(
+        self, client, monkeypatch, bad
+    ):
+        """A zero or unparseable setting must not mean "close every session"."""
+        monkeypatch.setenv("STUDY_SESSION_IDLE_HOURS", bad)
+        assert study_module.idle_timeout_seconds() == int(12 * 3600)
+
+    def test_an_unreadable_timestamp_leaves_the_session_alone(self, client):
+        """Closing a session because its clock is unreadable is the one failure
+        here that would cost a live session."""
+        state = _start(client).get_json()["state"]
+        session_id = state["study_session_id"]
+        conn = study_db._get_conn()
+        conn.execute(
+            "UPDATE study_sessions SET started_at = ?, step_started_at = ? WHERE id = ?",
+            ("not-a-timestamp", None, session_id),
+        )
+        conn.execute(
+            "UPDATE study_events SET created_at = ? WHERE study_session_id = ?",
+            ("not-a-timestamp", session_id),
+        )
+        conn.commit()
+
+        assert study_module.sweep_idle_sessions(force=True) == []
+        assert study_db.get_study_session(session_id)["status"] == "active"
+
+
 class TestConfig:
     def test_config_reports_missing_models(self, client, monkeypatch):
         monkeypatch.setattr(study_module, "_model_list_provider", lambda: ["mug"])
@@ -785,7 +1092,7 @@ class TestConcurrentSessions:
     @pytest.fixture()
     def two(self, client):
         """Two sessions running side by side, each at a different step."""
-        first = _start(client, participant_code="AAA", task_order=["cane_tip", "coat_rack"])
+        first = _start(client, participant_code="AAA", task_order=["cane_tip", "lego"])
         first_state = first.get_json()["state"]
         # Looked up rather than a hard-coded index, so a protocol edit that
         # changes the step count ahead of task 1 does not silently retarget
@@ -800,7 +1107,7 @@ class TestConcurrentSessions:
             headers=_auth(),
         )
         first_state["step_index"] = target_index
-        second = _start(client, participant_code="BBB", task_order=["coat_rack", "pencil_holder"])
+        second = _start(client, participant_code="BBB", task_order=["lego", "pencil_holder"])
         second_state = second.get_json()["state"]
         return client, first_state, second_state
 
@@ -1215,9 +1522,9 @@ class TestConcurrentSessionsDoNotMuddleEachOther:
         same step id must load different models, because their Latin-square
         orders differ. A shared 'current step' or 'current model' would collapse
         them onto one."""
-        first = _start(client, participant_code="F1", task_order=["cane_tip", "coat_rack"])
+        first = _start(client, participant_code="F1", task_order=["cane_tip", "lego"])
         first_id = first.get_json()["state"]["study_session_id"]
-        second = _start(client, participant_code="F2", task_order=["pencil_holder", "coat_rack"])
+        second = _start(client, participant_code="F2", task_order=["pencil_holder", "lego"])
         second_id = second.get_json()["state"]["study_session_id"]
 
         for session_id in (first_id, second_id):
@@ -1962,3 +2269,290 @@ class TestReconnectingToAFinishedSession:
             f"the stream opened with {opening}, contradicting the direct answer"
         )
         assert opening.get("unknown_code") is None
+
+
+# Bases as the viewer sends them: right, up and forward, always axis aligned
+# because rotation happens in whole quarter turns.
+_IDENTITY_BASIS = {"scheme": "basis-v1", "right": [1, 0, 0], "up": [0, 1, 0], "forward": [0, 0, 1]}
+_QUARTER_TURN_ABOUT_Z = {
+    "scheme": "basis-v1", "right": [0, -1, 0], "up": [1, 0, 0], "forward": [0, 0, 1],
+}
+_QUARTER_TURN_ABOUT_Y = {
+    "scheme": "basis-v1", "right": [0, 0, 1], "up": [0, 1, 0], "forward": [-1, 0, 0],
+}
+
+
+def _render(session_id, **overrides):
+    """Record one render against a session, the way /render does."""
+    params = {
+        "model": "lego_2x4", "view": "x-", "render_mode": "Cut", "layout_mode": "single",
+        "depth": 50, "zoom": 0, "input_source": "keyboard", "cache_hit": False,
+    }
+    params.update(overrides)
+    return study_db.record_render(session_id, **params)
+
+
+def _end(client, session_id, status="completed"):
+    return client.post(
+        "/study/session/end",
+        json={"study_session_id": session_id, "status": status},
+        headers=_auth(),
+    )
+
+
+def _long_csv(client, query=""):
+    """The export, as (response, parsed rows)."""
+    response = client.get(f"/study/export/long.csv{query}", headers=_auth())
+    text = response.get_data(as_text=True)
+    return response, list(csv.DictReader(io.StringIO(text)))
+
+
+class TestLongExportCoversCompletedSessionsOnly:
+    """The constraint the endpoint exists to enforce. An active session is still
+    being written to, so exporting it gives a different file every time it is
+    asked for; an abandoned one stopped partway with nothing recording why."""
+
+    def test_an_active_session_is_not_in_the_file(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id)
+        _, rows = _long_csv(client)
+        assert rows == [], "a session still running must not reach the analysis file"
+
+    def test_an_abandoned_session_is_not_in_the_file(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id)
+        _end(client, session_id, status="abandoned")
+        _, rows = _long_csv(client)
+        assert rows == []
+
+    def test_a_completed_session_is(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id)
+        _end(client, session_id)
+        _, rows = _long_csv(client)
+        assert rows, "a finished session is the whole point of the export"
+        assert {row["participant_code"] for row in rows} == {"P01"}
+
+    def test_the_three_are_told_apart_in_one_file(self, client):
+        """The case that matters on the real server, where twelve of fourteen
+        sessions were sitting in a state nobody meant them to be in."""
+        finished = _start(client, participant_code="P01").get_json()["state"]
+        abandoned = _start(client, participant_code="P02").get_json()["state"]
+        running = _start(client, participant_code="P03").get_json()["state"]
+        for state in (finished, abandoned, running):
+            _render(state["study_session_id"])
+        _end(client, finished["study_session_id"])
+        _end(client, abandoned["study_session_id"], status="abandoned")
+
+        _, rows = _long_csv(client)
+        assert {row["participant_code"] for row in rows} == {"P01"}
+
+    def test_asking_for_one_unfinished_session_by_id_is_refused_and_says_why(self, client):
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        _render(session_id)
+        response = client.get(f"/study/export/long.csv?session={session_id}", headers=_auth())
+        assert response.status_code == 409
+        # Named status, so the experimenter can tell a typo from a session that
+        # nobody finished.
+        assert "active" in response.get_json()["message"]
+
+    def test_asking_for_one_finished_session_by_id_returns_just_that_one(self, client):
+        first = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        second = _start(client, participant_code="P02").get_json()["state"]["study_session_id"]
+        for session_id in (first, second):
+            _render(session_id)
+            _end(client, session_id)
+
+        _, rows = _long_csv(client, f"?session={first}")
+        assert {row["participant_code"] for row in rows} == {"P01"}
+
+    def test_an_unknown_session_is_a_clean_404(self, client):
+        assert client.get("/study/export/long.csv?session=999", headers=_auth()).status_code == 404
+
+    def test_a_session_that_is_not_a_number_is_a_400(self, client):
+        assert client.get("/study/export/long.csv?session=P01", headers=_auth()).status_code == 400
+
+    def test_the_export_is_a_plain_address_with_no_token(self, client):
+        """Opened in a browser, not fetched with a header. The fixture turns the
+        optional gate on, and this route is open regardless: a token to look up
+        and paste is the friction the panel's own token was removed for."""
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id)
+        _end(client, session_id)
+
+        response = client.get("/study/export/long.csv")
+        assert response.status_code == 200
+        assert response.mimetype == "text/csv"
+        rows = list(csv.DictReader(io.StringIO(response.get_data(as_text=True))))
+        assert {row["participant_code"] for row in rows} == {"P01"}
+
+    def test_one_session_by_id_needs_no_token_either(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id)
+        _end(client, session_id)
+        assert client.get(f"/study/export/long.csv?session={session_id}").status_code == 200
+
+    def test_the_rest_of_the_panel_is_still_gated(self, client):
+        """Opening this one route must not have opened the others."""
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        assert client.get(f"/study/sessions/{session_id}/export").status_code == 403
+        assert client.get("/study/sessions").status_code == 403
+
+
+class TestLongExportShape:
+    def test_it_is_a_csv_download_with_a_header_even_when_empty(self, client):
+        """An empty file looks like a failed download. A header says the request
+        worked and no session has been finished yet."""
+        response, rows = _long_csv(client)
+        assert response.status_code == 200
+        assert response.mimetype == "text/csv"
+        assert "attachment" in response.headers["Content-Disposition"]
+        assert rows == []
+        header = response.get_data(as_text=True).splitlines()[0]
+        assert header.split(",") == list(study_db.LONG_EXPORT_COLUMNS)
+
+    def test_one_row_per_interaction_not_one_per_session(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        _render(session_id)
+        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        commands = [row["event_type"] for row in rows]
+        assert commands.count("keyboard") == 2
+        assert "session_start" in commands and "session_end" in commands
+        assert any(row["event_type"] == "render" for row in rows)
+
+    def test_rows_are_in_the_order_they_happened(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        _render(session_id)
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        sequences = [int(row["seq"]) for row in rows]
+        assert sequences == sorted(sequences)
+
+    def test_the_phase_comes_through_so_onboarding_can_be_separated(self, client):
+        """The reason the column exists: a rotation during onboarding is someone
+        being taught the controls, not someone working out a model."""
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, part_id="onboarding", step_id="onboarding.depth", step_index=4)
+        _render(session_id, part_id="task1", step_id="task1.a.virtual", step_index=9)
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        phases = [row["phase"] for row in rows if row["event_type"] == "render"]
+        assert phases == ["onboarding", "task1"]
+
+    def test_the_model_and_render_mode_are_on_the_row(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, model="cane_tip_fitted", render_mode="Outline")
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        render_row = next(row for row in rows if row["event_type"] == "render")
+        assert render_row["model"] == "cane_tip_fitted"
+        assert render_row["render_mode"] == "Outline"
+
+
+class TestLongExportViewerState:
+    def test_an_event_carries_the_state_of_the_last_render(self, client):
+        """Only renders store viewer state, so an event row would otherwise have
+        a blank where the analysis needs to know what was under their hands."""
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, model="pencil_holder_2x3", render_mode="Filled")
+        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        keypress = next(row for row in rows if row["event_type"] == "keyboard")
+        assert keypress["model"] == "pencil_holder_2x3"
+        assert keypress["render_mode"] == "Filled"
+
+    def test_state_before_the_first_render_is_blank_rather_than_guessed(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        start_row = next(row for row in rows if row["event_type"] == "session_start")
+        assert start_row["model"] == ""
+        assert start_row["render_mode"] == ""
+
+    def test_state_does_not_leak_from_one_session_into_the_next(self, client):
+        """Carrying forward is per session. One participant's model appearing on
+        another participant's first rows would be invisible and wrong."""
+        first = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(first, model="lego_2x4")
+        _end(client, first)
+
+        second = _start(client, participant_code="P02").get_json()["state"]["study_session_id"]
+        client.post(f"/study/event?s={_key(second)}", json={"event_type": "keyboard"})
+        _end(client, second)
+
+        _, rows = _long_csv(client)
+        second_rows = [row for row in rows if row["participant_code"] == "P02"]
+        assert second_rows, "the second session should be in the file"
+        assert all(row["model"] == "" for row in second_rows)
+
+
+class TestLongExportOrientation:
+    def test_an_unturned_object_reads_as_zero_on_every_axis(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, orientation=_IDENTITY_BASIS)
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        row = next(r for r in rows if r["event_type"] == "render")
+        assert (row["orientation_x"], row["orientation_y"], row["orientation_z"]) == (
+            "0.0", "0.0", "0.0",
+        )
+
+    def test_a_quarter_turn_reads_as_ninety_on_the_axis_it_was_turned_about(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, orientation=_QUARTER_TURN_ABOUT_Z)
+        _render(session_id, orientation=_QUARTER_TURN_ABOUT_Y)
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        turned = [r for r in rows if r["event_type"] == "render"]
+        about_z, about_y = turned[0], turned[1]
+        assert (about_z["orientation_x"], about_z["orientation_y"], about_z["orientation_z"]) == (
+            "0.0", "0.0", "90.0",
+        )
+        assert (about_y["orientation_x"], about_y["orientation_y"], about_y["orientation_z"]) == (
+            "0.0", "90.0", "0.0",
+        )
+
+    def test_the_raw_basis_is_kept_so_nothing_depends_on_the_decomposition(self, client):
+        """Pitched to straight up, a turn about X and a turn about Z are the same
+        motion and the angles cannot tell them apart. The vectors still can."""
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, orientation=_QUARTER_TURN_ABOUT_Y)
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        row = next(r for r in rows if r["event_type"] == "render")
+        assert json.loads(row["orientation_basis"])["forward"] == [-1, 0, 0]
+
+    def test_a_render_with_no_orientation_leaves_the_columns_blank(self, client):
+        """Blank, not zero. Zero is a measurement, and there was not one."""
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, orientation=None)
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        row = next(r for r in rows if r["event_type"] == "render")
+        assert row["orientation_x"] == ""
+        assert row["orientation_y"] == ""
+        assert row["orientation_z"] == ""
+
+    def test_a_half_written_basis_is_blank_rather_than_invented(self, client):
+        session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
+        _render(session_id, orientation={"scheme": "basis-v1", "forward": [0, 0, 1]})
+        _end(client, session_id)
+
+        _, rows = _long_csv(client)
+        row = next(r for r in rows if r["event_type"] == "render")
+        assert row["orientation_x"] == ""

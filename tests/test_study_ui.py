@@ -449,13 +449,60 @@ class TestControlPanelBehaviour:
         html = CONTROL_HTML.read_text(encoding="utf-8")
         assert 'id="token' not in html
 
-    def test_opening_the_panel_starts_a_session(self):
+    def test_opening_the_panel_asks_for_the_model_set_then_starts(self):
+        """Which two objects the participant gets is the one thing starting a
+        session needs a human to answer, so it is the whole of the opening
+        screen. The old enrolment form asked for things the protocol had already
+        decided; none of it should have come back with the picker."""
         js = CONTROL_JS.read_text(encoding="utf-8")
-        assert "function startSession()" in js
+        assert "function showSetPicker()" in js
+        assert "function startSession(taskOrder" in js
+        assert "'/study/sets'" in js
         assert "enrollment-form" not in js, "the enrolment form should be gone"
         html = CONTROL_HTML.read_text(encoding="utf-8")
         assert 'id="enrollment-form"' not in html
         assert "Start session" not in html
+
+    def test_the_chosen_set_is_what_the_session_starts_on(self):
+        """A picker that did not send the choice would look right and quietly
+        run the rotation's set instead."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "JSON.stringify({ task_order: taskOrder })" in js
+        assert "startSession(entry.task_order" in js
+
+    def test_used_sets_say_so_rather_than_only_being_struck_through(self):
+        """A line through text is decoration: it reaches nobody using a screen
+        reader. Whatever it means has to be in the button's text too."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "already run once this round" in js
+        assert "set-choice-note" in js
+        css = _css_rules(CONTROL_CSS)
+        assert ".set-choice.is-used .set-choice-label" in css
+        assert "line-through" in css
+
+    def test_a_used_set_is_still_selectable(self):
+        """An experimenter who has to deviate -- a missing print, a participant
+        who saw one of these in a pilot -- must not be locked out by the panel."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        picker = js[js.index("function renderSetPicker("):js.index("/** Start the session")]
+        assert "disabled" not in picker, "used sets should be marked, not disabled"
+
+    def test_the_picker_heading_takes_focus_rather_than_the_first_choice(self):
+        """Landing on a button says nothing about what is being chosen; the
+        heading reads forward over the round summary and the whole list."""
+        heading = _by_id(CONTROL_HTML)["set-heading"]
+        assert heading["attrs"].get("tabindex") == "-1"
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "el('set-heading')?.focus({ preventScroll: true })" in js
+
+    def test_the_round_is_reported_in_words(self):
+        """Where the round has got to is the reason the list looks the way it
+        does, so it has to be readable rather than inferred from which entries
+        happen to be struck through."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "sets still to run" in js
+        assert "Nothing has been run yet" in js
+        assert "The previous round is complete" in js
 
     def test_a_reload_does_not_start_a_second_session(self):
         """One instance of the panel owns one session. A refresh mid-session must
@@ -523,6 +570,36 @@ class TestControlPanelBehaviour:
         js = CONTROL_JS.read_text(encoding="utf-8")
         assert "const isStepMoveKey = key === 'n' || key === 'b' || key === 'p';" in js
         assert "if (openDialog && openDialog !== currentStepDialog) openDialog.close();" in js
+
+    def test_next_finishes_the_session_on_the_last_step(self):
+        """Next on the last step used to do nothing, leaving the only way to
+        close a session as a separate End button the script asks the
+        experimenter to remember. Across the two deployed servers, twelve of
+        fourteen sessions were still open."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "function nextOrFinish()" in js
+        assert "function onLastStep()" in js
+        assert "endSession('That was the last step" in js
+        # The keyboard route must not be the one that leaves sessions open.
+        assert "nextOrFinish();" in js
+        assert "advance({ direction: key === 'n' ? 'next' : 'previous' });" not in js
+
+    def test_the_button_says_which_of_the_two_it_will_do(self):
+        """Whether Next advances or ends the session must not have to be
+        inferred from the step number."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "onLastStep() ? 'Finish session' : 'Next'" in js
+
+    def test_finishing_still_confirms_first(self):
+        """Ending is irreversible, so the gesture that ends it keeps the same
+        confirmation the End button has."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        block = js[js.index("function endSession("):js.index("el('end-session-btn')")]
+        assert "window.confirm(prompt)" in block
+
+    def test_help_documents_that_n_finishes(self):
+        html = CONTROL_HTML.read_text(encoding="utf-8")
+        assert "finish the session when you are on the last one" in html
 
     def test_logging_health_is_reported_in_words(self):
         """A degraded log must not be conveyed by colour alone."""
@@ -660,6 +737,15 @@ class TestBothStudyPagesAreCheckedByAxe:
         assert "/study (in a session)" in ci
         assert "/study/control" in ci
         assert "/study (waiting for a code)" in ci
+
+    def test_both_panel_states_are_checked(self):
+        """The panel opens on the model-set picker and only reaches the session
+        by being used, so checking the page it lands on covers roughly none of
+        the markup a session renders."""
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        assert "/study/control (choosing a model set)" in ci
+        assert "/study/control (running a session)" in ci
+        assert "page.click('#set-list button')" in ci
 
     def test_the_study_pages_are_checked_in_a_real_session(self):
         """An empty panel and a participant page with no session exercise almost

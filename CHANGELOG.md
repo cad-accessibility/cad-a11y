@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-08-17
+
+#### Added
+*   Study logs can now be downloaded as a single spreadsheet, covering every session that has been completed, at `/study/export/long.csv`. It is an ordinary address that can be opened in a browser, with nothing to find or paste first. It is one row per interaction rather than one per session, with the time, the phase of the study, the model, the render mode and the orientation on each row, so counting how much of a task was spent in each render mode is a matter of sorting a column rather than writing a program. It is one request, so it can be run again unchanged each time another participant is added.
+*   The download covers completed sessions only. A session still running is being written to as it is read, so the file would differ every time it was asked for, and a session that was abandoned stopped partway with nothing recording why. Asking for one of those by name says which of the two it is rather than returning an empty file, so that a participant is never quietly missing from the analysis.
+*   That address asks for no token, on a deployment that requires one everywhere else in the panel. Worth knowing what that means: anyone who can reach the server and knows the address can download the interaction data of every completed session. That data is keys pressed, what reached the display, and timings, recorded under participant codes. Names, anything a participant said, and the questionnaire answers are not in it, because the application does not store them anywhere.
+*   Orientation, which the viewer keeps as the directions it is looking along, is written out as a rotation in degrees about each of the three axes. The original directions are kept in a column of their own, so the one case where angles are ambiguous, an object pitched to straight up or straight down, can still be read exactly.
+
+### 2026-08-11
+
+#### Fixed
+*   Sessions now close when the experimenter reaches the end of them. "Next" on the final step used to do nothing at all, which left the only way to close a session as a separate "End" button that the last step asks you to remember. On the two deployed servers, twelve of fourteen sessions were still sitting open, one of them nineteen steps into a twenty-two step protocol. "Next" on the last step now reads "Finish session" and closes the record, after asking first.
+*   Sessions that were started and walked away from no longer claim to be in progress forever. A session with no activity for twelve hours is marked as abandoned, which is what it is. Nothing is deleted: it keeps every interaction it recorded, and it simply stops being offered to the next experimenter as a session running on that set of models. The wait can be changed with `STUDY_SESSION_IDLE_HOURS`.
+*   An abandoned session is never counted as having used its models. Only a session someone actually finished does, so a run that was cut short leaves its combination free for the next participant rather than quietly dropping it out of the balanced design.
+
+### 2026-08-10
+
+#### Changed
+*   The objects in the study have changed. The Lego brick is now one of the objects a participant is asked to explore and compare, rather than the warm-up it used to be, and the coat rack has been taken out. The three objects are now the Lego brick, the pencil holder and the cane tip, and each participant still gets two of them. The coat rack's models still ship with the app; they are simply not part of a session any more.
+*   The experimenter now chooses which two objects a participant gets, instead of the panel deciding. Opening the control panel lists all six combinations, and picking one starts the session on it. This is the only thing the panel asks for before a session begins.
+*   Combinations that have already been run are struck through in that list, and each one says in words that it has been run, so the list is as clear read aloud as it is on screen. It also says when a session is running on a combination right now, which is what stops two experimenters starting on the same one at the same time.
+*   Once every combination has been run, the list comes back with all six available again as a new round. Nothing has to be reset, and nobody has to keep count: the list is worked out from the sessions that have actually been completed. A session that was started and then abandoned does not use up its combination, and a combination deliberately run twice is shown as run twice rather than quietly evened out.
+*   A combination that has already been run can still be picked. It is marked, not blocked, so an experimenter can deviate when they have to, for a missing print or a participant who has seen one of the objects before.
+*   Starting a session on an object the study no longer has is now refused outright. It used to be accepted with the unknown object silently dropped, which produced a session one task short, and the only sign of it was a second task that put nothing on the display.
+
 ### 2026-08-07
 
 #### Added

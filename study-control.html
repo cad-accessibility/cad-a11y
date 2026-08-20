@@ -51,17 +51,34 @@
         <main id="main-content">
 
             <!-- ============================================================
-                 STARTING UP — shown only while the session is being created
+                 STARTING UP — shown while the protocol loads, while the session
+                 is being created, and again once the session has ended
                  =============================================================
-                 There is no enrolment form. Opening this panel starts a session:
-                 the participant id, the session number and the model pairs are
-                 all decided by the protocol, so there was nothing on that form
-                 an experimenter had to answer. One instance of this page owns
-                 one session, and a reload stays on the same one.
+                 There is no enrolment form. The participant id and the session
+                 number are decided by the protocol, so there was nothing on
+                 that form an experimenter had to answer. One instance of this
+                 page owns one session, and a reload stays on the same one.
             -->
             <section id="starting-section" aria-labelledby="starting-heading">
-                <h2 id="starting-heading">Starting a session&hellip;</h2>
+                <h2 id="starting-heading">Loading the protocol&hellip;</h2>
                 <p id="starting-error" class="error-text" role="alert" hidden></p>
+            </section>
+
+            <!-- ============================================================
+                 CHOOSING THE MODEL SET — the one decision starting a session
+                 needs, so it is the first thing on screen
+                 =============================================================
+                 Three objects taken two at a time gives six sets, and a round is
+                 those six run once each. The ones already recorded are struck
+                 through — and said in words, since a line through text is not
+                 announced. Once every set has been run the whole list comes back
+                 unstruck as a fresh round; nothing has to be reset by hand.
+            -->
+            <section id="set-section" aria-labelledby="set-heading" hidden>
+                <h2 id="set-heading" tabindex="-1">Choose the model set</h2>
+                <p id="set-round" class="help-text">Loading the model sets&hellip;</p>
+                <ul id="set-list" class="set-list" aria-labelledby="set-heading"></ul>
+                <p id="set-error" class="error-text" role="alert" hidden></p>
             </section>
 
             <!-- ============================================================
@@ -225,7 +242,7 @@
             <li><kbd>C</kbd> Show the current step: script, prompts, and status</li>
             <li><kbd>S</kbd> Show strategy prompts</li>
             <li><kbd>J</kbd> Jump to a step</li>
-            <li><kbd>N</kbd> Next step</li>
+            <li><kbd>N</kbd> Next step, or finish the session when you are on the last one</li>
             <li><kbd>B</kbd> or <kbd>P</kbd> Back to the previous step</li>
             <li><kbd>R</kbd> Run the study on this device — hands this window to the participant; use if you have only one computer</li>
             <li><kbd>E</kbd> End session</li>

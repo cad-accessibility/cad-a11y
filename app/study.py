@@ -58,12 +58,15 @@ logging.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import logging
 import os
 import queue as _queue_module
 import secrets
 import threading
+import time
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
@@ -404,7 +407,7 @@ def _participant_model(step: dict[str, Any] | None) -> dict[str, Any] | None:
     if not stem or _model_index(stem) is None:
         return None
     version = model.get("version")
-    label = {"a": "First object", "b": "Second object"}.get(str(version), "Practice model")
+    label = {"a": "First object", "b": "Second object"}.get(str(version), "Object")
     return {"stem": stem, "label": label}
 
 
@@ -655,6 +658,140 @@ def study_config():
     return jsonify(payload), 200
 
 
+# ---------------------------------------------------------------------------
+# Closing sessions nobody closed
+#
+# A session ends when the experimenter presses End, or -- in a solo session --
+# when the participant finishes the last step. Neither happens if the panel tab
+# is simply closed, and on both deployed servers that is what usually happened:
+# of 14 sessions across staging and production, 12 were still 'active', one of
+# them stuck at step 19 of 22 and one at step 0 for three days. They are not
+# running, but every one of them was reported to the next experimenter as a
+# session in progress on that model set.
+#
+# So sessions are also closed by disuse. The sweep is lazy rather than a
+# background thread: this server is a handful of requests an hour during a
+# session and none between, so a thread would spend its life asleep, and a
+# thread that dies takes the cleanup with it silently. Throttled, because
+# otherwise every poll of the panel would re-scan.
+# ---------------------------------------------------------------------------
+
+# Twelve hours. A session is 60-90 minutes and produces events throughout, so
+# this is far beyond any real gap; the point is to catch the abandoned ones by
+# the next working day, not to reclaim them promptly.
+_DEFAULT_IDLE_HOURS = 12.0
+
+_last_sweep_at: float = 0.0
+_sweep_lock = threading.Lock()
+_SWEEP_INTERVAL_SECONDS = 300
+
+
+def idle_timeout_seconds() -> int:
+    """How long an active session may go quiet before it is treated as gone."""
+    raw = os.getenv("STUDY_SESSION_IDLE_HOURS", "").strip()
+    try:
+        hours = float(raw) if raw else _DEFAULT_IDLE_HOURS
+    except ValueError:
+        hours = _DEFAULT_IDLE_HOURS
+    # Zero or negative would close sessions the moment they were created.
+    if hours <= 0:
+        hours = _DEFAULT_IDLE_HOURS
+    return int(hours * 3600)
+
+
+def sweep_idle_sessions(*, force: bool = False) -> list[dict[str, Any]]:
+    """Close abandoned sessions, at most once every few minutes.
+
+    Never raises: this runs at the top of ordinary requests, and a cleanup fault
+    must not take down the panel or the participant's page with it.
+    """
+    global _last_sweep_at
+    with _sweep_lock:
+        now_ts = time.monotonic()
+        if not force and now_ts - _last_sweep_at < _SWEEP_INTERVAL_SECONDS:
+            return []
+        _last_sweep_at = now_ts
+
+    try:
+        closed = study_db.close_idle_sessions(idle_timeout_seconds())
+    except Exception as error:  # noqa: BLE001 - counted, never fatal
+        study_db.note_external_failure(error)
+        return []
+    for session in closed:
+        logger.info(
+            "study: closed abandoned session %s (%s), idle %ss",
+            session.get("id"),
+            session.get("participant_code"),
+            session.get("idle_seconds"),
+        )
+        # A panel or participant page still attached is told, rather than being
+        # left showing a session the database no longer considers open.
+        _broadcast(study_db.get_study_session(int(session["id"])))
+    return closed
+
+
+def task_set_status() -> dict[str, Any]:
+    """Which model sets this round has already run, and which are still to do.
+
+    A round is the six sets run once each. "Used" is not a stored flag -- there
+    is nothing to keep in step and nothing to reset -- it is derived from the
+    completed sessions in the database: a set counts as used when it has been
+    completed more often than the least-run set has. So the moment every set has
+    been through once, they are all level again and the whole list comes back
+    unstruck, which is the fresh round. Nobody has to notice the rollover or
+    press anything to make it happen.
+
+    Deriving it also means the two things that go wrong in a study do the right
+    thing on their own. A session started and abandoned did not consume its set,
+    because only completed sessions are counted. And an experimenter who has to
+    deviate -- a print is missing, the participant saw one of these in a pilot --
+    just picks a struck-through set; the counts absorb it, and the list keeps
+    telling the truth about what has actually been run.
+
+    ``in_progress`` is the one thing not derived from history: it is how many
+    sessions are running on that set right now. Two panels open at once both see
+    the same free sets, and without this they would both pick the first one.
+    """
+    # Before counting, not after: an abandoned session that still says it is
+    # active is exactly what makes "running on it now" untrustworthy, and this
+    # is the screen where that claim is acted on.
+    sweep_idle_sessions()
+
+    sets = study_protocol.task_sets()
+    completed = study_db.count_task_orders("completed")
+
+    running: dict[str, int] = {}
+    for other in study_db.list_active_sessions():
+        key = study_protocol.set_id(other.get("task_order") or [])
+        running[key] = running.get(key, 0) + 1
+
+    counts = [completed.get(entry["id"], 0) for entry in sets]
+    # The least-run set defines the current round. Every set level with it is
+    # still to do; anything above it has been used since the last rollover.
+    floor = min(counts) if counts else 0
+    return {
+        "round": floor + 1,
+        "sets_per_round": len(sets),
+        "remaining": sum(1 for count in counts if count == floor),
+        "sets": [
+            {
+                **entry,
+                "completed_count": completed.get(entry["id"], 0),
+                "used": completed.get(entry["id"], 0) > floor,
+                "in_progress": running.get(entry["id"], 0),
+            }
+            for entry in sets
+        ],
+    }
+
+
+@study_bp.route("/study/sets", methods=["GET"])
+@require_token
+def study_sets():
+    """The model sets the experimenter chooses from when starting a session."""
+    return jsonify(task_set_status()), 200
+
+
 @study_bp.route("/study/state", methods=["GET"])
 def study_state():
     """Current state. Returns the experimenter view when a valid token is present
@@ -700,6 +837,10 @@ def study_session_start():
     if session_number < 1:
         return jsonify({"status": "error", "message": "session_number must be 1 or more"}), 400
 
+    # Tidy before enrolling, so a new session is not started alongside a row of
+    # abandoned ones that will be reported to this experimenter as running.
+    sweep_idle_sessions()
+
     participant = study_db.create_participant(code or None)
     code = str(participant["code"])
 
@@ -707,7 +848,20 @@ def study_session_start():
     known_pairs = set(protocol.get("model_pairs", {}))
     requested_order = data.get("task_order")
     if isinstance(requested_order, list) and requested_order:
-        task_order = [str(key) for key in requested_order if str(key) in known_pairs]
+        task_order = [str(key) for key in requested_order]
+        # All or nothing. Unknown names used to be filtered out and the rest
+        # accepted, so a request naming a pair the protocol no longer has -- a
+        # stale panel, a bookmarked call, the coat rack after it was retired --
+        # started a session one task short instead of failing, and the shortfall
+        # was only visible as a task 2 that put nothing on the display.
+        unknown = [key for key in task_order if key not in known_pairs]
+        if unknown:
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": f"task_order names unknown model pairs: {', '.join(unknown)}",
+                }
+            ), 400
     else:
         task_order = study_protocol.assign_task_order(int(participant["id"]))
     if not task_order:
@@ -1134,3 +1288,88 @@ def study_session_export(study_session_id: int):
     if not payload:
         return jsonify({"status": "error", "message": "No such session"}), 404
     return jsonify(payload), 200
+
+
+@study_bp.route("/study/export/long.csv", methods=["GET"])
+def study_export_long_csv():
+    """Every completed session as one long-format CSV, one row per interaction.
+
+    Deliberately not behind ``require_token``, unlike the rest of the panel. This
+    is a plain address someone opens in a browser and gets a spreadsheet from:
+
+        https://<host>/study/export/long.csv
+
+    A token here would be a token to look up, keep somewhere, and paste into a
+    terminal, on the one route whose whole value is that re-running the analysis
+    costs nothing. That is the same friction that made the control panel's own
+    token the most confusing part of running a session, and it was removed there
+    for the same reason. The consequence is real and worth stating plainly: on a
+    deployment reachable from the internet, anyone who knows this address can
+    download the interaction data of every completed session. What that is, is
+    the deliberately narrow thing recorded in ``study_db`` -- keys pressed, what
+    reached the display, timings, all under participant codes. It is not names,
+    not anything anyone said, and not the questionnaire answers, none of which
+    this application ever stores.
+
+    Completed sessions only, and that is not a filter the caller can turn off. An
+    active session is still being written to, so including it would make the file
+    depend on the moment it was asked for; an abandoned one stopped partway with
+    nothing recording why. Deciding either is usable is a judgement about a
+    specific participant, and it belongs to whoever is doing the analysis, not to
+    a default in an endpoint. ``?session=<id>`` narrows the file to one session,
+    still only if that session is completed.
+    """
+    raw_session = (request.args.get("session") or "").strip()
+    study_session_id: int | None = None
+    if raw_session:
+        try:
+            study_session_id = int(raw_session)
+        except ValueError:
+            return jsonify(
+                {"status": "error", "message": "session must be a session id"}
+            ), 400
+        session = study_db.get_study_session(study_session_id)
+        if not session:
+            return jsonify({"status": "error", "message": "No such session"}), 404
+        if session.get("status") != "completed":
+            # 409 rather than 404: the session is real, and saying so is what tells
+            # the experimenter the difference between a typo and a session that
+            # nobody finished.
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": (
+                        f"Session {study_session_id} is {session.get('status')}, and the "
+                        "export covers completed sessions only."
+                    ),
+                }
+            ), 409
+
+    rows = study_db.export_long_rows(study_session_id)
+
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer,
+        fieldnames=list(study_db.LONG_EXPORT_COLUMNS),
+        extrasaction="ignore",
+        lineterminator="\n",
+    )
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({column: row.get(column) for column in study_db.LONG_EXPORT_COLUMNS})
+
+    # A header even when there are no completed sessions yet, so the file opens in
+    # a spreadsheet and says what it would have contained, rather than being empty
+    # and looking like the download failed.
+    filename = (
+        f"study_long_session_{study_session_id}.csv" if study_session_id else "study_long.csv"
+    )
+    return Response(
+        buffer.getvalue(),
+        status=200,
+        mimetype="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )

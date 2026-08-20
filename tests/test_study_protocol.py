@@ -45,18 +45,38 @@ class TestCounterbalancing:
             assert len(set(order)) == len(order), f"repeat pair at {sequence_number}"
 
     def test_only_main_pairs_are_assigned(self):
-        """The Lego brick is the practice round and must never be a task."""
         for sequence_number in range(1, 25):
             order = study_protocol.assign_task_order(sequence_number)
-            assert study_protocol.PRACTICE_PAIR not in order
             for key in order:
                 assert key in study_protocol.MAIN_PAIRS
+
+    def test_the_retired_coat_rack_is_never_assigned(self):
+        """It was a fourth pair and is out of the study. Its STLs still ship, so
+        nothing fails loudly if it creeps back into an assignment -- a
+        participant would simply be given an object the protocol no longer
+        counts."""
+        assert "coat_rack" not in study_protocol.MODEL_PAIRS
+        assert "coat_rack" not in study_protocol.MAIN_PAIRS
+        for sequence_number in range(1, 25):
+            assert "coat_rack" not in study_protocol.assign_task_order(sequence_number)
+
+    def test_the_lego_brick_is_a_task_not_a_rehearsal(self):
+        """It used to be the practice round. There is no practice round now, so
+        it has to be reachable as a real task or it is not in the study at all."""
+        assert "lego" in study_protocol.MAIN_PAIRS
+        assigned = {
+            key
+            for sequence_number in range(1, 7)
+            for key in study_protocol.assign_task_order(sequence_number)
+        }
+        assert "lego" in assigned
+        assert not hasattr(study_protocol, "PRACTICE_PAIR")
 
     def test_balanced_over_one_full_cycle(self):
         """Across six participants each pair appears twice in each position, and
         every ordered pair of models occurs exactly once. This is the property
         that keeps 'differences found in task 2' from being confounded with
-        'task 2 was always the coat rack'."""
+        'task 2 was always the cane tip'."""
         orders = [study_protocol.assign_task_order(n) for n in range(1, 7)]
 
         firsts = [order[0] for order in orders]
@@ -83,10 +103,46 @@ class TestCounterbalancing:
             assert len(row["labels"]) == len(row["task_order"])
 
 
+class TestTaskSets:
+    """The list the experimenter picks from in the control panel."""
+
+    def test_one_set_per_cell_of_the_design(self):
+        sets = study_protocol.task_sets()
+        assert len(sets) == 6, "three objects taken two at a time, in order"
+        assert len({entry["id"] for entry in sets}) == 6, "duplicate set"
+
+    def test_every_set_is_a_full_assignment(self):
+        for entry in study_protocol.task_sets():
+            assert len(entry["task_order"]) == study_protocol.TASKS_PER_SESSION
+            assert len(set(entry["task_order"])) == len(entry["task_order"])
+            assert len(entry["labels"]) == len(entry["task_order"])
+            for key in entry["task_order"]:
+                assert key in study_protocol.MODEL_PAIRS
+
+    def test_the_id_distinguishes_order(self):
+        """The two orders of the same objects are different cells of the design.
+        An id that collapsed them would mark both as run once either had been."""
+        assert study_protocol.set_id(["cane_tip", "lego"]) != study_protocol.set_id(
+            ["lego", "cane_tip"]
+        )
+
+    def test_the_id_matches_what_a_session_stores(self):
+        """A session's task_order has to map onto a set without a lookup table --
+        that is how the panel knows which sets have been run."""
+        ids = {entry["id"] for entry in study_protocol.task_sets()}
+        for sequence_number in range(1, 7):
+            assert study_protocol.set_id(study_protocol.assign_task_order(sequence_number)) in ids
+
+    def test_labels_are_human_readable_not_keys(self):
+        labels = {label for entry in study_protocol.task_sets() for label in entry["labels"]}
+        assert "Lego brick" in labels
+        assert "pencil_holder" not in labels
+
+
 class TestStepResolution:
     @pytest.fixture()
     def steps(self):
-        return study_protocol.resolve_steps(["cane_tip", "coat_rack"])
+        return study_protocol.resolve_steps(["cane_tip", "lego"])
 
     def test_step_ids_are_unique(self, steps):
         ids = [step["id"] for step in steps]
@@ -100,14 +156,14 @@ class TestStepResolution:
         by_id = {step["id"]: step for step in steps}
         assert by_id["task1.a.virtual"]["model"]["model"] == "cane_tip_hook"
         assert by_id["task1.b.virtual"]["model"]["model"] == "cane_tip_fitted"
-        assert by_id["task2.a.virtual"]["model"]["model"] == "coat_hanger_30"
-        assert by_id["task2.b.virtual"]["model"]["model"] == "coat_hanger_40"
+        assert by_id["task2.a.virtual"]["model"]["model"] == "lego_2x3"
+        assert by_id["task2.b.virtual"]["model"]["model"] == "lego_2x4"
 
     def test_task_order_actually_changes_the_models(self):
         """Guards the bug that would silently ruin counterbalancing: a resolver
         that ignores the assignment and always returns the same pair."""
-        first = study_protocol.resolve_steps(["cane_tip", "coat_rack"])
-        second = study_protocol.resolve_steps(["coat_rack", "cane_tip"])
+        first = study_protocol.resolve_steps(["cane_tip", "lego"])
+        second = study_protocol.resolve_steps(["lego", "cane_tip"])
         by_id_first = {s["id"]: s for s in first}
         by_id_second = {s["id"]: s for s in second}
         assert (
@@ -149,7 +205,7 @@ class TestStepResolution:
     def test_physical_model_reminders_resolve(self, steps):
         by_id = {step["id"]: step for step in steps}
         assert by_id["task1.a.physical"]["physical_model"] == "Printed hook cane tip"
-        assert by_id["task2.b.physical"]["physical_model"] == "Printed 40 mm peg coat rack"
+        assert by_id["task2.b.physical"]["physical_model"] == "Printed 2x4 Lego brick"
 
     def test_questions_are_carried_as_text_to_read_not_as_fields(self, steps):
         """The questions are shown to the experimenter so they have one place to
@@ -188,7 +244,7 @@ class TestStepResolution:
 class TestScriptContent:
     @pytest.fixture()
     def by_id(self):
-        return {s["id"]: s for s in study_protocol.resolve_steps(["cane_tip", "coat_rack"])}
+        return {s["id"]: s for s in study_protocol.resolve_steps(["cane_tip", "lego"])}
 
     def test_the_opening_does_not_take_consent(self, by_id):
         """Consent is given before the session -- the participant would not have
