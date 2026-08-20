@@ -2883,7 +2883,7 @@ if (resetPositionBtn) {
         // keydown handler for why.
         clearCameraCenterState();
         // "Position reset" also means undoing any roll/pitch/yaw, zoom, and
-        // slice depth, not just pan (#183) -- see resetOrientationZoomAndDepth.
+        // slice depth, not just pan -- see resetOrientationZoomAndDepth.
         resetOrientationZoomAndDepth();
         // currentMoveCamera is reset inside sendStateToServer itself, only
         // once actually consumed -- see the 'z' case in the keydown handler.
@@ -3240,7 +3240,7 @@ document.addEventListener('keydown', function(e) {
             // this same request and silently overrode the reset.
             clearCameraCenterState();
             // "Position reset" also means undoing any roll/pitch/yaw, zoom,
-            // and slice depth, not just pan (#183) -- see
+            // and slice depth, not just pan -- see
             // resetOrientationZoomAndDepth.
             resetOrientationZoomAndDepth();
             // currentMoveCamera is reset inside sendStateToServer itself, only
