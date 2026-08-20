@@ -262,6 +262,12 @@ async function sendStateToServer() {
         const renderPipelineParams = getRenderPipelineParams(viewerState.currentRenderMode);
         const orientationPayload = getOrientationPayload();
         const moveCamera = viewerState.currentMoveCamera;
+        const printView = viewerState.currentPrintView;
+        // Capture now and reset immediately: the coalescing guard above returns before this line runs, so a
+        // one-shot request parameter (a queued pan, or a print_view request) is
+        // never lost to an early reset racing the eventual coalesced resend.
+        viewerState.currentMoveCamera = "none";
+        viewerState.currentPrintView = false;
         const cameraCenter = getCurrentCameraCenter(viewerState.currentView, orientationPayload);
         const worldCameraCenter = viewerState.currentWorldCameraCenter;
 
@@ -276,7 +282,7 @@ async function sendStateToServer() {
             projectionMode: renderPipelineParams.projectionMode,
             mode: getServerRepresentationMode(),
             move_camera_center: moveCamera,
-            print_view: viewerState.currentPrintView,
+            print_view: printView,
             model: viewerState.currentModel,
             current_model: viewerState.currentModel,
             compose_cursor: true, // for now always true, maybe later make it configurable
@@ -310,6 +316,11 @@ async function sendStateToServer() {
             announce(`${activeModelLoadTask.label}: generating render.`);
         }
         pendingInputSource = 'keyboard'; // reset to default after consuming
+        // Captured now (synchronously) and cleared immediately, same reasoning
+        // as activeModelLoadTask above: a second sendStateToServer call before
+        // this one's response arrives must not steal or duplicate this direction.
+        const activePanDirection = pendingPanDirection;
+        pendingPanDirection = null;
 
         // Send to server and process response
         renderRequestInFlight = true;
@@ -347,6 +358,20 @@ async function sendStateToServer() {
                 updateModelList(data.model_list);
             }
             syncCameraCenterFromResponse(data, state);
+            // Only known once the server has recomputed the object's position
+            // relative to the viewport (#153), hence deferred to here rather
+            // than announced immediately when the w/a/s/d key was pressed.
+            if (activePanDirection) {
+                if (data.object_out_of_frame && Array.isArray(data.pan_guidance_directions)
+                        && data.pan_guidance_directions.length) {
+                    // Out on both axes names both directions (e.g. "move
+                    // object up and left"), matching the two arrows drawn in
+                    // the dotpad frame
+                    announceAlert(`move object ${data.pan_guidance_directions.join(' and ')}, object out of frame`);
+                } else {
+                    announceAlert(`move object ${activePanDirection}`);
+                }
+            }
             // Update tactile display preview
             if (data.image_base64) {
                 lastRenderedGrid = gridForSize(state.target_pixel_width, state.target_pixel_height);
@@ -409,6 +434,13 @@ async function sendStateToServer() {
             // use. Connection state is managed exclusively by the health poll below so that
             // only sustained, confirmed outages interrupt the user.
             console.warn('Render request failed:', error.message);
+            // A pending move-object press waits for this response to know
+            // whether the object stayed in frame -- if the request
+            // itself failed, that never arrives, so say so rather than
+            // leaving the reader with no feedback at all for the keypress.
+            if (activePanDirection) {
+                announceAlert('Move failed, try again.');
+            }
             if (isActiveModelLoadTask(activeModelLoadTask)) {
                 announceAlert(`Processing failed for ${activeModelLoadTask.label}.`);
                 clearModelLoadTask(activeModelLoadTask);
@@ -510,6 +542,10 @@ let lastAnnouncedParameterKey = null;
 let pendingInputSource = 'keyboard'; // consumed once per sendStateToServer call
 let modelLoadAnnouncement = null;
 let modelLoadAnnouncementSeq = 0;
+// The direction word for a pending w/a/s/d move-object press ("up"/"down"/
+// "left"/"right"), consumed once the /render response says whether the object
+// is still in frame afterward (#153) — see sendStateToServer's response handler.
+let pendingPanDirection = null;
 
 // Cursor position is in 2D display coordinates, not CAD/world coordinates.
 // Mapping to CAD X/Y/Z depends on viewerState.currentView and viewerState.currentSliceDepth.
@@ -1148,9 +1184,10 @@ function toggleSliceGraphLock() {
 }
 
 function print_view(){
+    // currentPrintView is reset inside sendStateToServer itself, only once
+    // actually consumed -- see the moveCamera/printView comment there.
     viewerState.currentPrintView = true;
     sendStateToServer();
-    viewerState.currentPrintView = !viewerState.currentPrintView;
 }
 
 function formatDebugValue(value) {
@@ -2637,11 +2674,10 @@ function loadStudyModel(stem, label, defaults) {
     beginModelLoadAnnouncement(studyModelLabel, 'study');
     // "reset" centres the object, the last of the study defaults. It is a render
     // parameter rather than viewer state, so it is set for this one request and
-    // cleared straight after, the same way the Z shortcut does it.
+    // reset inside sendStateToServer itself once actually consumed 
     pendingInputSource = 'study';
     viewerState.currentMoveCamera = 'reset';
     sendStateToServer();
-    viewerState.currentMoveCamera = 'none';
     return true;
 }
 
@@ -2822,9 +2858,13 @@ sliceGraphModeRadios().forEach((radio) => {
 if (resetPositionBtn) {
     resetPositionBtn.addEventListener('click', function() {
         pendingInputSource = 'ui';
+        // Drop the remembered per-view centre -- see the 'z' case in the
+        // keydown handler for why.
+        clearCameraCenterState();
+        // currentMoveCamera is reset inside sendStateToServer itself, only
+        // once actually consumed -- see the 'z' case in the keydown handler.
         viewerState.currentMoveCamera = "reset";
         sendStateToServer();
-        viewerState.currentMoveCamera = "none";
         announce('Position reset');
     });
 }
@@ -3091,22 +3131,24 @@ document.addEventListener('keydown', function(e) {
             break;
 
         case 'w':
-            viewerState.currentMoveCamera = "up";
+            // "Move object up" means the viewport has to shift the other way —
+            // see the comment on pendingPanDirection / sendStateToServer (#153).
+            // currentMoveCamera and pendingPanDirection are reset inside
+            // sendStateToServer itself, only once actually consumed, so a
+            // press that gets coalesced into a later resend isn't lost.
+            viewerState.currentMoveCamera = "down";
+            pendingPanDirection = 'up';
             sendStateToServer();
-            viewerState.currentMoveCamera = "none";
-            announceAlert('up');
             break;
         case 'd':
-            viewerState.currentMoveCamera = "right";
+            viewerState.currentMoveCamera = "left";
+            pendingPanDirection = 'right';
             sendStateToServer();
-            viewerState.currentMoveCamera = "none";
-            announceAlert('right');
             break;
         case 's':
-            viewerState.currentMoveCamera = "down";
+            viewerState.currentMoveCamera = "up";
+            pendingPanDirection = 'down';
             sendStateToServer();
-            viewerState.currentMoveCamera = "none";
-            announceAlert('down');
             break;
         case '[':
             viewerState.composeScrollbar = !viewerState.composeScrollbar;
@@ -3120,10 +3162,9 @@ document.addEventListener('keydown', function(e) {
             break;
 
         case 'a':
-            viewerState.currentMoveCamera = "left";
+            viewerState.currentMoveCamera = "right";
+            pendingPanDirection = 'left';
             sendStateToServer();
-            viewerState.currentMoveCamera = "none";
-            announceAlert('left');
             break;
 
         case '4':
@@ -3170,9 +3211,16 @@ document.addEventListener('keydown', function(e) {
 
         case 'z':
             e.preventDefault();
+            // Drop the remembered per-view centre so this request omits
+            // camera_center entirely. Without this, the stale remembered centre still went out on
+            // this same request and silently overrode the reset.
+            clearCameraCenterState();
+            // currentMoveCamera is reset inside sendStateToServer itself, only
+            // once actually consumed -- resetting it here raced ahead of
+            // that when a render was already in flight (the coalescing guard
+            // returns before consuming it), silently dropping the reset.
             viewerState.currentMoveCamera = "reset";
             sendStateToServer();
-            viewerState.currentMoveCamera = "none";
             announceAlert('Position reset');
             break;
 
