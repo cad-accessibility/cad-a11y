@@ -405,6 +405,90 @@ def test_rolling_clockwise_is_clockwise_from_every_named_view(wire_token, view_k
     )
 
 
+def test_viewer_js_pitch_yaw_formulas_are_user_centred():
+    """The applyRelativeRotation switch in viewer.js must use the user-centred
+    swap formulas so the near face (the model face pointing toward the reader)
+    moves in the announced direction.  This reads the JS directly so a
+    regression that accidentally swaps the sign in viewer.js would be caught
+    even though _press is a hardcoded Python copy that would stay correct."""
+    js = VIEWER_JS.read_text(encoding="utf-8")
+    # Expected assignments per rotation.  Each entry is
+    # target_property -> (negated, source_variable).
+    # "negated" means the assignment is negateVec3(source), otherwise just source.
+    expected = {
+        # pitchUp: near face (-depth) rises to the top  =>  new up = -depth
+        "pitchUp":  {"orientationUp": (True,  "depth"), "orientationDepth": (False, "up")},
+        # pitchDown: near face drops to the bottom      =>  new up = +depth
+        "pitchDown": {"orientationUp": (False, "depth"), "orientationDepth": (True,  "up")},
+        # yawLeft: near face (nose) swings to the left  =>  new right = +depth
+        "yawLeft":  {"orientationRight": (False, "depth"), "orientationDepth": (True,  "right")},
+        # yawRight: near face (nose) swings to the right => new right = -depth
+        "yawRight": {"orientationRight": (True,  "depth"), "orientationDepth": (False, "right")},
+    }
+    for rotation_name, expected_assignments in expected.items():
+        case_pat = rf"case '{re.escape(rotation_name)}':(.*?)break;"
+        m = re.search(case_pat, js, re.S)
+        assert m, f"case '{rotation_name}' not found in viewer.js"
+        case_body = m.group(1)
+        for target, (negated, source) in expected_assignments.items():
+            if negated:
+                pat = rf"viewerState\.{re.escape(target)}\s*=\s*negateVec3\({re.escape(source)}\);"
+                assert re.search(pat, case_body), (
+                    f"{rotation_name}: expected viewerState.{target} = negateVec3({source})"
+                )
+            else:
+                pat = rf"viewerState\.{re.escape(target)}\s*=\s*{re.escape(source)}\s*;"
+                assert re.search(pat, case_body), (
+                    f"{rotation_name}: expected viewerState.{target} = {source}"
+                )
+
+
+@pytest.mark.parametrize("wire_token,view_key", sorted(TOKEN_TO_VIEW.items()))
+def test_pitching_up_and_down_produce_distinct_renders_from_every_named_view(wire_token, view_key):
+    """pitchUp and pitchDown must show different faces of the model from every
+    starting orientation, not accidentally the same rotation or a no-op."""
+    base = _view_basis()[wire_token]
+    up_basis   = _press(base, "pitchUp")
+    down_basis = _press(base, "pitchDown")
+    up_payload   = {"scheme": "basis-v1", "forward": up_basis["depth"].tolist(),
+                    "up": up_basis["up"].tolist(), "right": up_basis["right"].tolist()}
+    down_payload = {"scheme": "basis-v1", "forward": down_basis["depth"].tolist(),
+                    "up": down_basis["up"].tolist(), "right": down_basis["right"].tolist()}
+    shape = _chiral_shape()
+    square = dict(cut_depth=1.0, view_key=view_key, rendering_mode="filled",
+                  imposed_ax_limits=[[-3, 3], [-3, 3]], screen_size=[64, 64])
+    img_up,   _ = get_single_view(shape, shape.bounds.flatten(),
+                                  orientation_basis=up_payload, **square)
+    img_down, _ = get_single_view(shape, shape.bounds.flatten(),
+                                  orientation_basis=down_payload, **square)
+    assert not np.array_equal(img_up[..., 0] < 128, img_down[..., 0] < 128), (
+        f"pitchUp and pitchDown produced identical renders from {view_key}"
+    )
+
+
+@pytest.mark.parametrize("wire_token,view_key", sorted(TOKEN_TO_VIEW.items()))
+def test_yawing_left_and_right_produce_distinct_renders_from_every_named_view(wire_token, view_key):
+    """yawLeft and yawRight must show different faces of the model from every
+    starting orientation, not accidentally the same rotation or a no-op."""
+    base = _view_basis()[wire_token]
+    left_basis  = _press(base, "yawLeft")
+    right_basis = _press(base, "yawRight")
+    left_payload  = {"scheme": "basis-v1", "forward": left_basis["depth"].tolist(),
+                     "up": left_basis["up"].tolist(), "right": left_basis["right"].tolist()}
+    right_payload = {"scheme": "basis-v1", "forward": right_basis["depth"].tolist(),
+                     "up": right_basis["up"].tolist(), "right": right_basis["right"].tolist()}
+    shape = _chiral_shape()
+    square = dict(cut_depth=1.0, view_key=view_key, rendering_mode="filled",
+                  imposed_ax_limits=[[-3, 3], [-3, 3]], screen_size=[64, 64])
+    img_left,  _ = get_single_view(shape, shape.bounds.flatten(),
+                                   orientation_basis=left_payload, **square)
+    img_right, _ = get_single_view(shape, shape.bounds.flatten(),
+                                   orientation_basis=right_payload, **square)
+    assert not np.array_equal(img_left[..., 0] < 128, img_right[..., 0] < 128), (
+        f"yawLeft and yawRight produced identical renders from {view_key}"
+    )
+
+
 def test_the_cut_follows_the_orientation():
     """Cut slices into the screen. Under a rotated basis it has to follow, or it
     would keep slicing along whichever model axis the view name happened to
