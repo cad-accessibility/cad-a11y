@@ -730,6 +730,27 @@ function setOrientationFromView(viewToken) {
     viewerState.orientationDepth = [...basis.depth];
 }
 
+// "Position reset" (the Z shortcut and the Reset Position button) means the
+// whole framing, not just pan: undo any roll/pitch/yaw back to the straight-on
+// basis for whatever view is currently selected, zoom back out to 0, and
+// bring the slice plane back to the middle (50%) of every axis -- otherwise a
+// rotated, zoomed-in, or deeply-sliced view came back centred on itself
+// rather than on the object. Does not touch which named view is selected, or
+// send anything to the server itself -- callers still own
+// clearCameraCenterState(), setting currentMoveCamera = "reset", and the
+// single sendStateToServer() call, same as before.
+function resetOrientationZoomAndDepth() {
+    setOrientationFromView(viewerState.currentView);
+    resetSlicePlanes();
+    // Undoing a pitch/yaw can change which physical axis is "depth" (see
+    // activeSliceAxis) -- re-derive the displayed slice percentage for
+    // whichever axis is active now, the same as updateView does after a
+    // real view switch. With every plane just reset to 0.5 this always
+    // settles on 50% regardless of which axis that turns out to be.
+    syncSliceDepthFromPlanes();
+    updateZoom(0, false, false);
+}
+
 const RELATIVE_ROTATIONS = {
     rollCounterclockwise: { speech: 'roll counterclockwise' },
     rollClockwise:        { speech: 'roll clockwise' },
@@ -2861,6 +2882,9 @@ if (resetPositionBtn) {
         // Drop the remembered per-view centre -- see the 'z' case in the
         // keydown handler for why.
         clearCameraCenterState();
+        // "Position reset" also means undoing any roll/pitch/yaw, zoom, and
+        // slice depth, not just pan -- see resetOrientationZoomAndDepth.
+        resetOrientationZoomAndDepth();
         // currentMoveCamera is reset inside sendStateToServer itself, only
         // once actually consumed -- see the 'z' case in the keydown handler.
         viewerState.currentMoveCamera = "reset";
@@ -3215,6 +3239,10 @@ document.addEventListener('keydown', function(e) {
             // camera_center entirely. Without this, the stale remembered centre still went out on
             // this same request and silently overrode the reset.
             clearCameraCenterState();
+            // "Position reset" also means undoing any roll/pitch/yaw, zoom,
+            // and slice depth, not just pan -- see
+            // resetOrientationZoomAndDepth.
+            resetOrientationZoomAndDepth();
             // currentMoveCamera is reset inside sendStateToServer itself, only
             // once actually consumed -- resetting it here raced ahead of
             // that when a render was already in flight (the coalescing guard
