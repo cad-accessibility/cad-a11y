@@ -438,9 +438,7 @@ def test_viewer_js_pitch_yaw_formulas_are_user_centred():
                 )
             else:
                 pat = rf"viewerState\.{re.escape(target)}\s*=\s*{re.escape(source)}\s*;"
-                # also allow with no space before ;
-                pat2 = rf"viewerState\.{re.escape(target)}\s*=\s*{re.escape(source)}\b[^(]"
-                assert re.search(pat, case_body) or re.search(pat2, case_body), (
+                assert re.search(pat, case_body), (
                     f"{rotation_name}: expected viewerState.{target} = {source}"
                 )
 
