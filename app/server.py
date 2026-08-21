@@ -377,6 +377,29 @@ def _log(message: str, *, force: bool = False) -> None:
         print(message)
 
 
+def _configure_app_logging() -> None:
+    """Make the standard-library loggers in this package reachable.
+
+    Most of the app reports through _log above, but modules that cannot import
+    this one use `logging` instead. Nothing ever configured it, so those records
+    went nowhere: the root logger defaults to WARNING with no handler, which made
+    a debug log a no-op however it was written (#113).
+
+    Scoped to the `app` package on purpose. Turning debug on globally would drown
+    the output in matplotlib, trimesh and PIL internals.
+    """
+    package_logger = logging.getLogger(__name__.split(".")[0])
+    package_logger.setLevel(logging.WARNING if QUIET_MODE else logging.DEBUG)
+    if not package_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        package_logger.addHandler(handler)
+    package_logger.propagate = False
+
+
+_configure_app_logging()
+
+
 def _push_sse(data: dict) -> None:
     """Broadcast a hardware-state event to all connected SSE clients."""
     message = f"data: {json.dumps(data)}\n\n"

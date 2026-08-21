@@ -5,6 +5,7 @@ This library provides a simple interface to generate comparison views of CAD mod
 It processes STEP files and returns rendered image arrays based on specified parameters.
 """
 
+import logging
 import numpy as np
 import contextlib
 import gzip
@@ -38,6 +39,9 @@ from shapely import symmetric_difference, from_wkb, to_wkb
 import matplotlib.pyplot as plt
 import io, PIL, json
 from PIL import Image
+
+
+logger = logging.getLogger(__name__)
 
 
 def compute_imposed_zoom_limits(horizontal_dist, vertical_dist, center_x, center_y, zoom_level, screen_w, screen_h):
@@ -270,14 +274,38 @@ def _decimate_for_display(mesh):
     Best effort by design. Decimation needs an optional backend, and a model that
     cannot be simplified should still load and render, just more slowly, so any
     failure returns the mesh untouched rather than breaking the load.
+
+    Swallowing the failure is right, but swallowing it silently is not: a missing
+    or systematically failing backend then looks exactly like a renderer that is
+    simply slow, with nothing to point at. Both ways this can give up are logged,
+    as is the successful case, so the reduction can be confirmed rather than
+    assumed. Debug level, since none of these are faults the user can act on.
     """
-    if len(mesh.faces) <= MAX_RENDER_FACES:
+    original_faces = len(mesh.faces)
+    if original_faces <= MAX_RENDER_FACES:
         return mesh
     try:
         simplified = mesh.simplify_quadric_decimation(face_count=MAX_RENDER_FACES)
-    except Exception:
+    except Exception as error:
+        logger.debug(
+            "Mesh decimation unavailable for a %d-face model, rendering it at full "
+            "detail: %s: %s. Renders will be slower than intended.",
+            original_faces, type(error).__name__, error,
+        )
         return mesh
-    return simplified if len(simplified.faces) > 0 else mesh
+
+    if len(simplified.faces) == 0:
+        logger.debug(
+            "Mesh decimation returned an empty mesh for a %d-face model, keeping "
+            "the original. Renders will be slower than intended.",
+            original_faces,
+        )
+        return mesh
+
+    logger.debug(
+        "Decimated mesh for display: %d faces to %d.", original_faces, len(simplified.faces)
+    )
+    return simplified
 
 
 class CADComparisonRenderer:
