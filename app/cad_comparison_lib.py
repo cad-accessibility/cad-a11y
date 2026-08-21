@@ -1244,16 +1244,36 @@ class CADComparisonRenderer:
         else:
             camera_center = self._default_camera_center(view_limits)
 
-        horizontal_dist = np.abs(view_limits[0][1] - view_limits[0][0])
-        vertical_dist = np.abs(view_limits[1][1] - view_limits[1][0])
+        # This needs to account for the aspect ratio of the monarch
+        screen_w_for_ratio = render_screen_size[0]
+        if comparison_mode == "side-by-side":
+            screen_w_for_ratio = 0.5*render_screen_size[0]
+
+        # Fixed-scale viewport: the longest 3D bounding box dimension fits along
+        # the shortest display dimension, so model scale depends only on the zoom
+        # level and never on how the model happens to be oriented.  Rotating a
+        # long model from vertical to horizontal must not change its apparent size.
+        longest_3d_dim = 0.0
+        if self.bbox is not None:
+            xmin_b, ymin_b, zmin_b, xmax_b, ymax_b, zmax_b = self.bbox
+            longest_3d_dim = max(xmax_b - xmin_b, ymax_b - ymin_b, zmax_b - zmin_b)
+        screen_min_dim = min(screen_w_for_ratio, render_screen_size[1])
+        if screen_min_dim > 0 and longest_3d_dim > 0:
+            scale_horizontal_dist = longest_3d_dim * screen_w_for_ratio / screen_min_dim
+            scale_vertical_dist = longest_3d_dim * render_screen_size[1] / screen_min_dim
+        else:
+            # Degenerate display or model — fall back to the projected extents.
+            scale_horizontal_dist = np.abs(view_limits[0][1] - view_limits[0][0])
+            scale_vertical_dist = np.abs(view_limits[1][1] - view_limits[1][0])
+
         # arrow-key stepping. 0.25, not 0.5: a pan moves by 25% of the active
         # (zoom-scaled) viewport, so 75% of what was visible before is still
         # visible after.
         pan_step_scale = 0.25 * zoom_scale
-        camera_center = apply_pan_step(camera_center, camera_move, pan_step_scale, horizontal_dist, vertical_dist)
+        camera_center = apply_pan_step(camera_center, camera_move, pan_step_scale, scale_horizontal_dist, scale_vertical_dist)
 
         object_out_of_frame, pan_guidance_directions = self._object_pan_guidance(
-            view_limits, camera_center, zoom_scale, horizontal_dist, vertical_dist
+            view_limits, camera_center, zoom_scale, scale_horizontal_dist, scale_vertical_dist
         )
 
         # Compute scrollbar dimensions after final zoom/aspect correction so
@@ -1263,13 +1283,9 @@ class CADComparisonRenderer:
         y_scroll_min = 0.0
         y_scroll_max = 1.0
 
-        # This needs to account for the aspect ratio of the monarch
-        screen_w_for_ratio = render_screen_size[0]
-        if comparison_mode == "side-by-side":
-            screen_w_for_ratio = 0.5*render_screen_size[0]
         imposed_zoom_ax_limits = list(compute_imposed_zoom_limits(
-            horizontal_dist,
-            vertical_dist,
+            scale_horizontal_dist,
+            scale_vertical_dist,
             camera_center[0],
             camera_center[1],
             zoom_level,
