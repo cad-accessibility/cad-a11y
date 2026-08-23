@@ -2178,9 +2178,8 @@ document.getElementById("model-list-dropdown").addEventListener("change", functi
     viewerState.currentModel = selectedItem;
     clearCameraCenterState();
     // A new model gets its own default view: straight-on orientation, zoom 0
-    // (fit longest_3d_dim vertically), and slice depth back to 50% -- not
+    // (fit longest_3d_dim along the shortest display dimension), and slice depth back to 50% -- not
     // whatever the previous model was left at.
-    resetOrientationZoomAndDepth();
     // Likewise the render mode: back to the app default rather than carrying
     // over e.g. xray or superposition from the previous model.
     viewerState.currentRenderMode = 'cut';
