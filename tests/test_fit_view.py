@@ -18,6 +18,7 @@ def _renderer_for_fit():
     renderer = cad_lib.CADComparisonRenderer.__new__(cad_lib.CADComparisonRenderer)
     renderer.shapes = [object(), object()]
     renderer.bbox = [0, 0, 0, 10, 10, 10]
+    renderer.longest_3d_dim = 10.0
     renderer.screen_size = [40, 40]
     renderer.view_limits = np.array(
         [

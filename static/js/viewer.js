@@ -2178,6 +2178,9 @@ document.getElementById("model-list-dropdown").addEventListener("change", functi
     viewerState.currentModel = selectedItem;
     clearCameraCenterState();
     resetSlicePlanes();
+    // A new model has its own longest_3d_dim, so update the zoom level to 0
+    // once the model's longest dimension is fit vertically to the display. 
+    updateZoom(0, false, false);
     const selectedLabel = this.selectedIndex >= 0 ? this.options[this.selectedIndex].text : `model ${selectedItem}`;
     if (sbModel && this.selectedIndex >= 0) {
         sbModel.textContent = this.options[this.selectedIndex].text;
@@ -2294,6 +2297,9 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             viewerState.currentModel = uploadedStem;
             clearCameraCenterState();
             resetSlicePlanes();
+            // See the model-dropdown change handler: a new model's default
+            // view is always zoom 0, not whatever the previous model was at.
+            updateZoom(0, false, false);
             const selectedLabel = dropdown.selectedIndex >= 0 ? dropdown.options[dropdown.selectedIndex].text : data.filename;
             if (sbModel && dropdown.selectedIndex >= 0) {
                 sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
@@ -2657,8 +2663,11 @@ function applyStudyDefaults(defaults) {
     if (representationModeByKey(wanted.representation_mode)) {
         viewerState.currentRepresentationMode = wanted.representation_mode;
     }
+    // A step that doesn't specify its own zoom defaults to 0 (fit the longest
+    // 3D dimension vertically) -- not whatever zoom the previous step's model
+    // happened to be left at.
     const zoom = Number(wanted.zoom);
-    if (Number.isFinite(zoom)) viewerState.currentZoom = Math.max(MIN_ZOOM, zoom);
+    viewerState.currentZoom = Number.isFinite(zoom) ? Math.max(MIN_ZOOM, zoom) : 0;
 
     updateDisplayOptions();
     if (typeof wanted.compose_scrollbar === 'boolean') {

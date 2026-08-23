@@ -10,10 +10,12 @@ vertical_dist from view_limits) as the reference for zoom scaling, so
 rotating a long stick from vertical to horizontal caused the display to
 expand significantly, making the model appear much smaller.
 
-After the fix the viewport is anchored to
-  ``longest_3d_bbox_dim / min(display_w, display_h)``
-which is constant for a given model and display, so rotation cannot affect
-the apparent size.
+After the fix the viewport is anchored to the longest 3D bbox dimension along
+the display's vertical extent, with horizontal following the display's aspect
+ratio from that -- constant for a given model and display, so rotation cannot
+affect the apparent size. This is unconditional: render() never resizes the
+viewport to compensate for a projected extent that happens to be larger (see
+test_framing_bounds_ignore_the_projected_extent_entirely below).
 """
 
 from __future__ import annotations
@@ -48,6 +50,8 @@ def _make_renderer(monkeypatch, view_limits_2x2, bbox):
     renderer.screen_size = [SCREEN_W, SCREEN_H]
     renderer.shapes = [object(), object()]
     renderer.bbox = bbox
+    xmin_b, ymin_b, zmin_b, xmax_b, ymax_b, zmax_b = bbox
+    renderer.longest_3d_dim = max(xmax_b - xmin_b, ymax_b - ymin_b, zmax_b - zmin_b)
     # view_limits must be indexable as renderer.view_limits[view_index]
     renderer.view_limits = np.array([view_limits_2x2 for _ in range(6)])
 
@@ -150,4 +154,24 @@ def test_zoom_in_halves_framing_bounds(monkeypatch):
 
     assert math.isclose(y1, y0 * 0.5, rel_tol=1e-9), (
         f"zoom=1 y-span {y1:.4f} should be half of zoom=0 y-span {y0:.4f}"
+    )
+
+
+def test_framing_bounds_ignore_the_projected_extent_entirely(monkeypatch):
+    """The fixed-scale viewport is unconditionally longest_3d_dim -- it is never
+    resized based on view_limits, even when the projected extent (here
+    deliberately much larger, as a non-90-degree orientation_basis sent
+    straight to the API could produce) would exceed it. Scale changes only via
+    an explicit user zoom action, never automatically to keep something in
+    frame -- a real UI rotation can never actually reach this case, since
+    roll/pitch/yaw are always 90-degree swaps of two basis axes."""
+    bbox = [-0.5, -0.5, -0.5, 0.5, 0.5, 0.5]  # cube, longest_3d_dim = 1.0
+    limits = [[-0.55, 0.55], [-0.825, 0.825]]  # projected extent (1.5) > longest_3d_dim
+
+    result = _make_renderer(monkeypatch, limits, bbox).render(BASE_PARAMS)
+
+    y_span = result.framing_bounds[1][1] - result.framing_bounds[1][0]
+    assert math.isclose(y_span, 1.0, rel_tol=1e-6), (
+        f"y-span {y_span:.4f} should stay exactly longest_3d_dim (1.0) "
+        "regardless of the projected extent"
     )

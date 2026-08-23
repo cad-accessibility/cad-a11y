@@ -305,6 +305,7 @@ class CADComparisonRenderer:
         self.after_model_path = after_model_path
         self.shapes = []
         self.bbox = None
+        self.longest_3d_dim = 0.0
         self.view_limits = None
         self.view_default_camera_center = []
         self.screen_size = list(DEFAULT_SCREEN_SIZE)
@@ -396,6 +397,8 @@ class CADComparisonRenderer:
             [shape_before, shape_after]
         )
         self.bbox = [xmin, ymin, zmin, xmax, ymax, zmax]
+        # This makes the zoom=0 scale (see render()) a property of the model
+        self.longest_3d_dim = max(xmax - xmin, ymax - ymin, zmax - zmin)
 
         # Calculate view limits for all views
         self._calculate_view_limits(same_shapes=same_file)
@@ -1249,18 +1252,20 @@ class CADComparisonRenderer:
         if comparison_mode == "side-by-side":
             screen_w_for_ratio = 0.5*render_screen_size[0]
 
-        # Fixed-scale viewport: the longest 3D bounding box dimension fits along
-        # the shortest display dimension, so model scale depends only on the zoom
-        # level and never on how the model happens to be oriented.  Rotating a
-        # long model from vertical to horizontal must not change its apparent size.
-        longest_3d_dim = 0.0
-        if self.bbox is not None:
-            xmin_b, ymin_b, zmin_b, xmax_b, ymax_b, zmax_b = self.bbox
-            longest_3d_dim = max(xmax_b - xmin_b, ymax_b - ymin_b, zmax_b - zmin_b)
-        screen_min_dim = min(screen_w_for_ratio, render_screen_size[1])
-        if screen_min_dim > 0 and longest_3d_dim > 0:
-            scale_horizontal_dist = longest_3d_dim * screen_w_for_ratio / screen_min_dim
-            scale_vertical_dist = longest_3d_dim * render_screen_size[1] / screen_min_dim
+        # Fixed-scale viewport: the longest 3D bounding box dimension (fixed once,
+        # at model load -- see self.longest_3d_dim in _load_models) fits along the
+        # display's vertical extent. This is recomputed into scale_vertical_dist /
+        # scale_horizontal_dist below on every render() call because the display
+        # geometry (screen_w_for_ratio, render_screen_size) is a per-request
+        # argument, not a model property -- but longest_3d_dim itself never
+        # changes, so for a given model and display these two values are always
+        # the same number. The zoom level (compute_imposed_zoom_limits below) is
+        # the only thing that ever scales this down further, and it changes only
+        # when the user explicitly zooms -- never as a side effect of rotating,
+        # panning, or slicing.
+        if render_screen_size[1] > 0 and self.longest_3d_dim > 0:
+            scale_vertical_dist = self.longest_3d_dim
+            scale_horizontal_dist = self.longest_3d_dim * screen_w_for_ratio / render_screen_size[1]
         else:
             # Degenerate display or model — fall back to the projected extents.
             scale_horizontal_dist = np.abs(view_limits[0][1] - view_limits[0][0])
