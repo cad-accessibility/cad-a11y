@@ -1,5 +1,7 @@
 import struct
-from io import StringIO
+from io import BytesIO, StringIO
+
+from werkzeug.datastructures import FileStorage
 
 def _is_ascii_stl_upload(file) -> bool:
     stream = file.stream
