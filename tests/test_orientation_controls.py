@@ -538,3 +538,39 @@ def test_the_keyboard_help_matches_the_keys():
                         ("J", "Yaw left"), ("L", "Yaw right")):
         assert f"<kbd>{key}</kbd> {action}" in html, f"help for {key} is wrong or missing"
     assert "View x-" not in html and "View z+" not in html, "help still lists removed keys"
+
+
+# --- Semicolon shortcut: announce current orientation ----------------------
+
+
+def test_semicolon_is_in_supported_shortcuts():
+    """';' must be listed so the keydown handler does not ignore it."""
+    block = re.search(
+        r"const supportedShortcuts = new Set\(\[(.*?)\]\)",
+        _js(), re.S,
+    )
+    assert block, "supportedShortcuts not found in viewer.js"
+    assert "';'" in block.group(1), "';' is not in supportedShortcuts"
+
+
+def test_semicolon_case_calls_describebasis():
+    """The ';' case must call describeBasis with the current orientation."""
+    js = _js()
+    assert "case ';':" in js, "no case ';': in keydown switch"
+    # Locate the case block and verify it calls describeBasis.
+    match = re.search(r"case ';':(.*?)break;", js, re.S)
+    assert match, "case ';': block not found"
+    block = match.group(1)
+    assert "describeBasis" in block, "case ';': does not call describeBasis"
+    assert "orientationRight" in block, "case ';': does not use orientationRight"
+    assert "orientationUp" in block, "case ';': does not use orientationUp"
+    assert "orientationDepth" in block, "case ';': does not use orientationDepth"
+
+
+def test_keyboard_help_includes_semicolon():
+    """The shortcuts dialog must document the ';' key."""
+    html = _html()
+    assert "<kbd>;</kbd>" in html, "semicolon shortcut is missing from the keyboard help"
+    idx = html.index("<kbd>;</kbd>")
+    assert "orientation" in html[idx:idx + 80].lower(), \
+        "the semicolon shortcut description does not mention orientation"

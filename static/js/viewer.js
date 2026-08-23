@@ -2974,7 +2974,7 @@ document.addEventListener('keydown', function(e) {
         'u', 'i', 'o', 'j', 'k', 'l',
         '4', '5',
         'r', 't', 'g', 'v', 'z',
-        'w', 'a', 's', 'd', '[', ']', 'h', '?', 'p', '.', 'escape', 'f'
+        'w', 'a', 's', 'd', '[', ']', 'h', '?', 'p', '.', 'escape', 'f', ';'
     ]);
 
     if (!supportedShortcuts.has(normalizedKey)) {
@@ -3131,6 +3131,16 @@ document.addEventListener('keydown', function(e) {
             // Read the full top-of-page status bar.
             e.preventDefault();
             announceAlert(getStatusBarAnnouncement());
+            break;
+
+        case ';':
+            // Announce the current view orientation.
+            e.preventDefault();
+            announceAlert(describeBasis({
+                right: viewerState.orientationRight,
+                up: viewerState.orientationUp,
+                depth: viewerState.orientationDepth,
+            }));
             break;
 
         case 'g':
