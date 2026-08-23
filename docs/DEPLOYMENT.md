@@ -214,15 +214,31 @@ All persistent data is in Docker-managed named volumes, not on the host filesyst
 | --- | --- |
 | `models` | The models that ship with the app, seeded from the image on every start |
 | `uploads` | Models uploaded by visitors |
-| `db` | The usage database |
+| `db` | The usage database, and the study database (`study.db`) |
 | `renders` | Render output |
-| `logs` | Braille send logs and study logs |
+| `logs` | Braille send logs, and per-session study logs under `study/` |
 
 Two consequences that have caught us out before.
 
 **This data is not in the old host location and is outside host-level backups.** Before the move to named volumes it lived under a path on the NFS share. It no longer does, and nothing on the host is backing it up.
 
 **`docker compose down -v` destroys it.** That includes every uploaded model and the entire usage database. Use plain `docker compose down` to stop the app. There is no undo and no copy elsewhere.
+
+**Study data is in there too, and it cannot be regenerated.** A study session is a person's hour; unlike the usage database, losing it means running someone again. It lives in two places, both under volumes covered by the backup command below: `db` holds `study.db`, and `logs/study/` holds the per-session JSONL files. Back both up after every session rather than only before risky operations.
+
+### The study control panel
+
+`/study/control` is open. Opening it starts a session, which is the whole flow: no secret to find, nothing to paste into a URL. A tab owns one session, so a reload continues it and a new tab starts another.
+
+That does mean anyone who reaches the address can advance a live session, read the answer key, and download a participant's interaction log. To gate it, set a token in `.env` on the server:
+
+```bash
+STUDY_CONTROL_TOKEN=$(openssl rand -base64 24)
+```
+
+The panel then needs `/study/control?token=…`. It is off unless that variable is set, and setting it changes nothing else about how a session runs.
+
+The participant page at `/study` is always open. It carries a four-character code, shown in the panel, that says which session the browser belongs to — several run at once on one server, and that code is what keeps one participant's interactions out of another's record.
 
 ### Backing up
 

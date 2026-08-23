@@ -23,7 +23,7 @@ def _make_renderer(monkeypatch, width=30, height=20):
         [[0, 10], [0, 10]],
         [[0, 10], [0, 10]],
     ]
-    renderer.view_current_camera_center = [[5, 5] for _ in range(6)]
+    renderer.view_default_camera_center = [[5, 5] for _ in range(6)]
 
     def fake_get_single_view(*args, screen_size=None, **kwargs):
         w, h = screen_size
@@ -51,7 +51,7 @@ def _render_with_cursor(monkeypatch, cursor_state, cursor_col=10, cursor_row=8):
         "cursor_row": cursor_row,
     }
 
-    return renderer.render(params)
+    return renderer.render(params).image
 
 
 def test_cursor_none_leaves_image_unchanged(monkeypatch):

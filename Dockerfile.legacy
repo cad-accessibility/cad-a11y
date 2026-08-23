@@ -1,4 +1,13 @@
-# syntax=docker/dockerfile:1
+# Fallback for hosts running a Docker version too old for BuildKit cache
+# mounts (`RUN --mount=type=cache`, used by the main Dockerfile) -- older
+# Docker Engine either doesn't ship BuildKit, or doesn't default to it, and
+# fails outright on that RUN syntax. This is byte-for-byte the same image
+# except the conda package cache is a plain image layer instead of a cache
+# mount, so a rebuild after touching environment.yml re-downloads packages
+# instead of reusing a persistent cache.
+#
+# GENERATED FROM Dockerfile by scripts/sync_legacy_dockerfile.py -- do not edit
+# by hand. Run that script after changing Dockerfile, and commit both.
 # Pin the base image to avoid silent breakage from upstream updates.
 FROM continuumio/miniconda3:24.11.1-0
 
@@ -17,14 +26,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # --- Dependency layers (cached until environment.yml / requirements.txt change) ---
 
 # Create conda environment with pythonocc-core (conda-only package).
-# The package cache is a BuildKit cache mount, not an image layer, so it survives
-# across builds without bloating the image — a rebuild after touching
-# environment.yml re-solves but does not re-download anything already fetched.
-# Nothing to `conda clean` afterward: cleaning would just empty the cache mount
-# for no image-size benefit.
 COPY environment.yml .
-RUN --mount=type=cache,target=/opt/conda/pkgs \
-    conda env create -f environment.yml
+RUN conda env create -f environment.yml && conda clean -afy
 
 # All subsequent RUN commands execute inside the conda env.
 SHELL ["conda", "run", "-n", "cad-a11y", "/bin/bash", "-c"]

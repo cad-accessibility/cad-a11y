@@ -13,6 +13,15 @@
     <div class="container">
         <header role="banner">
             <h1 id="page-title" tabindex="-1">Accessible 3D Model Viewer</h1>
+            <nav aria-label="Main menu" class="site-nav">
+              <div class="button-group">
+		<button type="button" id="device-connect-btn">Connect</button>
+	        <button type="button" id="device-disconnect-btn" hidden>Disconnect</button>
+                <button type="button" id="nav-about-btn">About</button>
+                <button type="button" id="nav-help-btn">Help</button>
+                <button type="button" id="nav-settings-btn">Settings</button>
+	      </div>
+            </nav>
         </header>
 
         <!--
@@ -24,7 +33,6 @@
             speaks the whole line through the announcement channel. Making it live
             would re-announce on every state change and flood.
         -->
-	<p>Press "h" or "?" for help</p>
         <div id="status-bar" role="region" aria-label="Viewer status">
             <span class="status-item">
                 <span class="status-label">View<span aria-hidden="true">:</span></span>
@@ -92,6 +100,73 @@
         <div id="announcement-window-polite" class="sr-only" role="status" aria-atomic="true"></div>
 
        <main id="main-content">
+
+            <!--
+                STUDY SESSION REGION — only shown at /study (viewer.js adds
+                body.study-ui; see viewer.css). First thing inside main, so the
+                skip link lands on it and a screen reader meets the current step
+                before the controls.
+
+                Not role="banner": the page already has one, and a second would
+                make "banner" ambiguous in the landmarks list. A labelled region
+                is listed just as reliably and says what it actually is.
+
+                The heading is aria-live="polite", never assertive. It fires only
+                on a step change, never on a render — participants are reading
+                braille with both hands while the display refreshes, and an
+                assertive interruption mid-slice is exactly the disruption the
+                protocol is trying to avoid measuring.
+            -->
+            <section id="study-region" class="study-region" aria-labelledby="study-step-heading" hidden>
+                <!-- Neither this heading nor the progress line below is a live
+                     region any more: a step change is announced once, as a
+                     single combined utterance, via the shared
+                     announcement-window-polite (see stepAnnouncement() in
+                     study.js). Both used to announce independently too, which
+                     read the title, then the step count, then the combined
+                     announcement again -- the same content three times over. -->
+                <h2 id="study-step-heading" tabindex="-1">Waiting for the session to start</h2>
+                <p id="study-step-progress" class="study-progress">
+                    <span id="study-step-progress-text">Not started</span>
+                </p>
+                <p id="study-step-text" class="study-step-text">
+                    Your experimenter will start the session in a moment.
+                </p>
+
+                <!--
+                    How this browser says which session it belongs to. Several
+                    can be running at once on one server, so the code is what
+                    makes it certain. Always asked for, never guessed: the
+                    procedure is the same whether one session is running or
+                    five, and there is one instruction to give a participant.
+
+                    Hidden once joined, so it is not a stray control sitting in
+                    the tab order for the rest of the session.
+                -->
+                <form id="study-join-form" class="study-join" hidden>
+                    <label for="study-join-code">Session code</label>
+                    <input type="text" id="study-join-code" name="code"
+                           autocomplete="off" autocapitalize="characters"
+                           spellcheck="false" maxlength="8" size="8"
+                           aria-describedby="study-join-hint">
+                    <button type="submit" id="study-join-btn">Join</button>
+                    <span id="study-join-hint" class="help-text">
+                        Four letters and numbers, from your experimenter.
+                    </span>
+                    <p id="study-join-error" class="error-text" role="alert" hidden></p>
+                </form>
+                <div class="button-group">
+                    <!--
+                        Advisory only: it tells the experimenter the participant is
+                        done and does not advance anything. Labelled in full rather
+                        than as "Ready" so it is unambiguous under voice control,
+                        where the visible label is the spoken command.
+                    -->
+                    <button type="button" id="study-ready-btn" disabled>I am ready to move on</button>
+                </div>
+                <p id="study-ready-status" role="status" class="help-text"></p>
+            </section>
+
             <div class="layout">
                 <!-- LEFT COLUMN: controls (braille reading order: most-used first) -->
                 <div class="left-col" id="left-col">
@@ -194,15 +269,12 @@
                             Side-by-Side
                         </label>
                         <label>
-                            <input type="radio" name="view-mode" id="view-mode-slice-graph-difference" value="slice-graph-difference">
-                            Slice Graph (Difference)
-                        </label>
-                        <label>
-                            <input type="radio" name="view-mode" id="view-mode-slice-graph-column-count" value="slice-graph-column-count">
-                            Slice Graph (Slice Area)
+                            <input type="radio" name="view-mode" id="view-mode-slice-graph" value="slice-graph">
+                            Slice Graph
                         </label>
                     </fieldset>
                 </div>
+                <div class="help-text" id="slice-graph-lock-status">Graph lock ON.</div>
             </section>
 
             <!-- 1d. Zoom -->
@@ -233,55 +305,6 @@
             </section>
 
             <!-- ============================================================
-                 2. DISPLAY OPTIONS — changed occasionally
-                 ============================================================ -->
-            <section class="section" aria-labelledby="display-opts-heading">
-                <h2 id="display-opts-heading">Display Options</h2>
-
-                <label class="checkbox-label" for="show-view-info-box">
-                    <input type="checkbox" id="show-view-info-box">
-                    View info box on display
-                </label>
-
-                <label class="checkbox-label" for="slice-graph-lock-checkbox">
-                    <input type="checkbox" id="slice-graph-lock-checkbox" checked>
-                    Lock slice graph
-                </label>
-
-                <div class="button-group" style="margin-top: 8px;">
-                    <button type="button" id="slice-graph-refresh-btn">
-                        Refresh Graph
-                    </button>
-                    <button type="button" id="slice-graph-mode-btn" aria-pressed="false">
-                        Graph Mode: Difference
-                    </button>
-                </div>
-                <div class="help-text" id="slice-graph-lock-status">Graph lock ON.</div>
-            </section>
-
-            <!-- Output device: braille display routing. Its own section, hidden in the
-                 simplified /workshop viewer (the connected display already decides
-                 routing there); shown here in the full viewer. -->
-            <section class="section" aria-labelledby="output-device-heading">
-                <h2 id="output-device-heading">Output device</h2>
-                <fieldset>
-                    <legend class="sr-only">Output device</legend>
-                    <label>
-                        <input type="radio" name="output-device" id="output-device-monarch" value="monarch" checked>
-                        Monarch
-                    </label>
-                    <label>
-                        <input type="radio" name="output-device" id="output-device-dotpad" value="dotpad">
-                        DotPad
-                    </label>
-                    <label>
-                        <input type="radio" name="output-device" id="output-device-auto" value="auto">
-                        Auto
-                    </label>
-                </fieldset>
-            </section>
-
-            <!-- ============================================================
                  3. MODEL — changed infrequently
                  ============================================================ -->
             <section class="section" aria-labelledby="model-list-heading">
@@ -299,23 +322,11 @@
             </section>
 
             <!-- ============================================================
-                 4b. MONARCH USB (BROWSER) — Web HID, one-time setup
-                 ============================================================ -->
-            <section class="section" aria-labelledby="monarch-hid-heading">
-                <h2 id="monarch-hid-heading">Monarch USB (Browser)</h2>
-                <div class="button-group" style="margin-bottom: 8px;">
-                    <button type="button" id="monarch-hid-connect-btn">Connect USB</button>
-                    <button type="button" id="monarch-hid-disconnect-btn" disabled>Disconnect</button>
-                </div>
-                <div id="monarch-hid-status" class="help-text">
-                    Not connected.
-                </div>
-            </section>
-
-            <!-- ============================================================
                  4c. TRINKEY SLIDER — Web Serial, maps ADC → slice depth
+                 Hidden by default; shown only when enabled in Settings (#145),
+                 since it's an optional add-on sensor, not the primary device.
                  ============================================================ -->
-            <section class="section" aria-labelledby="trinkey-heading">
+            <section class="section" id="trinkey-section" aria-labelledby="trinkey-heading" hidden>
                 <h2 id="trinkey-heading">Trinkey Slider</h2>
                 <div class="button-group" style="margin-bottom: 8px;">
                     <button type="button" id="trinkey-connect-btn">Connect USB</button>
@@ -329,8 +340,10 @@
 
             <!-- ============================================================
                  4d. WITMOTION IMU — Web Bluetooth, maps orientation → view
+                 Hidden by default; shown only when enabled in Settings (#145)
+                 as "Cube", since it's an optional add-on sensor.
                  ============================================================ -->
-            <section class="section" aria-labelledby="witmotion-heading">
+            <section class="section" id="witmotion-section" aria-labelledby="witmotion-heading" hidden>
                 <h2 id="witmotion-heading">WitMotion IMU</h2>
                 <div class="button-group" style="margin-bottom: 8px;">
                     <button type="button" id="witmotion-connect-btn">Connect BLE</button>
@@ -343,55 +356,31 @@
                 <div class="help-text">Angles: <span id="witmotion-angles">--</span></div>
             </section>
 
-            <!-- ============================================================
-                 5. DOTPAD — one-time setup
-                 ============================================================ -->
-            <section class="section" aria-labelledby="dotpad-heading">
-                <h2 id="dotpad-heading">DotPad</h2>
-                <div class="button-group" style="margin-bottom: 8px;">
-                    <button type="button" id="dotpad-scan-ble-btn">Connect BLE</button>
-                    <button type="button" id="dotpad-disconnect-btn" disabled>Disconnect</button>
-                </div>
-                <div id="dotpad-status" class="help-text">
-                    Not connected.
-                </div>
-                <label class="checkbox-label" for="dotpad-auto-send">
-                    <input type="checkbox" id="dotpad-auto-send" checked>
-                    Auto-send to DotPad
-                </label>
-            </section>
 
             <!-- ============================================================
-                 7. MODEL DESCRIPTION
+                 5. BOUNDING BOX
                  ============================================================ -->
-            <section class="section" aria-labelledby="model-desc-heading">
-                <h2 id="model-desc-heading">Model Description</h2>
-                <div id="model-description">
-                    Load a model to see its description here.
-                </div>
-            </section>
-
-            <!-- State summary — kept in DOM for JS references; visually mirrored in status bar -->
-            <section class="section" aria-labelledby="view-info-heading">
-                <h2 id="view-info-heading">State Summary</h2>
-                <div id="view-info">
-                    <span id="current-view" class="sr-only">x+</span>
-                    <span id="current-slice-depth-info" class="sr-only">50%</span>
-                    <span id="current-render-mode-info" class="sr-only">Filled</span>
-                    <span id="current-zoom-info" class="sr-only">0.0</span>
-                    <span id="current-bbox-dimensions-info" class="sr-only">--</span>
-                </div>
-            </section>
-
-            <!-- ============================================================
-                 8. BOUNDING BOX
-                 ============================================================ -->
-            <section class="section" aria-labelledby="bbox-heading">
+            <section class="section" id="bbox-section" aria-labelledby="bbox-heading" hidden>
                 <h2 id="bbox-heading">Bounding Box</h2>
                 <div id="bbox-info">
                     <div>X: <span id="bbox-x-min">--</span> to <span id="bbox-x-max">--</span> (w: <span id="bbox-x-width">--</span>)</div>
                     <div>Y: <span id="bbox-y-min">--</span> to <span id="bbox-y-max">--</span> (h: <span id="bbox-y-height">--</span>)</div>
                     <div>Z: <span id="bbox-z-min">--</span> to <span id="bbox-z-max">--</span> (d: <span id="bbox-z-depth">--</span>)</div>
+                </div>
+            </section>
+
+            <!-- ============================================================
+                 6. Pipeline Debug
+                 ============================================================ -->
+	    <section class="section debug-panel" id="debug-panel-section" aria-labelledby="debug-pipeline-heading" hidden>
+                <div class="debug-panel-header">
+                    <h2 id="debug-pipeline-heading">Pipeline Debug Visualization</h2>
+                </div>
+                <div id="debug-pipeline-content" class="debug-panel-content" hidden>
+                    <div class="help-text" id="debug-pipeline-summary">
+                        Waiting for render debug data...
+                    </div>
+                    <div id="debug-stage-list" class="debug-stage-list"></div>
                 </div>
             </section>
 
@@ -433,27 +422,35 @@
                 </aside><!-- end right-col -->
             </div><!-- end layout -->
 
-            <section class="section debug-panel" aria-labelledby="debug-pipeline-heading">
-                <div class="debug-panel-header">
-                    <h2 id="debug-pipeline-heading">Pipeline Debug Visualization</h2>
-                    <button
-                        id="debug-pipeline-toggle-btn"
-                        class="debug-panel-toggle"
-                        type="button"
-                        aria-expanded="false"
-                        aria-controls="debug-pipeline-content"
-                    >
-                        Show Debug Pipeline
-                    </button>
-                </div>
-                <div id="debug-pipeline-content" class="debug-panel-content" hidden>
-                    <div class="help-text" id="debug-pipeline-summary">
-                        Waiting for render debug data...
-                    </div>
-                    <div id="debug-stage-list" class="debug-stage-list"></div>
-                </div>
-            </section>
+
+            
         </main>
+
+        <footer role="contentinfo" class="site-footer">
+            <div class="footer-row">
+                <a href="https://github.com/cad-accessibility" target="_blank" rel="noopener noreferrer" class="footer-link">
+                    <svg width="18" height="18" viewBox="0 0 256 256" aria-hidden="true" focusable="false"><path fill="currentColor" d="M216,104v8a56.06,56.06,0,0,1-48.44,55.47A39.8,39.8,0,0,1,176,192v40a8,8,0,0,1-8,8H104a8,8,0,0,1-8-8V216H72a40,40,0,0,1-40-40A24,24,0,0,0,8,152a8,8,0,0,1,0-16,40,40,0,0,1,40,40,24,24,0,0,0,24,24H96v-8a39.8,39.8,0,0,1,8.44-24.53A56.06,56.06,0,0,1,56,112v-8a58.14,58.14,0,0,1,7.69-28.32A59.78,59.78,0,0,1,69.07,28,8,8,0,0,1,76,24a59.75,59.75,0,0,1,48,24h24a59.75,59.75,0,0,1,48-24,8,8,0,0,1,6.93,4,59.74,59.74,0,0,1,5.37,47.68A58,58,0,0,1,216,104Z"></path></svg>
+                    <span>View on GitHub</span>
+                </a>
+                <span class="footer-sep" aria-hidden="true">&bull;</span>
+                <a href="https://github.com/cad-accessibility/cad-a11y/issues" target="_blank" rel="noopener noreferrer" class="footer-link">
+                    <svg width="18" height="18" viewBox="0 0 256 256" aria-hidden="true" focusable="false"><path fill="currentColor" d="M168,92a12,12,0,1,1-12-12A12,12,0,0,1,168,92ZM100,80a12,12,0,1,0,12,12A12,12,0,0,0,100,80Zm116,64A87.76,87.76,0,0,1,213,167l22.24,9.72A8,8,0,0,1,232,192a7.89,7.89,0,0,1-3.2-.67L207.38,182a88,88,0,0,1-158.76,0L27.2,191.33A7.89,7.89,0,0,1,24,192a8,8,0,0,1-3.2-15.33L43,167A87.76,87.76,0,0,1,40,144v-8H16a8,8,0,0,1,0-16H40v-8a87.76,87.76,0,0,1,3-23L20.8,79.33a8,8,0,1,1,6.4-14.66L48.62,74a88,88,0,0,1,158.76,0l21.42-9.36a8,8,0,0,1,6.4,14.66L213,89.05a87.76,87.76,0,0,1,3,23v8h24a8,8,0,0,1,0,16H216Zm-80,0a8,8,0,0,0-16,0v64a8,8,0,0,0,16,0Zm64-32a72,72,0,0,0-144,0v8H200Z"></path></svg>
+                    <span>Report a bug</span>
+                </a>
+            </div>
+            <div class="footer-row footer-funders">
+                <span class="footer-funders-label"><em>Funded by:</em></span>
+                <a href="https://nsf.gov" target="_blank" rel="noopener noreferrer" class="footer-link">
+                    <img src="data:image/x-icon;base64,AAABAAEAICAAAAEAIACoEAAAFgAAACgAAAAgAAAAQAAAAAEAIAAAAAAAABAAABILAAASCwAAAAAAAAAAAAD////////////////////////////////////////////////8/f3/+vv8//////////////////////+j0t//n8vX///////////////////////8/f3//f3+/////////////////////////////////////////////////////////////////////////////////////////////////87l7P+rztf//v7+////////////+Pv7/3bC2P9stMj/8vb2/////////////////67V4P/B3OT/////////////////////////////////////////////////////////////////////////////////////////////////1Oz0/06owv+cx9L/yt7k/7/a4f+Jw9P/NaXG/y6fv/+Gvs3/wNng/8bd4v+n0Nv/SKjD/7HV3/////////////////////////////////////////////////////////////////////////////////////////////////+p2Ob/LqXI/y2evv+CvtD/xuLr/8fn8f9Ut9X/OqjI/7rf6v/L5Ov/jsbW/zakxP8onsH/oMvW///////////////////////////////////////////////////////////////////////Z6/H/yN7k//z8/P/5+/v/wd7n/4LE2P9YuNX/L6PE/7HT3P/m5Ob/y8fK/2+XqP9ciZv/wcHF/+Xl5v/A4ev/OazO/1G00f+QxdP/x93j//f5+v///v7/zePp/9bo7P///////////////////////////////////////////9/w9f9mssf/crbJ/3m5y/+o1OD/9fz+/7LP2P9GeYv/d3R4/4hkYv+GXlz/g1ZR/39RSv+FXFn/imlo/3FvdP87cYL/oMXR//v+//+01uD/gbzN/4C/0f9SqsP/xuPr/////////////////////////////////////////////////4jM4P8joMX/QaTA/9Pl6f/DuLX/c1BG/2AoFv9sMR3/bzMb/4BINf99Qiz/cjQY/3Y6If90OSP/ai4Z/14lE/9wT0X/vri2/93t8v9Ss8//Ip/E/3W+0//9/f7////////////////////////////////////////////5/P3/fsfc/1y51f87o8P/Xm5z/2UxHv9nKhD/cjMU/3k4E/+CQh//hkQd/4RAFP+DPxL/gj4S/347Ev95OBP/cjQU/2crEP9jMR3/XXB0/zGhwv9Yt9P/icHQ//j6+v///////////////////////////////////////////8Hh6v+i1eT/6fT4/3eAgf9eKxT/bzEQ/3s6Ef+EQA//i0YQ/6NnSf+aViL/kkkF/5NJBv+SSQf/j0cJ/4pEC/+EQA7/ezoQ/3AyD/9fKxL/XHV5/9zv9f+42OH/yN7k///////////////////////+////yN/m/7rV3P+p0Nv/fL3P/+z3+v/Ctq//azcc/3M0Df+APg3/ikQJ/5JJA/+fWBv/tnld/6VaFP+hUgD/oVMA/6BSAP+eUAD/mU4B/5NKA/+LRQf/gT4L/3M0C/9pNhn/wLq0//P7/v+Fv8//sNHZ/83g5f/L3+T//f3+///////A4On/Va3G/ymewP9KqML/psPK/39YQP9xMwf/gkAI/45HA/+YTQD/n1EA/7JsM//EiXL/vXtL/7FlEf+tXgD/rV4A/6lbAP+mVwD/oVMA/5pPAP+QSAL/hUIK/3M1Cf97WED/qcbN/1Gyzv8rnb3/R6XA/6PP3P/7/P3///////////+44O3/OqrM/zuszf9GcHj/Zi4K/3Y5CP+LRQL/m1AA/6RWAP+kWAL/snZJ/8WOcv+5hmn/rXM3/55iE/+eXgr/rGIA/65iAf+dVgX/lEwB/41HAv+RViv/lWBH/3c/G/9Ac3n/N6rN/zWnyP+c0uL//////////////////////9Ts8/+Hyt7/x+Ps/4V5av+dfGj/lGlE/5VOBv+lVwD/qVsA/7SES/++moH/zZ16/72mk/+7mnz/wJZi/7SQX/+gd0D/rGgG/619Q/+5pJL/rpaB/55yVP+ndWH/l2BG/2tkU/+23Oj/jcja/8ni6P//////////////////////vuHr/7bb5v/m4d3/gE4g/6uEYP+ZXSD/o1cA/6pdAP+zejT/593S/9K2nv/YrIP/3MKn/9uuev/cp1b/0Zkw/9bJu/+teif/woEa//Pp3P/RwLD/q3BD/7F7ZP+nc17/i2BE/+Dd2f++3+n/vtrh//////////////////j7+/97v9L/qtHc/8e9s/98QQf/qH1V/5haGP+oXAD/rW8e/+DQvf/5+Pf/07eZ/9ywff/duIX/47h1/86lZf/Or3j/8u/r/8abSv/GhhL/8ufY/8y7qv+uc0f/qX1k/6VzXP+gcFv/zsfC/6zZ5v+Evs7/+fr6//////+r097/eLzP/zGiwv9Vq8X/eouG/4JCAv+rgFX/m18X/6hkDf/Wv6P/+/n3/97Hsf/Rs47/5rp5/960af/NsYT/1su9//j4+f/t4Mn/zJUd/8yPFP/z6Nf/0MKz/6qBX/+4no3/qXhf/6p3YP+Cm6D/S6vH/zGevf9/u8z/p8vV/7Pb6P+Hyt7/WLbT/4DI4f+MmpT/hkYC/62DVf+ZYBz/yKd///v6+v/fxJj/0KFc/9Ozfv/ksj7/2bt7//Xz8v/79/H/8d2p/+GyNf/bngT/1qA3//Tp2//c0MX/y62Y/8eypP+remD/rHlg/4umrP9twNv/RK7O/3bC2f+bzNv///////z+/v+q1+b/vd/q/8/Etv+KTQf/r4VV/7SWd//28/D/5tGy/8mNHv/RmzL/0q5e/+CpFP/v4cX/8uTA/+a+SP/psgb/0qAW/9OkQf/it3z/9ezi/9LEt/+/jmv/wZh//69/Yf+jeV//0s7K/8Tm8f+X0OH/9/v9/////////////////87m7v/D3ub/6ePb/5BcHf/Do3z/9/Xz/+7i1P/Ikjr/0ZYz/9KjUf/Mqlr/4qsO/+3ctv/TslL/5bAA/96sCv/LsHf/zqpz/+C3ff/17OL/0cS4/7mKZ/++jGz/uZF0/7GaiP/n5uP/uN/q/8Pg6f//////////////////////2+/1/6fP2//E2t//mYZn/9C2nv/t39X/06yM/9KdZv/Rnlb/x6Fg/8KiZP/SnQr/7MRR/8mtZf/Lpjv/zahQ/9e/kv/Pqm//0K2B/+zczP/Ww7P/rIht/6yHbf/Ls6L/q7Cr/7/X3f+IxNX/0eXr/////////////////////v+63ur/fcDW/4DC2f+KmYr/rXtL/8WVcv/Nm3X/1aV7/9ytfv/dq1r/3KIW/+KnBP/psAD/6bQU/+a0Iv/nshH/46sO/+OzUv/juIH/3rGA/9ipf//PoHz/xpdz/7uPb/+Bpqv/YrXQ/2Czzf+419/////////////9/v7/xuLq/43I2/+JyuD/i8nd/8HY2v+0kWr/wI9p/8uac//Tonj/2qt7/+Cyef/fqTr/4KUH/+SqAP/nrgD/6K4A/+asAP/lryj/5LNX/92rVv/aqnD/0Z5m/7+IPf+weDD/tJZz/7/b4/9/x9//ZbrW/3e6z//D3OP//v7+//3+///d7/X/3vD2/9Hq8/+dydb/6/P1/9vOvf+8kmz/x5dv/8+gdv/WpnT/3K10/+Gzcv/dpSP/3qIA/+GlAP/hpgD/4KYJ/+W2Xv/jtnj/0pgj/8qOI/+/hSP/s3ga/6h3K//WzLX/7vj8/5nR4/+/4u7/1Ovz/9Hn7v/9/v7//////////////////////9To7v+61d3/2urt/6mvpf++lW7/ypxy/8yaW//OmEH/1qFG/9OWCP/XmQD/2pwA/9qdAP/YmwT/2qU4/92vcf/RnUb/xo81/8GNRv+6kWL/oKqg/+Dr7v+o0+D/xuTt/////////////////////////////////////////////f7//67U4P+JwtT/jMjc/7S4rf/FnXX/ypxv/82cX//OmUP/z5cp/9ObKv/SmBb/0JMF/9ObJf/Xp1z/16t4/9Kldf/KnGz/xJ1z/6q2rv9xutL/cbXK/5LI2P/4+/z////////////////////////////////////////////7/f7/sdvq/4/M4f+Mxtj/4u/z/+Xazf/JrIv/xZlm/8GMOf/Jl0r/1Kdw/8ePH//ChwT/xY4h/8iUPv/LnWT/yJ1w/8esjP/j2s7/5fP3/4DG3v9nu9f/pNDe///+/v///////////////////////////////////////////9Lp8P+b0OL/v+Lu/7HW4v+409v/7/X3/7/c4v+YqZP/qpJK/8CXVv/Cllb/s3wL/7F5Av+9jj7/xaBr/7aogv+Urqn/vdXZ//H3+P+32uT/odPk/6TW5/+EvtD/2unt////////////////////////////////////////////5PL3/+Py9////////f7//9nq7/+nzNf/kcnb/4bG3P/E3uT/8uzh/9zUvP+crpL/k6aL/9vWxf/08ev/zujw/3vE3f+AvtL/jcPS/8Tj7P/8/v7//////9bs8//b7fL//////////////////////////////////////////////////////////////////////9Hp8v+RzOH/isfc/6nP2//H3uX/wNzl/4rL4v+Cwtj/tdTd/8Pc4/+r1OH/e8Tc/3K/2P+53en/////////////////////////////////////////////////////////////////////////////////////////////////1ez0/5HN4f/H5vD/4fH2/9To7v+z2OT/i8rf/4DF3f+f0N//yuTs/97v9f/G5fD/gsLX/8vh5//////////////////////////////////////////////////////////////////////////////////////////////////Y7fT/y+fw//7///////////////z+/v+t2en/otTk//b7/f/////////////////E4uz/0OTq//////////////////////////////////////////////////////////////////////////////////////////////////7////9/v7//////////////////////7/h7f/C4ev///////////////////////3+/v/9/v//////////////////////////////////////////////////AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" alt="" class="footer-logo">
+                    <span>NSF</span>
+                </a>
+                <span class="footer-sep" aria-hidden="true">&bull;</span>
+                <a href="https://create.uw.edu" target="_blank" rel="noopener noreferrer" class="footer-link">
+                    <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADAklEQVRYhe2WWUiUURTHf6NmzriMjppLZcvokJa224RZvRRFQUUFRSRERCYUKBRCDz1EC/XQ8hIWVPQS0SJZge0lbUbaSGrg5K6pMziN2aizfV8P1pjNjDMmjj143s4959z/7+M799wrWZd2VGQMzW8sxX0KEJ+gGBuApNlxRMeGkbp4GiFhQSSmxA2KB4w2QHuLkYv3cgiVS1m/bRH7t17yHUCCMhp5hBRznxVRFImKCWPyNAW9PRYM+h+jD9BUq0fiJ6FBq+P5/U+kpU+ntdEwKGfUeyAxOZbyN3Wo5sRTUlxFYkqsbwG0VW20NRlQpU5mvnomG3eqfQswQxXD9uxMzh25x51r71i0LJHkuVMcca97IFwRzIIMJSBS9rqWLkOPV3VB0gnEJygw6LoRRLDbBfwnDHy3VwALM5Tkn96MNDgQgB6TmRN5t/j4rt5jbVvzN2oq2ygoykEEGrU6qsubHXGJp7sgcGIAVx4eQB4hG7Ru7DSxa815rBa729pQuZSCon1UvG+g/E0dnR3f0ZTWI9gHJD32gHJWrJM4QHhkMDNUMUPW7shZTli4jMzVKew9tJoGrW6QuFcAPSbzP8USlNGs3bLQ4Ze+1DqGz7AAGr/o+VzR4rReVd5ES32n27o9B1fhH9C/vbnXytWzT13meXUMj+Xe5H2JFkEQEOwCpS9qOJ53y23+kpUq5i+d6fBvX32Lvv27y9whmzA4NIjISaFIJP1+kCwQRDD3Wf/aBX6loPvaxZnrux3Xr769i+wNFzD32VxquDyGiugQcg6vJX1FEn5+w5tVD258AKBa00zKvKlcOfPMrbhLAFnIRE5eznL7gPBk8ggZxk4T7a1GEKGkuGrIfCeATVnqYYlbLTZM3QOnwWKxU1nWRHikjFP5hR7rnQDUK1VeiwN8eFXLsdybw6r505x+cERUCABGgwlNqedRO1JzAvjd8R2tRh4XanwP4GsbBxgH+P8AbDYB6H+7+cKcJuGjQg2bstQ8uVuBzWrH1N035AbmXsuIAH4CMEkJ/LrB0nEAAAAASUVORK5CYII=" alt="" class="footer-logo">
+                    <span>CREATE</span>
+                </a>
+            </div>
+        </footer>
     </div>
 
     <!-- Keyboard shortcuts reference — opened via H (or ?) per #146. Categorized so
@@ -464,11 +461,23 @@
          automatic — returning focus to whatever triggered the dialog on close. -->
     <dialog
         id="shortcuts-dialog"
+        class="info-dialog"
         aria-labelledby="shortcuts-heading"
-        aria-modal="true"
     >
         <h2 id="shortcuts-heading" tabindex="-1">Keyboard Shortcuts</h2>
         <p class="help-text">Press <kbd>Esc</kbd> or activate Close to return to where you were.</p>
+
+        <!-- Only meaningful at /study; hidden elsewhere and revealed by
+             study.js the same way #study-region itself is (#180). Placed
+             first since it's the most relevant reference during a session. -->
+        <div id="study-shortcuts-section" hidden>
+            <h3>Study Session</h3>
+            <ul class="shortcuts-list">
+                <li><kbd>N</kbd> Tell your experimenter you're ready to move on (or, if you're running this session solo, move to the next step directly)</li>
+                <li><kbd>B</kbd> Move back a step (only when running solo, without a separate experimenter)</li>
+                <li><kbd>C</kbd> Repeat the current step's title and instructions</li>
+            </ul>
+        </div>
 
         <h3>Orientation</h3>
         <ul class="shortcuts-list">
@@ -533,12 +542,108 @@
         </div>
     </dialog>
 
+    <!-- About dialog — opened via the Main menu's About button (#145). Same
+         accessible-dialog pattern as the shortcuts dialog above. -->
+    <dialog
+        id="about-dialog"
+        class="info-dialog"
+        aria-labelledby="about-heading"
+    >
+        <h2 id="about-heading" tabindex="-1">About</h2>
+        <p>
+            The CAD accessibility project is an open source effort to improve CAD
+            accessibility for screen reader users. We currently support the Monarch
+            and DotPad displays. To learn more about our project, check out
+            <a href="https://github.com/cad-accessibility">CAD Accessibility</a>.
+        </p>
+        <div class="consent-actions">
+            <button type="button" id="about-close-btn">Close</button>
+        </div>
+    </dialog>
+
+    <!-- Settings dialog — opened via the Main menu's Settings button (#145).
+         Controls which optional sections appear on the main page (Slider, Cube,
+         Debug Panel, Bounding Box — all hidden by default) and holds the Output
+         Device choice, moved here out of the main interface. -->
+    <dialog
+        id="settings-dialog"
+        class="info-dialog"
+        aria-labelledby="settings-heading"
+    >
+        <h2 id="settings-heading" tabindex="-1">Settings</h2>
+        <p class="help-text">
+            These control which optional features appear on the main page.
+        </p>
+
+        <h3>Output Device</h3>
+        <fieldset>
+            <legend class="sr-only">Output device</legend>
+            <label>
+                <input type="radio" name="output-device" id="output-device-dotpad" value="dotpad" checked>
+                DotPad
+            </label>
+            <label>
+                <input type="radio" name="output-device" id="output-device-monarch" value="monarch">
+                Monarch
+            </label>
+        </fieldset>
+
+        <h3>Hardware Controls</h3>
+        <div class="button-group settings-checkbox-group">
+            <label class="checkbox-label" for="settings-enable-slider">
+                <input type="checkbox" id="settings-enable-slider">
+                Slider (Trinkey)
+            </label>
+            <label class="checkbox-label" for="settings-enable-cube">
+                <input type="checkbox" id="settings-enable-cube">
+                Cube (WitMotion IMU)
+            </label>
+        </div>
+        <h3>Debugging</h3>
+        <div class="button-group settings-checkbox-group">
+            <label class="checkbox-label" for="settings-enable-debug-panel">
+                <input type="checkbox" id="settings-enable-debug-panel">
+                Debug Panel
+            </label>
+            <label class="checkbox-label" for="settings-enable-bbox">
+                <input type="checkbox" id="settings-enable-bbox">
+                Bounding Box
+            </label>
+        </div>
+
+        <h3>Display</h3>
+        <div class="button-group settings-checkbox-group">
+            <label class="checkbox-label" for="show-view-info-box">
+                <input type="checkbox" id="show-view-info-box">
+                View info box on display
+            </label>
+            <label class="checkbox-label" for="slice-graph-lock-checkbox">
+                <input type="checkbox" id="slice-graph-lock-checkbox" checked>
+                Lock slice graph
+            </label>
+        </div>
+        <fieldset>
+            <legend class="sr-only">Slice graph mode</legend>
+            <label>
+                <input type="radio" name="slice-graph-mode" id="slice-graph-mode-difference" value="difference" checked>
+                Graph Mode: Difference
+            </label>
+            <label>
+                <input type="radio" name="slice-graph-mode" id="slice-graph-mode-column-count" value="column-count">
+                Graph Mode: Slice Area
+            </label>
+        </fieldset>
+
+        <div class="consent-actions">
+            <button type="button" id="settings-close-btn">Close</button>
+        </div>
+    </dialog>
+
     <!-- Session consent dialog — shown once on first visit; keyboard-navigable and SR-announced -->
     <dialog
         id="session-consent-dialog"
         aria-labelledby="consent-dialog-title"
         aria-describedby="consent-dialog-desc"
-        aria-modal="true"
     >
         <h2 id="consent-dialog-title">Welcome to CAD A11y</h2>
         <p id="consent-dialog-desc">
@@ -576,6 +681,11 @@
 
     <script src="/static/js/viewer.js"></script>
 
+    <!-- Study session driver. Inert everywhere except /study, where it reveals the
+         study region above, loads the model for each protocol step, and reports
+         interactions to the study log. -->
+    <script src="/static/js/study.js"></script>
+
     <!-- Monarch USB Browser HID integration (mirrors braille_display.py _send_to_monarch) -->
     <script src="/static/js/monarch-hid.js"></script>
 
@@ -602,6 +712,13 @@
             const workshopSimple = location.pathname.replace(/\/+$/, '') === '/workshop'
                 || new URLSearchParams(location.search).get('ui') === 'simple';
             if (workshopSimple) return;
+
+            // Skip it in study mode too. Study participants give informed consent
+            // on paper before the session starts, so this dialog asks a question
+            // that has already been answered — and it would ask it as a modal, in
+            // front of a participant who is mid-onboarding on a braille display.
+            // Study logging is separate from analytics and is not gated on it.
+            if (location.pathname.replace(/\/+$/, '') === '/study') return;
 
             let sessionData = null;
             try {
@@ -650,7 +767,7 @@
             if (emailInput) emailInput.addEventListener('input', clearError);
 
             // Hide the background from screen readers while the dialog is open. This backs up
-            // the native modal inertness (showModal + aria-modal="true") for older assistive tech.
+            // the native modal inertness showModal() already provides for older assistive tech.
             function restoreBackground() {
                 if (main) main.removeAttribute('aria-hidden');
             }

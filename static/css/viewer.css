@@ -24,9 +24,37 @@ body {
 /* Typography */
 h1 {
     color: #2c3e50;
-    margin-bottom: 30px;
+    margin-bottom: 12px;
     font-size: 2.2em;
     font-weight: 600;
+}
+
+/* Main menu (#145): Main/About/Help/Settings. About/Help/Settings open dialogs;
+   Main is an escape hatch back to the tool (closes any open dialog and refocuses
+   main content), a no-op when you're already there. */
+.site-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 24px;
+}
+
+.site-nav button {
+    padding: 8px 16px;
+    border: 2px solid #1e6fa4;
+    border-radius: 6px;
+    background: white;
+    color: #1e6fa4;
+    font-size: 0.95em;
+    font-weight: 500;
+    cursor: pointer;
+    min-height: 40px;
+}
+
+.site-nav button:hover,
+.site-nav button:focus {
+    background: #1e6fa4;
+    color: white;
 }
 
 h2 {
@@ -711,8 +739,64 @@ button:focus-visible {
     }
 }
 
-/* Keyboard shortcuts dialog (#146) */
-#shortcuts-dialog {
+/* Settings dialog checkbox list — stacked, unlike the inline .button-group default. */
+.settings-checkbox-group {
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+/* Page footer (#145): GitHub/bug-report links, then a "Funded by" row. #767676 on
+   white = 4.5:1 (AA pass) for the muted link color; full-strength #333 on hover
+   matches focus-visible feedback elsewhere on the page. */
+.site-footer {
+    margin-top: 30px;
+    padding-top: 20px;
+    border-top: 1px solid #e1e8ed;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+
+.footer-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    font-size: 0.9em;
+}
+
+.footer-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #767676;
+    text-decoration: none;
+}
+
+.footer-link:hover,
+.footer-link:focus {
+    color: #333;
+    text-decoration: underline;
+}
+
+.footer-sep {
+    color: #c7d2dc;
+}
+
+.footer-funders-label {
+    color: #767676;
+}
+
+.footer-logo {
+    width: 16px;
+    height: 16px;
+}
+
+/* Shared chrome for the small read-only dialogs opened from the Main menu:
+   Keyboard Shortcuts (#146), About and Settings (#145). */
+.info-dialog {
     border: none;
     border-radius: 12px;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
@@ -724,14 +808,18 @@ button:focus-visible {
     color: #333;
 }
 
-#shortcuts-dialog::backdrop {
+.info-dialog::backdrop {
     background: rgba(0, 0, 0, 0.55);
 }
 
-#shortcuts-dialog h2 {
+.info-dialog h2 {
     margin: 0 0 8px 0;
     font-size: 1.4em;
     color: #2c3e50;
+}
+
+.info-dialog p {
+    line-height: 1.6;
 }
 
 #shortcuts-dialog h3 {
@@ -832,12 +920,15 @@ button:focus-visible {
 }
 
 /*
- * The shortcuts dialog focuses its own heading on open (tabindex=-1), per the ARIA
- * APG dialog pattern's guidance for read-only content: land on a static element at
- * the top of the dialog rather than the first interactive control, so reading
- * forward from there covers the whole dialog instead of starting at the end.
+ * Each info dialog (Shortcuts, About, Settings) focuses its own heading on open
+ * (tabindex=-1), per the ARIA APG dialog pattern's guidance for read-only content:
+ * land on a static element at the top of the dialog rather than the first
+ * interactive control, so reading forward from there covers the whole dialog
+ * instead of starting at the end.
  */
-#shortcuts-heading:focus {
+#shortcuts-heading:focus,
+#about-heading:focus,
+#settings-heading:focus {
     outline: none;
 }
 
@@ -952,4 +1043,54 @@ body.simple-ui #tactile-preview-section { display: block; }
     padding: 8px 16px;
     background: #1e6fa4;
     color: #fff;
+}
+
+/* ---------------------------------------------------------------------------
+   Study mode (/study).
+
+   The participant works in the ordinary viewer, so almost nothing is hidden:
+   the interface they were onboarded on has to be the interface they do the
+   tasks with, or the study measures the difference between the two.
+
+   Two things do go. The model chooser, because the model is decided by the
+   protocol step and a participant browsing to a later task's model would spoil
+   it, and the upload control, which has no meaning in a session. Both use
+   display:none rather than visibility, so they leave the accessibility tree
+   entirely instead of sitting in the tab order as invisible controls.
+   --------------------------------------------------------------------------- */
+body.study-ui section[aria-labelledby="model-list-heading"] { display: none; }
+
+.study-region {
+    border: 2px solid #1e6fa4;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    background: #f4f9fc;
+}
+.study-region h2 {
+    margin-top: 0;
+    /* Focus lands here on every step change; without a visible ring a sighted
+       facilitator watching over the participant's shoulder cannot tell the step
+       advanced. */
+    outline-offset: 2px;
+}
+.study-region .study-progress {
+    font-weight: 600;
+    margin: 4px 0;
+}
+.study-region .study-step-text {
+    margin: 8px 0;
+}
+
+@media (prefers-color-scheme: dark) {
+    .study-region {
+        background: #12222c;
+        border-color: #6cb6e0;
+    }
+}
+
+/* Windows High Contrast Mode drops the background and border colours above, so
+   the region would lose its boundary entirely. */
+@media (forced-colors: active) {
+    .study-region { border: 2px solid CanvasText; }
 }

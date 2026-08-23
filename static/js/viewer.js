@@ -2,6 +2,23 @@
 const SERVER_URL = window.location.origin;
 const UPLOAD_SESSION_STORAGE_KEY = 'cadA11yUploadSessionId';
 
+// ---------------------------------------------------------------------------
+// Study mode (/study).
+//
+// The participant uses the ordinary viewer -- the interface they were onboarded
+// on is the interface they do the tasks with -- with two differences. The model
+// chooser is gone, because models load themselves at each protocol step, and the
+// model's *name* is never displayed or announced: "lego_2x4" answers the very
+// question the participant is being asked to work out by touch. studyModelLabel
+// holds the neutral label ("Second object") that is shown in its place.
+//
+// studySessionId tags every render request, which is how the server attributes a
+// render to the right session when several are running at once.
+// ---------------------------------------------------------------------------
+const studyMode = location.pathname.replace(/\/+$/, '') === '/study';
+let studySessionId = null;
+let studyModelLabel = null;
+
 function getUploadSessionId() {
     try {
         let sessionId = window.sessionStorage.getItem(UPLOAD_SESSION_STORAGE_KEY);
@@ -131,8 +148,18 @@ function requestHighFidelityPreview(state) {
     });
 }
 
-const cameraCenterByViewOrientation = new Map();
-let currentWorldCameraCenter = null;
+// One object holding this window's entire view state: the complete set of values
+// that decides what it renders. Which model and view, the orientation basis, the
+// panned camera centres, the zoom, the slice depth and the per-axis planes, the
+// render and layout modes, the slice-graph settings, the cursor, and the compose
+// toggles. It lives only in the browser and is sent with each render request; the
+// server keeps none of it. Its fields are assigned where they were first set
+// below, so nothing about load order changes; folding them into one literal can
+// follow once that is verified in a running viewer.
+const viewerState = {};
+
+viewerState.cameraCenterByViewOrientation = new Map();
+viewerState.currentWorldCameraCenter = null;
 
 function getCameraCenterStateKey(viewToken, orientationPayload) {
     const normalizedView = String(viewToken || '').toLowerCase();
@@ -147,43 +174,59 @@ function getCameraCenterStateKey(viewToken, orientationPayload) {
 
 function getCurrentCameraCenter(viewToken, orientationPayload) {
     const key = getCameraCenterStateKey(viewToken, orientationPayload);
-    const value = cameraCenterByViewOrientation.get(key);
+    const value = viewerState.cameraCenterByViewOrientation.get(key);
     return Array.isArray(value) && value.length === 2 ? [...value] : null;
 }
 
 function clearCameraCenterState() {
-    cameraCenterByViewOrientation.clear();
-    currentWorldCameraCenter = null;
+    viewerState.cameraCenterByViewOrientation.clear();
+    viewerState.currentWorldCameraCenter = null;
 }
 
 function syncCameraCenterFromResponse(responseData, requestState) {
-    const debug = responseData && typeof responseData === 'object' ? responseData.debug : null;
-    if (!debug || !Array.isArray(debug.camera_center) || debug.camera_center.length !== 2) {
+    // This window's own view position, remembered here and sent back on the next
+    // render. The server does not keep it: one renderer is shared by every window
+    // looking at a model, so a centre held there meant one person's pan moved
+    // everybody else's view.
+    //
+    // The server used to be expected to return this inside `debug`, and never
+    // did, so this function returned early every single time and the centre
+    // stayed null forever. It is a real field now; `debug` is read as a fallback
+    // for one release in case an older server is answering.
+    const body = responseData && typeof responseData === 'object' ? responseData : null;
+    const debug = body && typeof body.debug === 'object' ? body.debug : null;
+    const reported = (body && Array.isArray(body.camera_center)) ? body.camera_center
+        : (debug && Array.isArray(debug.camera_center)) ? debug.camera_center
+        : null;
+    if (!reported || reported.length !== 2) {
         return;
     }
 
-    const centerX = Number(debug.camera_center[0]);
-    const centerY = Number(debug.camera_center[1]);
+    const centerX = Number(reported[0]);
+    const centerY = Number(reported[1]);
     if (!Number.isFinite(centerX) || !Number.isFinite(centerY)) {
         return;
     }
 
-    const debugView = typeof debug.view === 'string' && debug.view.trim().length > 0
+    const answeredView = (debug && typeof debug.view === 'string' && debug.view.trim())
         ? debug.view
         : requestState.view;
-    const debugOrientation = debug.orientation && typeof debug.orientation === 'object'
+    const answeredOrientation = (debug && debug.orientation && typeof debug.orientation === 'object')
         ? debug.orientation
         : requestState.orientation;
-    const key = getCameraCenterStateKey(debugView, debugOrientation);
-    cameraCenterByViewOrientation.set(key, [centerX, centerY]);
+    const key = getCameraCenterStateKey(answeredView, answeredOrientation);
+    viewerState.cameraCenterByViewOrientation.set(key, [centerX, centerY]);
     if (sbPanCenter) {
         sbPanCenter.textContent = formatCenter2([centerX, centerY]);
     }
 
-    if (Array.isArray(debug.world_camera_center) && debug.world_camera_center.length === 3) {
-        const worldCenter = debug.world_camera_center.map((value) => Number(value));
+    const reportedWorld = (body && Array.isArray(body.world_camera_center)) ? body.world_camera_center
+        : (debug && Array.isArray(debug.world_camera_center)) ? debug.world_camera_center
+        : null;
+    if (reportedWorld && reportedWorld.length === 3) {
+        const worldCenter = reportedWorld.map((value) => Number(value));
         if (worldCenter.every((value) => Number.isFinite(value))) {
-            currentWorldCameraCenter = [...worldCenter];
+            viewerState.currentWorldCameraCenter = [...worldCenter];
         }
     }
 }
@@ -214,39 +257,46 @@ async function sendStateToServer() {
         }
         renderAbortController = new AbortController();
 
-        const requestedGraphView = sliceGraphLocked ? sliceGraphAnchorView : currentView;
-        const requestedGraphDepth = sliceGraphLocked ? sliceGraphAnchorDepth : currentSliceDepth;
-        const renderPipelineParams = getRenderPipelineParams(currentRenderMode);
+        const requestedGraphView = viewerState.sliceGraphLocked ? viewerState.sliceGraphAnchorView : viewerState.currentView;
+        const requestedGraphDepth = viewerState.sliceGraphLocked ? viewerState.sliceGraphAnchorDepth : viewerState.currentSliceDepth;
+        const renderPipelineParams = getRenderPipelineParams(viewerState.currentRenderMode);
         const orientationPayload = getOrientationPayload();
-        const moveCamera = currentMoveCamera;
-        const cameraCenter = getCurrentCameraCenter(currentView, orientationPayload);
-        const worldCameraCenter = currentWorldCameraCenter;
+        const moveCamera = viewerState.currentMoveCamera;
+        const printView = viewerState.currentPrintView;
+        // Capture now and reset immediately: the coalescing guard above returns before this line runs, so a
+        // one-shot request parameter (a queued pan, or a print_view request) is
+        // never lost to an early reset racing the eventual coalesced resend.
+        viewerState.currentMoveCamera = "none";
+        viewerState.currentPrintView = false;
+        const cameraCenter = getCurrentCameraCenter(viewerState.currentView, orientationPayload);
+        const worldCameraCenter = viewerState.currentWorldCameraCenter;
 
         const state = {
-            view: currentView,
+            view: viewerState.currentView,
             orientation: orientationPayload,
             camera_center: cameraCenter,
             world_camera_center: worldCameraCenter,
-            zoom: currentZoom,
-            depth: currentSliceDepth,
+            zoom: viewerState.currentZoom,
+            depth: viewerState.currentSliceDepth,
             renderMode: renderPipelineParams.renderMode,
             projectionMode: renderPipelineParams.projectionMode,
             mode: getServerRepresentationMode(),
             move_camera_center: moveCamera,
-            print_view: currentPrintView,
-            current_model: currentModel,
+            print_view: printView,
+            model: viewerState.currentModel,
+            current_model: viewerState.currentModel,
             compose_cursor: true, // for now always true, maybe later make it configurable
-            cursor_col: currentCursorCol,
-            cursor_row: currentCursorRow,
+            cursor_col: viewerState.currentCursorCol,
+            cursor_row: viewerState.currentCursorRow,
             cursor_state: whichCursor(),
-            compose_scrollbar: composeScrollbar,
-            compose_slicegraph: composeSliceGraph,
-            show_view_info_box: showViewInfoBox,
+            compose_scrollbar: viewerState.composeScrollbar,
+            compose_slicegraph: viewerState.composeSliceGraph,
+            show_view_info_box: viewerState.showViewInfoBox,
             output_device: getEffectiveOutputDevice(),
-            slicegraph_locked: sliceGraphLocked,
+            slicegraph_locked: viewerState.sliceGraphLocked,
             slicegraph_view: requestedGraphView,
             slicegraph_depth: requestedGraphDepth,
-            slicegraph_mode: sliceGraphMode,
+            slicegraph_mode: viewerState.sliceGraphMode,
             input_source: pendingInputSource,
             // The grid of the display actually receiving output, so the render,
             // the payload sent to it and both previews all describe one thing.
@@ -262,18 +312,27 @@ async function sendStateToServer() {
         const activeModelLoadTask = modelLoadAnnouncement
             ? { ...modelLoadAnnouncement }
             : null;
-        if (activeModelLoadTask) {
+        if (activeModelLoadTask && activeModelLoadTask.source !== 'study') {
             announce(`${activeModelLoadTask.label}: generating render.`);
         }
         pendingInputSource = 'keyboard'; // reset to default after consuming
+        // Captured now (synchronously) and cleared immediately, same reasoning
+        // as activeModelLoadTask above: a second sendStateToServer call before
+        // this one's response arrives must not steal or duplicate this direction.
+        const activePanDirection = pendingPanDirection;
+        pendingPanDirection = null;
 
         // Send to server and process response
         renderRequestInFlight = true;
+        // The study session is sent as a header rather than in the body so the
+        // render parameters -- and with them the render cache key -- are byte for
+        // byte what the ordinary viewer sends.
+        const renderHeaders = { 'Content-Type': 'application/json' };
+        if (studySessionId) renderHeaders['X-Study-Session'] = String(studySessionId);
+
         fetch(`${SERVER_URL}/render`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: renderHeaders,
             body: JSON.stringify(state),
             mode: 'cors',
             signal: renderAbortController.signal,
@@ -299,6 +358,20 @@ async function sendStateToServer() {
                 updateModelList(data.model_list);
             }
             syncCameraCenterFromResponse(data, state);
+            // Only known once the server has recomputed the object's position
+            // relative to the viewport (#153), hence deferred to here rather
+            // than announced immediately when the w/a/s/d key was pressed.
+            if (activePanDirection) {
+                if (data.object_out_of_frame && Array.isArray(data.pan_guidance_directions)
+                        && data.pan_guidance_directions.length) {
+                    // Out on both axes names both directions (e.g. "move
+                    // object up and left"), matching the two arrows drawn in
+                    // the dotpad frame
+                    announceAlert(`move object ${data.pan_guidance_directions.join(' and ')}, object out of frame`);
+                } else {
+                    announceAlert(`move object ${activePanDirection}`);
+                }
+            }
             // Update tactile display preview
             if (data.image_base64) {
                 lastRenderedGrid = gridForSize(state.target_pixel_width, state.target_pixel_height);
@@ -306,12 +379,37 @@ async function sendStateToServer() {
                 if (isActiveModelLoadTask(activeModelLoadTask)) {
                     // One announcement per event: two calls in the same tick would
                     // land in the two swap slots and the first would be blanked
-                    // before AT reads it.
-                    announce(`${activeModelLoadTask.label} loaded. Tactile preview ready.`);
+                    // before AT reads it. Silent for a study load -- the
+                    // one consolidated step announcement already covers it, and
+                    // the task still needs clearing either way.
+                    if (activeModelLoadTask.source !== 'study') {
+                        announce(`${activeModelLoadTask.label} loaded. Tactile preview ready.`);
+                    }
                     clearModelLoadTask(activeModelLoadTask);
                 }
             }
             renderPipelineDebug(data.debug_pipeline, data.debug);
+            // The graph precompute for a model kicks off lazily, on the first
+            // slice-graph request for it, so that first response can be the flat
+            // placeholder rather than the real profile. Locked mode won't refresh
+            // on its own after that (that's the point of locking), so without
+            // this it just sits there looking broken until something else
+            // happens to trigger another render.
+            //
+            // This polls a dedicated cheap status endpoint rather than retrying
+            // sendStateToServer() itself. It used to retry the real render, but
+            // that render is a genuine matplotlib/shapely computation under
+            // render_lock — repeating it every couple of seconds while waiting
+            // pits the poll against the very background precompute thread it's
+            // waiting on for CPU, and under a constrained host that can starve
+            // precompute badly enough that it never finishes at all (confirmed
+            // live: with the old polling running, slicegraph_ready stayed false
+            // for 30s+; checking status only, precompute completed in ~18s).
+            if (data.slicegraph_ready === false && viewerState.sliceGraphLocked) {
+                scheduleSliceGraphStatusCheck();
+            } else {
+                sliceGraphAutoRefreshAttemptsLeft = 0;
+            }
             const shouldRequestPreview =
                 state.move_camera_center === 'none' &&
                 !(state.mode === 'slice-graph' && state.slicegraph_mode === 'column-count');
@@ -336,6 +434,13 @@ async function sendStateToServer() {
             // use. Connection state is managed exclusively by the health poll below so that
             // only sustained, confirmed outages interrupt the user.
             console.warn('Render request failed:', error.message);
+            // A pending move-object press waits for this response to know
+            // whether the object stayed in frame -- if the request
+            // itself failed, that never arrives, so say so rather than
+            // leaving the reader with no feedback at all for the keypress.
+            if (activePanDirection) {
+                announceAlert('Move failed, try again.');
+            }
             if (isActiveModelLoadTask(activeModelLoadTask)) {
                 announceAlert(`Processing failed for ${activeModelLoadTask.label}.`);
                 clearModelLoadTask(activeModelLoadTask);
@@ -356,27 +461,32 @@ async function sendStateToServer() {
 }
 
 // State management
-let currentSliceDepth = 50;
+viewerState.currentSliceDepth = 50;
 // The slice plane's position along each model axis, as a 0-1 fraction from
 // that axis's minimum end. Kept independent of viewing direction so turning
 // the model doesn't relocate the physical plane -- rotating only changes
 // which of the three is currently the active (visible) one, and from which
-// side currentSliceDepth reads it. See activeSliceAxis/displayDepthFromPlanes.
-let slicePlanes = { x: 0.5, y: 0.5, z: 0.5 };
-let currentView = 'x+';
-let currentZoom = 0.0;
-let currentRenderMode = 'filled';
-let currentRepresentationMode = 'single';
-let currentMoveCamera = "none";
-let currentPrintView = false;
-// The output-device radio the user picked: 'monarch', 'dotpad', or 'auto'.
-// Kept separate from whether a Monarch is actually connected over Web HID
-// (monarchHidConnected) so that selecting a radio can never turn off a live
-// Monarch feed — see getEffectiveOutputDevice and issue #75.
-let currentOutputDevice = 'monarch';
+// side viewerState.currentSliceDepth reads it. See activeSliceAxis/displayDepthFromPlanes.
+viewerState.slicePlanes = { x: 0.5, y: 0.5, z: 0.5 };
+viewerState.currentView = 'x+';
+viewerState.currentZoom = 0.0;
+viewerState.currentRenderMode = 'cut';
+viewerState.currentRepresentationMode = 'single';
+viewerState.currentMoveCamera = "none";
+viewerState.currentPrintView = false;
+// The output-device radio the user picked: 'monarch' or 'dotpad'. Also flipped
+// automatically on a successful connect — see setMonarchHidConnected /
+// setDotpadConnected. Kept separate from the connection flags (monarchHidConnected
+// / dotpadConnected) so device connection state and routing preference aren't
+// conflated.
+viewerState.currentOutputDevice = 'dotpad';
 let monarchHidConnected = false;
+// Mirrors monarchHidConnected for the DotPad, set via window.setDotpadConnected
+// (called from dotpad-integration.js) so the generic Connect/Disconnect pair
+// (#145) knows which device, if either, is live.
+let dotpadConnected = false;
 // Single source of truth for render modes.
-//   key        held in currentRenderMode and used as the radio `value`. Lowercase
+//   key        held in viewerState.currentRenderMode and used as the radio `value`. Lowercase
 //              throughout, so a case mismatch cannot silently unselect the group.
 //   label      the only spelling the user ever sees or hears.
 //   wire       sent to the server and stored in render_stats.render_mode.
@@ -387,49 +497,58 @@ const renderModes = [
     { key: 'cut', label: 'Cut', wire: 'Cut', projection: 'orthographic' },
     { key: 'xray', label: 'X-Ray', wire: 'x-ray', projection: 'x-ray' },
 ];
-// Single source of truth for view modes. Same shape as renderModes, plus:
-//   sliceGraphMode  which slice-graph variant this mode selects, when it is one.
-// `wire` collapses both slice-graph variants to the one mode name the server
-// knows; the variant is a client-side concern.
+// Single source of truth for view modes. Same shape as renderModes. Which
+// slice-graph variant (difference vs. slice area) is a separate Settings
+// choice (viewerState.sliceGraphMode below), not part of which view mode this is.
 const representationModes = [
     { key: 'single', label: 'Single (with scrollbar)', wire: 'single' },
     { key: 'side-by-side', label: 'Side-by-Side', wire: 'side-by-side' },
-    { key: 'slice-graph-difference', label: 'Slice Graph (Difference)', wire: 'slice-graph', sliceGraphMode: 'difference' },
-    { key: 'slice-graph-column-count', label: 'Slice Graph (Slice Area)', wire: 'slice-graph', sliceGraphMode: 'column-count' },
+    { key: 'slice-graph', label: 'Slice Graph', wire: 'slice-graph' },
 ];
-let currentModel = "none";
+viewerState.currentModel = null;   // the model this window is showing, by name
 let sessionOwnedModels = new Set(); // filenames (with extension) owned by the current cookie session
 let builtinModelStems = null;       // stems from MODEL_DIR; null = not yet received, show all
 let lastFullModelList = [];         // unfiltered server model_list for re-filtering on state change
-let composeScrollbar = true;
-let composeSliceGraph = false;
-let showViewInfoBox = false;
-let sliceGraphLocked = true;
-let sliceGraphAnchorView = 'y-';
-let sliceGraphAnchorDepth = 50;
-let sliceGraphMode = 'difference';
+viewerState.composeScrollbar = true;
+viewerState.composeSliceGraph = false;
+viewerState.showViewInfoBox = false;
+viewerState.sliceGraphLocked = true;
+viewerState.sliceGraphAnchorView = 'y-';
+viewerState.sliceGraphAnchorDepth = 50;
+viewerState.sliceGraphMode = 'difference';
+// Retries the slice graph render every SLICE_GRAPH_AUTO_REFRESH_DELAY_MS while
+// the server keeps reporting slicegraph_ready: false (precompute for this model
+// still running), up to SLICE_GRAPH_AUTO_REFRESH_MAX_ATTEMPTS times, then gives
+// up. See sendStateToServer's response handler.
+let sliceGraphAutoRefreshPending = false;
+let sliceGraphAutoRefreshAttemptsLeft = 0;
+const SLICE_GRAPH_AUTO_REFRESH_DELAY_MS = 2000;
+const SLICE_GRAPH_AUTO_REFRESH_MAX_ATTEMPTS = 20; // ~40s ceiling
 
 // Cursor variables
-let currentCursorCol = 2;
-let currentCursorRow = 2;
+viewerState.currentCursorCol = 2;
+viewerState.currentCursorRow = 2;
 const cursorStep = 1;
 let cursorStates = ['none', 'crosshair', 'guidelines', 'horizontal-line', 'vertical-line'];
-let currentCursorStateIndex = 0;
+viewerState.currentCursorStateIndex = 0;
 
 
 // Tracking variables
 let serverConnected = null;       // null = unknown, true = up, false = confirmed down
-let lastPolledView = null;        // last cube_value received from server
 let lastModelListSignature = '';  // prevents redundant dropdown rebuilds
-let currentBBoxDimensionsText = '';
+viewerState.currentBBoxDimensionsText = '';
 let lastAnnouncementMessage = '';
 let lastAnnouncedParameterKey = null;
 let pendingInputSource = 'keyboard'; // consumed once per sendStateToServer call
 let modelLoadAnnouncement = null;
 let modelLoadAnnouncementSeq = 0;
+// The direction word for a pending w/a/s/d move-object press ("up"/"down"/
+// "left"/"right"), consumed once the /render response says whether the object
+// is still in frame afterward (#153) — see sendStateToServer's response handler.
+let pendingPanDirection = null;
 
 // Cursor position is in 2D display coordinates, not CAD/world coordinates.
-// Mapping to CAD X/Y/Z depends on currentView and currentSliceDepth.
+// Mapping to CAD X/Y/Z depends on viewerState.currentView and viewerState.currentSliceDepth.
 function moveCursor(dCol, dRow, stepSize = cursorStep) {
     // Simple movement: advance by the configured cursorStep (pixels).
     if (!Number.isFinite(dCol) || !Number.isFinite(dRow) || !Number.isFinite(stepSize)) {
@@ -444,29 +563,29 @@ function moveCursor(dCol, dRow, stepSize = cursorStep) {
     const displayWidth = activeGrid.pixelWidth;
     const displayHeight = activeGrid.pixelHeight;
 
-    const usableWidth = composeScrollbar? Math.max(1, displayWidth - 2) : displayWidth;
-    const usableHeight = composeScrollbar? Math.max(1, displayHeight - 2) : displayHeight;
+    const usableWidth = viewerState.composeScrollbar? Math.max(1, displayWidth - 2) : displayWidth;
+    const usableHeight = viewerState.composeScrollbar? Math.max(1, displayHeight - 2) : displayHeight;
     // dont let cursor go negative or beyond the display bounds (for 40x60 tactile display)
     const maxCol = usableWidth - 1;
     const maxRow = usableHeight - 1;
 
-    const nextCol = currentCursorCol + dCol * stepSize;
-    currentCursorCol = Math.min(Math.max(nextCol, 0), maxCol);
-    const nextRow = currentCursorRow + dRow * stepSize;
-    currentCursorRow = Math.min(Math.max(nextRow, 0), maxRow);
+    const nextCol = viewerState.currentCursorCol + dCol * stepSize;
+    viewerState.currentCursorCol = Math.min(Math.max(nextCol, 0), maxCol);
+    const nextRow = viewerState.currentCursorRow + dRow * stepSize;
+    viewerState.currentCursorRow = Math.min(Math.max(nextRow, 0), maxRow);
 
     pendingInputSource = 'dotpad';
-    console.debug(`Display cursor: col ${currentCursorCol}, row ${currentCursorRow}`);
-    announceAlert(`Column ${currentCursorCol}, row ${currentCursorRow}`);
+    console.debug(`Display cursor: col ${viewerState.currentCursorCol}, row ${viewerState.currentCursorRow}`);
+    announceAlert(`Column ${viewerState.currentCursorCol}, row ${viewerState.currentCursorRow}`);
     sendStateToServer();
 }
 
 function whichCursor() {
-    return cursorStates[currentCursorStateIndex] || 'none';
+    return cursorStates[viewerState.currentCursorStateIndex] || 'none';
 }
 
 function cycleCursorState() {
-    currentCursorStateIndex = (currentCursorStateIndex + 1) % cursorStates.length;
+    viewerState.currentCursorStateIndex = (viewerState.currentCursorStateIndex + 1) % cursorStates.length;
     const newState = whichCursor();
     announceAlert(`${newState} cursor`);
     pendingInputSource = 'dotpad';
@@ -477,7 +596,7 @@ function renderModeByKey(modeKey) {
 }
 
 /** User-facing name for a render mode key. Never leak the key itself to a person. */
-function renderModeLabel(modeKey = currentRenderMode) {
+function renderModeLabel(modeKey = viewerState.currentRenderMode) {
     const mode = renderModeByKey(modeKey);
     return mode ? mode.label : String(modeKey);
 }
@@ -487,17 +606,17 @@ function representationModeByKey(modeKey) {
 }
 
 /** User-facing name for a view mode key. Never leak the key itself to a person. */
-function representationModeLabel(modeKey = currentRepresentationMode) {
+function representationModeLabel(modeKey = viewerState.currentRepresentationMode) {
     const mode = representationModeByKey(modeKey);
     return mode ? mode.label : String(modeKey);
 }
 
-function isSliceGraphRepresentationMode(modeValue = currentRepresentationMode) {
+function isSliceGraphRepresentationMode(modeValue = viewerState.currentRepresentationMode) {
     const mode = representationModeByKey(modeValue);
     return Boolean(mode) && mode.wire === 'slice-graph';
 }
 
-function getServerRepresentationMode(modeValue = currentRepresentationMode) {
+function getServerRepresentationMode(modeValue = viewerState.currentRepresentationMode) {
     const mode = representationModeByKey(modeValue);
     return mode ? mode.wire : modeValue;
 }
@@ -510,7 +629,11 @@ function beginModelLoadAnnouncement(modelLabel, source = 'selection') {
         label,
         source,
     };
-    announce(`${label} processing started.`);
+    // Task tracking (isActiveModelLoadTask below) still applies to a study
+    // load -- silencing it here is only about not also speaking progress
+    // chatter on top of the one consolidated step announcement (#180)
+    // study.js already makes for this same model change.
+    if (source !== 'study') announce(`${label} processing started.`);
 }
 
 function isActiveModelLoadTask(task) {
@@ -564,9 +687,9 @@ function describeBasis(basis) {
     return `${axisLabel(basis.depth)} toward you, Right: ${axisLabel(basis.right)}, Up: ${axisLabel(basis.up)}`;
 }
 
-let orientationRight = [...VIEW_BASIS['x+'].right];
-let orientationUp = [...VIEW_BASIS['x+'].up];
-let orientationDepth = [...VIEW_BASIS['x+'].depth];
+viewerState.orientationRight = [...VIEW_BASIS['x+'].right];
+viewerState.orientationUp = [...VIEW_BASIS['x+'].up];
+viewerState.orientationDepth = [...VIEW_BASIS['x+'].depth];
 
 function dotVec3(a, b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -602,9 +725,30 @@ function orientationViewFromDepth(depthVector) {
 
 function setOrientationFromView(viewToken) {
     const basis = VIEW_BASIS[viewToken] || VIEW_BASIS['x+'];
-    orientationRight = [...basis.right];
-    orientationUp = [...basis.up];
-    orientationDepth = [...basis.depth];
+    viewerState.orientationRight = [...basis.right];
+    viewerState.orientationUp = [...basis.up];
+    viewerState.orientationDepth = [...basis.depth];
+}
+
+// "Position reset" (the Z shortcut and the Reset Position button) means the
+// whole framing, not just pan: undo any roll/pitch/yaw back to the straight-on
+// basis for whatever view is currently selected, zoom back out to 0, and
+// bring the slice plane back to the middle (50%) of every axis -- otherwise a
+// rotated, zoomed-in, or deeply-sliced view came back centred on itself
+// rather than on the object. Does not touch which named view is selected, or
+// send anything to the server itself -- callers still own
+// clearCameraCenterState(), setting currentMoveCamera = "reset", and the
+// single sendStateToServer() call, same as before.
+function resetOrientationZoomAndDepth() {
+    setOrientationFromView(viewerState.currentView);
+    resetSlicePlanes();
+    // Undoing a pitch/yaw can change which physical axis is "depth" (see
+    // activeSliceAxis) -- re-derive the displayed slice percentage for
+    // whichever axis is active now, the same as updateView does after a
+    // real view switch. With every plane just reset to 0.5 this always
+    // settles on 50% regardless of which axis that turns out to be.
+    syncSliceDepthFromPlanes();
+    updateZoom(0, false, false);
 }
 
 const RELATIVE_ROTATIONS = {
@@ -619,45 +763,45 @@ const RELATIVE_ROTATIONS = {
 
 function applyRelativeRotation(rotationName, emit = announceAlert) {
     const rotation = RELATIVE_ROTATIONS[rotationName];
-    const right = orientationRight, up = orientationUp, depth = orientationDepth;
+    const right = viewerState.orientationRight, up = viewerState.orientationUp, depth = viewerState.orientationDepth;
     switch (rotationName) {
         case 'rollClockwise':
-            orientationRight = up;
-            orientationUp = negateVec3(right);
+            viewerState.orientationRight = up;
+            viewerState.orientationUp = negateVec3(right);
             break;
         case 'rollCounterclockwise':
-            orientationRight = negateVec3(up);
-            orientationUp = right;
+            viewerState.orientationRight = negateVec3(up);
+            viewerState.orientationUp = right;
             break;
         case 'pitchUp':
-            orientationUp = negateVec3(depth);
-            orientationDepth = up;
+            viewerState.orientationUp = negateVec3(depth);
+            viewerState.orientationDepth = up;
             break;
         case 'pitchDown':
-            orientationUp = depth;
-            orientationDepth = negateVec3(up);
+            viewerState.orientationUp = depth;
+            viewerState.orientationDepth = negateVec3(up);
             break;
         case 'yawLeft':
-            orientationRight = depth;
-            orientationDepth = negateVec3(right);
+            viewerState.orientationRight = depth;
+            viewerState.orientationDepth = negateVec3(right);
             break;
         case 'yawRight':
-            orientationRight = negateVec3(depth);
-            orientationDepth = right;
+            viewerState.orientationRight = negateVec3(depth);
+            viewerState.orientationDepth = right;
             break;
         default:
             return;
     }
 
     // Pitch/yaw can switch which of the three persisted planes is now facing
-    // the viewer; roll never does (it doesn't touch orientationDepth), so this
+    // the viewer; roll never does (it doesn't touch viewerState.orientationDepth), so this
     // is a no-op there. Must run before updateView/sendStateToServer below so
     // the request they send already carries the re-derived depth.
     const depthChanged = syncSliceDepthFromPlanes();
-    const depthMessage = depthChanged ? `depth ${currentSliceDepth}%` : "";
-    const viewChanged = updateView(orientationViewFromDepth(orientationDepth), false,
+    const depthMessage = depthChanged ? `depth ${viewerState.currentSliceDepth}%` : "";
+    const viewChanged = updateView(orientationViewFromDepth(viewerState.orientationDepth), false,
                                    { syncOrientation: false });
-    const currentBasis = { right: orientationRight, up: orientationUp, depth: orientationDepth };
+    const currentBasis = { right: viewerState.orientationRight, up: viewerState.orientationUp, depth: viewerState.orientationDepth };
     const orientationMessage = describeBasis(currentBasis);
 
     if (!viewChanged) {
@@ -671,17 +815,19 @@ function applyRelativeRotation(rotationName, emit = announceAlert) {
 
     }
 
-    const message = `${rotation.speech}, ${orientationMessage}. ${depthMessage}`;
-    const messageShort = `${orientationMessage}. ${depthMessage}`;
+    //const message = `${rotation.speech}, ${orientationMessage}. ${depthMessage}`;
+    const message = `${rotation.speech} ${depthMessage}`;
+    //const messageShort = `${orientationMessage}. ${depthMessage}`;
+    const messageShort = `${rotation.speech}`;
     announceParameterValue(rotationName, message, messageShort, emit);
 }
 
 function getOrientationPayload() {
     return {
         scheme: 'basis-v1',
-        forward: normalizeAxisVector(orientationDepth),
-        up: normalizeAxisVector(orientationUp),
-        right: normalizeAxisVector(orientationRight),
+        forward: normalizeAxisVector(viewerState.orientationDepth),
+        up: normalizeAxisVector(viewerState.orientationUp),
+        right: normalizeAxisVector(viewerState.orientationRight),
     };
 }
 
@@ -690,7 +836,7 @@ function getOrientationPayload() {
 // negative end); sign < 0 means the reverse. This sign is what makes the same
 // physical plane read as (100 - x)% after a 180-degree turn around that axis.
 function activeSliceAxis() {
-    const d = orientationDepth;
+    const d = viewerState.orientationDepth;
     if (d[0] !== 0) return { axis: 'x', sign: Math.sign(d[0]) };
     if (d[1] !== 0) return { axis: 'y', sign: Math.sign(d[1]) };
     return { axis: 'z', sign: Math.sign(d[2]) };
@@ -700,7 +846,7 @@ function activeSliceAxis() {
 // percentage the slider/announcements show ("X% from where you're looking").
 function displayDepthFromPlanes() {
     const { axis, sign } = activeSliceAxis();
-    const fraction = slicePlanes[axis];
+    const fraction = viewerState.slicePlanes[axis];
     return Math.round((sign > 0 ? fraction : 1 - fraction) * 100);
 }
 
@@ -709,26 +855,26 @@ function displayDepthFromPlanes() {
 function writeDisplayDepthToPlanes(depthPercent) {
     const { axis, sign } = activeSliceAxis();
     const fraction = depthPercent / 100;
-    slicePlanes[axis] = sign > 0 ? fraction : 1 - fraction;
+    viewerState.slicePlanes[axis] = sign > 0 ? fraction : 1 - fraction;
 }
 
 function resetSlicePlanes() {
-    slicePlanes = { x: 0.5, y: 0.5, z: 0.5 };
+    viewerState.slicePlanes = { x: 0.5, y: 0.5, z: 0.5 };
 }
 
-// Re-derive currentSliceDepth from the persisted planes after the active axis
+// Re-derive viewerState.currentSliceDepth from the persisted planes after the active axis
 // may have changed (any pitch/yaw, or picking a different named view). Roll
 // never changes the active axis, so this is a harmless no-op there. Does not
-// write back to slicePlanes -- only updateSliceDepth (a user-initiated change)
+// write back to viewerState.slicePlanes -- only updateSliceDepth (a user-initiated change)
 // does that.
 function syncSliceDepthFromPlanes() {
-    const oldDepth = currentSliceDepth;
-    currentSliceDepth = displayDepthFromPlanes();
+    const oldDepth = viewerState.currentSliceDepth;
+    viewerState.currentSliceDepth = displayDepthFromPlanes();
     if (sliceSlider) {
-        sliceSlider.value = currentSliceDepth;
+        sliceSlider.value = viewerState.currentSliceDepth;
     }
-    if (slicePercentage) slicePercentage.textContent = currentSliceDepth;
-    return oldDepth !== currentSliceDepth;
+    if (slicePercentage) slicePercentage.textContent = viewerState.currentSliceDepth;
+    return oldDepth !== viewerState.currentSliceDepth;
 }
 
 // DOM elements
@@ -746,15 +892,12 @@ const zoomLevelValue = document.getElementById('zoom-level-value');
 const zoomOutBtn = document.getElementById('zoom-out-btn');
 const zoomInBtn = document.getElementById('zoom-in-btn');
 const sliceGraphLockCheckbox = document.getElementById('slice-graph-lock-checkbox');
-const sliceGraphRefreshBtn = document.getElementById('slice-graph-refresh-btn');
-const sliceGraphModeBtn = document.getElementById('slice-graph-mode-btn');
 const resetPositionBtn = document.getElementById('reset-position-btn');
 const sliceGraphLockStatus = document.getElementById('slice-graph-lock-status');
 const showViewInfoBoxCheckbox = document.getElementById('show-view-info-box');
 const exportSliceSvgBtn = document.getElementById('export-slice-svg-btn');
 const highFidelityPreviewImg = document.getElementById('high-fidelity-preview-img');
 const highFidelityPreviewMeta = document.getElementById('high-fidelity-preview-meta');
-const debugPipelineToggleBtn = document.getElementById('debug-pipeline-toggle-btn');
 const debugPipelineContent = document.getElementById('debug-pipeline-content');
 const debugPipelineSummary = document.getElementById('debug-pipeline-summary');
 const debugStageList = document.getElementById('debug-stage-list');
@@ -763,6 +906,29 @@ const shortcutsDialog = document.getElementById('shortcuts-dialog');
 const shortcutsCloseBtn = document.getElementById('shortcuts-close-btn');
 const shortcutsHeading = document.getElementById('shortcuts-heading');
 const mainContent = document.getElementById('main-content');
+
+// Main menu
+const navAboutBtn = document.getElementById('nav-about-btn');
+const navHelpBtn = document.getElementById('nav-help-btn');
+const navSettingsBtn = document.getElementById('nav-settings-btn');
+const aboutDialog = document.getElementById('about-dialog');
+const aboutCloseBtn = document.getElementById('about-close-btn');
+const aboutHeading = document.getElementById('about-heading');
+const settingsDialog = document.getElementById('settings-dialog');
+const settingsCloseBtn = document.getElementById('settings-close-btn');
+const settingsHeading = document.getElementById('settings-heading');
+const settingsSliderCheckbox = document.getElementById('settings-enable-slider');
+const settingsCubeCheckbox = document.getElementById('settings-enable-cube');
+const settingsDebugPanelCheckbox = document.getElementById('settings-enable-debug-panel');
+const settingsBboxCheckbox = document.getElementById('settings-enable-bbox');
+const sliceGraphModeRadios = () => document.querySelectorAll('input[name="slice-graph-mode"]');
+const trinkeySection = document.getElementById('trinkey-section');
+const witmotionSection = document.getElementById('witmotion-section');
+const debugPanelSection = document.getElementById('debug-panel-section');
+const bboxSection = document.getElementById('bbox-section');
+const deviceConnectBtn = document.getElementById('device-connect-btn');
+const deviceDisconnectBtn = document.getElementById('device-disconnect-btn');
+const deviceConnectStatus = document.getElementById('device-connect-status');
 
 // New radio group references
 const renderModeRadios = () => document.querySelectorAll('input[name="render-mode"]');
@@ -810,10 +976,10 @@ const announcementWindowPolite = document.getElementById('announcement-window-po
 
 /** Update the top status bar to reflect current state. */
 function refreshStatusBar() {
-    if (sbView) sbView.textContent = currentView;
-    if (sbDepth) sbDepth.textContent = currentSliceDepth + '%';
+    if (sbView) sbView.textContent = viewerState.currentView;
+    if (sbDepth) sbDepth.textContent = viewerState.currentSliceDepth + '%';
     if (sbRenderMode) sbRenderMode.textContent = renderModeLabel();
-    if (sbZoom) sbZoom.textContent = Number(currentZoom).toFixed(1);
+    if (sbZoom) sbZoom.textContent = Number(viewerState.currentZoom).toFixed(1);
     if (sbViewMode) sbViewMode.textContent = representationModeLabel();
 }
 
@@ -872,16 +1038,16 @@ function announceParameterValue(parameterKey, firstText, repeatText, emit = anno
 
 function refreshViewInfoSummary() {
     if (currentSliceDepthInfo) {
-        currentSliceDepthInfo.textContent = `${currentSliceDepth}%`;
+        currentSliceDepthInfo.textContent = `${viewerState.currentSliceDepth}%`;
     }
     if (currentRenderModeInfo) {
         currentRenderModeInfo.textContent = renderModeLabel();
     }
     if (currentZoomInfo) {
-        currentZoomInfo.textContent = Number(currentZoom).toFixed(1);
+        currentZoomInfo.textContent = Number(viewerState.currentZoom).toFixed(1);
     }
     if (currentBBoxDimensionsInfo) {
-        currentBBoxDimensionsInfo.textContent = currentBBoxDimensionsText;
+        currentBBoxDimensionsInfo.textContent = viewerState.currentBBoxDimensionsText;
     }
     refreshStatusBar();
 }
@@ -895,10 +1061,10 @@ function getStatusBarAnnouncement() {
     };
 
     return [
-        `View: ${readText(sbView, currentView)}`,
-        `Depth: ${readText(sbDepth, `${currentSliceDepth}%`)}`,
+        `View: ${readText(sbView, viewerState.currentView)}`,
+        `Depth: ${readText(sbDepth, `${viewerState.currentSliceDepth}%`)}`,
         `Render: ${readText(sbRenderMode, renderModeLabel())}`,
-        `Zoom: ${readText(sbZoom, Number(currentZoom).toFixed(1))}`,
+        `Zoom: ${readText(sbZoom, Number(viewerState.currentZoom).toFixed(1))}`,
         `Layout: ${readText(sbViewMode, representationModeLabel())}`,
         `Model: ${readText(sbModel)}`,
         `DotPad: ${readText(sbDotPad)}`,
@@ -907,18 +1073,17 @@ function getStatusBarAnnouncement() {
 
 // Update button labels with current state information
 function updateButtonLabels() {
-    const depthText = `${currentSliceDepth}%`;
+    const depthText = `${viewerState.currentSliceDepth}%`;
     deeperBtn.textContent = `Deeper 10%`;
     shallowerBtn.textContent = `Shallower 10%`;
 }
 
 function updateSliceGraphLockUI() {
     const isSliceGraphMode = isSliceGraphRepresentationMode();
-    sliceGraphRefreshBtn.disabled = !isSliceGraphMode;
     if (sliceGraphLockCheckbox) {
-        sliceGraphLockCheckbox.checked = sliceGraphLocked;
+        sliceGraphLockCheckbox.checked = viewerState.sliceGraphLocked;
     }
-    if (sliceGraphLocked) {
+    if (viewerState.sliceGraphLocked) {
         if (isSliceGraphMode) {
             sliceGraphLockStatus.textContent = `Freeze graph`;
         } else {
@@ -926,7 +1091,7 @@ function updateSliceGraphLockUI() {
         }
     } else {
         if (isSliceGraphMode) {
-            sliceGraphLockStatus.textContent = `view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`;
+            sliceGraphLockStatus.textContent = `view ${viewerState.sliceGraphAnchorView}, depth ${viewerState.sliceGraphAnchorDepth}%`;
         } else {
             sliceGraphLockStatus.textContent = 'Switch to Slice Graph mode to use refresh.';
         }
@@ -934,25 +1099,40 @@ function updateSliceGraphLockUI() {
 }
 
 function updateSliceGraphModeUI() {
-    if (!sliceGraphModeBtn) {
-        return;
-    }
-    const isColumnCountMode = sliceGraphMode === 'column-count';
-    sliceGraphModeBtn.textContent = isColumnCountMode
-        ? 'Graph Mode: Slice Area'
-        : 'Graph Mode: Difference';
+    syncRadioGroup(sliceGraphModeRadios(), viewerState.sliceGraphMode, 'slice-graph-mode');
 }
 
-function toggleSliceGraphMode() {
-    sliceGraphMode = sliceGraphMode === 'difference' ? 'column-count' : 'difference';
+// Settings-only now: which slice-graph algorithm to use, independent of
+// whether the current view mode is even Slice Graph. Persisted like the other
+// Settings choices so it survives a reload.
+const SETTINGS_SLICE_GRAPH_MODE_KEY = 'settingsSliceGraphMode';
+
+function setSliceGraphMode(newMode) {
+    viewerState.sliceGraphMode = newMode;
     updateSliceGraphModeUI();
+    try {
+        window.localStorage.setItem(SETTINGS_SLICE_GRAPH_MODE_KEY, viewerState.sliceGraphMode);
+    } catch (_) {
+        // Ignore localStorage failures (e.g., privacy mode).
+    }
     pendingInputSource = 'ui';
     sendStateToServer();
 }
 
+function initializeSliceGraphMode() {
+    let storedMode = null;
+    try {
+        storedMode = window.localStorage.getItem(SETTINGS_SLICE_GRAPH_MODE_KEY);
+    } catch (_) {
+        // Default below if storage is unavailable.
+    }
+    viewerState.sliceGraphMode = (storedMode === 'column-count') ? 'column-count' : 'difference';
+    updateSliceGraphModeUI();
+}
+
 function captureSliceGraphAnchor(shouldAnnounce = true) {
-    sliceGraphAnchorView = currentView;
-    sliceGraphAnchorDepth = currentSliceDepth;
+    viewerState.sliceGraphAnchorView = viewerState.currentView;
+    viewerState.sliceGraphAnchorDepth = viewerState.currentSliceDepth;
     updateSliceGraphLockUI();
 }
 
@@ -963,16 +1143,56 @@ function autoRefreshSliceGraph(options = {}) {
     }
 
     // In locked mode, keep the graph centered on the current exploration point.
-    if (updateAnchor && sliceGraphLocked) {
+    if (updateAnchor && viewerState.sliceGraphLocked) {
         captureSliceGraphAnchor(false);
     }
 
     sendStateToServer();
 }
 
+// Polls /render/status (cheap: no render_lock, no matplotlib) rather
+// than retrying the real render itself — see the comment at the call site in
+// sendStateToServer's response handler for why that distinction matters. Once
+// status says ready, does exactly one real render to pick up the finished
+// graph; until then, keeps checking every SLICE_GRAPH_AUTO_REFRESH_DELAY_MS,
+// up to SLICE_GRAPH_AUTO_REFRESH_MAX_ATTEMPTS times, then gives up (a manual
+// interaction, e.g. moving the depth slider, still recovers after that).
+function scheduleSliceGraphStatusCheck() {
+    if (sliceGraphAutoRefreshAttemptsLeft <= 0) {
+        sliceGraphAutoRefreshAttemptsLeft = SLICE_GRAPH_AUTO_REFRESH_MAX_ATTEMPTS;
+    }
+    if (sliceGraphAutoRefreshPending) {
+        return;
+    }
+    sliceGraphAutoRefreshPending = true;
+    sliceGraphAutoRefreshAttemptsLeft -= 1;
+    setTimeout(async () => {
+        sliceGraphAutoRefreshPending = false;
+        if (!isSliceGraphRepresentationMode() || !viewerState.sliceGraphLocked) {
+            return;
+        }
+        try {
+            const res = await fetch(`${SERVER_URL}/render/status`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ current_model: viewerState.currentModel }),
+            });
+            const statusData = await res.json();
+            if (statusData.slice_graphs_ready) {
+                sendStateToServer();
+            } else if (sliceGraphAutoRefreshAttemptsLeft > 0) {
+                scheduleSliceGraphStatusCheck();
+            }
+        } catch (_) {
+            // Network hiccup checking status — not fatal, a manual interaction
+            // still recovers same as before this existed.
+        }
+    }, SLICE_GRAPH_AUTO_REFRESH_DELAY_MS);
+}
+
 function setSliceGraphLocked(locked) {
-    sliceGraphLocked = locked;
-    if (sliceGraphLocked) {
+    viewerState.sliceGraphLocked = locked;
+    if (viewerState.sliceGraphLocked) {
         // When turning lock back on, freeze at the current exploration point.
         captureSliceGraphAnchor(false);
     }
@@ -981,13 +1201,14 @@ function setSliceGraphLocked(locked) {
 }
 
 function toggleSliceGraphLock() {
-    setSliceGraphLocked(!sliceGraphLocked);
+    setSliceGraphLocked(!viewerState.sliceGraphLocked);
 }
 
 function print_view(){
-    currentPrintView = true;
+    // currentPrintView is reset inside sendStateToServer itself, only once
+    // actually consumed -- see the moveCamera/printView comment there.
+    viewerState.currentPrintView = true;
     sendStateToServer();
-    currentPrintView = !currentPrintView;
 }
 
 function formatDebugValue(value) {
@@ -1011,23 +1232,15 @@ function formatDebugValue(value) {
 }
 
 function setDebugPipelineVisible(isVisible) {
-    if (!debugPipelineContent || !debugPipelineToggleBtn) {
+    if (!debugPipelineContent) {
         return;
     }
     debugPipelineContent.hidden = !isVisible;
-    debugPipelineToggleBtn.textContent = isVisible ? 'Hide Debug Pipeline' : 'Show Debug Pipeline';
     try {
         window.localStorage.setItem(DEBUG_PIPELINE_VISIBILITY_KEY, isVisible ? '1' : '0');
     } catch (_) {
         // Ignore localStorage failures (e.g., privacy mode).
     }
-}
-
-function toggleDebugPipelineVisibility() {
-    if (!debugPipelineContent) {
-        return;
-    }
-    setDebugPipelineVisible(debugPipelineContent.hidden);
 }
 
 function initializeDebugPipelineVisibility() {
@@ -1043,54 +1256,220 @@ function initializeDebugPipelineVisibility() {
     setDebugPipelineVisible(isVisible);
 }
 
-// Keyboard shortcuts dialog (#146). Native <dialog> + showModal() supplies focus
+// Small read-only info dialogs opened from the Main menu: Keyboard
+// Shortcuts, About, Settings. Native <dialog> + showModal() supplies focus
 // containment, background inertness, and Escape-to-close for free; the one thing
 // that isn't automatic is returning focus to whatever triggered the dialog once
-// it closes, which is what shortcutsDialogTrigger is for. See the ARIA APG
+// it closes, which is what each controller's `trigger` is for. See the ARIA APG
 // pattern: https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/examples/dialog/
-let shortcutsDialogTrigger = null;
+function makeInfoDialogController(dialog, headingEl) {
+    let trigger = null;
+
+    function open() {
+        if (!dialog || !dialog.showModal || dialog.open) {
+            return;
+        }
+        trigger = document.activeElement;
+        // Backs up the native modal inertness for older assistive tech, same as
+        // the session consent dialog.
+        if (mainContent) mainContent.setAttribute('aria-hidden', 'true');
+        dialog.showModal();
+        // showModal() defaults to focusing the first focusable element, which here
+        // is the Close button at the very end of the content — reading forward
+        // from there reads nothing. Per the ARIA APG dialog pattern, a read-only
+        // dialog like this one should instead land on a static element at the top
+        // (the heading, made focusable via tabindex="-1"), so reading forward
+        // covers the whole dialog.
+        if (headingEl) headingEl.focus({ preventScroll: true });
+    }
+
+    function close() {
+        if (!dialog || !dialog.open) {
+            return;
+        }
+        dialog.close();
+    }
+
+    function restoreAfterClose() {
+        if (mainContent) mainContent.removeAttribute('aria-hidden');
+        // Return focus to whatever opened the dialog rather than stranding it at
+        // the top of the document (or on an element that's since been removed).
+        if (trigger && document.contains(trigger)) {
+            trigger.focus();
+        }
+        trigger = null;
+    }
+
+    if (dialog) {
+        // Cleanup after the dialog has actually closed. (Escape triggers `cancel`,
+        // whose default action closes the dialog and then fires `close`.)
+        dialog.addEventListener('close', restoreAfterClose);
+        // Clicking outside the dialog's own content is the escape hatch a
+        // dedicated "Main" button used to provide: close it and land on the main
+        // content directly, rather than wherever restoreAfterClose above would
+        // otherwise return focus to. A click on the dialog element itself (not a
+        // descendant) is a click on the backdrop area, since <dialog> occupies the
+        // full viewport once open — a click on any actual content inside targets
+        // that descendant instead, so this can't be triggered by clicking the
+        // dialog's own controls.
+        dialog.addEventListener('click', (e) => {
+            if (e.target !== dialog) return;
+            dialog.close();
+            if (mainContent) {
+                mainContent.setAttribute('tabindex', '-1');
+                mainContent.focus();
+            }
+        });
+    }
+
+    return { open, close };
+}
+
+const shortcutsDialogController = makeInfoDialogController(shortcutsDialog, shortcutsHeading);
+const aboutDialogController = makeInfoDialogController(aboutDialog, aboutHeading);
+const settingsDialogController = makeInfoDialogController(settingsDialog, settingsHeading);
 
 function openShortcutsDialog() {
-    if (!shortcutsDialog || !shortcutsDialog.showModal || shortcutsDialog.open) {
-        return;
-    }
-    shortcutsDialogTrigger = document.activeElement;
-    // Backs up the native modal inertness for older assistive tech, same as the
-    // session consent dialog.
-    if (mainContent) mainContent.setAttribute('aria-hidden', 'true');
-    shortcutsDialog.showModal();
-    // showModal() defaults to focusing the first focusable element, which here is
-    // the Close button at the very end of the content — reading forward from there
-    // reads nothing. Per the ARIA APG dialog pattern, a read-only dialog like this
-    // one should instead land on a static element at the top (the heading, made
-    // focusable via tabindex="-1"), so reading forward covers the whole dialog.
-    if (shortcutsHeading) shortcutsHeading.focus({ preventScroll: true });
+    shortcutsDialogController.open();
 }
 
 function closeShortcutsDialog() {
-    if (!shortcutsDialog || !shortcutsDialog.open) {
-        return;
-    }
-    shortcutsDialog.close();
+    shortcutsDialogController.close();
 }
 
-function restoreAfterShortcutsDialogClose() {
-    if (mainContent) mainContent.removeAttribute('aria-hidden');
-    // Return focus to whatever opened the dialog rather than stranding it at the
-    // top of the document (or on an element that's since been removed).
-    if (shortcutsDialogTrigger && document.contains(shortcutsDialogTrigger)) {
-        shortcutsDialogTrigger.focus();
-    }
-    shortcutsDialogTrigger = null;
-}
-
-if (shortcutsDialog) {
-    // Cleanup after the dialog has actually closed. (Escape triggers `cancel`, whose
-    // default action closes the dialog and then fires `close`.)
-    shortcutsDialog.addEventListener('close', restoreAfterShortcutsDialogClose);
-}
 if (shortcutsCloseBtn) {
     shortcutsCloseBtn.addEventListener('click', closeShortcutsDialog);
+}
+if (aboutCloseBtn) {
+    aboutCloseBtn.addEventListener('click', () => aboutDialogController.close());
+}
+if (settingsCloseBtn) {
+    settingsCloseBtn.addEventListener('click', () => settingsDialogController.close());
+}
+if (navAboutBtn) {
+    navAboutBtn.addEventListener('click', () => aboutDialogController.open());
+}
+if (navHelpBtn) {
+    navHelpBtn.addEventListener('click', openShortcutsDialog);
+}
+if (navSettingsBtn) {
+    navSettingsBtn.addEventListener('click', () => settingsDialogController.open());
+}
+
+// --- Optional / advanced sections (Slider, Cube, Debug Panel, Bounding Box),
+// gated by Settings (#145) --------------------------------------------------
+//
+// Trinkey Slider and WitMotion IMU are optional extras, not the primary tactile
+// display; Debug Panel and Bounding Box are developer/advanced diagnostics. All
+// four sections start hidden and only appear once explicitly turned on here.
+// Persisted so the choice survives a reload.
+const SETTINGS_SLIDER_VISIBLE_KEY = 'settingsSliderEnabled';
+const SETTINGS_CUBE_VISIBLE_KEY = 'settingsCubeEnabled';
+const SETTINGS_DEBUG_PANEL_VISIBLE_KEY = 'settingsDebugPanelEnabled';
+const SETTINGS_BBOX_VISIBLE_KEY = 'settingsBboxEnabled';
+
+function setOptionalSectionVisible(sectionEl, checkboxEl, storageKey, isVisible) {
+    if (sectionEl) sectionEl.hidden = !isVisible;
+    if (checkboxEl) checkboxEl.checked = isVisible;
+    try {
+        window.localStorage.setItem(storageKey, isVisible ? '1' : '0');
+    } catch (_) {
+        // Ignore localStorage failures (e.g., privacy mode).
+    }
+}
+
+function initializeOptionalSectionVisibility() {
+    let sliderEnabled = false;
+    let cubeEnabled = false;
+    let debugPanelEnabled = false;
+    let bboxEnabled = false;
+    try {
+        sliderEnabled = window.localStorage.getItem(SETTINGS_SLIDER_VISIBLE_KEY) === '1';
+        cubeEnabled = window.localStorage.getItem(SETTINGS_CUBE_VISIBLE_KEY) === '1';
+        debugPanelEnabled = window.localStorage.getItem(SETTINGS_DEBUG_PANEL_VISIBLE_KEY) === '1';
+        bboxEnabled = window.localStorage.getItem(SETTINGS_BBOX_VISIBLE_KEY) === '1';
+    } catch (_) {
+        // Default to hidden if storage is unavailable.
+    }
+    setOptionalSectionVisible(trinkeySection, settingsSliderCheckbox, SETTINGS_SLIDER_VISIBLE_KEY, sliderEnabled);
+    setOptionalSectionVisible(witmotionSection, settingsCubeCheckbox, SETTINGS_CUBE_VISIBLE_KEY, cubeEnabled);
+    setOptionalSectionVisible(
+        debugPanelSection, settingsDebugPanelCheckbox, SETTINGS_DEBUG_PANEL_VISIBLE_KEY, debugPanelEnabled
+    );
+    setOptionalSectionVisible(bboxSection, settingsBboxCheckbox, SETTINGS_BBOX_VISIBLE_KEY, bboxEnabled);
+}
+
+if (settingsSliderCheckbox) {
+    settingsSliderCheckbox.addEventListener('change', () => {
+        setOptionalSectionVisible(
+            trinkeySection, settingsSliderCheckbox, SETTINGS_SLIDER_VISIBLE_KEY, settingsSliderCheckbox.checked
+        );
+    });
+}
+if (settingsCubeCheckbox) {
+    settingsCubeCheckbox.addEventListener('change', () => {
+        setOptionalSectionVisible(
+            witmotionSection, settingsCubeCheckbox, SETTINGS_CUBE_VISIBLE_KEY, settingsCubeCheckbox.checked
+        );
+    });
+}
+if (settingsDebugPanelCheckbox) {
+    settingsDebugPanelCheckbox.addEventListener('change', () => {
+        setOptionalSectionVisible(
+            debugPanelSection, settingsDebugPanelCheckbox, SETTINGS_DEBUG_PANEL_VISIBLE_KEY,
+            settingsDebugPanelCheckbox.checked
+        );
+    });
+}
+if (settingsBboxCheckbox) {
+    settingsBboxCheckbox.addEventListener('change', () => {
+        setOptionalSectionVisible(
+            bboxSection, settingsBboxCheckbox, SETTINGS_BBOX_VISIBLE_KEY, settingsBboxCheckbox.checked
+        );
+    });
+}
+
+// --- Generic "Connect to device" / "Disconnect" (#145) --------------------
+//
+// Proxies to whichever output device (Monarch or DotPad) the Output Device
+// setting names, by forwarding the click to that device's own connect/disconnect
+// button — Web HID/Web Bluetooth's requestDevice() needs a direct user gesture,
+// and a synthetic click dispatched synchronously from within this click handler
+// still counts as one. This is a shortcut in front of the two existing
+// device-specific sections, not a replacement for them.
+function updateGenericDeviceConnectUI() {
+    if (!deviceConnectBtn || !deviceDisconnectBtn) return;
+    const connected = monarchHidConnected || dotpadConnected;
+    deviceDisconnectBtn.hidden = !connected;
+    deviceConnectBtn.disabled = connected;
+    if (deviceConnectStatus) {
+        deviceConnectStatus.textContent = monarchHidConnected
+            ? 'Connected: Monarch'
+            : dotpadConnected
+                ? 'Connected: DotPad'
+                : 'Not connected.';
+    }
+}
+
+if (deviceConnectBtn) {
+    deviceConnectBtn.addEventListener('click', () => {
+        // Calls the real connect logic directly (exposed by monarch-hid.js /
+        // dotpad-integration.js) rather than clicking a per-device button.
+        if (viewerState.currentOutputDevice === 'dotpad') {
+            window.connectDotpad?.();
+        } else {
+            window.connectMonarchHid?.();
+        }
+    });
+}
+if (deviceDisconnectBtn) {
+    deviceDisconnectBtn.addEventListener('click', () => {
+        if (monarchHidConnected) {
+            window.disconnectMonarchHid?.();
+        } else if (dotpadConnected) {
+            window.disconnectDotpad?.();
+        }
+    });
 }
 
 function renderPipelineDebug(debugPipeline, debugInfo = null) {
@@ -1265,28 +1644,29 @@ function renderPipelineDebug(debugPipeline, debugInfo = null) {
 }
 
 function fetchExportSourceState() {
-    const requestedGraphView = sliceGraphLocked ? sliceGraphAnchorView : currentView;
-    const requestedGraphDepth = sliceGraphLocked ? sliceGraphAnchorDepth : currentSliceDepth;
-    const renderPipelineParams = getRenderPipelineParams(currentRenderMode);
+    const requestedGraphView = viewerState.sliceGraphLocked ? viewerState.sliceGraphAnchorView : viewerState.currentView;
+    const requestedGraphDepth = viewerState.sliceGraphLocked ? viewerState.sliceGraphAnchorDepth : viewerState.currentSliceDepth;
+    const renderPipelineParams = getRenderPipelineParams(viewerState.currentRenderMode);
     return {
-        view: currentView,
+        view: viewerState.currentView,
         orientation: getOrientationPayload(),
-        zoom: currentZoom,
-        depth: currentSliceDepth,
+        zoom: viewerState.currentZoom,
+        depth: viewerState.currentSliceDepth,
         renderMode: renderPipelineParams.renderMode,
         projectionMode: renderPipelineParams.projectionMode,
         mode: getServerRepresentationMode(),
         move_camera_center: 'none',
         print_view: false,
-        current_model: currentModel,
-        compose_scrollbar: composeScrollbar,
-        compose_slicegraph: composeSliceGraph,
-        show_view_info_box: showViewInfoBox,
-        output_device: currentOutputDevice,
-        slicegraph_locked: sliceGraphLocked,
+        model: viewerState.currentModel,
+        current_model: viewerState.currentModel,
+        compose_scrollbar: viewerState.composeScrollbar,
+        compose_slicegraph: viewerState.composeSliceGraph,
+        show_view_info_box: viewerState.showViewInfoBox,
+        output_device: viewerState.currentOutputDevice,
+        slicegraph_locked: viewerState.sliceGraphLocked,
         slicegraph_view: requestedGraphView,
         slicegraph_depth: requestedGraphDepth,
-        slicegraph_mode: sliceGraphMode,
+        slicegraph_mode: viewerState.sliceGraphMode,
         export_width: 1000,
     };
 }
@@ -1313,7 +1693,7 @@ function updateHighFidelityPreview(data) {
     }
 
     highFidelityPreviewImg.src = 'data:image/png;base64,' + previewBase64;
-    highFidelityPreviewImg.alt = `Render preview: ${currentView} view, ${currentSliceDepth}% depth, ${renderModeLabel()}`;
+    highFidelityPreviewImg.alt = `Render preview: ${viewerState.currentView} view, ${viewerState.currentSliceDepth}% depth, ${renderModeLabel()}`;
 
     highFidelityPreviewMeta.textContent = previewCaption(shape);
 }
@@ -1342,8 +1722,8 @@ async function exportCurrentSliceAsPng() {
         }
 
         const downloadUrl = 'data:image/png;base64,' + data.image_base64;
-        const sanitizedView = String(currentView).replace(/[^a-zA-Z0-9+-]/g, '_');
-        const filename = `slice_${sanitizedView}_${currentSliceDepth}_${currentRenderMode}.png`;
+        const sanitizedView = String(viewerState.currentView).replace(/[^a-zA-Z0-9+-]/g, '_');
+        const filename = `slice_${sanitizedView}_${viewerState.currentSliceDepth}_${viewerState.currentRenderMode}.png`;
 
         const link = document.createElement('a');
         link.href = downloadUrl;
@@ -1363,33 +1743,33 @@ async function exportCurrentSliceAsPng() {
 
 // Update slice depth display and announce changes
 function updateSliceDepth(newDepth, shouldAnnounce = true) {
-    const oldDepth = currentSliceDepth;
-    currentSliceDepth = Math.max(0, Math.min(100, newDepth));
-    writeDisplayDepthToPlanes(currentSliceDepth);
-    sliceSlider.value = currentSliceDepth;
-    slicePercentage.textContent = currentSliceDepth;
+    const oldDepth = viewerState.currentSliceDepth;
+    viewerState.currentSliceDepth = Math.max(0, Math.min(100, newDepth));
+    writeDisplayDepthToPlanes(viewerState.currentSliceDepth);
+    sliceSlider.value = viewerState.currentSliceDepth;
+    slicePercentage.textContent = viewerState.currentSliceDepth;
     refreshViewInfoSummary();
 
     // Only mutate button labels and trigger a render when the value actually
     // changed.
-    if (oldDepth !== currentSliceDepth) {
+    if (oldDepth !== viewerState.currentSliceDepth) {
         // shouldAnnounce=false means the caller (a keyboard shortcut handler, or
         // hardware acting through window.updateSliceDepth) announces its own
         // settled value separately. shouldAnnounce=true (a mouse click on the
         // slider or the +/- buttons) has no other feedback mechanism, so announce
         // it here.
         if (shouldAnnounce) {
-            announceDepthValue(currentSliceDepth, oldDepth, announceAlert);
+            announceDepthValue(viewerState.currentSliceDepth, oldDepth, announceAlert);
         }
         updateButtonLabels();
         sendStateToServer();
     }
 
-    return oldDepth !== currentSliceDepth;
+    return oldDepth !== viewerState.currentSliceDepth;
 }
 
 function getCurrentSliceDepth(){
-    return currentSliceDepth;
+    return viewerState.currentSliceDepth;
 }
 
 /**
@@ -1418,27 +1798,42 @@ function syncRadioGroup(radios, currentValue, groupLabel) {
 
 // Helper to sync radios with current state
 function syncRadios() {
-    syncRadioGroup(renderModeRadios(), currentRenderMode, 'render-mode');
-    syncRadioGroup(viewModeRadios(), currentRepresentationMode, 'view-mode');
-    syncRadioGroup(outputDeviceRadios(), currentOutputDevice, 'output-device');
+    syncRadioGroup(renderModeRadios(), viewerState.currentRenderMode, 'render-mode');
+    syncRadioGroup(viewModeRadios(), viewerState.currentRepresentationMode, 'view-mode');
+    syncRadioGroup(outputDeviceRadios(), viewerState.currentOutputDevice, 'output-device');
 }
 
 // The server only attaches monarch_cells_hex to a render when output_device is
 // 'monarch_hid'. Send that whenever a Monarch is connected over Web HID and the
-// user has not explicitly chosen a different device, independent of which radio
-// is selected — so picking the Monarch radio cannot turn its own feed off (#75).
+// user has picked Monarch, independent of connection order.
 function getEffectiveOutputDevice() {
-    if (monarchHidConnected && (currentOutputDevice === 'monarch' || currentOutputDevice === 'auto')) {
+    if (monarchHidConnected && viewerState.currentOutputDevice === 'monarch') {
         return 'monarch_hid';
     }
-    return currentOutputDevice;
+    return viewerState.currentOutputDevice;
 }
 
-// Called by the Monarch Web HID integration on connect/disconnect. Only toggles
-// the connection flag; the radio preference is the user's and is left alone.
+// Called by the Monarch Web HID integration on connect/disconnect. 
 function setMonarchHidConnected(connected) {
     monarchHidConnected = Boolean(connected);
+    if (connected) {
+        viewerState.currentOutputDevice = 'monarch';
+        syncRadios();
+    }
+    updateGenericDeviceConnectUI();
 }
+
+// Called by the DotPad integration (dotpad-integration.js) on connect/disconnect,
+// mirroring setMonarchHidConnected above.
+function setDotpadConnected(connected) {
+    dotpadConnected = Boolean(connected);
+    if (connected) {
+        viewerState.currentOutputDevice = 'dotpad';
+        syncRadios();
+    }
+    updateGenericDeviceConnectUI();
+}
+window.setDotpadConnected = setDotpadConnected;
 
 // --- Connected tactile displays -------------------------------------------
 //
@@ -1537,33 +1932,32 @@ window.setTactileDisplay = setTactileDisplay;
 window.activeTactileGrid = activeTactileGrid;
 
 function switchOutputDevice(targetDevice) {
-    if (currentOutputDevice === targetDevice) {
+    if (viewerState.currentOutputDevice === targetDevice) {
         announce(`already using ${targetDevice}`);
         return;
     }
 
-    currentOutputDevice = targetDevice;
+    viewerState.currentOutputDevice = targetDevice;
     syncRadios();
     announce(`output device ${targetDevice}`);
     sendStateToServer();
     return true;
 }
 
-// Helper to update composeScrollbar and composeSliceGraph based on view mode
+// Helper to update viewerState.composeScrollbar and viewerState.composeSliceGraph based on view mode
 function updateDisplayOptions() {
-    switch (currentRepresentationMode) {
+    switch (viewerState.currentRepresentationMode) {
         case 'single':
-            composeScrollbar = true;
-            composeSliceGraph = false;
+            viewerState.composeScrollbar = true;
+            viewerState.composeSliceGraph = false;
             break;
         case 'side-by-side':
-            composeScrollbar = false;
-            composeSliceGraph = false;
+            viewerState.composeScrollbar = false;
+            viewerState.composeSliceGraph = false;
             break;
-        case 'slice-graph-difference':
-        case 'slice-graph-column-count':
-            composeScrollbar = false;
-            composeSliceGraph = true;
+        case 'slice-graph':
+            viewerState.composeScrollbar = false;
+            viewerState.composeSliceGraph = true;
             break;
     }
     updateSideBySideAxisLabels();
@@ -1589,8 +1983,8 @@ function updateSideBySideAxisLabels() {
         return;
     }
 
-    if (currentRepresentationMode === 'side-by-side') {
-        const rightAxis = currentView;
+    if (viewerState.currentRepresentationMode === 'side-by-side') {
+        const rightAxis = viewerState.currentView;
         const leftAxis = getLegendAxisForSliceAxis(rightAxis);
         leftLabel.textContent = `Left view: ${leftAxis}`;
         rightLabel.textContent = `Right view: ${rightAxis}`;
@@ -1603,25 +1997,25 @@ function updateSideBySideAxisLabels() {
 // Update view information
 function updateView(newView, shouldAnnounce = true, options = {}) {
     const syncOrientation = options.syncOrientation !== false;
-    const oldView = currentView;
-    currentView = newView;
-    if (syncOrientation && oldView !== currentView) {
-        setOrientationFromView(currentView);
+    const oldView = viewerState.currentView;
+    viewerState.currentView = newView;
+    if (syncOrientation && oldView !== viewerState.currentView) {
+        setOrientationFromView(viewerState.currentView);
         syncSliceDepthFromPlanes();
     }
-    if (currentViewSpan) currentViewSpan.textContent = currentView;
+    if (currentViewSpan) currentViewSpan.textContent = viewerState.currentView;
     refreshViewInfoSummary();
     updateButtonLabels();
     updateSideBySideAxisLabels();
     syncRadios();
-    if (oldView !== currentView && shouldAnnounce) {
+    if (oldView !== viewerState.currentView && shouldAnnounce) {
         // Only real caller: the WitMotion orientation-cube hardware reporting a
         // new face (applyRelativeRotation and page-load both call with false/no-op).
-        announceAlert(`${currentView.toLowerCase()} view`);
+        announceAlert(`${viewerState.currentView.toLowerCase()} view`);
     }
 
     // Send state to server if changed
-    if (oldView !== currentView) {
+    if (oldView !== viewerState.currentView) {
         if (isSliceGraphRepresentationMode()) {
             autoRefreshSliceGraph({ updateAnchor: true });
         } else {
@@ -1629,14 +2023,14 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
         }
     }
 
-    return oldView !== currentView;
+    return oldView !== viewerState.currentView;
 }
 
 /** Caption for either preview. Both go through this so they cannot disagree
  * about the order of the dimensions, or about which display they describe.
  * `shape` is [height, width], as numpy reports it. */
 function previewCaption(shape) {
-    const parts = [currentView, `${currentSliceDepth}%`, renderModeLabel()];
+    const parts = [viewerState.currentView, `${viewerState.currentSliceDepth}%`, renderModeLabel()];
     if (shape && shape.length > 1) {
         parts.push(`${shape[1]}\u00d7${shape[0]}px`);
     }
@@ -1655,7 +2049,7 @@ function updateTactilePreview(base64, shape) {
     const img = document.getElementById('tactile-display-img');
     const meta = document.getElementById('tactile-preview-meta');
     img.src = 'data:image/png;base64,' + base64;
-    img.alt = `Tactile display: ${currentView} view, ${currentSliceDepth}% depth, ${renderModeLabel()}`;
+    img.alt = `Tactile display: ${viewerState.currentView} view, ${viewerState.currentSliceDepth}% depth, ${renderModeLabel()}`;
     meta.textContent = previewCaption(shape);
 }
 
@@ -1679,7 +2073,7 @@ function updateBoundingBox(bbox) {
     setEl('bbox-z-max', format(zmax));
     setEl('bbox-z-depth', format(zmax - zmin));
 
-    currentBBoxDimensionsText = `${format(xmax - xmin)} × ${format(ymax - ymin)} × ${format(zmax - zmin)}`;
+    viewerState.currentBBoxDimensionsText = `${format(xmax - xmin)} × ${format(ymax - ymin)} × ${format(zmax - zmin)}`;
     refreshViewInfoSummary();
 }
 
@@ -1699,15 +2093,20 @@ function updateModelList(model_list) {
     if (!Array.isArray(model_list)) return;
     lastFullModelList = model_list;
 
+    // In study mode the dropdown is hidden and the model is chosen by the
+    // protocol step, so never rebuild it. The status bar shows the neutral study
+    // label rather than the stem, because the stem gives the task away.
+    if (studyMode) {
+        if (sbModel) sbModel.textContent = studyModelLabel || '--';
+        return;
+    }
+
     // In the simplified workshop viewer the model dropdown is hidden and the model
     // is chosen from the URL, so never rebuild it or reset the current selection
     // (the ownership filter would otherwise drop an ingested model and reset to 0).
     // Just keep the status-bar label in sync with the URL-selected model.
     if (document.body.classList.contains('simple-ui')) {
-        const simpleIdx = Number(currentModel);
-        if (sbModel && lastFullModelList[simpleIdx] !== undefined) {
-            sbModel.textContent = lastFullModelList[simpleIdx];
-        }
+        if (sbModel && viewerState.currentModel) sbModel.textContent = viewerState.currentModel;
         return;
     }
 
@@ -1717,10 +2116,9 @@ function updateModelList(model_list) {
     const signature = entries.map(e => e.stem).join('||');
 
     if (signature === lastModelListSignature && dropdown.options.length > 0) {
-        // Same visible set — restore selection using original server index stored in option.value.
-        const currentModelIndex = Number(currentModel);
-        const hasCurrentOption = [...dropdown.options].some(o => o.value === String(currentModelIndex));
-        if (hasCurrentOption) dropdown.value = String(currentModelIndex);
+        // Same visible set — restore the selection by name.
+        const hasCurrentOption = [...dropdown.options].some(o => o.value === viewerState.currentModel);
+        if (hasCurrentOption) dropdown.value = viewerState.currentModel;
         if (sbModel && dropdown.selectedIndex >= 0) {
             sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
         }
@@ -1740,8 +2138,10 @@ function updateModelList(model_list) {
 
     entries.forEach(({ stem, i }) => {
         const option = document.createElement("option");
-        // option.value carries the ORIGINAL server index so currentModel round-trips correctly.
-        option.value = i;
+        // The model's name, not its position in the server's list. That list is
+        // rebuilt whenever anyone uploads, so a position meant a different model
+        // afterwards and this window would silently start showing it.
+        option.value = stem;
         const ownedFile = [...sessionOwnedModels].find(fn => fn.replace(/\.[^.]+$/, '') === stem);
         if (ownedFile) {
             option.text = stem + ' (your upload)';
@@ -1752,14 +2152,13 @@ function updateModelList(model_list) {
         dropdown.appendChild(option);
     });
 
-    const currentModelIndex = Number(currentModel);
-    const hasCurrentOption = [...dropdown.options].some(o => o.value === String(currentModelIndex));
+    const hasCurrentOption = [...dropdown.options].some(o => o.value === viewerState.currentModel);
     if (hasCurrentOption) {
-        dropdown.value = String(currentModelIndex);
+        dropdown.value = viewerState.currentModel;
         if (sbModel) sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
     } else {
         dropdown.selectedIndex = 0;
-        currentModel = dropdown.value;
+        viewerState.currentModel = dropdown.value;
         if (sbModel && dropdown.options.length > 0) sbModel.textContent = dropdown.options[0].text;
     }
     refreshDeleteButton();
@@ -1767,7 +2166,7 @@ function updateModelList(model_list) {
 
 document.getElementById("model-list-dropdown").addEventListener("input", function() {
     // Keep local state in sync while keyboard arrows navigate options.
-    currentModel = this.value;
+    viewerState.currentModel = this.value;
     if (sbModel && this.selectedIndex >= 0) {
         sbModel.textContent = this.options[this.selectedIndex].text;
     }
@@ -1776,7 +2175,7 @@ document.getElementById("model-list-dropdown").addEventListener("input", functio
 
 document.getElementById("model-list-dropdown").addEventListener("change", function() {
     const selectedItem = this.value;
-    currentModel = selectedItem;
+    viewerState.currentModel = selectedItem;
     clearCameraCenterState();
     resetSlicePlanes();
     const selectedLabel = this.selectedIndex >= 0 ? this.options[this.selectedIndex].text : `model ${selectedItem}`;
@@ -1843,7 +2242,7 @@ document.getElementById('delete-model-btn').addEventListener('click', async func
             dropdown.remove(dropdown.selectedIndex);
             if (dropdown.options.length > 0) {
                 dropdown.selectedIndex = 0;
-                currentModel = dropdown.value;
+                viewerState.currentModel = dropdown.value;
                 sendStateToServer();
             }
             refreshDeleteButton();
@@ -1889,8 +2288,10 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             updateModelList(data.model_list);
             // Select the newly uploaded model
             const dropdown = document.getElementById('model-list-dropdown');
-            dropdown.value = String(data.new_model_index);
-            currentModel = String(data.new_model_index);
+            const uploadedStem = data.model_stem
+                || (data.filename || '').replace(/\.[^.]+$/, '');
+            dropdown.value = uploadedStem;
+            viewerState.currentModel = uploadedStem;
             clearCameraCenterState();
             resetSlicePlanes();
             const selectedLabel = dropdown.selectedIndex >= 0 ? dropdown.options[dropdown.selectedIndex].text : data.filename;
@@ -1918,35 +2319,16 @@ document.getElementById('upload-model-input').addEventListener('change', async f
     }
 });
 
-        // Apply a server state snapshot to local UI — shared by SSE and fallback poll.
-let lastSliderRaw = null; // null = never received a server-side slider value yet
+// Apply a server state snapshot to local UI — shared by SSE and fallback poll.
+//
+// The cube and the slider are deliberately absent. They are connected to a
+// browser, by this window, through witmotion-imu.js and trinkey-slider.js, and
+// they drive this window only. The server used to poll them over its own serial
+// ports and broadcast every reading to every connected browser, so one cube
+// turned at the server moved everybody's view. There was no way to address a
+// message to one window: the client registry is a list of queues with nothing
+// attached to say who is who.
 function applyServerState(data) {
-    if (data.cube_value !== undefined && data.cube_value !== lastPolledView) {
-        const isFirstReading = (lastPolledView === null);
-        lastPolledView = data.cube_value;
-        // First reading — record but skip, for the same reason as the slider
-        // below: cube_value is reserved for the WitMotion IMU, so before the
-        // hardware has reported it still holds the server's placeholder. Acting
-        // on it would drag the viewer off its own starting view on page load,
-        // even when no cube is connected.
-        if (!isFirstReading) {
-            pendingInputSource = 'cube';
-            updateView(data.cube_value);
-        }
-    }
-    if (data.slider_value !== undefined) {
-        const rawValue = data.slider_value;
-        if (lastSliderRaw === null) {
-            // First reading — record but skip to avoid jumping depth to the
-            // server default (0) before the slider hardware has been moved.
-            lastSliderRaw = rawValue;
-        } else if (rawValue !== lastSliderRaw) {
-            lastSliderRaw = rawValue;
-            const newDepth = Math.round(Math.max(0, Math.min(100, (rawValue / 65535) * 100)));
-            pendingInputSource = 'slider';
-            updateSliceDepth(newDepth, false);
-        }
-    }
     if (Array.isArray(data.builtin_model_stems) && data.builtin_model_stems.length && !builtinModelStems) {
         builtinModelStems = data.builtin_model_stems;
         // Force a rebuild now that the filter is known.
@@ -1965,9 +2347,8 @@ function applyServerState(data) {
     // viewer to a freshly-ingested model. Transient — /get_data never carries this,
     // and the index guard keeps it idempotent.
     if (data.load_model) {
-        const idx = lastFullModelList.indexOf(data.load_model);
-        if (idx >= 0 && String(idx) !== currentModel) {
-            currentModel = String(idx);
+        if (data.load_model !== viewerState.currentModel) {
+            viewerState.currentModel = data.load_model;
             clearCameraCenterState();
             resetSlicePlanes();
             pendingInputSource = 'ingest';
@@ -2038,14 +2419,14 @@ setInterval(() => {
 
 // Update zoom information
 function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
-    const oldZoom = currentZoom;
+    const oldZoom = viewerState.currentZoom;
     const parsedZoom = Number(newZoom);
     if (!Number.isFinite(parsedZoom)) {
         return false;
     }
-    currentZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, parsedZoom));
+    viewerState.currentZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, parsedZoom));
 
-    const zoomText = currentZoom.toFixed(1);
+    const zoomText = viewerState.currentZoom.toFixed(1);
     zoomInput.value = zoomText;
     zoomLevelValue.textContent = zoomText;
     refreshViewInfoSummary();
@@ -2056,11 +2437,11 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
     // announce it. Keyboard callers pass shouldAnnounce=false and announce their
     // own settled value.
     if (shouldAnnounce) {
-        announceZoomValue(currentZoom, oldZoom, announceAlert);
+        announceZoomValue(viewerState.currentZoom, oldZoom, announceAlert);
     }
 
-    console.log(oldZoom, currentZoom);
-    if (sendToServer && oldZoom !== currentZoom) {
+    console.log(oldZoom, viewerState.currentZoom);
+    if (sendToServer && oldZoom !== viewerState.currentZoom) {
         if (isSliceGraphRepresentationMode()) {
             autoRefreshSliceGraph({ updateAnchor: false });
         } else {
@@ -2069,26 +2450,27 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
         }
     }
 
-    return oldZoom !== currentZoom;
+    return oldZoom !== viewerState.currentZoom;
 }
 
 async function fitCurrentViewToDevice() {
-    const renderPipelineParams = getRenderPipelineParams(currentRenderMode);
+    const renderPipelineParams = getRenderPipelineParams(viewerState.currentRenderMode);
     const orientationPayload = getOrientationPayload();
 
     const payload = {
-        view: currentView,
+        view: viewerState.currentView,
         orientation: orientationPayload,
-        zoom: currentZoom,
-        depth: currentSliceDepth,
+        zoom: viewerState.currentZoom,
+        depth: viewerState.currentSliceDepth,
         renderMode: renderPipelineParams.renderMode,
         projectionMode: renderPipelineParams.projectionMode,
         mode: getServerRepresentationMode(),
-        current_model: currentModel,
+        model: viewerState.currentModel,
+        current_model: viewerState.currentModel,
         output_device: getEffectiveOutputDevice(),
-        compose_scrollbar: composeScrollbar,
-        compose_slicegraph: composeSliceGraph,
-        show_view_info_box: showViewInfoBox,
+        compose_scrollbar: viewerState.composeScrollbar,
+        compose_slicegraph: viewerState.composeSliceGraph,
+        show_view_info_box: viewerState.showViewInfoBox,
     };
 
     const response = await fetch(`${SERVER_URL}/render/fit-view`, {
@@ -2106,8 +2488,8 @@ async function fitCurrentViewToDevice() {
     }
 
     if (Array.isArray(data.camera_center) && data.camera_center.length === 2) {
-        const key = getCameraCenterStateKey(currentView, orientationPayload);
-        cameraCenterByViewOrientation.set(key, data.camera_center);
+        const key = getCameraCenterStateKey(viewerState.currentView, orientationPayload);
+        viewerState.cameraCenterByViewOrientation.set(key, data.camera_center);
     }
 
     updateZoom(data.zoom, false, false);
@@ -2123,12 +2505,12 @@ function switchToRenderMode(targetMode, shouldAnnounce = true) {
         console.error(`switchToRenderMode: unknown render mode ${targetMode}`);
         return;
     }
-    if (currentRenderMode === targetMode) {
+    if (viewerState.currentRenderMode === targetMode) {
         if (shouldAnnounce) announce(`already ${renderModeLabel(targetMode)}`);
         return;
     }
-    const previousMode = currentRenderMode;
-    currentRenderMode = targetMode;
+    const previousMode = viewerState.currentRenderMode;
+    viewerState.currentRenderMode = targetMode;
     refreshViewInfoSummary();
     updateButtonLabels();
     syncRadios();
@@ -2140,7 +2522,7 @@ function switchToRenderMode(targetMode, shouldAnnounce = true) {
 }
 
 function cycleRenderMode(shouldAnnounce = true) {
-    const currentIndex = renderModes.findIndex(mode => mode.key === currentRenderMode);
+    const currentIndex = renderModes.findIndex(mode => mode.key === viewerState.currentRenderMode);
     const nextIndex = (currentIndex + 1) % renderModes.length;
     switchToRenderMode(renderModes[nextIndex].key, shouldAnnounce);
 }
@@ -2151,21 +2533,17 @@ function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
         console.error(`switchToRepresentationMode: unknown view mode ${targetMode}`);
         return;
     }
-    if (currentRepresentationMode === targetMode) {
+    if (viewerState.currentRepresentationMode === targetMode) {
         if (shouldAnnounce) announce(`already ${representationModeLabel(targetMode)}`);
         return;
     }
-    const previousMode = currentRepresentationMode;
+    const previousMode = viewerState.currentRepresentationMode;
     const enteringSliceGraph = !isSliceGraphRepresentationMode(previousMode) && isSliceGraphRepresentationMode(targetMode);
 
-    if (mode.sliceGraphMode) {
-        sliceGraphMode = mode.sliceGraphMode;
-    }
-
-    currentRepresentationMode = targetMode;
+    viewerState.currentRepresentationMode = targetMode;
     updateDisplayOptions();
     if (enteringSliceGraph) {
-        sliceGraphLocked = true;
+        viewerState.sliceGraphLocked = true;
         captureSliceGraphAnchor(false);
     }
     updateButtonLabels();
@@ -2181,7 +2559,7 @@ function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
 }
 
 function cycleRepresentationMode(shouldAnnounce = true) {
-    const currentIndex = representationModes.findIndex(mode => mode.key === currentRepresentationMode);
+    const currentIndex = representationModes.findIndex(mode => mode.key === viewerState.currentRepresentationMode);
     const nextIndex = (currentIndex + 1) % representationModes.length;
     switchToRepresentationMode(representationModes[nextIndex].key, shouldAnnounce);
 }
@@ -2212,6 +2590,11 @@ function emitAnnouncement(message, politeness) {
             console.warn('Tactile announcement failed:', err);
         }
     }
+
+    // What the participant's screen reader and braille display were told, and
+    // when. Reading a transcript against the log is guesswork without it: the
+    // session recording captures what they said, not what the system said back.
+    reportStudyInteraction('announcement', { message: normalizedMessage, politeness });
 }
 
 /**
@@ -2239,6 +2622,138 @@ window.getCurrentSliceDepth = getCurrentSliceDepth;
 window.updateSliceDepth = updateSliceDepth;
 window.announceDepthValue = announceDepthValue;
 
+// ---------------------------------------------------------------------------
+// Study mode API, used by static/js/study.js.
+//
+// State is written directly rather than through updateView / updateSliceDepth /
+// switchToRenderMode, then rendered once. Those helpers each send their own
+// render, so going through them would fire five requests for one step change and
+// walk the braille display through four intermediate states the participant
+// never asked for.
+// ---------------------------------------------------------------------------
+
+/** Put the viewer into the state every study model starts from (issue #163):
+ * mug-upright orientation, 50% depth, Cut, single with scrollbars, zoomed out
+ * and centred. Applied on every auto-load so Part B starts where Part A did and
+ * a comparison is between models rather than between viewpoints. */
+function applyStudyDefaults(defaults) {
+    const wanted = defaults || {};
+
+    if (wanted.view && VIEW_BASIS[wanted.view]) {
+        viewerState.currentView = wanted.view;
+        setOrientationFromView(viewerState.currentView);
+    }
+    // Reset all three planes, not just the active one: slice depth is persisted
+    // per axis, so a stale plane would surface the moment the participant turned
+    // the new model.
+    resetSlicePlanes();
+
+    const depth = clampDepth(wanted.depth);
+    if (depth !== null) {
+        viewerState.currentSliceDepth = depth;
+        writeDisplayDepthToPlanes(viewerState.currentSliceDepth);
+    }
+    if (renderModeByKey(wanted.render_mode)) viewerState.currentRenderMode = wanted.render_mode;
+    if (representationModeByKey(wanted.representation_mode)) {
+        viewerState.currentRepresentationMode = wanted.representation_mode;
+    }
+    const zoom = Number(wanted.zoom);
+    if (Number.isFinite(zoom)) viewerState.currentZoom = Math.max(MIN_ZOOM, zoom);
+
+    updateDisplayOptions();
+    if (typeof wanted.compose_scrollbar === 'boolean') {
+        // After updateDisplayOptions, which derives it from the layout mode.
+        viewerState.composeScrollbar = wanted.compose_scrollbar;
+    }
+
+    if (sliceSlider) sliceSlider.value = viewerState.currentSliceDepth;
+    if (slicePercentage) slicePercentage.textContent = viewerState.currentSliceDepth;
+    if (zoomInput) zoomInput.value = viewerState.currentZoom;
+    if (zoomLevelValue) zoomLevelValue.textContent = Number(viewerState.currentZoom).toFixed(1);
+    if (currentViewSpan) currentViewSpan.textContent = viewerState.currentView;
+    syncRadios();
+    updateButtonLabels();
+    refreshViewInfoSummary();
+    refreshStatusBar();
+}
+
+/** Load the model for the current protocol step.
+ *
+ * `stem` is the model's real name, which is how a model has to be addressed --
+ * a position in the server's list means a different file after anyone uploads
+ * one (#123). It is never displayed: `label` is the neutral name the participant
+ * hears, and updateModelList keeps the stem out of the status bar. */
+function loadStudyModel(stem, label, defaults) {
+    if (!stem) return false;
+
+    studyModelLabel = label || 'Model';
+    viewerState.currentModel = stem;
+    clearCameraCenterState();
+    applyStudyDefaults(defaults);
+    if (sbModel) sbModel.textContent = studyModelLabel;
+
+    beginModelLoadAnnouncement(studyModelLabel, 'study');
+    // "reset" centres the object, the last of the study defaults. It is a render
+    // parameter rather than viewer state, so it is set for this one request and
+    // reset inside sendStateToServer itself once actually consumed 
+    pendingInputSource = 'study';
+    viewerState.currentMoveCamera = 'reset';
+    sendStateToServer();
+    return true;
+}
+
+/** The viewer state at this instant, attached to every reported event so a study
+ * log line can be read without joining it against anything else. */
+function viewerStateSnapshot() {
+    return {
+        model_label: studyModelLabel,
+        view: viewerState.currentView,
+        depth: viewerState.currentSliceDepth,
+        render_mode: viewerState.currentRenderMode,
+        layout_mode: viewerState.currentRepresentationMode,
+        zoom: viewerState.currentZoom,
+        orientation: getOrientationPayload(),
+        cursor_state: whichCursor(),
+        output_device: getEffectiveOutputDevice(),
+    };
+}
+
+window.cadStudy = {
+    isStudyMode: () => studyMode,
+    setSessionId: (id) => { studySessionId = id ? Number(id) : null; },
+    getSessionId: () => studySessionId,
+    applyDefaults: applyStudyDefaults,
+    loadModel: loadStudyModel,
+    snapshot: viewerStateSnapshot,
+    // study.js subscribes; kept as a list so nothing here needs to know about it.
+    onInteraction: [],
+    // The real polite-announcement pipeline (status bar refresh, tactile/
+    // braille display forwarding, the shared announcement-window-polite live
+    // region -- see EXPECTED_LIVE_ELEMENTS in test_live_regions.py), so a step
+    // change reaches a connected display too, not just an on-screen region,
+    // and reads as one coherent utterance instead of three separately-timed
+    // live regions (heading, step counter, and a step-text paragraph that was
+    // not a live region at all). Exposed under both names: study.js calls it
+    // by either, and both must reach the same function.
+    announce: announce,
+    announcePolite: announce,
+};
+
+/** Report an interaction to study.js, if study mode is running. Deliberately
+ * tolerant: a listener that throws must not stop the key from doing its job.
+ * Callable from anything hoisted above the assignment above, so it must also
+ * tolerate being reached before that has run. */
+function reportStudyInteraction(eventType, eventData) {
+    if (!studyMode || !window.cadStudy) return;
+    for (const listener of window.cadStudy.onInteraction) {
+        try {
+            listener(eventType, eventData, viewerStateSnapshot());
+        } catch (error) {
+            console.warn('Study interaction listener failed:', error);
+        }
+    }
+}
+
 // Event listeners
 
 // Slice depth slider with enhanced feedback
@@ -2246,8 +2761,8 @@ let sliderUpdateTimeout = null;
 
 sliceSlider.addEventListener('input', function() {
     const newValue = parseInt(this.value);
-    currentSliceDepth = newValue;
-    slicePercentage.textContent = currentSliceDepth;
+    viewerState.currentSliceDepth = newValue;
+    slicePercentage.textContent = viewerState.currentSliceDepth;
 
     // Update button labels immediately
     updateButtonLabels();
@@ -2279,7 +2794,7 @@ document.addEventListener('change', function(e) {
     }
 });
 
-// Output device radios (Monarch, DotPad, Auto)
+// Output device radios (Monarch, DotPad)
 document.addEventListener('change', function(e) {
     if (e.target && e.target.matches('input[name="output-device"]')) {
         if (e.target.checked) {
@@ -2306,7 +2821,7 @@ zoomInput.addEventListener('input', function() {
 zoomInput.addEventListener('change', function() {
     clearTimeout(zoomDebounceTimer);
     if (!Number.isFinite(this.valueAsNumber)) {
-        this.value = currentZoom.toFixed(1);
+        this.value = viewerState.currentZoom.toFixed(1);
         return;
     }
     pendingInputSource = 'ui';
@@ -2315,16 +2830,16 @@ zoomInput.addEventListener('change', function() {
 
 zoomOutBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
-    updateZoom(currentZoom - ZOOM_STEP, true, true);
+    updateZoom(viewerState.currentZoom - ZOOM_STEP, true, true);
 });
 
 zoomInBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
-    updateZoom(currentZoom + ZOOM_STEP, true, true);
+    updateZoom(viewerState.currentZoom + ZOOM_STEP, true, true);
 });
 
 showViewInfoBoxCheckbox.addEventListener('change', function() {
-    showViewInfoBox = this.checked;
+    viewerState.showViewInfoBox = this.checked;
     pendingInputSource = 'ui';
     sendStateToServer();
 });
@@ -2332,13 +2847,13 @@ showViewInfoBoxCheckbox.addEventListener('change', function() {
 // Deeper depth button
 deeperBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
-    updateSliceDepth(currentSliceDepth + 10, true);
+    updateSliceDepth(viewerState.currentSliceDepth + 10, true);
 });
 
 // Shallower depth button
 shallowerBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
-    updateSliceDepth(currentSliceDepth - 10, true);
+    updateSliceDepth(viewerState.currentSliceDepth - 10, true);
 });
 
 if (sliceGraphLockCheckbox) {
@@ -2346,33 +2861,34 @@ if (sliceGraphLockCheckbox) {
         setSliceGraphLocked(this.checked);
         // The checkbox's own checked state already gives its own accessible
         // feedback; only log the change 
-        announce(`Slice graph lock ${sliceGraphLocked ? 'on' : 'off'}`);
+        announce(`Slice graph lock ${viewerState.sliceGraphLocked ? 'on' : 'off'}`);
     });
 }
 
-sliceGraphRefreshBtn.addEventListener('click', function() {
-    if (!isSliceGraphRepresentationMode()) {
-        announce('refresh only available in slice-graph mode');
-        return;
-    }
-    captureSliceGraphAnchor(true);
-    pendingInputSource = 'ui';
-    sendStateToServer();
+// Refresh is keyboard-only (G) — see the 'g' case in the keydown handler.
+// There is no on-screen button for it.
+
+sliceGraphModeRadios().forEach((radio) => {
+    radio.addEventListener('change', function() {
+        if (!this.checked) return;
+        setSliceGraphMode(this.value);
+        announce(`Slice graph mode ${viewerState.sliceGraphMode === 'column-count' ? 'slice area' : 'difference'}`);
+    });
 });
-
-if (sliceGraphModeBtn) {
-    sliceGraphModeBtn.addEventListener('click', function() {
-        toggleSliceGraphMode();
-        announce(`Slice graph mode ${sliceGraphMode === 'column-count' ? 'column count' : 'difference'}`);
-    });
-}
 
 if (resetPositionBtn) {
     resetPositionBtn.addEventListener('click', function() {
         pendingInputSource = 'ui';
-        currentMoveCamera = "reset";
+        // Drop the remembered per-view centre -- see the 'z' case in the
+        // keydown handler for why.
+        clearCameraCenterState();
+        // "Position reset" also means undoing any roll/pitch/yaw, zoom, and
+        // slice depth, not just pan -- see resetOrientationZoomAndDepth.
+        resetOrientationZoomAndDepth();
+        // currentMoveCamera is reset inside sendStateToServer itself, only
+        // once actually consumed -- see the 'z' case in the keydown handler.
+        viewerState.currentMoveCamera = "reset";
         sendStateToServer();
-        currentMoveCamera = "none";
         announce('Position reset');
     });
 }
@@ -2403,11 +2919,6 @@ exportSliceSvgBtn.addEventListener('click', function() {
     exportCurrentSliceAsPng();
 });
 
-if (debugPipelineToggleBtn) {
-    debugPipelineToggleBtn.addEventListener('click', function() {
-        toggleDebugPipelineVisibility();
-    });
-}
 
 // Global keyboard navigation support for accessibility
 document.addEventListener('keydown', function(e) {
@@ -2483,13 +2994,25 @@ document.addEventListener('keydown', function(e) {
         return;
     }
 
+    // Every shortcut the viewer acts on, reported before it is handled. The
+    // server only sees the renders a keypress happens to produce, so without this
+    // the log cannot distinguish "pressed R" from "pressed a key that did
+    // nothing", and keys that never render (H, the period key) leave no trace.
+    reportStudyInteraction('keyboard', {
+        key: normalizedKey,
+        raw_key: rawKey,
+        code,
+        repeat: Boolean(e.repeat),
+        active_element_id: document.activeElement?.id || null,
+    });
+
     switch(normalizedKey) {
         case 'arrowup':
             // Go deeper (increase depth by 1%)
             e.preventDefault();
             {
-                const previousDepth = currentSliceDepth;
-                const nextDepth = Math.min(100, currentSliceDepth + 1);
+                const previousDepth = viewerState.currentSliceDepth;
+                const nextDepth = Math.min(100, viewerState.currentSliceDepth + 1);
                 updateSliceDepth(nextDepth, false);
                 announceDepthValue(nextDepth, previousDepth);
             }
@@ -2498,8 +3021,8 @@ document.addEventListener('keydown', function(e) {
             // Go shallower (decrease depth by 1%)
             e.preventDefault();
             {
-                const previousDepth = currentSliceDepth;
-                const nextDepth = Math.max(0, currentSliceDepth - 1);
+                const previousDepth = viewerState.currentSliceDepth;
+                const nextDepth = Math.max(0, viewerState.currentSliceDepth - 1);
                 updateSliceDepth(nextDepth, false);
                 announceDepthValue(nextDepth, previousDepth);
             }
@@ -2508,8 +3031,8 @@ document.addEventListener('keydown', function(e) {
             // Go deeper (increase depth by 10%)
             e.preventDefault();
             {
-                const previousDeeperDepth = currentSliceDepth;
-                const newDeeperDepth = Math.min(100, currentSliceDepth + 10);
+                const previousDeeperDepth = viewerState.currentSliceDepth;
+                const newDeeperDepth = Math.min(100, viewerState.currentSliceDepth + 10);
                 updateSliceDepth(newDeeperDepth, false);
                 announceDepthValue(newDeeperDepth, previousDeeperDepth);
             }
@@ -2518,8 +3041,8 @@ document.addEventListener('keydown', function(e) {
             // Go shallower (decrease depth by 10%)
             e.preventDefault();
             {
-                const previousShallowerDepth = currentSliceDepth;
-                const newShallowerDepth = Math.max(0, currentSliceDepth - 10);
+                const previousShallowerDepth = viewerState.currentSliceDepth;
+                const newShallowerDepth = Math.max(0, viewerState.currentSliceDepth - 10);
                 updateSliceDepth(newShallowerDepth, false);
                 announceDepthValue(newShallowerDepth, previousShallowerDepth);
             }
@@ -2528,10 +3051,10 @@ document.addEventListener('keydown', function(e) {
         case '2':
             e.preventDefault();
             {
-                const previousZoom = currentZoom;
-                const zoomChanged = updateZoom(currentZoom - ZOOM_STEP, false, true);
+                const previousZoom = viewerState.currentZoom;
+                const zoomChanged = updateZoom(viewerState.currentZoom - ZOOM_STEP, false, true);
                 if (zoomChanged) {
-                    announceZoomValue(currentZoom, previousZoom);
+                    announceZoomValue(viewerState.currentZoom, previousZoom);
                 } else {
                     announceZoomValue(previousZoom, previousZoom);
                 }
@@ -2540,10 +3063,10 @@ document.addEventListener('keydown', function(e) {
         case '3':
             e.preventDefault();
             {
-                const previousZoom = currentZoom;
-                const zoomChanged = updateZoom(currentZoom + ZOOM_STEP, false, true);
+                const previousZoom = viewerState.currentZoom;
+                const zoomChanged = updateZoom(viewerState.currentZoom + ZOOM_STEP, false, true);
                 if (zoomChanged) {
-                    announceZoomValue(currentZoom, previousZoom);
+                    announceZoomValue(viewerState.currentZoom, previousZoom);
                 } else {
                     announceZoomValue(previousZoom, previousZoom);
                 }
@@ -2559,7 +3082,7 @@ document.addEventListener('keydown', function(e) {
         case 'r':
             e.preventDefault();
             {
-                const previousMode = currentRenderMode;
+                const previousMode = viewerState.currentRenderMode;
                 cycleRenderMode(false);
                 announceAlert(`${renderModeLabel()}`);
             }
@@ -2568,7 +3091,7 @@ document.addEventListener('keydown', function(e) {
         case 't':
             e.preventDefault();
             {
-                const previousViewMode = currentRepresentationMode;
+                const previousViewMode = viewerState.currentRepresentationMode;
                 cycleRepresentationMode(false);
                 announceAlert(`${representationModeLabel()}`);
             }
@@ -2618,7 +3141,7 @@ document.addEventListener('keydown', function(e) {
             }
             captureSliceGraphAnchor(true);
             sendStateToServer();
-            announceAlert(`view ${sliceGraphAnchorView}, depth ${sliceGraphAnchorDepth}%`);
+            announceAlert(`view ${viewerState.sliceGraphAnchorView}, depth ${viewerState.sliceGraphAnchorDepth}%`);
             break;
 
         case 'v':
@@ -2628,52 +3151,53 @@ document.addEventListener('keydown', function(e) {
                 break;
             }
             toggleSliceGraphLock();
-            announceAlert(`${sliceGraphLocked ? 'on' : 'off'}`);
+            announceAlert(`${viewerState.sliceGraphLocked ? 'on' : 'off'}`);
             break;
 
         case 'w':
-            currentMoveCamera = "up";
+            // "Move object up" means the viewport has to shift the other way —
+            // see the comment on pendingPanDirection / sendStateToServer (#153).
+            // currentMoveCamera and pendingPanDirection are reset inside
+            // sendStateToServer itself, only once actually consumed, so a
+            // press that gets coalesced into a later resend isn't lost.
+            viewerState.currentMoveCamera = "down";
+            pendingPanDirection = 'up';
             sendStateToServer();
-            currentMoveCamera = "none";
-            announceAlert('up');
             break;
         case 'd':
-            currentMoveCamera = "right";
+            viewerState.currentMoveCamera = "left";
+            pendingPanDirection = 'right';
             sendStateToServer();
-            currentMoveCamera = "none";
-            announceAlert('right');
             break;
         case 's':
-            currentMoveCamera = "down";
+            viewerState.currentMoveCamera = "up";
+            pendingPanDirection = 'down';
             sendStateToServer();
-            currentMoveCamera = "none";
-            announceAlert('down');
             break;
         case '[':
-            composeScrollbar = !composeScrollbar;
+            viewerState.composeScrollbar = !viewerState.composeScrollbar;
             sendStateToServer();
-            announceAlert(`${composeScrollbar ? 'on' : 'off'}`);
+            announceAlert(`${viewerState.composeScrollbar ? 'on' : 'off'}`);
             break;
         case ']':
-            composeSliceGraph = !composeSliceGraph;
+            viewerState.composeSliceGraph = !viewerState.composeSliceGraph;
             sendStateToServer();
-            announceAlert(`${composeSliceGraph ? 'on' : 'off'}`);
+            announceAlert(`${viewerState.composeSliceGraph ? 'on' : 'off'}`);
             break;
 
         case 'a':
-            currentMoveCamera = "left";
+            viewerState.currentMoveCamera = "right";
+            pendingPanDirection = 'left';
             sendStateToServer();
-            currentMoveCamera = "none";
-            announceAlert('left');
             break;
 
         case '4':
             e.preventDefault();
             {
-                const previousZoom = currentZoom;
-                const zoomChanged = updateZoom(currentZoom - FINE_ZOOM_STEP, false);
+                const previousZoom = viewerState.currentZoom;
+                const zoomChanged = updateZoom(viewerState.currentZoom - FINE_ZOOM_STEP, false);
                 if (zoomChanged) {
-                    announceZoomValue(currentZoom, previousZoom);
+                    announceZoomValue(viewerState.currentZoom, previousZoom);
                 } else {
                     announceZoomValue(previousZoom, previousZoom);
                 }
@@ -2682,10 +3206,10 @@ document.addEventListener('keydown', function(e) {
         case '5':
             e.preventDefault();
             {
-                const previousZoom = currentZoom;
-                const zoomChanged = updateZoom(currentZoom + FINE_ZOOM_STEP, false);
+                const previousZoom = viewerState.currentZoom;
+                const zoomChanged = updateZoom(viewerState.currentZoom + FINE_ZOOM_STEP, false);
                 if (zoomChanged) {
-                    announceZoomValue(currentZoom, previousZoom);
+                    announceZoomValue(viewerState.currentZoom, previousZoom);
                 } else {
                     announceZoomValue(previousZoom, previousZoom);
                 }
@@ -2711,9 +3235,20 @@ document.addEventListener('keydown', function(e) {
 
         case 'z':
             e.preventDefault();
-            currentMoveCamera = "reset";
+            // Drop the remembered per-view centre so this request omits
+            // camera_center entirely. Without this, the stale remembered centre still went out on
+            // this same request and silently overrode the reset.
+            clearCameraCenterState();
+            // "Position reset" also means undoing any roll/pitch/yaw, zoom,
+            // and slice depth, not just pan -- see
+            // resetOrientationZoomAndDepth.
+            resetOrientationZoomAndDepth();
+            // currentMoveCamera is reset inside sendStateToServer itself, only
+            // once actually consumed -- resetting it here raced ahead of
+            // that when a render was already in flight (the coalescing guard
+            // returns before consuming it), silently dropping the reset.
+            viewerState.currentMoveCamera = "reset";
             sendStateToServer();
-            currentMoveCamera = "none";
             announceAlert('Position reset');
             break;
 
@@ -2739,6 +3274,13 @@ document.addEventListener('DOMContentLoaded', async function() {
     // Move focus to the top element (page title) on load.
     focusTopOfPage();
 
+    // Study mode: same viewer, minus the model chooser and the upload control.
+    // The model is decided by the protocol step, and study.js drives it from
+    // there; the study region in the markup is revealed by this class.
+    if (studyMode) {
+        document.body.classList.add('study-ui');
+    }
+
     // Simplified workshop viewer: the /workshop route (or ?ui=simple) shows only
     // the core controls (see viewer.css) and constrains depth to four steps.
     const workshopParams = new URLSearchParams(location.search);
@@ -2748,14 +3290,14 @@ document.addEventListener('DOMContentLoaded', async function() {
         // rendering a session starts from. The full viewer keeps x+ and Filled.
         // Set directly rather than through updateView/switchToRenderMode so no
         // extra render is sent before the requested model is resolved below.
-        currentView = 'y+';
-        setOrientationFromView(currentView);
-        currentRenderMode = 'xray';
+        viewerState.currentView = 'y+';
+        setOrientationFromView(viewerState.currentView);
+        viewerState.currentRenderMode = 'xray';
     }
 
     // Set initial values
     updateSliceDepth(50, false);
-    updateView(currentView);
+    updateView(viewerState.currentView);
     updateDisplayOptions();
     updateZoom(0, false);
     syncRadios();
@@ -2763,28 +3305,32 @@ document.addEventListener('DOMContentLoaded', async function() {
     updateSliceGraphLockUI();
     updateSliceGraphModeUI();
     refreshViewInfoSummary();
-    showViewInfoBoxCheckbox.checked = showViewInfoBox;
+    showViewInfoBoxCheckbox.checked = viewerState.showViewInfoBox;
     refreshStatusBar();
 
     // Expose globally so display-connect handlers can trigger a send.
     window.sendStateToServer = sendStateToServer;
     initializeDebugPipelineVisibility();
+    initializeOptionalSectionVisibility();
+    initializeSliceGraphMode();
+    updateGenericDeviceConnectUI();
 
     // Pre-select a model when opened via /workshop?model=<stem> or ?model=<stem>.
-    // Resolve the stem to its server index before the first render so the viewer
-    // opens directly on that model instead of flashing model 0.
+    // The URL already carries the name a render wants, so there is nothing to
+    // look up: this used to fetch the whole model list on every start purely to
+    // turn that name back into a position.
     const wantedModel = workshopParams.get('model');
     if (wantedModel) {
-        const wantedStem = wantedModel.replace(/\.[^.]+$/, '');
-        try {
-            const gd = await (await fetch(`${SERVER_URL}/get_data`)).json();
-            const idx = (gd.model_list || []).indexOf(wantedStem);
-            if (idx >= 0) {
-                currentModel = String(idx);
-                if (sbModel) sbModel.textContent = wantedStem;
-            }
-        } catch (_) { /* fall back to the default model */ }
+        viewerState.currentModel = wantedModel.replace(/\.[^.]+$/, '');
+        if (sbModel) sbModel.textContent = viewerState.currentModel;
     }
+
+    // In study mode the first render belongs to the protocol, not to page load:
+    // study.js loads whichever model the current step calls for once it has the
+    // session. Rendering the default here would put an arbitrary object on the
+    // braille display -- possibly one from a later task -- and log it against
+    // nothing.
+    if (studyMode) return;
 
     // Send initial state to server
     pendingInputSource = 'init';
