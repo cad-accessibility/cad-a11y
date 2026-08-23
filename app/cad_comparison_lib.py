@@ -1263,9 +1263,11 @@ class CADComparisonRenderer:
         # the only thing that ever scales this down further, and it changes only
         # when the user explicitly zooms -- never as a side effect of rotating,
         # panning, or slicing.
-        if render_screen_size[1] > 0 and self.longest_3d_dim > 0:
-            scale_vertical_dist = self.longest_3d_dim
-            scale_horizontal_dist = self.longest_3d_dim * screen_w_for_ratio / render_screen_size[1]
+        screen_min_dim = min(screen_w_for_ratio, render_screen_size[1])
+
+        if screen_min_dim > 0 and self.longest_3d_dim > 0:
+            scale_horizontal_dist = self.longest_3d_dim * screen_w_for_ratio / screen_min_dim
+            scale_vertical_dist = self.longest_3d_dim * render_screen_size[1] / screen_min_dim
         else:
             # Degenerate display or model — fall back to the projected extents.
             scale_horizontal_dist = np.abs(view_limits[0][1] - view_limits[0][0])
