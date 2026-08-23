@@ -42,12 +42,6 @@ def _read_binary_stl(file):
 
     stream = file.stream
 
-    try:
-        original_pos = stream.tell()
-    except (AttributeError, OSError):
-
-        original_pos = 0
-
     stream.seek(0)
 
     header_bytes = stream.read(80)
