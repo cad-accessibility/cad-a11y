@@ -41,7 +41,7 @@ from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
 
-from . import db, study, study_db
+from . import db, recording, study, study_db
 from .braille_display import (
     _pixels_to_braille_cells,
     _pixels_to_braille_cells_dotpad,
@@ -303,11 +303,11 @@ def _participant_for_name(first_name: str) -> str:
     the workshop mitigates that out of band (name tags, photos)."""
     existing = db.get_session_id_for_identifier(first_name)
     if existing:
-        db.upsert_session(existing)  # refresh last_seen_at
+        recording.current().touch_session(existing)  # refresh last_seen_at
         return existing
     user_id = str(uuid.uuid4())
-    db.upsert_session(user_id)
-    db.save_session_identifier(user_id, first_name, consent_given=False, is_workshop=True)
+    recording.current().touch_session(user_id)
+    recording.current().identify_session(user_id, first_name, consent=False, is_workshop=True)
     return user_id
 
 
@@ -889,16 +889,24 @@ def _render_and_send(
 
     # Device sends are handled browser-side (Web HID / Web BLE).
     event.update({"status": "success", "send_duration_ms": 0.0})
-    _write_braille_event(event)
+    # This line carries the model, the view, the depth, the render mode and the
+    # caller's address, so it is interaction data and goes through the recorder.
+    recording.current().braille_event(event)
 
     bbox = getattr(engine, "bbox", None)
     return rendered, bbox, braille_payload, result
 
 
 def _save_print_if_requested(params: dict[str, Any], result: RenderResult, img_data: np.ndarray) -> None:
+    """A print export is a file on disk carrying what was on the display, so it
+    goes through the recorder like every other write rather than straight to
+    RENDERS_DIR. On the demo path the recorder is null and no file appears."""
     if not params.get("print_view"):
         return
+    recording.current().print_render(params, result, img_data)
 
+
+def _write_print_render(params: dict[str, Any], result: RenderResult, img_data: np.ndarray) -> None:
     RENDERS_DIR.mkdir(parents=True, exist_ok=True)
     next_index = 0
     for file_path in RENDERS_DIR.glob("print_*.pdf"):
@@ -1231,7 +1239,7 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
             braille_payload,
         )
     session_id = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE)) if has_request_context() else None
-    db.record_render(
+    recording.current().render(
         session_id=session_id,
         view=str(params.get("view", "")),
         render_mode=str(params.get("renderMode", "")),
@@ -1295,6 +1303,37 @@ def open_viewer_in_browser() -> None:
         _log(f"Could not open viewer in browser: {error}", force=True)
 
 
+# ---------------------------------------------------------------------------
+# Recording: the single injection point
+#
+# Everything below that could later say what somebody did goes through
+# recording.current(). There is deliberately no `if demo:` at any of those call
+# sites -- the object they get back is the whole difference. See app/recording.py.
+# ---------------------------------------------------------------------------
+
+recording.install(
+    recording.PersistentRecorder(
+        analytics=db,
+        braille_writer=_write_braille_event,
+        study_render_writer=study.record_render_for_request,
+        print_writer=_write_print_render,
+        cookie_writer=_attach_session_cookie,
+    )
+)
+
+
+@app.before_request
+def _bind_recorder_for_request() -> None:
+    """Bind demo requests to the null recorder before any handler runs.
+
+    Ordinary requests are left alone and fall through to the process recorder,
+    which on a demo station is itself null. Binding here rather than in each
+    handler is what makes a handler added later safe by default.
+    """
+    if recording.request_is_demo(request):
+        recording.bind_null()
+
+
 @app.route("/viewer", methods=["GET"])
 def serve_viewer():
     """Serve the main HTML viewer.
@@ -1351,7 +1390,7 @@ def workshop():
                 resp = redirect(f"/workshop?model={quote(stem)}", code=302)
                 user_id = db.get_session_id_for_identifier(normalized_name)
                 if user_id:
-                    _attach_session_cookie(resp, user_id)
+                    recording.current().attach_session_cookie(resp, user_id)
                 return resp
     return _render_workshop_entry(notice=True)
 
@@ -1514,7 +1553,7 @@ def render_view():
                 # Recorded on the cache path too: a cached response still put a
                 # new image under the participant's fingers, and dropping those
                 # would lose most of a fast arrow-key traversal from the record.
-                study.record_render_for_request(merged_params, model_stem=model_stem, cache_hit=True)
+                recording.current().study_render(merged_params, model_stem=model_stem, cache_hit=True)
                 return jsonify(cached_response), 200
 
         response = _render_response(merged_params, source="http_render")
@@ -1527,7 +1566,7 @@ def render_view():
             }
         )
         response["debug"] = debug
-        study.record_render_for_request(merged_params, model_stem=model_stem, cache_hit=False)
+        recording.current().study_render(merged_params, model_stem=model_stem, cache_hit=False)
 
         # A pan is not cacheable in either direction. "move left" means move from
         # wherever this window already was, and neither key carries that starting
@@ -1743,7 +1782,7 @@ def _save_and_index_stl(
 
     if session_id:
         try:
-            db.register_model(
+            recording.current().register_model(
                 session_id,
                 filename,
                 original_name or filename,
@@ -1968,11 +2007,14 @@ def session_identify():
         email = email or None
 
     session_id = _get_or_create_session_id()  # reuse a valid cookie or mint a new UUID
-    db.upsert_session(session_id)
-    db.save_session_identifier(session_id, email, bool(consent))
+    recorder = recording.current()
+    recorder.touch_session(session_id)
+    recorder.identify_session(session_id, email, consent=bool(consent))
 
     response = jsonify({"status": "success"})
-    _attach_session_cookie(response, session_id)
+    # The cookie is a write too: it is the identifier that would survive the tab
+    # closing. The null recorder returns the response untouched.
+    recorder.attach_session_cookie(response, session_id)
     return response, 200
 
 
@@ -2010,7 +2052,7 @@ def delete_model(filename: str):
     except Exception as err:
         return jsonify({"status": "error", "message": f"Could not remove file: {err}"}), 500
 
-    db.mark_model_deleted(session_id, safe_name)
+    recording.current().forget_model(session_id, safe_name)
 
     global AVAILABLE_MODELS, MODEL_NAME_LIST
     with models_lock:
@@ -2036,7 +2078,7 @@ def track_event():
     event_data = data.get("event_data")
     if event_data is not None and not isinstance(event_data, dict):
         return jsonify({"status": "error", "message": "event_data must be an object"}), 400
-    db.record_page_event(session_id, event_type, event_data)
+    recording.current().page_event(session_id, event_type, event_data)
     return jsonify({"status": "success"}), 200
 
 
@@ -2272,6 +2314,7 @@ def main() -> int:
     _log(f"Upload directory writable: {_is_writable_directory(UPLOAD_DIR)}", force=True)
     _log(f"Models found: {len(AVAILABLE_MODELS)}", force=True)
     _log("Endpoints: POST /render, GET /get_data", force=True)
+
     _log(f"Braille send logs: {BRAILLE_LOG_PATH}", force=True)
     if QUIET_MODE:
         _log("Output mode: quiet (set SERVER_VERBOSE=1 for debug logs)", force=True)
