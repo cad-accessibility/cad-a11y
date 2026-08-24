@@ -15,6 +15,7 @@ def _make_renderer(monkeypatch, width=30, height=20):
     renderer.screen_size = [width, height]
     renderer.shapes = [object(), object()]
     renderer.bbox = None
+    renderer.longest_3d_dim = 0.0
     renderer.view_limits = [
         [[0, 10], [0, 10]],
         [[0, 10], [0, 10]],

@@ -193,15 +193,25 @@ def _front_horizontal_dist(built):
 def test_render_actually_uses_a_25_percent_step(renderer):
     """Regression test at the render() level, not just the pure function:
     proves render() computes pan_step_scale as 0.25 * zoom_scale rather than
-    silently keeping the old 0.5 factor around."""
-    limits, horizontal_dist = _front_horizontal_dist(renderer)
+    silently keeping the old 0.5 factor around.
+
+    Since scale is now locked to the longest 3D bbox dimension along the
+    shortest display dimension (not the projected bounding box), the expected
+    step is 25% of the fixed-scale viewport width, not 25% of the projected
+    horizontal_dist."""
+    limits, _ = _front_horizontal_dist(renderer)
     start_center = renderer._default_camera_center(limits)
 
     result = renderer.render(dict(BASE_PARAMS, move_camera_center="right"))
 
-    # zoom_level 0 -> zoom_scale 1.0, so the expected step is exactly 25% of
-    # horizontal_dist.
-    expected_delta = 0.25 * horizontal_dist
+    # Compute the fixed-scale viewport width used by render() for the
+    # DEFAULT_SCREEN_SIZE (96x40) display at zoom_level=0 (zoom_scale=1.0).
+    xmin_b, ymin_b, zmin_b, xmax_b, ymax_b, zmax_b = renderer.bbox
+    longest_3d_dim = max(xmax_b - xmin_b, ymax_b - ymin_b, zmax_b - zmin_b)
+    screen_w, screen_h = renderer.screen_size
+    screen_min_dim = min(screen_w, screen_h)
+    scale_horizontal_dist = longest_3d_dim * screen_w / screen_min_dim
+    expected_delta = 0.25 * scale_horizontal_dist
     assert math.isclose(result.camera_center[0] - start_center[0], expected_delta, rel_tol=1e-6)
 
 

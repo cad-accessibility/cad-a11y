@@ -2177,7 +2177,14 @@ document.getElementById("model-list-dropdown").addEventListener("change", functi
     const selectedItem = this.value;
     viewerState.currentModel = selectedItem;
     clearCameraCenterState();
-    resetSlicePlanes();
+    // A new model gets its own default view: straight-on orientation, zoom 0
+    // (fit longest_3d_dim along the shortest display dimension), and slice depth back to 50% -- not
+    // whatever the previous model was left at.
+    // Likewise the render mode: back to the app default rather than carrying
+    // over e.g. xray or superposition from the previous model.
+    resetOrientationZoomAndDepth();
+    viewerState.currentRenderMode = 'cut';
+    syncRadios();
     const selectedLabel = this.selectedIndex >= 0 ? this.options[this.selectedIndex].text : `model ${selectedItem}`;
     if (sbModel && this.selectedIndex >= 0) {
         sbModel.textContent = this.options[this.selectedIndex].text;
@@ -2293,7 +2300,12 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             dropdown.value = uploadedStem;
             viewerState.currentModel = uploadedStem;
             clearCameraCenterState();
-            resetSlicePlanes();
+            // See the model-dropdown change handler: a new model always gets
+            // the app's default view and render mode, not whatever the
+            // previous model was left at.
+            resetOrientationZoomAndDepth();
+            viewerState.currentRenderMode = 'cut';
+            syncRadios();
             const selectedLabel = dropdown.selectedIndex >= 0 ? dropdown.options[dropdown.selectedIndex].text : data.filename;
             if (sbModel && dropdown.selectedIndex >= 0) {
                 sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
@@ -2657,8 +2669,11 @@ function applyStudyDefaults(defaults) {
     if (representationModeByKey(wanted.representation_mode)) {
         viewerState.currentRepresentationMode = wanted.representation_mode;
     }
+    // A step that doesn't specify its own zoom defaults to 0 (fit the longest
+    // 3D dimension vertically) -- not whatever zoom the previous step's model
+    // happened to be left at.
     const zoom = Number(wanted.zoom);
-    if (Number.isFinite(zoom)) viewerState.currentZoom = Math.max(MIN_ZOOM, zoom);
+    viewerState.currentZoom = Number.isFinite(zoom) ? Math.max(MIN_ZOOM, zoom) : 0;
 
     updateDisplayOptions();
     if (typeof wanted.compose_scrollbar === 'boolean') {
