@@ -2182,6 +2182,7 @@ document.getElementById("model-list-dropdown").addEventListener("change", functi
     // whatever the previous model was left at.
     // Likewise the render mode: back to the app default rather than carrying
     // over e.g. xray or superposition from the previous model.
+    resetOrientationZoomAndDepth();
     viewerState.currentRenderMode = 'cut';
     syncRadios();
     const selectedLabel = this.selectedIndex >= 0 ? this.options[this.selectedIndex].text : `model ${selectedItem}`;
