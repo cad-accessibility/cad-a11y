@@ -700,10 +700,15 @@ class CADComparisonRenderer:
         digest = hashlib.sha256(signature.encode()).hexdigest()[:12]
         stem = os.path.splitext(os.path.basename(self.after_model_path))[0]
         safe_stem = re.sub(r"[^A-Za-z0-9._-]", "_", stem)[:80]
-        return os.path.join(
+        # CAD_A11Y_PRECOMPUTE_DIR relocates this whole cache. A demo station points
+        # it at a scratch directory the process deletes on exit, so a model somebody
+        # brought along leaves no derived file behind under data/.
+        override = os.environ.get("CAD_A11Y_PRECOMPUTE_DIR", "").strip()
+        base = override or os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "data", "renders", "precompute", f"{safe_stem}-{digest}.json.gz",
+            "data", "renders", "precompute",
         )
+        return os.path.join(base, f"{safe_stem}-{digest}.json.gz")
 
     def load_precompute_cache(self):
         """Restore a previous run's slice data, or return False.

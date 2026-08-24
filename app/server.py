@@ -13,6 +13,7 @@ person's device moves that window and no other.
 
 from __future__ import annotations
 
+import atexit
 import base64
 import copy
 import contextlib
@@ -26,6 +27,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import tempfile
 import threading
 import time
 import webbrowser
@@ -162,6 +164,43 @@ def _resolve_upload_dir() -> Path:
         + ". Set UPLOAD_MODEL_DIR to a writable path."
     )
 
+
+# ---------------------------------------------------------------------------
+# Demo station scratch space
+#
+# A demo station must leave nothing behind when it exits. The mesh loader and the
+# slice precompute cache both take a *path* -- trimesh reads STL bytes from a file
+# handle and the precompute cache is a gzipped file per model -- so an uploaded
+# model does touch the disk while it is being explored. What this does is make
+# that a directory the operating system hands out and this process removes: it is
+# outside the repo, outside any Docker volume, named per run, and deleted whole
+# when the process ends. Nothing in it survives the station being shut down, and
+# no other station can see into it.
+#
+# Stated plainly because it is the one place the "nothing crosses the process
+# boundary" rule is met by cleanup rather than by never writing: an upload's bytes
+# exist on disk for as long as the tab is open. The tab's own unload handler
+# (POST /uploads/cleanup) removes the file before that, so in practice the window
+# is the exploration itself.
+_demo_scratch: Path | None = None
+
+
+def demo_scratch_dir() -> Path:
+    """The per-run scratch directory, created on first use and removed at exit."""
+    global _demo_scratch
+    if _demo_scratch is None:
+        _demo_scratch = Path(tempfile.mkdtemp(prefix="cad-a11y-demo-"))
+        atexit.register(shutil.rmtree, _demo_scratch, True)
+    return _demo_scratch
+
+
+if recording.demo_only_process():
+    # Uploads, print exports and the precompute cache all move into scratch, so a
+    # demo station writes nothing into data/ at all.
+    _scratch = demo_scratch_dir()
+    os.environ.setdefault("UPLOAD_MODEL_DIR", str(_scratch / "uploads"))
+    os.environ.setdefault("CAD_A11Y_PRECOMPUTE_DIR", str(_scratch / "precompute"))
+    RENDERS_DIR = _scratch / "renders"
 
 UPLOAD_DIR = _resolve_upload_dir()
 
@@ -440,7 +479,13 @@ _MODEL_DIR_RESOLVED = MODEL_DIR.resolve()
 # and because study.py importing server.py would be a cycle.
 study.set_model_list_provider(lambda: MODEL_NAME_LIST)
 study.set_repo_root_provider(lambda: REPO_ROOT)
-app.register_blueprint(study.study_bp)
+# Not registered at all on a demo station. The study path is not merely unused
+# there -- it is the thing that allocates participant identifiers and opens
+# session logs, and the surest way to know it cannot run is for its URLs not to
+# exist. /study, /study/control and everything under them return 404.
+DEMO_ONLY = recording.demo_only_process()
+if not DEMO_ONLY:
+    app.register_blueprint(study.study_bp)
 
 
 def _is_builtin(model_path: Path) -> bool:
@@ -1295,10 +1340,14 @@ def initialize_default_braille_render() -> None:
         _log(f"Initial render failed: {error}", force=True)
 
 
-def open_viewer_in_browser() -> None:
+def open_viewer_in_browser(port: int = 6969) -> None:
+    # A demo station opens on /demo, so nobody has to remember to type it and
+    # nobody can land on the recording viewer by opening the shortcut.
+    path = "/demo" if DEMO_ONLY else "/viewer"
+    url = f"http://localhost:{port}{path}"
     try:
-        webbrowser.open("http://localhost:6969/viewer", new=1)
-        _log("Opened viewer: http://localhost:6969/viewer", force=True)
+        webbrowser.open(url, new=1)
+        _log(f"Opened viewer: {url}", force=True)
     except Exception as error:
         _log(f"Could not open viewer in browser: {error}", force=True)
 
@@ -1311,27 +1360,112 @@ def open_viewer_in_browser() -> None:
 # sites -- the object they get back is the whole difference. See app/recording.py.
 # ---------------------------------------------------------------------------
 
-recording.install(
-    recording.PersistentRecorder(
-        analytics=db,
-        braille_writer=_write_braille_event,
-        study_render_writer=study.record_render_for_request,
-        print_writer=_write_print_render,
-        cookie_writer=_attach_session_cookie,
+if DEMO_ONLY:
+    # No handles are constructed at all: this process has no analytics module,
+    # no log path and no cookie writer to reach for.
+    #
+    # The same instance the per-request binding uses, so that on a demo station
+    # the count of writes that did not happen is one number rather than two --
+    # /demo/status reports it, and a reading that only covered half the requests
+    # would be worse than no reading.
+    recording.install(recording.null_recorder())
+else:
+    recording.install(
+        recording.PersistentRecorder(
+            analytics=db,
+            braille_writer=_write_braille_event,
+            study_render_writer=study.record_render_for_request,
+            print_writer=_write_print_render,
+            cookie_writer=_attach_session_cookie,
+        )
     )
-)
+
+
+# Paths a demo client has no business on. Two of them write durable state that
+# does not pass through the recorder -- /study allocates participant identifiers
+# and opens session logs, /ingest writes a model into the public built-in
+# directory -- so for those the recorder swap is not the whole answer and the
+# request is refused outright.
+#
+# On a station launched with CAD_A11Y_DEMO=1 the study routes do not exist at
+# all, which is the stronger guarantee. This closes the same door on a server
+# that is serving both, where a demo page shares an origin with a study session.
+_CLOSED_TO_DEMO = ("/study", "/ingest")
 
 
 @app.before_request
-def _bind_recorder_for_request() -> None:
+def _bind_recorder_for_request():
     """Bind demo requests to the null recorder before any handler runs.
 
     Ordinary requests are left alone and fall through to the process recorder,
     which on a demo station is itself null. Binding here rather than in each
     handler is what makes a handler added later safe by default.
     """
-    if recording.request_is_demo(request):
-        recording.bind_null()
+    if not recording.request_is_demo(request):
+        return None
+    recording.bind_null()
+
+    path = request.path
+    if any(path == closed or path.startswith(closed + "/") for closed in _CLOSED_TO_DEMO):
+        return jsonify(
+            {
+                "status": "error",
+                "message": "Not available in demo mode.",
+            }
+        ), 404
+    return None
+
+
+# ---------------------------------------------------------------------------
+# The demo endpoint
+# ---------------------------------------------------------------------------
+
+@app.route("/demo", methods=["GET"])
+def demo_view():
+    """Exploration with nothing recorded, at its own address.
+
+    Same HTML as /viewer, so every control -- depth, the U/O/I/K/J/L rotation
+    cluster, R for render mode, the display's own buttons -- is the one that has
+    always been there. What differs is decided in three places and nowhere else:
+
+    * ``before_request`` above bound this request, and every request the page
+      makes, to the null recorder;
+    * ``static/js/demo-bootstrap.js`` replaces the browser's own persistence and
+      network transports before the application's code runs;
+    * ``viewer.js`` refuses to start on this path if that shim did not run.
+
+    There is no consent flow, no onboarding, no task sequence and no facilitator
+    panel here: those live on /study, which a demo station does not register at
+    all.
+    """
+    return send_file(REPO_ROOT / "accessible-3d-viewer.html")
+
+
+@app.route("/demo/status", methods=["GET"])
+def demo_status():
+    """What the page's indicator reads, and what to show a host who asks.
+
+    Deliberately answerable from the running app rather than from the source. It
+    reports the recorder this very request resolved to, so it cannot say
+    "recording off" while some other code path is on: it is the same
+    ``recording.current()`` every write goes through.
+    """
+    recorder = recording.current()
+    return jsonify(
+        {
+            "demo": True,
+            "recording": bool(recorder.records),
+            "recorder": recorder.name,
+            "process_demo_only": recording.demo_only_process(),
+            "study_routes_registered": any(
+                str(rule).startswith("/study") for rule in app.url_map.iter_rules()
+            ),
+            # Counts calls that reached the null recorder and wrote nothing. Zero
+            # is normal on a freshly opened page; it climbs as somebody explores,
+            # and it is the count of writes that did *not* happen.
+            "suppressed_writes": getattr(recorder, "writes", 0),
+        }
+    ), 200
 
 
 @app.route("/viewer", methods=["GET"])
@@ -2308,14 +2442,31 @@ def serve_static_css(filename):
 
 
 def main() -> int:
-    _log("Server starting on http://localhost:6969", force=True)
+    # One station per process, so three stations on one machine need three ports.
+    # See the demo section of the README.
+    port = int(os.getenv("PORT", "6969") or "6969")
+    _log(f"Server starting on http://localhost:{port}", force=True)
     _log(f"Model directory: {MODEL_DIR}", force=True)
     _log(f"Upload directory: {UPLOAD_DIR}", force=True)
     _log(f"Upload directory writable: {_is_writable_directory(UPLOAD_DIR)}", force=True)
     _log(f"Models found: {len(AVAILABLE_MODELS)}", force=True)
     _log("Endpoints: POST /render, GET /get_data", force=True)
 
-    _log(f"Braille send logs: {BRAILLE_LOG_PATH}", force=True)
+    if DEMO_ONLY:
+        # Said loudly, at the top, because it is the thing to check before letting
+        # anybody sit down at this station.
+        _log("", force=True)
+        _log("=" * 60, force=True)
+        _log("DEMO STATION - RECORDING IS OFF", force=True)
+        _log("  Nothing is written: no databases, no logs, no cookies.", force=True)
+        _log(f"  Open: http://localhost:{port}/demo", force=True)
+        _log(f"  Confirm: http://localhost:{port}/demo/status", force=True)
+        _log("  The study endpoints are not served by this process.", force=True)
+        _log(f"  Scratch (deleted on exit): {demo_scratch_dir()}", force=True)
+        _log("=" * 60, force=True)
+        _log("", force=True)
+    else:
+        _log(f"Braille send logs: {BRAILLE_LOG_PATH}", force=True)
     if QUIET_MODE:
         _log("Output mode: quiet (set SERVER_VERBOSE=1 for debug logs)", force=True)
 
@@ -2336,12 +2487,12 @@ def main() -> int:
         target=initialize_default_braille_render, name="cad-initial-render", daemon=True
     ).start()
     start_model_warmup()
-    open_viewer_in_browser()
+    open_viewer_in_browser(port)
 
     _log("Ready.", force=True)
     # threaded=True lets /events (SSE) and /get_data respond concurrently while
     # a render is in progress; render_lock still serializes the renders themselves.
-    app.run(debug=False, host="0.0.0.0", port=6969, threaded=True)
+    app.run(debug=False, host="0.0.0.0", port=port, threaded=True)
     return 0
 
 
