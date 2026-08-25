@@ -3442,6 +3442,32 @@ window.addEventListener('pageshow', function() {
     focusTopOfPage();
 });
 
+// Tell the server to delete this tab's uploads when the tab goes away.
+//
+// The endpoint has been there since uploads were made per-tab; nothing was
+// calling it, so an uploaded file sat on disk until something else removed it.
+// That matters most on a demo station, where a model somebody brought along
+// must not outlive their turn at the display.
+//
+// pagehide rather than beforeunload: beforeunload does not fire reliably on
+// mobile or when a tab is discarded, and pagehide does. keepalive rather than
+// sendBeacon, because the demo page refuses sendBeacon (it cannot be tagged, so
+// it cannot be discarded server-side) and keepalive is what lets an ordinary
+// fetch outlive the document.
+window.addEventListener('pagehide', function() {
+    try {
+        fetch(`${SERVER_URL}/uploads/cleanup`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ upload_session_id: getUploadSessionId() }),
+            keepalive: true,
+        }).catch(function () {});
+    } catch (_) {
+        // The tab is going away regardless; a failure here costs a stale file,
+        // which the station's own shutdown clears.
+    }
+});
+
 // Handle browser zoom and text scaling
 function handleZoomChanges() {
     // Ensure the interface remains usable at different zoom levels
