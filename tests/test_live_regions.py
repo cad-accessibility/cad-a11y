@@ -35,6 +35,13 @@ IMPLICIT_LIVE_ROLES = {"alert", "status", "log", "alertdialog", "marquee", "time
 # IMPLICIT_LIVE_ROLES) is a regression.
 EXPECTED_LIVE_ELEMENTS = {
     "announcement-window": {"aria-live": None, "role": "alert"},
+    # --- Demo mode (/demo). Present in the markup on every page, revealed only
+    # on the demo path. role="status" rather than "alert": it is revealed once,
+    # during page setup, before anybody has touched a control, so there is
+    # nothing in progress for it to interrupt -- and viewer.js separately
+    # announces the same sentence assertively through the announcement layer, so
+    # a reader who is mid-sentence hears it there rather than twice here.
+    "demo-banner": {"aria-live": None, "role": "status"},
     "announcement-window-polite": {"aria-live": None, "role": "status"},
     # Inline form-validation error in the session-consent dialog — unrelated to
     # the announcement layer, hidden until the email field actually fails to

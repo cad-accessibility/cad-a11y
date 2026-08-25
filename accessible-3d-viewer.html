@@ -5,12 +5,40 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Accessible 3D Model Viewer</title>
     <meta name="description" content="An accessible interface for viewing and interacting with 3D models, optimized for screen readers and keyboard navigation">
+    <!--
+        Loaded first, synchronously, and before every other script on the page.
+        On /demo it replaces the browser's persistence and network transports so
+        nothing this page does can be recorded or survive the tab; everywhere else
+        it does nothing at all. viewer.js refuses to start on /demo unless this
+        has run. See static/js/demo-bootstrap.js.
+    -->
+    <script src="/static/js/demo-bootstrap.js"></script>
     <link rel="stylesheet" href="/static/css/viewer.css">
 </head>
 <body>
     <!-- Skip navigation link – WCAG 2.4.1 -->
     <a href="#main-content" class="sr-only" style="position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden;z-index:10000;" onfocus="this.style.position='static';this.style.width='auto';this.style.height='auto';this.style.left='auto';this.style.overflow='visible';this.style.padding='8px 16px';this.style.background='#2c3e50';this.style.color='#fff';this.style.fontSize='1em';this.style.textDecoration='underline';" onblur="this.style.position='absolute';this.style.left='-9999px';this.style.width='1px';this.style.height='1px';this.style.overflow='hidden';this.style.padding='0';">Skip to main content</a>
     <div class="container">
+        <!--
+            DEMO MODE INDICATOR — revealed by viewer.js on /demo, hidden everywhere
+            else. Placed ahead of the banner landmark so it is the first thing a
+            screen reader reaches on the page, and given role="status" so revealing
+            it is announced without interrupting anything already being read.
+
+            The point of it is that the person running the event can confirm
+            recording is off at a glance, and say so out loud to a host who asks,
+            without reading any source. It reports what the server itself answered
+            at /demo/status, not what the page assumed: if the two ever disagreed,
+            this would say so rather than reassure.
+        -->
+        <p id="demo-banner" class="demo-banner" role="status" hidden>
+            <span id="demo-banner-text"></span>
+            <button type="button" id="demo-recheck-btn" class="demo-recheck">
+                Check recording status again
+            </button>
+            <span id="demo-banner-detail" class="demo-detail"></span>
+        </p>
+
         <header role="banner">
             <h1 id="page-title" tabindex="-1">Accessible 3D Model Viewer</h1>
             <nav aria-label="Main menu" class="site-nav">
@@ -720,6 +748,13 @@
             // Study logging is separate from analytics and is not gated on it.
             if (location.pathname.replace(/\/+$/, '') === '/study') return;
 
+            // Skip it on the demo path, and never create a session there. The
+            // dialog's entire subject is a tracking cookie and an email address,
+            // and a demo station sets neither -- asking would offer a choice that
+            // has already been made, in the one place it cannot be answered
+            // either way.
+            if (window.CAD_DEMO_MODE) return;
+
             let sessionData = null;
             try {
                 const res = await fetch('/session/me');
@@ -849,7 +884,15 @@
         // Client-side interaction tracking — section dwell time and shortcuts.
         // Sends events to POST /events/track; all calls are fire-and-forget.
         // ---------------------------------------------------------------------------
+        // A second line of defence, not the guarantee. The guarantee is that the
+        // server binds a demo request to a recorder with nothing behind it, so a
+        // tracking call that did get made would write nothing. This stops it
+        // being made at all, so a participant's key presses do not leave the
+        // browser even to be discarded.
+        const trackingEnabled = !window.CAD_DEMO_MODE;
+
         function trackEvent(eventType, eventData) {
+            if (!trackingEnabled) return;
             fetch('/events/track', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -859,6 +902,7 @@
 
         // Track how long the user dwells in each labelled section.
         (function trackSectionDwell() {
+            if (!trackingEnabled) return;
             const sections = document.querySelectorAll('section[aria-labelledby]');
             sections.forEach(function (section) {
                 const headingId = section.getAttribute('aria-labelledby');
@@ -884,6 +928,7 @@
 
         // Track keyboard shortcut usage (key + active element context).
         document.addEventListener('keydown', function (e) {
+            if (!trackingEnabled) return;
             // Only track non-printable shortcuts that change viewer state.
             const shortcuts = new Set([
                 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
@@ -904,7 +949,9 @@
         });
 
         initSession();
-        initSessionModels();
+        // No cookie on the demo path, so there is no session to ask about, and
+        // asking would be a needless backend round-trip on venue wifi.
+        if (!window.CAD_DEMO_MODE) initSessionModels();
     })();
     </script>
 </body>
