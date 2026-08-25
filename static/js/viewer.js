@@ -19,6 +19,7 @@ const studyMode = location.pathname.replace(/\/+$/, '') === '/study';
 let studySessionId = null;
 let studyModelLabel = null;
 
+
 function getUploadSessionId() {
     try {
         let sessionId = window.sessionStorage.getItem(UPLOAD_SESSION_STORAGE_KEY);
@@ -2539,6 +2540,57 @@ function cycleRenderMode(shouldAnnounce = true) {
     switchToRenderMode(renderModes[nextIndex].key, shouldAnnounce);
 }
 
+// ---------------------------------------------------------------------------
+// Queued render-mode transitions
+//
+// Pressing R three times quickly to reach a known mode used to leave the viewer
+// short of it: the presses after the first were dropped, and the only way back
+// was a reload. It has caught several facilitators, and a room of people
+// exploring freely will hit it repeatedly.
+//
+// Two separate things were going wrong, and both are fixed here.
+//
+// 1. *Dropped input.* The key handler swallows auto-repeat for every shortcut
+//    that is not a continuous control, which is right for a held key -- holding
+//    R is one gesture, not four -- but it also meant a fast burst of genuine
+//    presses could be read as repeat and thrown away. Every press now enters a
+//    queue and is applied; nothing is discarded on the way in.
+//
+// 2. *Announced state diverging from rendered state.* Each press used to speak
+//    immediately while the renders behind them coalesced, so what was said and
+//    what arrived under somebody's fingers could differ mid-burst, and two
+//    announcements in one tick blank each other in the live region anyway. The
+//    announcement is now made once, when the burst settles, and reads the state
+//    that was actually applied. One gesture, one thing said, and it is true.
+//
+// The render itself is still sent on every step: sendStateToServer already
+// collapses a burst into the first frame plus the settled one, so the display
+// starts moving on the first press rather than waiting out the settle window.
+const RENDER_MODE_SETTLE_MS = 120;
+let renderModeSettleTimer = null;
+let renderModeStepsQueued = 0;
+
+/** Advance the render mode by one step, from a keypress. Never drops. */
+function queueRenderModeStep() {
+    renderModeStepsQueued += 1;
+    cycleRenderMode(false);
+
+    if (renderModeSettleTimer) clearTimeout(renderModeSettleTimer);
+    renderModeSettleTimer = setTimeout(settleRenderModeAnnouncement, RENDER_MODE_SETTLE_MS);
+}
+
+/** Say where the burst landed, once, reading the applied state rather than a
+ *  value captured when some earlier press was handled. */
+function settleRenderModeAnnouncement() {
+    renderModeSettleTimer = null;
+    const steps = renderModeStepsQueued;
+    renderModeStepsQueued = 0;
+    if (steps === 0) return;
+    // The mode is read here, after every queued step has been applied, which is
+    // what makes this incapable of announcing a mode the viewer is not in.
+    announceAlert(renderModeLabel(viewerState.currentRenderMode));
+}
+
 function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
     const mode = representationModeByKey(targetMode);
     if (!mode) {
@@ -3004,6 +3056,15 @@ document.addEventListener('keydown', function(e) {
         'arrowup', 'arrowdown', '2', '3',
         '4', '5', 'n', 'm'
     ]);
+    // R is not a continuous control, but a fast burst of real presses can reach
+    // this handler flagged as repeat, and dropping those is the bug that leaves
+    // the viewer stuck a mode short of where somebody meant to be. Let them
+    // through to the queue; holding the key still costs one step per OS repeat,
+    // which is a mode cycle rather than a stuck view, and the settle window
+    // means it is still announced once.
+    if (normalizedKey === 'r') {
+        repeatableShortcuts.add('r');
+    }
     if (e.repeat && !repeatableShortcuts.has(normalizedKey)) {
         e.preventDefault();
         return;
@@ -3096,11 +3157,7 @@ document.addEventListener('keydown', function(e) {
         // View shortcuts
         case 'r':
             e.preventDefault();
-            {
-                const previousMode = viewerState.currentRenderMode;
-                cycleRenderMode(false);
-                announceAlert(`${renderModeLabel()}`);
-            }
+            queueRenderModeStep();
             break;
 
         case 't':
