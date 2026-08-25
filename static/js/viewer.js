@@ -104,6 +104,19 @@ let previewRequestTimer = null;
 // values rather than a stale snapshot.
 let renderRequestInFlight = false;
 let renderResendPending = false;
+// Which version of the viewer state the last send was for, and which version has
+// actually reached the display. A burst collapses to the first frame plus the
+// settled one, which is right -- but if that settled one *failed* (a venue wifi
+// blip, a busy server) the two numbers part company and the display is left
+// showing something the viewer is no longer in. One retry closes that; the cap
+// stops a genuinely down server turning into a retry loop, since the health poll
+// already owns reconnection.
+let renderStateSerial = 0;
+let renderDeliveredSerial = 0;
+const RENDER_RETRY_LIMIT = 1;
+// Starts full, so the very first render can retry too, and is refilled by every
+// success. A run of failures therefore costs one extra attempt, not one each.
+let renderRetriesLeft = RENDER_RETRY_LIMIT;
 
 function scheduleHighFidelityPreview(state) {
     if (previewRequestTimer) {
@@ -247,10 +260,12 @@ async function sendStateToServer() {
         }
 
         // Coalesce rather than stack up work the server cannot skip.
+        renderStateSerial += 1;
         if (renderRequestInFlight) {
             renderResendPending = true;
             return;
         }
+        const attemptSerial = renderStateSerial;
 
         // Cancel any in-flight render request so stale responses don't overwrite newer state
         if (renderAbortController) {
@@ -426,6 +441,9 @@ async function sendStateToServer() {
             if (typeof window._monarchHidOnRender === 'function' && data.monarch_cells_hex) {
                 window._monarchHidOnRender(data.monarch_cells_hex);
             }
+            // This state reached the display. Anything newer is still owed one.
+            renderDeliveredSerial = Math.max(renderDeliveredSerial, attemptSerial);
+            renderRetriesLeft = RENDER_RETRY_LIMIT;
         })
         .catch(error => {
             if (error.name === 'AbortError') return; // Superseded by a newer request — ignore
@@ -449,8 +467,17 @@ async function sendStateToServer() {
         })
         .finally(() => {
             renderRequestInFlight = false;
+            // A burst left newer state behind this request: send it.
             if (renderResendPending) {
                 renderResendPending = false;
+                sendStateToServer();
+                return;
+            }
+            // Nothing newer was queued, but this request never delivered. The
+            // viewer and the display disagree, which is the inconsistent view a
+            // fast burst used to leave behind. Try once more.
+            if (renderDeliveredSerial < attemptSerial && renderRetriesLeft > 0) {
+                renderRetriesLeft -= 1;
                 sendStateToServer();
             }
         });
