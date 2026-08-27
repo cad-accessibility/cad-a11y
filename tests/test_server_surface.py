@@ -83,8 +83,11 @@ def test_a_print_names_its_file_from_the_render_that_made_it():
                       "current_render_mode", "view_current_view_limits"):
         assert f"self.{attribute}" not in lib, f"{attribute} is still renderer state"
 
-    helper = re.search(r"def _save_print_if_requested\(.*?\n\n\n", SERVER_SOURCE, re.S)
-    assert helper, "_save_print_if_requested not found"
+    # _save_print_if_requested decides *whether* to export; _write_print_render is
+    # the write itself, reached through the recorder so a demo station produces no
+    # file (see app/recording.py). The name is built in the writer.
+    helper = re.search(r"def _write_print_render\(.*?\n\n\n", SERVER_SOURCE, re.S)
+    assert helper, "_write_print_render not found"
     assert "result." in helper.group(0), "the filename is not built from the render result"
     assert "engine." not in helper.group(0), "still reading values off the shared engine"
 

@@ -19,6 +19,39 @@ const studyMode = location.pathname.replace(/\/+$/, '') === '/study';
 let studySessionId = null;
 let studyModelLabel = null;
 
+// ---------------------------------------------------------------------------
+// Demo mode (/demo).
+//
+// Exploration with nothing recorded, for the hands-on session at the Andrew
+// Heiskell Braille and Talking Book Library, where recording is not permitted.
+// Every exploration control is the ordinary one; what is missing is the study
+// path, the consent dialog, and any way for this page to write anything down.
+//
+// The guarantee is not made here. It is made by the null recorder on the server
+// (app/recording.py) and by the transport shim in demo-bootstrap.js. What this
+// file does is refuse to run if the shim did not, and say clearly on the page
+// which of the two states the app is in.
+// ---------------------------------------------------------------------------
+const demoMode = location.pathname.replace(/\/+$/, '') === '/demo';
+
+if (demoMode && window.__CAD_DEMO_SEALED__ !== true) {
+    // The one case where not starting is the correct behaviour. demo-bootstrap.js
+    // is what stops this page persisting anything and what tags its requests so
+    // the server discards them; without it the viewer would work perfectly and
+    // record everything, which is the exact outcome /demo exists to prevent.
+    const banner = document.getElementById('demo-banner');
+    if (banner) {
+        banner.hidden = false;
+        banner.classList.add('demo-banner-warning');
+        banner.textContent =
+            'Demo mode could not start safely: the component that switches off '
+            + 'recording did not load. Nothing has been recorded, because the viewer '
+            + 'has not started. Reload the page; if this repeats, do not use this '
+            + 'station and check that /static/js/demo-bootstrap.js is being served.';
+    }
+    throw new Error('demo mode is not sealed; refusing to start the viewer');
+}
+
 function getUploadSessionId() {
     try {
         let sessionId = window.sessionStorage.getItem(UPLOAD_SESSION_STORAGE_KEY);
@@ -103,6 +136,19 @@ let previewRequestTimer = null;
 // values rather than a stale snapshot.
 let renderRequestInFlight = false;
 let renderResendPending = false;
+// Which version of the viewer state the last send was for, and which version has
+// actually reached the display. A burst collapses to the first frame plus the
+// settled one, which is right -- but if that settled one *failed* (a venue wifi
+// blip, a busy server) the two numbers part company and the display is left
+// showing something the viewer is no longer in. One retry closes that; the cap
+// stops a genuinely down server turning into a retry loop, since the health poll
+// already owns reconnection.
+let renderStateSerial = 0;
+let renderDeliveredSerial = 0;
+const RENDER_RETRY_LIMIT = 1;
+// Starts full, so the very first render can retry too, and is refilled by every
+// success. A run of failures therefore costs one extra attempt, not one each.
+let renderRetriesLeft = RENDER_RETRY_LIMIT;
 
 function scheduleHighFidelityPreview(state) {
     if (previewRequestTimer) {
@@ -246,10 +292,12 @@ async function sendStateToServer() {
         }
 
         // Coalesce rather than stack up work the server cannot skip.
+        renderStateSerial += 1;
         if (renderRequestInFlight) {
             renderResendPending = true;
             return;
         }
+        const attemptSerial = renderStateSerial;
 
         // Cancel any in-flight render request so stale responses don't overwrite newer state
         if (renderAbortController) {
@@ -425,6 +473,9 @@ async function sendStateToServer() {
             if (typeof window._monarchHidOnRender === 'function' && data.monarch_cells_hex) {
                 window._monarchHidOnRender(data.monarch_cells_hex);
             }
+            // This state reached the display. Anything newer is still owed one.
+            renderDeliveredSerial = Math.max(renderDeliveredSerial, attemptSerial);
+            renderRetriesLeft = RENDER_RETRY_LIMIT;
         })
         .catch(error => {
             if (error.name === 'AbortError') return; // Superseded by a newer request — ignore
@@ -448,8 +499,17 @@ async function sendStateToServer() {
         })
         .finally(() => {
             renderRequestInFlight = false;
+            // A burst left newer state behind this request: send it.
             if (renderResendPending) {
                 renderResendPending = false;
+                sendStateToServer();
+                return;
+            }
+            // Nothing newer was queued, but this request never delivered. The
+            // viewer and the display disagree, which is the inconsistent view a
+            // fast burst used to leave behind. Try once more.
+            if (renderDeliveredSerial < attemptSerial && renderRetriesLeft > 0) {
+                renderRetriesLeft -= 1;
                 sendStateToServer();
             }
         });
@@ -2539,6 +2599,57 @@ function cycleRenderMode(shouldAnnounce = true) {
     switchToRenderMode(renderModes[nextIndex].key, shouldAnnounce);
 }
 
+// ---------------------------------------------------------------------------
+// Queued render-mode transitions
+//
+// Pressing R three times quickly to reach a known mode used to leave the viewer
+// short of it: the presses after the first were dropped, and the only way back
+// was a reload. It has caught several facilitators, and a room of people
+// exploring freely will hit it repeatedly.
+//
+// Two separate things were going wrong, and both are fixed here.
+//
+// 1. *Dropped input.* The key handler swallows auto-repeat for every shortcut
+//    that is not a continuous control, which is right for a held key -- holding
+//    R is one gesture, not four -- but it also meant a fast burst of genuine
+//    presses could be read as repeat and thrown away. Every press now enters a
+//    queue and is applied; nothing is discarded on the way in.
+//
+// 2. *Announced state diverging from rendered state.* Each press used to speak
+//    immediately while the renders behind them coalesced, so what was said and
+//    what arrived under somebody's fingers could differ mid-burst, and two
+//    announcements in one tick blank each other in the live region anyway. The
+//    announcement is now made once, when the burst settles, and reads the state
+//    that was actually applied. One gesture, one thing said, and it is true.
+//
+// The render itself is still sent on every step: sendStateToServer already
+// collapses a burst into the first frame plus the settled one, so the display
+// starts moving on the first press rather than waiting out the settle window.
+const RENDER_MODE_SETTLE_MS = 120;
+let renderModeSettleTimer = null;
+let renderModeStepsQueued = 0;
+
+/** Advance the render mode by one step, from a keypress. Never drops. */
+function queueRenderModeStep() {
+    renderModeStepsQueued += 1;
+    cycleRenderMode(false);
+
+    if (renderModeSettleTimer) clearTimeout(renderModeSettleTimer);
+    renderModeSettleTimer = setTimeout(settleRenderModeAnnouncement, RENDER_MODE_SETTLE_MS);
+}
+
+/** Say where the burst landed, once, reading the applied state rather than a
+ *  value captured when some earlier press was handled. */
+function settleRenderModeAnnouncement() {
+    renderModeSettleTimer = null;
+    const steps = renderModeStepsQueued;
+    renderModeStepsQueued = 0;
+    if (steps === 0) return;
+    // The mode is read here, after every queued step has been applied, which is
+    // what makes this incapable of announcing a mode the viewer is not in.
+    announceAlert(renderModeLabel(viewerState.currentRenderMode));
+}
+
 function switchToRepresentationMode(targetMode, shouldAnnounce = true) {
     const mode = representationModeByKey(targetMode);
     if (!mode) {
@@ -3004,6 +3115,15 @@ document.addEventListener('keydown', function(e) {
         'arrowup', 'arrowdown', '2', '3',
         '4', '5', 'n', 'm'
     ]);
+    // R is not a continuous control, but a fast burst of real presses can reach
+    // this handler flagged as repeat, and dropping those is the bug that leaves
+    // the viewer stuck a mode short of where somebody meant to be. Let them
+    // through to the queue; holding the key still costs one step per OS repeat,
+    // which is a mode cycle rather than a stuck view, and the settle window
+    // means it is still announced once.
+    if (normalizedKey === 'r') {
+        repeatableShortcuts.add('r');
+    }
     if (e.repeat && !repeatableShortcuts.has(normalizedKey)) {
         e.preventDefault();
         return;
@@ -3096,11 +3216,7 @@ document.addEventListener('keydown', function(e) {
         // View shortcuts
         case 'r':
             e.preventDefault();
-            {
-                const previousMode = viewerState.currentRenderMode;
-                cycleRenderMode(false);
-                announceAlert(`${renderModeLabel()}`);
-            }
+            queueRenderModeStep();
             break;
 
         case 't':
@@ -3272,6 +3388,97 @@ document.addEventListener('keydown', function(e) {
     }
 });
 
+/** Put the demo indicator up, and label the app region with it.
+ *
+ * The text comes from the server's own answer at /demo/status, which reports the
+ * recorder that request actually resolved to -- the same object every write goes
+ * through. That is what makes this checkable rather than decorative: the page is
+ * not asserting that recording is off, it is repeating what the code path that
+ * would do the recording said about itself.
+ *
+ * If the answer is that recording IS on, or if no answer arrives, it says so in
+ * the warning style rather than reassuring. Someone standing at the venue needs
+ * the failure to look different from the success.
+ */
+async function initDemoIndicator() {
+    const button = document.getElementById('demo-recheck-btn');
+    if (button) {
+        // Re-asks on demand, so the claim can be demonstrated to a host on the
+        // spot rather than taken on trust. Announced as well as shown, because
+        // the person being reassured may be the one reading it.
+        button.addEventListener('click', () => refreshDemoIndicator({ spoken: true }));
+    }
+    return refreshDemoIndicator({ spoken: true });
+}
+
+/** Ask the server whether it is recording, and say so on the page. */
+async function refreshDemoIndicator({ spoken }) {
+    const banner = document.getElementById('demo-banner');
+    const textEl = document.getElementById('demo-banner-text');
+    const detailEl = document.getElementById('demo-banner-detail');
+    const main = document.getElementById('main-content');
+
+    let status = null;
+    try {
+        const res = await fetch(`${SERVER_URL}/demo/status`);
+        if (res.ok) status = await res.json();
+    } catch (_) {
+        // Left null: handled as "could not confirm" below, which is the honest
+        // reading. Venue wifi is expected to be unreliable, but /demo/status is
+        // same-origin and served by the process the page is already talking to,
+        // so a failure here means something worth looking at.
+    }
+
+    const recordingOff = status !== null && status.recording === false;
+    const label = recordingOff
+        ? 'Demo mode. Nothing you do here is recorded.'
+        : (status === null
+            ? 'Demo mode: could not confirm with the server that recording is off. Do not use this station until it can.'
+            : 'Warning: this page is at the demo address but the server reports that recording is ON. Do not use this station.');
+
+    const sentence = recordingOff
+        ? label + ' No key presses, no display refreshes, no timings and no'
+            + ' models are stored, and nothing is kept when this tab closes.'
+        : label;
+
+    if (banner) {
+        banner.hidden = false;
+        banner.classList.toggle('demo-banner-warning', !recordingOff);
+    }
+    if (textEl) textEl.textContent = sentence;
+
+    // The checkable half. "suppressed writes" counts the writes this server
+    // turned away since it started: it climbs as people explore, which is what
+    // makes it evidence rather than a label. A study endpoint being absent is
+    // shown too, since that is where a participant identifier would come from.
+    if (detailEl) {
+        detailEl.textContent = status === null
+            ? 'Server did not answer /demo/status.'
+            : `Server says: recording=${status.recording}`
+                + ` · sink=${status.recorder}`
+                + ` · whole process in demo mode=${status.process_demo_only}`
+                + ` · study endpoints served=${status.study_routes_registered}`
+                + ` · writes refused so far=${status.suppressed_writes}`;
+    }
+
+    // In the accessible name of the app region, so it is heard on entering the
+    // main content rather than only if the banner happens to be read. Screen
+    // reader users arriving via the skip link land here.
+    if (main) {
+        main.setAttribute('role', 'region');
+        main.setAttribute('aria-label', label + ' 3D model viewer.');
+    }
+
+    document.title = recordingOff
+        ? 'Demo (not recording) — Accessible 3D Model Viewer'
+        : 'Demo (CHECK RECORDING) — Accessible 3D Model Viewer';
+
+    // Spoken as well as shown. Assertive, because it is the one thing on this
+    // page somebody may need to interrupt for.
+    if (spoken) announceAlert(label);
+    return status;
+}
+
 function focusTopOfPage() {
     const pageTitle = document.getElementById('page-title');
     if (!pageTitle) {
@@ -3280,7 +3487,16 @@ function focusTopOfPage() {
     // Delay one frame so layout is ready before moving focus.
     requestAnimationFrame(() => {
         pageTitle.focus({ preventScroll: true });
-        pageTitle.scrollIntoView({ block: 'start' });
+        // Scrolling the title to the top pushed the demo indicator off screen,
+        // which defeats the point of an indicator you are supposed to be able to
+        // confirm at a glance. It sits above the title, so on the demo path scroll
+        // to the document top and let both be visible.
+        const banner = document.getElementById('demo-banner');
+        if (banner && !banner.hidden) {
+            window.scrollTo({ top: 0 });
+        } else {
+            pageTitle.scrollIntoView({ block: 'start' });
+        }
     });
 }
 
@@ -3294,6 +3510,14 @@ document.addEventListener('DOMContentLoaded', async function() {
     // there; the study region in the markup is revealed by this class.
     if (studyMode) {
         document.body.classList.add('study-ui');
+    }
+
+    // Demo mode: say so, on the page and to a screen reader, then build the
+    // curated chooser. Done before the first render so nobody can touch a
+    // control before the indicator is up.
+    if (demoMode) {
+        document.body.classList.add('demo-ui');
+        await initDemoIndicator();
     }
 
     // Simplified workshop viewer: the /workshop route (or ?ui=simple) shows only
@@ -3356,6 +3580,32 @@ document.addEventListener('DOMContentLoaded', async function() {
 // Ensure top focus is restored when returning via browser history cache.
 window.addEventListener('pageshow', function() {
     focusTopOfPage();
+});
+
+// Tell the server to delete this tab's uploads when the tab goes away.
+//
+// The endpoint has been there since uploads were made per-tab; nothing was
+// calling it, so an uploaded file sat on disk until something else removed it.
+// That matters most on a demo station, where a model somebody brought along
+// must not outlive their turn at the display.
+//
+// pagehide rather than beforeunload: beforeunload does not fire reliably on
+// mobile or when a tab is discarded, and pagehide does. keepalive rather than
+// sendBeacon, because the demo page refuses sendBeacon (it cannot be tagged, so
+// it cannot be discarded server-side) and keepalive is what lets an ordinary
+// fetch outlive the document.
+window.addEventListener('pagehide', function() {
+    try {
+        fetch(`${SERVER_URL}/uploads/cleanup`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ upload_session_id: getUploadSessionId() }),
+            keepalive: true,
+        }).catch(function () {});
+    } catch (_) {
+        // The tab is going away regardless; a failure here costs a stale file,
+        // which the station's own shutdown clears.
+    }
 });
 
 // Handle browser zoom and text scaling
