@@ -39,6 +39,7 @@ cad-a11y/
 ├── accessible-3d-viewer.html     # Main viewer UI
 ├── app/
 │   ├── server.py                 # Flask server (entry point inside the container)
+│   ├── recording.py              # The one place interaction data leaves the process
 │   ├── braille_display.py        # Braille display I/O (Monarch, DotPad)
 │   └── cad_comparison_lib.py     # CAD rendering and comparison library
 ├── src/
@@ -51,6 +52,7 @@ cad-a11y/
 │   ├── css/viewer.css            # Viewer styles
 │   └── js/
 │       ├── viewer.js             # Main viewer logic
+│       ├── demo-bootstrap.js     # Switches off recording and storage on /demo
 │       ├── monarch-hid.js        # Monarch braille display (WebHID)
 │       ├── trinkey-slider.js     # Adafruit Trinkey slider (Web Serial)
 │       ├── witmotion-imu.js      # WitMotion IMU for orientation input (Web Bluetooth)
@@ -141,6 +143,121 @@ The DotPad supports cursor controls and depth changes with the following inputs:
 
 NOTE: Cursor or guideline movements will only work when the cursor or guidelines are active. A single button press will move one pixel. A double or triple button press will move the line five or twelve pixels respectively.
 
+
+## Running a demo session (nothing is recorded)
+
+`/demo` is the viewer with recording switched off. It exists for events where
+capturing what people do is not permitted — the hands-on session at the Andrew
+Heiskell Braille and Talking Book Library is the one it was built for. It is not
+a study session, it does not ask for consent, and it has no facilitator panel.
+
+There is no login, no session code and no setup. One address, and it works.
+
+### Launching three stations
+
+Each station is its own server process. That is not a limitation to work around —
+it is what makes the stations independent, and it means a station keeps working
+if the venue wifi drops, because nothing leaves the machine after the page loads.
+
+**One laptop per station (what to do if you can).** On each laptop:
+
+```bash
+CAD_A11Y_DEMO=1 python -m app.server
+```
+
+It opens `http://localhost:6969/demo` by itself. Nothing else to type.
+
+**Three stations on one laptop.** Give each one its own port, in three terminals:
+
+```bash
+CAD_A11Y_DEMO=1 PORT=6969 python -m app.server
+```
+
+```bash
+CAD_A11Y_DEMO=1 PORT=6970 python -m app.server
+```
+
+```bash
+CAD_A11Y_DEMO=1 PORT=6971 python -m app.server
+```
+
+Then open `http://localhost:6969/demo`, `http://localhost:6970/demo` and
+`http://localhost:6971/demo`, one per browser window, and pair each window with
+its own display from the **Connect** button. Each window talks only to the
+display it paired with.
+
+`CAD_A11Y_DEMO=1` is the important part. It puts the whole process into demo
+mode: nothing can be recorded by any request, and the study endpoints are not
+served at all.
+
+### Checking that recording is off — at the venue, in ten seconds
+
+You do not need to read any code, and you do not need a terminal.
+
+1. **Look at the top of the page.** A boxed message reads *"Demo mode. Nothing
+   you do here is recorded."* If that box is missing, or if it is red rather than
+   cream, **stop and do not use the station**.
+2. **Press the "Check recording status again" button** inside that box. It asks
+   the server again, right then, and shows what the server said. You can do this
+   with somebody watching. The line underneath should read:
+
+   ```
+   Server says: recording=false · sink=null · whole process in demo mode=true
+   · study endpoints served=false · writes refused so far=<a number>
+   ```
+
+   Read it out loud if a host asks. What each part means:
+
+   | Part | What it tells you |
+   | --- | --- |
+   | `recording=false` | The server is not writing anything for this page |
+   | `sink=null` | There is no database or log file attached at all |
+   | `whole process in demo mode=true` | Nothing on this machine can record, not just this page |
+   | `study endpoints served=false` | The study pages do not exist on this machine |
+   | `writes refused so far` | How many writes have been turned away since it started. It goes **up** as people explore. That is the proof it is working. |
+
+3. **Check the browser tab title.** It reads *"Demo (not recording)"*. If it
+   reads *"Demo (CHECK RECORDING)"*, stop.
+
+A screen reader user gets the same information: the message is announced on load,
+the "Check recording status again" button is reachable by keyboard, and the main
+area of the page is named with it, so it is heard on entering the content.
+
+### If something looks wrong
+
+| What you see | What it means | What to do |
+| --- | --- | --- |
+| No box at the top | The page did not start in demo mode | Check the address is `/demo`. Reload. |
+| Red box, "could not confirm" | The page could not reach the server | Reload. If it repeats, restart the station. |
+| Red box, "recording is ON" | The server is recording | Stop. Close the browser and relaunch with `CAD_A11Y_DEMO=1`. |
+| Page is blank | The component that switches recording off did not load, so the viewer refused to start | Reload. Nothing was recorded — the viewer never ran. |
+
+The blank-page case is deliberate. If the part that switches recording off is
+missing, the viewer does not start rather than starting without it.
+
+### What people can do in a demo session
+
+* **Switch between models freely.** The chooser holds the mug, the mug cut at a
+  quarter, halfway and three quarters through — those four are the quickest way
+  to show what slicing does — plus the LEGO brick, the pencil holder and the cane
+  tip.
+* **Bring their own model.** The **Upload model…** control takes an STL or STEP
+  file. It is reachable by keyboard and labelled for a screen reader. The file is
+  used for that session only: it is deleted when the tab closes, and the whole
+  scratch directory it lived in is deleted when the station shuts down.
+* **Every exploration control, unchanged.** Depth and slicing, pitch/roll/yaw on
+  `U`/`O`, `I`/`K`, `J`/`L`, render mode on `R`, and the buttons on the display
+  itself. Press `H` for the full list.
+
+There is no consent flow, no onboarding script, no task sequence, no rating
+scales and no control panel. Those belong to `/study`, which a demo station does
+not serve.
+
+### Afterwards
+
+Shut each station down with Ctrl-C. Its scratch directory goes with it. There is
+nothing to delete, because there is nothing to find: no rows were written, no log
+lines appended, no participant numbers issued, and no cookies set.
 
 ## Running a study session
 
