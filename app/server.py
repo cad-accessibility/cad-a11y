@@ -43,7 +43,7 @@ from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
 
-from . import db, recording, study, study_db
+from . import db, recording, study, study_db, study_protocol
 from .braille_display import (
     _pixels_to_braille_cells,
     _pixels_to_braille_cells_dotpad,
@@ -1420,6 +1420,23 @@ def _bind_recorder_for_request():
 # The demo endpoint
 # ---------------------------------------------------------------------------
 
+def _demo_model_stems() -> list[str]:
+    """The models the demo chooser offers: the study's three pairs.
+
+    The onboarding mug is deliberately not here. It is the object the study uses
+    to teach the system rather than one of the objects under comparison, and the
+    ask was for the six.
+    """
+    stems: list[str] = []
+    for key in study_protocol.MAIN_PAIRS:
+        pair = study_protocol.MODEL_PAIRS.get(key) or {}
+        for version in ("a", "b"):
+            stem = (pair.get(version) or {}).get("model")
+            if stem and stem not in stems:
+                stems.append(stem)
+    return stems
+
+
 @app.route("/demo", methods=["GET"])
 def demo_view():
     """Exploration with nothing recorded, at its own address.
@@ -1464,6 +1481,15 @@ def demo_status():
             # is normal on a freshly opened page; it climbs as somebody explores,
             # and it is the count of writes that did *not* happen.
             "suppressed_writes": getattr(recorder, "writes", 0),
+            # The stems the demo chooser is limited to. Read from the protocol
+            # rather than listed here, so the demo shows whatever the study is
+            # actually using and cannot drift from it: the coat rack leaving the
+            # study is the kind of change that would otherwise be missed.
+            #
+            # This filters what the page displays. It does not change where
+            # models are loaded from, what the server will render, or what an
+            # upload does; anything not in this list is simply not offered.
+            "models": _demo_model_stems(),
         }
     ), 200
 

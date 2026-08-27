@@ -380,6 +380,50 @@ def test_a_demo_tab_asks_for_its_uploads_to_be_deleted_when_it_closes():
     assert "keepalive: true" in viewer, "the request would be cancelled as the tab unloads"
 
 
+def test_the_demo_chooser_offers_the_studys_six_objects(client, sinks):
+    """The demo lists the study's three pairs and nothing else.
+
+    Derived from the protocol rather than listed here, so the two cannot drift:
+    when the coat rack stopped being part of the study, a hand-written copy of
+    this list would have gone on offering it.
+
+    The onboarding mug is deliberately absent. It is what the study teaches the
+    system on, not one of the objects under comparison.
+    """
+    import app.study_protocol as study_protocol
+
+    reported = client.get("/demo/status").get_json()["models"]
+
+    expected = []
+    for key in study_protocol.MAIN_PAIRS:
+        pair = study_protocol.MODEL_PAIRS.get(key) or {}
+        for version in ("a", "b"):
+            stem = (pair.get(version) or {}).get("model")
+            if stem and stem not in expected:
+                expected.append(stem)
+
+    assert sorted(reported) == sorted(expected)
+    assert len(reported) == 6, f"expected the study's six, got {reported}"
+    assert study_protocol.ONBOARDING_MODEL not in reported
+
+
+def test_narrowing_the_demo_list_does_not_narrow_anything_else(client, sinks):
+    """It filters what is shown. It does not change what loads or what renders.
+
+    A model outside the six still renders perfectly well if something asks for
+    it, because the list is a display concern and the render path never consulted
+    it. This is what stops the filter turning into a second, quieter model
+    resolver that the two paths could disagree about.
+    """
+    outside = "cube"
+    assert outside not in client.get("/demo/status").get_json()["models"]
+
+    response = client.post("/render", json=_render_body(current_model=outside), headers=DEMO_HEADERS)
+    assert response.status_code == 200
+    assert response.get_json()["image_base64"], f"{outside} stopped rendering"
+    assert sinks.total == 0
+
+
 # ---------------------------------------------------------------------------
 # The architecture, not just the behaviour
 # ---------------------------------------------------------------------------

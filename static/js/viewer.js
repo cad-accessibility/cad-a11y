@@ -568,6 +568,10 @@ const representationModes = [
 viewerState.currentModel = null;   // the model this window is showing, by name
 let sessionOwnedModels = new Set(); // filenames (with extension) owned by the current cookie session
 let builtinModelStems = null;       // stems from MODEL_DIR; null = not yet received, show all
+// On /demo only: the stems the chooser is limited to, from GET /demo/status.
+// null until it arrives, and null means show everything, so a slow or failed
+// answer leaves the ordinary list rather than an empty one.
+let demoModelStems = null;
 let lastFullModelList = [];         // unfiltered server model_list for re-filtering on state change
 viewerState.composeScrollbar = true;
 viewerState.composeSliceGraph = false;
@@ -2144,9 +2148,15 @@ function _visibleModelEntries(model_list) {
     }
     const builtinSet = new Set(builtinModelStems);
     const ownedStems = new Set([...sessionOwnedModels].map(fn => fn.replace(/\.[^.]+$/, '')));
+    // The demo offers the study's own objects rather than everything on the
+    // server. Narrows what is listed and nothing else: the models are loaded from
+    // the same place, render the same way, and an upload is still the uploader's
+    // to see. Anything outside the list is simply not offered.
+    const demoSet = demoMode && demoModelStems ? new Set(demoModelStems) : null;
     return model_list
         .map((stem, i) => ({ stem, i }))
-        .filter(({ stem }) => builtinSet.has(stem) || ownedStems.has(stem));
+        .filter(({ stem }) => builtinSet.has(stem) || ownedStems.has(stem))
+        .filter(({ stem }) => !demoSet || demoSet.has(stem) || ownedStems.has(stem));
 }
 
 function updateModelList(model_list) {
@@ -3427,6 +3437,13 @@ async function refreshDemoIndicator({ spoken }) {
         // reading. Venue wifi is expected to be unreliable, but /demo/status is
         // same-origin and served by the process the page is already talking to,
         // so a failure here means something worth looking at.
+    }
+
+    if (status !== null && Array.isArray(status.models) && status.models.length) {
+        demoModelStems = status.models;
+        // The list may already have been built unfiltered, so force a rebuild.
+        lastModelListSignature = null;
+        if (lastFullModelList.length > 0) updateModelList(lastFullModelList);
     }
 
     const recordingOff = status !== null && status.recording === false;
