@@ -52,22 +52,6 @@ if (demoMode && window.__CAD_DEMO_SEALED__ !== true) {
     throw new Error('demo mode is not sealed; refusing to start the viewer');
 }
 
-// Demo stations offer a short, curated list rather than everything on disk. The
-// mug is the explanatory object -- whole first, then cut at three depths, which
-// is the fastest way to show somebody what slicing actually does to a shape --
-// followed by the three objects people are most likely to want to compare
-// against their own work. `depth` is where that entry starts; it can be changed
-// freely afterwards with the ordinary depth controls.
-const DEMO_MODELS = [
-    { stem: 'mug',                label: 'Mug (whole)',                     depth: 0  },
-    { stem: 'mug',                label: 'Mug, cut a quarter of the way through', depth: 25 },
-    { stem: 'mug',                label: 'Mug, cut halfway through',        depth: 50 },
-    { stem: 'mug',                label: 'Mug, cut three quarters of the way through', depth: 75 },
-    { stem: 'lego_2x4',           label: 'LEGO brick',                      depth: 50 },
-    { stem: 'pencil_holder_2x2',  label: 'Pencil holder',                   depth: 50 },
-    { stem: 'cane_tip_fitted',    label: 'Cane tip',                        depth: 50 },
-];
-
 function getUploadSessionId() {
     try {
         let sessionId = window.sessionStorage.getItem(UPLOAD_SESSION_STORAGE_KEY);
@@ -2165,67 +2149,9 @@ function _visibleModelEntries(model_list) {
         .filter(({ stem }) => builtinSet.has(stem) || ownedStems.has(stem));
 }
 
-/** Build the demo station's model chooser: the curated list, plus anything this
- * tab has uploaded during the session.
- *
- * Uploads are added from this tab's own memory rather than from the server's
- * model list, which is what keeps three stations apart: a file another station
- * uploaded is on the same disk but was never named to this page, so it cannot
- * appear here. Nothing is shared and nothing needs filtering.
- */
-function buildDemoModelList() {
-    const dropdown = document.getElementById('model-list-dropdown');
-    if (!dropdown) return;
-
-    const previous = dropdown.selectedIndex >= 0 ? dropdown.selectedIndex : 0;
-    dropdown.innerHTML = '';
-    dropdown.disabled = false;
-
-    DEMO_MODELS.forEach((entry) => {
-        const option = document.createElement('option');
-        option.value = entry.stem;
-        option.text = entry.label;
-        // Where this entry starts. Read by the change handler; not a constraint
-        // afterwards, since depth is the thing people are here to play with.
-        option.dataset.demoDepth = String(entry.depth);
-        dropdown.appendChild(option);
-    });
-
-    [...demoUploadedModels].forEach((filename) => {
-        const stem = filename.replace(/\.[^.]+$/, '');
-        const option = document.createElement('option');
-        option.value = stem;
-        option.text = stem + ' (your upload)';
-        option.dataset.ownedFilename = filename;
-        dropdown.appendChild(option);
-    });
-
-    dropdown.selectedIndex = Math.min(previous, dropdown.options.length - 1);
-    if (sbModel && dropdown.selectedIndex >= 0) {
-        sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
-    }
-    refreshDeleteButton();
-}
-
-// Filenames uploaded from this tab in this session. Lives only here: there is no
-// server-side record of it on the demo path, by design.
-const demoUploadedModels = new Set();
-
 function updateModelList(model_list) {
     if (!Array.isArray(model_list)) return;
     lastFullModelList = model_list;
-
-    // The demo station's chooser is the curated list plus this tab's uploads, and
-    // is never rebuilt from what happens to be on the server's disk -- that list
-    // changes when another station uploads, and one station's model appearing in
-    // another's chooser is exactly what must not happen.
-    if (demoMode) {
-        if (sbModel && document.getElementById('model-list-dropdown')?.selectedIndex >= 0) {
-            const dd = document.getElementById('model-list-dropdown');
-            sbModel.textContent = dd.options[dd.selectedIndex].text;
-        }
-        return;
-    }
 
     // In study mode the dropdown is hidden and the model is chosen by the
     // protocol step, so never rebuild it. The status bar shows the neutral study
@@ -2373,32 +2299,6 @@ document.getElementById('delete-model-btn').addEventListener('click', async func
     if (!filename) return;
     const stem = selectedOption.text.replace(/ \(your upload\)$/, '');
 
-    // On the demo path this is a local matter. DELETE /models/<file> proves
-    // ownership from the session cookie, and a demo station sets none -- which is
-    // the point, not an oversight. Ownership there is the tab's own list, so
-    // removing it from that list is the whole operation; the file itself goes
-    // when the tab closes (the pagehide handler below) and the station's scratch
-    // directory goes when the station does.
-    if (demoMode) {
-        demoUploadedModels.delete(filename);
-        sessionOwnedModels.delete(filename);
-        buildDemoModelList();
-        if (dropdown.options.length > 0) {
-            dropdown.selectedIndex = 0;
-            viewerState.currentModel = dropdown.value;
-            const presetDepth = dropdown.options[0].dataset.demoDepth;
-            if (presetDepth !== undefined) updateSliceDepth(Number(presetDepth), false);
-            clearCameraCenterState();
-            resetSlicePlanes();
-            pendingInputSource = 'ui';
-            sendStateToServer();
-        }
-        refreshDeleteButton();
-        if (statusEl) statusEl.textContent = `✓ ${stem} removed`;
-        announce(`Model ${stem} removed.`);
-        return;
-    }
-
     this.disabled = true;
     try {
         const resp = await fetch(`${SERVER_URL}/models/${encodeURIComponent(filename)}`, {
@@ -2406,7 +2306,6 @@ document.getElementById('delete-model-btn').addEventListener('click', async func
         });
         if (resp.ok) {
             sessionOwnedModels.delete(filename);
-            demoUploadedModels.delete(filename);
             dropdown.remove(dropdown.selectedIndex);
             if (dropdown.options.length > 0) {
                 dropdown.selectedIndex = 0;
@@ -2453,13 +2352,6 @@ document.getElementById('upload-model-input').addEventListener('change', async f
 
         if (data.status === 'success') {
             if (data.filename) sessionOwnedModels.add(data.filename);
-            if (demoMode) {
-                // Remembered in this tab only. On the demo path the server wrote
-                // no row for this upload, so this set is the only record that it
-                // happened, and it goes when the tab does.
-                if (data.filename) demoUploadedModels.add(data.filename);
-                buildDemoModelList();
-            }
             updateModelList(data.model_list);
             // Select the newly uploaded model
             const dropdown = document.getElementById('model-list-dropdown');
@@ -3626,11 +3518,6 @@ document.addEventListener('DOMContentLoaded', async function() {
     if (demoMode) {
         document.body.classList.add('demo-ui');
         await initDemoIndicator();
-        buildDemoModelList();
-        const dropdown = document.getElementById('model-list-dropdown');
-        if (dropdown && dropdown.options.length > 0) {
-            viewerState.currentModel = dropdown.value;
-        }
     }
 
     // Simplified workshop viewer: the /workshop route (or ?ui=simple) shows only

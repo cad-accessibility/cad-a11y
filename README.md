@@ -147,7 +147,7 @@ NOTE: Cursor or guideline movements will only work when the cursor or guidelines
 ## Running a demo session (nothing is recorded)
 
 `/demo` is the viewer with recording switched off. It exists for events where
-capturing what people do is not permitted — the hands-on session at the Andrew
+capturing what people do is not permitted. The hands-on session at the Andrew
 Heiskell Braille and Talking Book Library is the one it was built for. It is not
 a study session, it does not ask for consent, and it has no facilitator panel.
 
@@ -155,7 +155,7 @@ There is no login, no session code and no setup. One address, and it works.
 
 ### Launching three stations
 
-Each station is its own server process. That is not a limitation to work around —
+Each station is its own server process. That is not a limitation to work around;
 it is what makes the stations independent, and it means a station keeps working
 if the venue wifi drops, because nothing leaves the machine after the page loads.
 
@@ -190,7 +190,7 @@ display it paired with.
 mode: nothing can be recorded by any request, and the study endpoints are not
 served at all.
 
-### Checking that recording is off — at the venue, in ten seconds
+### Checking that recording is off, at the venue, in ten seconds
 
 You do not need to read any code, and you do not need a terminal.
 
@@ -230,21 +230,22 @@ area of the page is named with it, so it is heard on entering the content.
 | No box at the top | The page did not start in demo mode | Check the address is `/demo`. Reload. |
 | Red box, "could not confirm" | The page could not reach the server | Reload. If it repeats, restart the station. |
 | Red box, "recording is ON" | The server is recording | Stop. Close the browser and relaunch with `CAD_A11Y_DEMO=1`. |
-| Page is blank | The component that switches recording off did not load, so the viewer refused to start | Reload. Nothing was recorded — the viewer never ran. |
+| Page is blank | The component that switches recording off did not load, so the viewer refused to start | Reload. Nothing was recorded: the viewer never ran. |
 
 The blank-page case is deliberate. If the part that switches recording off is
 missing, the viewer does not start rather than starting without it.
 
 ### What people can do in a demo session
 
-* **Switch between models freely.** The chooser holds the mug, the mug cut at a
-  quarter, halfway and three quarters through — those four are the quickest way
-  to show what slicing does — plus the LEGO brick, the pencil holder and the cane
-  tip.
-* **Bring their own model.** The **Upload model…** control takes an STL or STEP
-  file. It is reachable by keyboard and labelled for a screen reader. The file is
-  used for that session only: it is deleted when the tab closes, and the whole
-  scratch directory it lived in is deleted when the station shuts down.
+* **Switch between models freely.** The ordinary model chooser, with the models
+  the server has. Nothing is preselected and nothing is hidden: the demo is the
+  viewer with recording off, not a different set of objects. The mug is the
+  quickest thing to reach for when showing somebody what slicing does to a shape,
+  and the LEGO brick, pencil holder and cane tip are all there.
+* **Bring their own model.** The **Upload model...** control takes an STL or STEP
+  file. It is reachable by keyboard and labelled for a screen reader. No record
+  of the upload is written: on the demo path the row that would normally be
+  created is not. The file itself is removed when the tab closes.
 * **Every exploration control, unchanged.** Depth and slicing, pitch/roll/yaw on
   `U`/`O`, `I`/`K`, `J`/`L`, render mode on `R`, and the buttons on the display
   itself. Press `H` for the full list.
