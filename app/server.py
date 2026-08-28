@@ -31,6 +31,7 @@ import tempfile
 import threading
 import time
 import webbrowser
+from src.converter.binary_to_ascii import execute
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable
@@ -1988,12 +1989,31 @@ def upload_model():
     cookie_sid = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE))
 
     try:
-        filename, dest, new_index = _save_and_index_stl(
-            file.save,
-            file.filename,
-            session_id=cookie_sid,
-            original_name=file.filename,
-        )
+        # check if it is a .step file, no conversion needed
+        suffix = Path(file.filename).suffix.lower()
+        if suffix == ".stl":
+            filename = file.filename
+            # conversion of binary stl occurs here only if it is a .stl
+            file = execute(file)
+            if isinstance(file, str):
+                save_fn = lambda dest: dest.write_text(file)
+            else:
+                save_fn = file.save
+
+            filename, dest, new_index = _save_and_index_stl(
+                save_fn,
+                filename,
+                session_id=cookie_sid,
+                original_name=filename,
+            )
+        else:
+            filename, dest, new_index = _save_and_index_stl(
+                file.save,
+                file.filename,
+                session_id=cookie_sid,
+                original_name=file.filename,
+            )
+
     except ValueError as err:
         return jsonify({"status": "error", "message": str(err)}), 400
     except Exception as error:
