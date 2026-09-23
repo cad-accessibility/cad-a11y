@@ -30,6 +30,7 @@ VIEWER_HTML = REPO_ROOT / "accessible-3d-viewer.html"
 MODE_GROUPS = [
     ("render-mode", "renderModes"),
     ("view-mode", "representationModes"),
+    ("axis-mode", "AXIS_MODES"),
 ]
 
 _ENTRY_RE = re.compile(r"\{([^}]*)\}")

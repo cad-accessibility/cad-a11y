@@ -100,7 +100,7 @@ def _by_type(command_type: str) -> list[dict]:
 
 
 def test_every_command_has_a_known_type():
-    known = {"move", "depth", "cycle-cursor"}
+    known = {"move", "depth", "cycle-cursor", "axis"}
     for key, command in _command_map().items():
         assert command.get("type") in known, f"{key} has unknown type {command.get('type')!r}"
 
@@ -216,3 +216,37 @@ def test_handler_does_not_reach_into_viewer_private_state():
 def test_code_only_ignores_comments(snippet, expected):
     """If the stripper is wrong, the negative assertions above prove nothing."""
     assert ("currentSliceDepth" in _code_only(snippet)) is expected
+
+
+# --- Axes (XYZ mode, #185) -------------------------------------------------
+
+BRAILLE_LETTERS = {"x": {1, 3, 4, 6}, "y": {1, 3, 4, 5, 6}, "z": {1, 3, 5, 6}}
+
+
+def _dots_in_first_byte(key: str) -> set[int]:
+    """Byte 0 of a report read as a dot bitfield, the reading the depth keys
+    imply: dot 1 = 1 (shallower), dot 4 = 8 (deeper)."""
+    first = int(key.split(":")[1].split(",")[0])
+    return {dot for dot in range(1, 9) if first & (1 << (dot - 1))}
+
+
+def test_each_axis_has_a_home_view_and_an_other_side():
+    pairs = sorted((c["axis"], c.get("side", "home")) for c in _by_type("axis"))
+    assert pairs == [(a, s) for a in "xyz" for s in ("home", "other")]
+
+
+def test_each_axis_command_is_its_braille_letter_on_the_same_bitfield_as_depth():
+    """Checked against the property the mapping was inferred from rather than a
+    copied literal: the depth keys make byte 0 a dot bitfield, and on that
+    bitfield each axis report must spell its own letter, with dot 7 (the
+    computer-braille capital) for the other side. Whether the device sends
+    these at all is a hardware question this cannot answer."""
+    depth_dots = {tuple(sorted(_dots_in_first_byte(k))) for k, c in _command_map().items()
+                  if c.get("type") == "depth"}
+    assert depth_dots == {(1,), (4,)}, "the bitfield reading no longer holds for depth"
+    for key, command in _command_map().items():
+        if command.get("type") == "axis":
+            expected = set(BRAILLE_LETTERS[command["axis"]])
+            if command.get("side") == "other":
+                expected |= {7}
+            assert _dots_in_first_byte(key) == expected, f"{key} is not braille {command}"

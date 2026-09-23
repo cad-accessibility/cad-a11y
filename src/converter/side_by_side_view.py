@@ -9,38 +9,11 @@ import matplotlib.pyplot as plt
 import trimesh
 from .render_low_res import get_outlines
 from .plane_intersection_utils import depth_peeling_single_depth_with_bbox, faces_on_plane_fast
-from .single_view_stl import get_single_view
+from .single_view_stl import get_single_view, _get_view_basis, project_vertices
 
 from OCC.Core.STEPControl import STEPControl_Reader
 from OCC.Extend.DataExchange import write_stl_file
 from OCC.Core.gp import gp_Pnt, gp_Dir 
-
-views = {
-    "top": {
-        "eye": np.array([0, 0, -1000.0]),
-        "dir": np.array([0, 0, 1.0])
-    },
-    "front": {
-        "eye": np.array([0, -1000, 0.0]),
-        "dir": np.array([0, 1, 0.0])
-    },
-    "left": {
-        "eye": np.array([-1000.0, 0, 0]),
-        "dir": np.array([1.0, 0, 0])
-    },
-    "bottom": {
-        "eye": np.array([0, 0, 1000.0]),
-        "dir": np.array([0, 0, -1.0])
-    },
-    "back": {
-        "eye": np.array([0, 1000.0, 0]),
-        "dir": np.array([0, -1.0, 0])
-    },
-    "right": {
-        "eye": np.array([1000.0, 0, 0]),
-        "dir": np.array([-1.0, 0, 0])
-    }
-}
 
 def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cut="left",  rendering_mode="filled", imposed_ax_limits_legend=[], imposed_ax_limits_cut=[], screen_size=[60, 40]):
 
@@ -51,8 +24,13 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     cut_width = total_width - legend_width  # Ensures exact fit
     total_height = screen_size[1]
     
-    # Cut view
-    normal_dir = views[view_key_cut]["dir"]
+    # Cut view. Both panels take their axes from the same bases the single view
+    # uses, so a side-by-side slice is the single view's slice drawn smaller.
+    # They used to carry their own table and hand-written projections, which is
+    # three places that had to agree about six views and did not.
+    cut_normal = _get_view_basis(view_key_cut)[2]
+    legend_normal = _get_view_basis(view_key_legend)[2]
+    normal_dir = cut_normal
     shape_cut, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
     shape_cut = faces_on_plane_fast(shape_cut, plane_origin, normal_dir)
 
@@ -67,22 +45,7 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     if type(shape_cut) != list and len(shape_cut.faces) > 0 and not np.isclose(shape_cut.area, 0.0):
 
         colors = [0.0 for i in range(len(shape_cut.faces))]
-        if view_key_cut == "top":
-            coords = shape_cut.vertices[:,[0,1]]
-        if view_key_cut == "front":
-            coords = shape_cut.vertices[:,[0,2]]
-        if view_key_cut == "left":
-            coords = shape_cut.vertices[:,[1,2]]
-        if view_key_cut == "bottom":
-            coords = shape_cut.vertices[:,[0,1]]
-            coords[:,0] *= -1
-            coords[:,1] *= -1
-        if view_key_cut == "back":
-            coords = shape_cut.vertices[:,[0,2]]
-            coords[:,0] *= -1
-        if view_key_cut == "right":
-            coords = shape_cut.vertices[:,[1,2]]
-            coords[:,0] *= -1
+        coords = project_vertices(shape_cut.vertices, view_key_cut)
         ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape_cut.faces, aa=True)
 
     ax.set_aspect('equal')
@@ -111,7 +74,6 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
         cut_img = img_np
 
     # Legend - view
-    normal_dir = views[view_key_legend]["dir"]
 
     # Target pixel resolution (legend view gets 1/3 of width)
     width_px, height_px = legend_width, total_height
@@ -123,22 +85,7 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     if not np.isclose(shape.area, 0.0):
 
         colors = [0.0 for i in range(len(shape.faces))]
-        if view_key_legend == "top":
-            coords = shape.vertices[:,[0,1]]
-        if view_key_legend == "front":
-            coords = shape.vertices[:,[0,2]]
-        if view_key_legend == "left":
-            coords = shape.vertices[:,[1,2]]
-        if view_key_legend == "bottom":
-            coords = shape.vertices[:,[0,1]]
-            coords[:,0] *= -1
-            coords[:,1] *= -1
-        if view_key_legend == "back":
-            coords = shape.vertices[:,[0,2]]
-            coords[:,0] *= -1
-        if view_key_legend == "right":
-            coords = shape.vertices[:,[1,2]]
-            coords[:,0] *= -1
+        coords = project_vertices(shape.vertices, view_key_legend)
         ax.tripcolor(coords[:,0], coords[:, 1], facecolors=colors, cmap="gray", triangles=shape.faces, aa=True)
 
 
@@ -177,26 +124,11 @@ def get_side_view(shape, bbox, cut_depth=0.9, view_key_legend="top", view_key_cu
     ax = fig.add_axes([0, 0, 1, 1])  
     ax.axis('off')
     # Add line at plane_origin in legend_img
-    line_vec = np.cross(views[view_key_cut]["dir"], views[view_key_legend]["dir"])
+    line_vec = np.cross(cut_normal, legend_normal)
 
     plane_origin_np = np.array(plane_origin)
     line_pts = np.array([plane_origin_np - 1000.0*line_vec, plane_origin_np + 1000.0*line_vec])
-    if view_key_legend == "top":
-        coords = line_pts[:,[0,1]]
-    if view_key_legend == "front":
-        coords = line_pts[:,[0,2]]
-    if view_key_legend == "left":
-        coords = line_pts[:,[1,2]]
-    if view_key_legend == "bottom":
-        coords = line_pts[:,[0,1]]
-        coords[:,0] *= -1
-        coords[:,1] *= -1
-    if view_key_legend == "back":
-        coords = line_pts[:,[0,2]]
-        coords[:,0] *= -1
-    if view_key_legend == "right":
-        coords = line_pts[:,[1,2]]
-        coords[:,0] *= -1
+    coords = project_vertices(line_pts, view_key_legend)
     ax.plot(coords[:, 0], coords[:, 1], linewidth=0.5, color=(0.0,0.0,0.0,1.0), aa=False)
     ax.set_aspect('equal')
     ax = plt.gca()

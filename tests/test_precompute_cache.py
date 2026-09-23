@@ -39,9 +39,12 @@ def _precompute(built):
     assert built._precompute_done.wait(600), "precompute did not finish"
 
 
-def test_the_cache_is_written_where_it_will_survive_a_restart():
+def test_the_cache_is_written_where_it_will_survive_a_restart(monkeypatch):
     """Under data/, which is the mounted volume. The old path was inside the
-    image, so every rebuild threw the work away."""
+    image, so every rebuild threw the work away. The suite points the cache at a
+    temporary directory (tests/conftest.py), so the default is checked with that
+    cleared."""
+    monkeypatch.delenv("CAD_A11Y_PRECOMPUTE_DIR", raising=False)
     built = cad_lib.CADComparisonRenderer(str(MODEL), str(MODEL))
     parts = Path(built.cache_path).parts
     assert "data" in parts and "renders" in parts, built.cache_path

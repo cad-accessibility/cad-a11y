@@ -321,6 +321,21 @@ function onKey(device, currKeyCode, keyMsg) {
         return;
     }
 
+    // X, Y and Z spelled as braille chords pick the axis in XYZ mode (#185):
+    // dots 1346, 13456 and 1356, the letters themselves, from the home view. The
+    // keyboard reaches the other side with Shift; these chords use all six keys,
+    // so there is nothing left to hold, and the chord for the axis already
+    // showing flips it instead. Each chord contains shorter ones that mean
+    // something else (dot 1 alone is shallower), so this relies on the SDK
+    // reporting a chord once it is complete, as the "v" chord below already
+    // does. If a sub-chord is seen firing first, decode on key release instead
+    // (SDK 3.0.1+ reports key up with the raw key state).
+    if (letter === 'x' || letter === 'y' || letter === 'z') {
+        if (typeof window.axisCommandFromDevice === 'function') {
+            window.axisCommandFromDevice(letter, 'dotpad', { flipOnRepeat: true });
+        }
+        return;
+    }
     if (letter === 'v'){
         if (typeof window.cycleCursorState === 'function') {
             window.cycleCursorState();
@@ -510,11 +525,20 @@ function encodeAnnouncementForDotPad(message, cellCount) {
     return hex;
 }
 
-function sendAnnouncementToDotPad({message}) {
+// The lines behind the one on the text line now, most important first. The
+// viewer writes a braille form for announcements that need one ("Z 31%" for
+// "Z cut at 31 percent"), sometimes over more than one 20-cell line; only
+// the first fits. Kept so a text-scroll control (PR #166) can page through the
+// rest, as #154 asks.
+window._dotpadBrailleLines = [];
+
+function sendAnnouncementToDotPad({message, braille}) {
     if (!connectedDevice) return;
 
     const cellCount = connectedDevice.numberBrailleCellColumns || 20;
-    const textHex = encodeAnnouncementForDotPad(message, cellCount);
+    const lines = Array.isArray(braille) && braille.length ? braille : [message];
+    window._dotpadBrailleLines = lines.slice();
+    const textHex = encodeAnnouncementForDotPad(String(lines[0]), cellCount);
     sdk.displayTextData(textHex, connectedDevice, DisplayMode.TextMode);
 }
 

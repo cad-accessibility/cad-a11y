@@ -323,3 +323,48 @@ def test_footer_funded_by_row_links_to_nsf_and_create():
     hrefs = [el["href"] for el in elements if el["tag"] == "a"]
     assert "https://nsf.gov" in hrefs
     assert "https://create.uw.edu" in hrefs
+
+
+VIEWER_CSS = Path(__file__).resolve().parent.parent / "static" / "css" / "viewer.css"
+
+
+def _hidden_classes() -> set[str]:
+    """Classes on elements the page ships with the hidden attribute."""
+    import re
+
+    classes: set[str] = set()
+    for tag in re.finditer(r"<[a-z]+\b[^>]*>", VIEWER_HTML.read_text(encoding="utf-8")):
+        text = tag.group(0)
+        if not re.search(r"\shidden(?=[\s>])", text):
+            continue
+        match = re.search(r'class="([^"]+)"', text)
+        if match:
+            classes.update(match.group(1).split())
+    return classes
+
+
+def test_no_class_rule_shows_an_element_the_page_hides():
+    """A class that sets display:grid, flex or block overrides the browser's own
+    [hidden] { display: none }, so an element shipped hidden shows anyway unless
+    the class also honours [hidden]. That is how "Left view: -- Right view: --"
+    sat above the preview in every layout. Only rules that style the class
+    itself count; a rule scoped under a page state (body.study-ui ...) reveals
+    on purpose."""
+    import re
+
+    css = VIEWER_CSS.read_text(encoding="utf-8")
+    offenders = []
+    for cls in sorted(_hidden_classes()):
+        pattern = rf"(?m)^\s*\.{re.escape(cls)}(?![\w-])\s*(?:,[^{{]*)?\{{([^}}]*)\}}"
+        sets_display = any(
+            re.search(r"display\s*:\s*(?!none)", body) for body in re.findall(pattern, css)
+        )
+        if sets_display and not re.search(rf"\.{re.escape(cls)}\[hidden\]", css):
+            offenders.append(cls)
+    assert not offenders, f"these classes override [hidden]: {offenders}"
+
+
+def test_the_side_by_side_labels_stay_hidden_outside_side_by_side():
+    css = VIEWER_CSS.read_text(encoding="utf-8")
+    assert ".side-by-side-axis-labels[hidden]" in css
+    assert "side-by-side-axis-labels" in _hidden_classes()

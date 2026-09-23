@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-09-22
+
+#### Fixed
+*   Pitch and yaw now turn the way the keys say from every view. They used to run backwards from the viewer's starting view and from two others: pitching up showed the object's top rather than its underside, and yawing left brought the wrong side round. The turns are now centred on the person reading the display: pitch up swings the part nearest you up to the top edge, yaw left swings it to your left, and that holds whichever way the object is currently facing (#185).
+*   All six views are now the views OpenSCAD shows under the same names. Front, back and bottom used to cut from the far side, so 0% depth there was the surface furthest from you, and bottom showed the top of the object turned half round instead of the view from below. 0% is now the surface nearest you in every view, which is what the help has always said.
+*   The view is named the way OpenSCAD names it (Top, Front, Right and so on) in the status bar and wherever it is announced, instead of internal codes like "x+", two of which pointed the opposite way to what they suggested.
+*   Fitting the current slice to the display (F) centres and sizes the slice again. It measured a different slice once the object had been turned, and even unturned it worked out the zoom against the wrong window, so the slice came out off-centre or the wrong size (#173).
+*   The help text for the arrow keys said Up goes shallower and Down deeper. It is the other way round, and the help now says so.
+*   Renders driven by the cube or the slider were recorded as keyboard renders. The two modules set a variable the viewer never read, so every cube and slider render in the study data so far says `keyboard`. They now say `witmotion` and `slider`. Earlier rows cannot be corrected from the data; anyone analysing input source should know the old ones are wrong.
+*   On the study page, P printed and also stepped back. B is the key for back and P is print, as the help says.
+*   The depth slider moved the number but not the plane, so turning the model afterwards jumped back to wherever the plane had been, and what it read out to a screen reader never changed from "50 percent depth". Both follow the slider now.
+*   Running the test suite no longer leaves files in the repo's `data/` folder. Every run left its one-triangle test models in `data/models` and `data/uploads` (about 2,400 so far on one development machine), and the ones in `data/models` were listed to everyone as built-in models. Runs also left slice caches and lines in the local braille log and usage database. The suite now points the app at a temporary folder that is removed when it finishes. `CAD_A11Y_MODEL_DIR` is new for this: it moves the built-in model folder the way `UPLOAD_MODEL_DIR` moves uploads.
+
+#### Added
+*   An XYZ axis mode, chosen in Settings, for people who model in OpenSCAD and already think in axes (#185). X, Y and Z cut along that axis from the right, the front or above, and Shift with the letter from the other side, so each key always gives the same view, one of OpenSCAD's standard views. Arrow Up and Down move the cut 1% of the object along that axis and Page Up and Down 10%, always toward higher values for Up, and Home and End go to the object's lowest and highest coordinate. The viewer says where the cut is in those terms ("Z cut at 31 percent, seen from above. X to the right, Y toward the top edge"), writes a short braille line for the DotPad's text display alongside the speech, and "," says where the origin is. Turn mode stays the default until blind OpenSCAD users have tried XYZ. No key does something in both modes: a key from the other one only says which mode it belongs to.
+*   On the pins in XYZ mode: the axis letters at the edges of the display they increase toward, and a small hollow square where the model's origin is. Both are on unless turned off in Settings.
+*   The view info box names the axis coming out of the display with a capital braille letter. It used to draw a lowercase letter and a plus or minus sign, which pilot participants could not read: a lone lowercase x is the word "it" in contracted braille, and the plus sign read as "ing".
+*   "." now starts by saying which way the model is facing and how the display's two axes run ("Seen from the front. X to the right, Z toward the top edge. Depth 50%."), in both modes, before the rest of the status bar. This is what #193 asked for, and it is correct from every view now that the views are.
+*   Single-key shortcuts can be switched off in Settings, for anyone whose screen reader or speech input sends letters the viewer would otherwise act on (WCAG 2.1.4). The arrow, Page, Home and End keys keep working.
+*   The study data records the axis mode and where the cut was on every row: the axis, the side it was seen from, and how far along the object. `docs/STUDY_DATA_EXPORT.md` describes the new columns.
+
+#### Changed
+*   Reset is now 0, not Z, in both modes, since Z cuts along Z in XYZ mode. Pressing Z in Turn mode says where reset went.
+*   The cube only changes the view once a face is clearly up and has stayed up for a moment. Held near a corner, it used to flicker between two views, redrawing and interrupting with an announcement each time.
+*   Study data: in the front, back and bottom views the same slice now reads as 100 minus the depth it used to (30% becomes 70%), and the orientation recorded for those views changed with it. `docs/STUDY_DATA_EXPORT.md` explains how to tell sessions from before and after this apart in the data itself.
+
 ### 2026-08-19
 
 #### Added

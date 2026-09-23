@@ -280,6 +280,12 @@ def _decimate_for_display(mesh):
     return simplified if len(simplified.faces) > 0 else mesh
 
 
+# Six-dot braille for the only letters ever drawn onto the pins, and the capital
+# sign that goes before each: see _draw_axis_label.
+_AXIS_LETTER_DOTS = {"x": [1, 3, 4, 6], "y": [1, 3, 4, 5, 6], "z": [1, 3, 5, 6]}
+_CAPITAL_SIGN_DOTS = [6]
+
+
 class CADComparisonRenderer:
     """
     Renderer for CAD model comparisons.
@@ -305,6 +311,10 @@ class CADComparisonRenderer:
         self.after_model_path = after_model_path
         self.shapes = []
         self.bbox = None
+        # How normalising moved the model, so its origin can still be found: see
+        # _load_models and to_render_space.
+        self.model_scale = 1.0
+        self.model_offset = 0.0
         self.longest_3d_dim = 0.0
         self.view_limits = None
         self.view_default_camera_center = []
@@ -323,11 +333,14 @@ class CADComparisonRenderer:
         # of a blind horizontal line sitting there until something else happens
         # to trigger a re-render.
         self.slicegraph_ready = True
-        # Bumped from 2: the file is per model now, lives on the data volume
-        # rather than inside the image, and carries the cut polygons as well as
-        # the difference matrices. An older file is unreadable on all three
-        # counts, so it must not be mistaken for a warm start.
-        self.cache_version = 3
+        # 3: the file is per model, lives on the data volume rather than inside
+        # the image, and carries the cut polygons as well as the difference
+        # matrices.
+        # 4: the polygons are projected with the view bases rather than by hand,
+        # and front, back and bottom now cut from the reader's side, so a
+        # version-3 file holds those three views' slices in reverse order and
+        # bottom's mirrored. It must not be mistaken for a warm start.
+        self.cache_version = 4
         self.cache_path = self._precompute_cache_path()
         self._model_signature_value = None
         # The framing in force, so a turn reframes but a redraw does not.
@@ -388,6 +401,18 @@ class CADComparisonRenderer:
         after_mesh = before_mesh.copy() if same_file else self._load_one_mesh(self.after_model_path)
         shapes = [before_mesh, after_mesh]
 
+        # How normalising is about to move the model, kept so its origin can be
+        # found afterwards (XYZ mode marks it). normalize_shapes_diagonal maps
+        # every vertex v to s*v + c*(1 - s), where s is 1/diagonal and c is a
+        # single number, the mean of all six bounding-box values. Measured after
+        # decimation, like the normalised bbox below.
+        raw_bbox = plane_inter_utils.get_bbox_from_shapes(shapes)
+        pmin = np.array(raw_bbox[:3], dtype=float)
+        pmax = np.array(raw_bbox[3:], dtype=float)
+        diagonal = float(np.linalg.norm(pmax - pmin))
+        self.model_scale = 1.0 / diagonal if diagonal > 0 else 1.0
+        self.model_offset = float(np.mean([pmin, pmax]))
+
         # Normalize both shapes
         shape_before, shape_after = plane_inter_utils.normalize_shapes_diagonal(shapes)
         self.shapes = [shape_before, shape_after]
@@ -403,6 +428,28 @@ class CADComparisonRenderer:
         # Calculate view limits for all views
         self._calculate_view_limits(same_shapes=same_file)
         #self._compute_slice_graphs()
+
+    def to_render_space(self, point):
+        """Where a point given in the model's own coordinates sits in the
+        normalised space the renderer draws in: s*v + c*(1 - s), per axis."""
+        v = np.asarray(point, dtype=float)
+        return self.model_scale * v + self.model_offset * (1.0 - self.model_scale)
+
+    def origin_fraction(self):
+        """Where the model's origin lies along each axis, as a fraction of the
+        object's extent: 0 at its lowest coordinate, 1 at its highest, outside
+        that range when the origin is beyond the object. The same in the model's
+        own space and the normalised one, since normalising is a uniform scale
+        and shift. None for an axis the object has no extent along."""
+        if self.bbox is None:
+            return None
+        origin = self.to_render_space([0.0, 0.0, 0.0])
+        lo, hi = np.asarray(self.bbox[:3], dtype=float), np.asarray(self.bbox[3:], dtype=float)
+        fractions = []
+        for axis in range(3):
+            extent = hi[axis] - lo[axis]
+            fractions.append(float((origin[axis] - lo[axis]) / extent) if extent > 0 else None)
+        return fractions
 
     def _limits_for_orientation(self, orientation_basis, view_index, view_key):
         """The window to draw, for this view at this orientation.
@@ -589,23 +636,9 @@ class CADComparisonRenderer:
                 #shape = deepcopy(self.shapes[0])
                 cut_depth = cut_percent/100.0
                 cut_faces = get_cut_faces(shape, view_key, cut_depth, self.bbox)
-                coords = shape.vertices[:,[0,1]]
-                if view_key == "top":
-                    coords = cut_faces.vertices[:,[0,1]]
-                if view_key == "front":
-                    coords = cut_faces.vertices[:,[0,2]]
-                if view_key == "left":
-                    coords = cut_faces.vertices[:,[1,2]]
-                if view_key == "bottom":
-                    coords = cut_faces.vertices[:,[0,1]]
-                    coords[:,0] *= -1
-                    coords[:,1] *= -1
-                if view_key == "back":
-                    coords = cut_faces.vertices[:,[0,2]]
-                    coords[:,0] *= -1
-                if view_key == "right":
-                    coords = cut_faces.vertices[:,[1,2]]
-                    coords[:,0] *= -1
+                # The same projection the render uses, so the slice graph's
+                # zoom window (render limits) and these polygons share axes.
+                coords = project_vertices(cut_faces.vertices, view_key)
                 triangles = [
                     Polygon(coords[face])
                     for face in cut_faces.faces
@@ -861,12 +894,31 @@ class CADComparisonRenderer:
         return profile
 
     def compute_fit_view(self, params, *, screen_size=None):
-        """Compute a zoom and camera center that fits the current slice on the tactile display."""
+        """Compute a zoom and camera center that fits the current slice on the tactile display.
+
+        Measured the way render() draws, on both counts that used to differ (#173):
+
+        * The cut and the projection follow the orientation the viewer sent. They
+          used to take the named view alone, so once the model had been turned
+          this fitted a slice through some other axis and centred on where that
+          slice would have been.
+        * The zoom is relative to render()'s own zoom-0 window, the longest 3D
+          dimension fitted to the display. It was relative to the named view's
+          projected extent instead, so the zoom handed back framed a window of a
+          different size from the slice whenever the two differed, which for
+          most models is always.
+        """
         view_name = self._map_view_name(params.get("view", "Top"))
         depth_percent = float(params.get("depth", 0))
         shape_choice = str(params.get("shape", "after")).lower()
         shape_index = 0 if shape_choice == "before" else 1
         view_index = self._get_view_index(view_name)
+        orientation = params.get("orientation")
+
+        def view_limits():
+            # The extent this view at this orientation frames at zoom 0: where
+            # render() starts before any pan. Only the fallbacks need it.
+            return self._limits_for_orientation(orientation, view_index, view_name)
 
         # Match render(): it passes 1.0 - depth_percent / 100.0 into get_single_view().
         cut_depth = 1.0 - (depth_percent / 100.0)
@@ -877,18 +929,19 @@ class CADComparisonRenderer:
             view_name,
             cut_depth,
             self.bbox,
+            orientation_basis=orientation,
         )
 
         if slice_faces is None or len(slice_faces.faces) == 0:
             # Fallback: do not invent a weird camera if there is no slice to fit.
             return {
                 "zoom": float(params.get("zoom", 0.0)),
-                "camera_center": self.view_default_camera_center[view_index].tolist(),
+                "camera_center": self._default_camera_center(view_limits()),
             }
 
         used_vertex_ids = np.unique(slice_faces.faces.reshape(-1))
         slice_vertices = slice_faces.vertices[used_vertex_ids]
-        coords = project_vertices(slice_vertices, view_name)
+        coords = project_vertices(slice_vertices, view_name, orientation_basis=orientation)
         min_x = float(np.min(coords[:,0]))
         max_x = float(np.max(coords[:,0]))
         min_y = float(np.min(coords[:,1]))
@@ -904,10 +957,10 @@ class CADComparisonRenderer:
             # Fallback: if empty slice
             return {
                 "zoom": float(params.get("zoom", 0.0)),
-                "camera_center": self.view_default_camera_center[view_index].tolist(),
+                "camera_center": self._default_camera_center(view_limits()),
             }
         slice_aspect = slice_width / slice_height
-        
+
         screen_size = list(screen_size) if screen_size else list(self.screen_size)
         render_screen_size = [screen_size[0], screen_size[1]]
         if bool(params.get("compose_scrollbar", False)):
@@ -915,7 +968,11 @@ class CADComparisonRenderer:
                 max(1, screen_size[0] - 2),
                 max(1, screen_size[1] - 2),
             ]
-        device_aspect = render_screen_size[0] / render_screen_size[1]
+
+        screen_w_for_ratio = render_screen_size[0]
+        if str(params.get("mode", "single")).lower() == "side-by-side":
+            screen_w_for_ratio = 0.5 * render_screen_size[0]
+        device_aspect = screen_w_for_ratio / render_screen_size[1]
 
         margin = 1.0
 
@@ -926,18 +983,22 @@ class CADComparisonRenderer:
             fitted_height = slice_height * margin
             fitted_width = fitted_height * device_aspect
 
-        horizontal_dist = self.view_limits[view_index][0][1] - self.view_limits[view_index][0][0]
-        vertical_dist = self.view_limits[view_index][1][1] - self.view_limits[view_index][1][0]
+        # render()'s zoom-0 window, computed the same way it computes it.
+        screen_min_dim = min(screen_w_for_ratio, render_screen_size[1])
+        if screen_min_dim > 0 and self.longest_3d_dim > 0:
+            horizontal_dist = self.longest_3d_dim * screen_w_for_ratio / screen_min_dim
+            vertical_dist = self.longest_3d_dim * render_screen_size[1] / screen_min_dim
+        else:
+            limits = view_limits()
+            horizontal_dist = abs(limits[0][1] - limits[0][0])
+            vertical_dist = abs(limits[1][1] - limits[1][0])
 
-        screen_w_for_ratio = render_screen_size[0]
-        if str(params.get("mode", "single")).lower() == "side-by-side":
-            screen_w_for_ratio = 0.5 * render_screen_size[0]
-
+        # Only the size of this window matters below, not where it is centred.
         base_x_lim, base_y_lim = compute_imposed_zoom_limits(
             horizontal_dist,
             vertical_dist,
-            self.view_default_camera_center[view_index][0],
-            self.view_default_camera_center[view_index][1],
+            0.0,
+            0.0,
             0.0,
             screen_w_for_ratio,
             render_screen_size[1],
@@ -969,30 +1030,22 @@ class CADComparisonRenderer:
 
     
     def _map_view_name(self, view_name):
-        """Map view name from JSON format to internal format."""
-        view_mapping = {
-            "top": "top",
-            "front": "front",
-            "left": "left",
-            "right": "right",
-            "back": "back",
-            "bottom": "bottom",
-        }
-        view_mapping = {
-            "top": "z+",
-            "front": "y-",
-            "left": "x-",
-            "right": "x+",
-            "back": "y+",
-            "bottom": "z-",
-        }
+        """Map the viewer's wire token to the renderer's view key.
+
+        The tokens are kept as they were so logged sessions and the study's
+        defaults still mean the same view, but the x pair is historical: x- is
+        the view from +X (OpenSCAD's Right) and x+ the view from -X (its Left).
+        The keys name the views they are, so "right" here really is the right
+        view. It used to map x- to "left", which read correctly only because
+        the basis stored under "left" was itself the right view.
+        """
         view_mapping = {
             "z+": "top",
-            "y-": "front",
-            "x-": "left",
-            "x+": "right",
-            "y+": "back",
             "z-": "bottom",
+            "y-": "front",
+            "y+": "back",
+            "x-": "right",
+            "x+": "left",
         }
         return view_mapping.get(view_name.lower(), "top")
     
@@ -1043,27 +1096,36 @@ class CADComparisonRenderer:
                 if img_array.shape[2] > 3:
                     img_array[py, px, 3] = 255
 
-    def _draw_braille_text(self, img_array, text, x, y):
-        """Draw a short braille string using 2x4 cells with 1px spacing."""
-        # Grade-1 letter mappings plus simple symbol approximations for axis tokens.
-        char_to_dots = {
-            "x": [1, 3, 4, 6],
-            "y": [1, 3, 4, 5, 6],
-            "z": [1, 3, 5, 6],
-            "+": [3, 4, 6],
-            "-": [3, 6],
-            " ": [],
-        }
-        cursor_x = x
-        cell_advance = 3  # 2px cell width + 1px spacing
-        for ch in text.lower():
-            dots = char_to_dots.get(ch, [])
-            if len(dots) > 0:
-                self._draw_braille_cell(img_array, cursor_x, y, dots)
-            cursor_x += cell_advance
+    def _draw_axis_label(self, img_array, axis_letter, x, y):
+        """Draw a two-cell capital axis label, e.g. ⠠⠭ for X, with its top-left
+        at (x, y): 5 pixels wide and 4 tall.
+
+        The capital sign and then the letter, the way BANA's guidelines write a
+        diagram label. These used to be a lowercase letter and a sign glyph,
+        "x+" drawn as dots 1346 and 346, and the pilot found them unreadable: a
+        lone lowercase x is the word "it" in contracted UEB, and dots 346 are
+        Nemeth's plus but UEB's "ing". No sign is drawn anywhere now; which side
+        a view is seen from is said in speech and braille instead."""
+        dots = _AXIS_LETTER_DOTS.get(str(axis_letter or "").lower()[:1])
+        if dots is None:
+            return
+        self._draw_braille_cell(img_array, x, y, _CAPITAL_SIGN_DOTS)
+        self._draw_braille_cell(img_array, x + 3, y, dots)
+
+    @staticmethod
+    def _clear_box(img_array, x0, y0, box_w, box_h):
+        """Lower every pin in a box, so a mark drawn in it reads against blank."""
+        h, w = img_array.shape[0], img_array.shape[1]
+        x0, y0 = max(0, x0), max(0, y0)
+        x1, y1 = min(w, x0 + box_w), min(h, y0 + box_h)
+        if x1 <= x0 or y1 <= y0:
+            return
+        img_array[y0:y1, x0:x1, 0:3] = 255
+        if img_array.shape[2] > 3:
+            img_array[y0:y1, x0:x1, 3] = 255
 
     def _overlay_side_by_side_view_labels(self, img_array, left_axis, right_axis):
-        """Overlay compact braille axis markers at the top of each side-by-side panel."""
+        """Label each side-by-side panel with the axis coming out of it."""
         if img_array is None or len(img_array.shape) != 3:
             return
         h, w = img_array.shape[0], img_array.shape[1]
@@ -1074,46 +1136,92 @@ class CADComparisonRenderer:
         y = 1
         left_x = 1
         right_x = legend_width + 1
-        self._draw_braille_text(img_array, left_axis, left_x, y)
-        self._draw_braille_text(img_array, right_axis, right_x, y)
+        self._draw_axis_label(img_array, left_axis, left_x, y)
+        self._draw_axis_label(img_array, right_axis, right_x, y)
 
     def _overlay_view_info_box(self, img_array, axis_text):
-        """Overlay a compact 7x5 top-left info box with axis text (e.g., x+)."""
+        """Overlay a compact 7x5 top-left info box naming the axis coming out of
+        the display, e.g. ⠠⠵ for Z."""
         if img_array is None or len(img_array.shape) != 3:
             return
         h, w = img_array.shape[0], img_array.shape[1]
         if h < 5 or w < 7:
             return
 
-        axis_text = (axis_text or "x+").lower()[:2]
-        char_to_dots = {
-            "x": [1, 3, 4, 6],
-            "y": [1, 3, 4, 5, 6],
-            "z": [1, 3, 5, 6],
-            "+": [3, 4, 6],
-            "-": [3, 6],
-        }
-
-        # Fixed size requested by user.
-        box_x0 = 0
-        box_y0 = 0
+        # Fixed size requested by user. White background only (no outline).
         box_w = min(w, 7)
         box_h = min(h, 5)
-        box_x1 = box_x0 + box_w - 1
-        box_y1 = box_y0 + box_h - 1
+        self._clear_box(img_array, 0, 0, box_w, box_h)
+        # Layout inside 7x5 box: [margin][capital sign][gap][letter][margin].
+        self._draw_axis_label(img_array, (axis_text or "x")[:1], 1, 1)
 
-        # White background only (no outline).
-        img_array[box_y0:box_y1 + 1, box_x0:box_x1 + 1, 0:3] = 255
-        if img_array.shape[2] > 3:
-            img_array[box_y0:box_y1 + 1, box_x0:box_x1 + 1, 3] = 255
+    def _overlay_axis_letters(self, img_array, right_axis, up_axis, drawable_size):
+        """XYZ mode's edge letters: each display axis labelled at the middle of
+        the edge it increases toward. With Top, Front and Right that is the right
+        edge and the top edge, where a reader expects X and Y on a flat board;
+        seen from the other side a letter moves to the opposite edge, so where it
+        sits shows the direction without a sign. Projecting targets onto the
+        edges helped blind users with layout (Kane et al., Access Overlays)."""
+        w, h = int(drawable_size[0]), int(drawable_size[1])
+        box_w, box_h = 7, 6  # a 5x4 label and a one-pin blank margin
+        if w < 2 * box_w + 2 or h < 2 * box_h + 2:
+            return
 
-        # Draw exactly two 2x4 glyphs with one blank column between them.
-        # Layout inside 7x5 box: [margin][2px][gap][2px][margin].
-        if len(axis_text) >= 1 and axis_text[0] in char_to_dots:
-            self._draw_braille_cell(img_array, box_x0 + 1, box_y0 + 1, char_to_dots[axis_text[0]])
-        if len(axis_text) >= 2 and axis_text[1] in char_to_dots:
-            self._draw_braille_cell(img_array, box_x0 + 4, box_y0 + 1, char_to_dots[axis_text[1]])
-    
+        def signed(vec):
+            index = int(np.argmax(np.abs(vec)))
+            return "xyz"[index], float(np.sign(vec[index]))
+
+        across, across_sign = signed(right_axis)
+        x0 = w - box_w if across_sign > 0 else 0
+        y0 = (h - box_h) // 2
+        self._clear_box(img_array, x0, y0, box_w, box_h)
+        self._draw_axis_label(img_array, across, x0 + 1, y0 + 1)
+
+        vertical, vertical_sign = signed(up_axis)
+        x0 = (w - box_w) // 2
+        y0 = 0 if vertical_sign > 0 else h - box_h
+        self._clear_box(img_array, x0, y0, box_w, box_h)
+        self._draw_axis_label(img_array, vertical, x0 + 1, y0 + 1)
+
+    def origin_on_display(self, right_axis, up_axis, limits, drawable_size):
+        """Where the model's origin lands on the display, as (column, row), or
+        None when it is off it. The origin is (0, 0, 0) in the model's own
+        coordinates, which normalising moved: to_render_space puts it back."""
+        origin = self.to_render_space([0.0, 0.0, 0.0])
+        x = float(np.dot(origin, right_axis))
+        y = float(np.dot(origin, up_axis))
+        (x_lo, x_hi), (y_lo, y_hi) = limits
+        w, h = int(drawable_size[0]), int(drawable_size[1])
+        if x_hi == x_lo or y_hi == y_lo:
+            return None
+        col = int(np.floor((x - x_lo) / (x_hi - x_lo) * w))
+        row = int(np.floor((y_hi - y) / (y_hi - y_lo) * h))
+        if not (1 <= col < w - 1 and 1 <= row < h - 1):
+            return None
+        return col, row
+
+    def _overlay_origin_marker(self, img_array, right_axis, up_axis, limits, drawable_size):
+        """A hollow 3x3 square at the origin, on a blank 5x5 patch so it cannot
+        merge with the cut around it. Hollow outlines were the best recognised
+        marks on a pin display (Bellik & Clavel 2017). Nothing is drawn when the
+        origin is off the display; "," says where it is instead."""
+        where = self.origin_on_display(right_axis, up_axis, limits, drawable_size)
+        if where is None:
+            return
+        col, row = where
+        w, h = int(drawable_size[0]), int(drawable_size[1])
+        self._clear_box(img_array, col - 2, row - 2, 5, 5)
+        # Clip the blank patch to the drawable area: the scrollbar lies beyond it.
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                px, py = col + dx, row + dy
+                if 0 <= px < w and 0 <= py < h:
+                    img_array[py, px, 0:3] = 0
+                    if img_array.shape[2] > 3:
+                        img_array[py, px, 3] = 255
+
     def render(self, params, *, screen_size=None):
         """
         Render a view of the CAD model comparison based on provided parameters.
@@ -1613,6 +1721,20 @@ class CADComparisonRenderer:
         if show_view_info_box and comparison_mode in ["single", "slice-graph"]:
             axis_text = params.get("view", "top").lower()
             self._overlay_view_info_box(img_array, axis_text)
+
+        # XYZ mode's marks (#185): where the model's origin is, and which way the
+        # display's two axes run. The viewer asks for them only in XYZ mode. In
+        # the single view only, and not over a slice graph, which owns the bottom
+        # rows; side by side has two frames and neither mark would say which.
+        show_origin_marker = bool(params.get("show_origin_marker", False))
+        show_axis_letters = bool(params.get("show_axis_letters", False))
+        if (show_origin_marker or show_axis_letters) and comparison_mode == "single" and not compose_slice_graph:
+            right_axis, up_axis, _ = _get_view_basis(view_name, orientation_basis=params.get("orientation"))
+            if show_origin_marker:
+                self._overlay_origin_marker(img_array, right_axis, up_axis,
+                                            imposed_zoom_ax_limits, render_screen_size)
+            if show_axis_letters:
+                self._overlay_axis_letters(img_array, right_axis, up_axis, render_screen_size)
 
         return RenderResult(
             img_array,

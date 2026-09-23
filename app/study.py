@@ -62,6 +62,7 @@ import csv
 import io
 import json
 import logging
+import math
 import os
 import queue as _queue_module
 import secrets
@@ -624,7 +625,31 @@ def _record_render_for_request(params: dict[str, Any], *, model_stem: str, cache
         part_id=(step or {}).get("part_id"),
         step_id=(step or {}).get("id"),
         step_index=(step or {}).get("index"),
+        **_axis_fields(params),
     )
+
+
+def _axis_fields(params: dict[str, Any]) -> dict[str, Any]:
+    """The axis mode and where the cut was along its axis, as the viewer reported
+    them with the render (#185), each checked against what it can be. Anything
+    else is left blank rather than stored: a column is only worth grouping on if
+    its values are the ones the viewer can actually send."""
+    def pick(key: str, allowed: set[str]) -> str | None:
+        value = params.get(key)
+        return value if isinstance(value, str) and value in allowed else None
+
+    def number(key: str) -> float | None:
+        value = params.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value) if math.isfinite(value) else None
+
+    return {
+        "axis_mode": pick("axis_mode", {"turn", "xyz"}),
+        "cut_axis": pick("cut_axis", {"x", "y", "z"}),
+        "cut_side": pick("cut_side", {"above", "below", "front", "back", "right", "left"}),
+        "cut_percent": number("cut_percent"),
+    }
 
 
 # ---------------------------------------------------------------------------

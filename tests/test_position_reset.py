@@ -1,4 +1,8 @@
-"""Tests for the Z shortcut / Reset Position button (#183).
+"""Tests for the reset shortcut / Reset Position button (#183).
+
+The shortcut was Z until XYZ mode (#185) needed Z to mean "cut along Z"; a key
+cannot mean reset in one axis mode and a cut in the other, so reset moved to 0
+for everyone. Z in Turn mode now says where reset went.
 
 "Position reset" was found to only actually reset pan: the Z key and the
 Reset Position button set currentMoveCamera = "reset" and sent it to the
@@ -76,13 +80,19 @@ def test_reset_orientation_zoom_and_depth_helper_resets_all_three():
     assert block.index("resetSlicePlanes()") < block.index("syncSliceDepthFromPlanes()")
 
 
-def test_z_key_calls_the_shared_reset_helper():
-    block = _case_block("z")
+def test_the_reset_key_calls_the_shared_reset_helper():
+    block = _case_block("0")
     assert "resetOrientationZoomAndDepth()" in block, (
-        "'z' should reset orientation and zoom the same way the Reset "
+        "'0' should reset orientation and zoom the same way the Reset "
         "Position button does, not just pan"
     )
     assert "clearCameraCenterState()" in block
+
+
+def test_z_no_longer_resets():
+    """Z picks the Z axis in XYZ mode, so it cannot also be reset."""
+    match = re.search(r"case 'z':\n(.*?)\n\s*break;", _js(), re.S)
+    assert match is None or "resetOrientationZoomAndDepth()" not in match.group(1)
 
 
 def test_reset_button_calls_the_shared_reset_helper():

@@ -219,7 +219,14 @@ CREATE TABLE IF NOT EXISTS study_renders (
     orientation      TEXT,
     created_at       DATETIME,
     elapsed_ms       INTEGER,
-    step_elapsed_ms  INTEGER
+    step_elapsed_ms  INTEGER,
+    -- Which axis mode, and where the cut was along its axis (#185): the axis it
+    -- cut along, the side it was seen from, and how far along the object from its
+    -- lowest coordinate. Blank for renders recorded before these existed.
+    axis_mode        TEXT,
+    cut_axis         TEXT,
+    cut_side         TEXT,
+    cut_percent      REAL
 );
 CREATE INDEX IF NOT EXISTS idx_study_renders_session ON study_renders(study_session_id, seq);
 
@@ -228,6 +235,16 @@ CREATE INDEX IF NOT EXISTS idx_study_renders_session ON study_renders(study_sess
 -- experimenter thought, not interactions with the system, and they are recorded
 -- verbally on the experimenter's own sheet.
 """
+
+
+# Added to study_renders after its first CREATE, so _migrate adds them to a
+# database that predates them.
+AXIS_RENDER_COLUMNS = (
+    ("axis_mode", "TEXT"),
+    ("cut_axis", "TEXT"),
+    ("cut_side", "TEXT"),
+    ("cut_percent", "REAL"),
+)
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -350,6 +367,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_study_sessions_key "
         "ON study_sessions(participant_key) WHERE participant_key IS NOT NULL"
     )
+
+    # --- study_renders: the axis mode and the cut (#185) ----------------------
+    render_columns = {row["name"] for row in conn.execute("PRAGMA table_info(study_renders)")}
+    for name, kind in AXIS_RENDER_COLUMNS:
+        if render_columns and name not in render_columns:
+            conn.execute(f"ALTER TABLE study_renders ADD COLUMN {name} {kind}")
 
 
 _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
@@ -963,6 +986,10 @@ def record_render(
     part_id: str | None = None,
     step_id: str | None = None,
     step_index: int | None = None,
+    axis_mode: str | None = None,
+    cut_axis: str | None = None,
+    cut_side: str | None = None,
+    cut_percent: float | None = None,
 ) -> int | None:
     """Record one render request against the active study session.
 
@@ -990,8 +1017,9 @@ def record_render(
                    (study_session_id, participant_id, participant_code, seq, part_id,
                     step_id, step_index, model, view, render_mode, layout_mode, depth,
                     zoom, input_source, cache_hit, orientation, created_at, elapsed_ms,
-                    step_elapsed_ms)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    step_elapsed_ms, axis_mode, cut_axis, cut_side, cut_percent)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?, ?)""",
                 (
                     study_session_id,
                     participant_id,
@@ -1012,6 +1040,10 @@ def record_render(
                     timestamp,
                     elapsed,
                     step_elapsed,
+                    axis_mode,
+                    cut_axis,
+                    cut_side,
+                    None if cut_percent is None else float(cut_percent),
                 ),
             )
             conn.commit()
@@ -1041,6 +1073,10 @@ def record_render(
                     "depth": depth,
                     "zoom": zoom,
                     "orientation": orientation,
+                    "axis_mode": axis_mode,
+                    "cut_axis": cut_axis,
+                    "cut_side": cut_side,
+                    "cut_percent": cut_percent,
                 },
                 "event_data": {"input_source": input_source, "cache_hit": bool(cache_hit)},
             },
@@ -1137,6 +1173,16 @@ LONG_EXPORT_COLUMNS: tuple[str, ...] = (
     "orientation_y",
     "orientation_z",
     "orientation_basis",
+    # Appended rather than placed beside `view`, so a script reading columns by
+    # position keeps working. Blank for sessions recorded before #185.
+    "axis_mode",
+    "cut_axis",
+    "cut_side",
+    "cut_percent",
+    # Whether Shift was held: Shift+Z is Z seen from the other side, and `key`
+    # reads "z" for both. Blank on anything that is not a key, and on keys
+    # recorded before it was.
+    "key_shift",
 )
 
 
@@ -1288,7 +1334,8 @@ def _long_rows_for_session(session: dict[str, Any]) -> list[dict[str, Any]]:
     renders = conn.execute(
         """SELECT seq, part_id, step_id, step_index, model, view, render_mode,
                   layout_mode, depth, zoom, input_source, cache_hit, orientation,
-                  created_at, elapsed_ms, step_elapsed_ms
+                  created_at, elapsed_ms, step_elapsed_ms, axis_mode, cut_axis,
+                  cut_side, cut_percent
            FROM study_renders WHERE study_session_id = ?""",
         (study_session_id,),
     ).fetchall()
@@ -1315,6 +1362,7 @@ def _long_rows_for_session(session: dict[str, Any]) -> list[dict[str, Any]]:
         "orientation_y": None,
         "orientation_z": None,
         "orientation_basis": None,
+        **{name: None for name, _ in AXIS_RENDER_COLUMNS},
     }
     rows: list[dict[str, Any]] = []
     for kind, row in merged:
@@ -1331,6 +1379,7 @@ def _long_rows_for_session(session: dict[str, Any]) -> list[dict[str, Any]]:
                 "orientation_y": angle_y,
                 "orientation_z": angle_z,
                 "orientation_basis": row["orientation"],
+                **{name: row[name] for name, _ in AXIS_RENDER_COLUMNS},
             }
             event_type = "render"
             source = "server"
@@ -1338,6 +1387,7 @@ def _long_rows_for_session(session: dict[str, Any]) -> list[dict[str, Any]]:
             cache_hit = bool(row["cache_hit"])
             key = None
             key_repeat = None
+            key_shift = None
         else:
             event_type = row["event_type"]
             source = row["source"]
@@ -1355,6 +1405,7 @@ def _long_rows_for_session(session: dict[str, Any]) -> list[dict[str, Any]]:
             # A held arrow key repeats, and counting repeats as separate commands
             # overstates deliberate presses. Blank on anything that is not a key.
             key_repeat = bool(payload.get("repeat")) if key is not None else None
+            key_shift = bool(payload["shift"]) if key is not None and "shift" in payload else None
 
         rows.append(
             {
@@ -1375,6 +1426,7 @@ def _long_rows_for_session(session: dict[str, Any]) -> list[dict[str, Any]]:
                 "source": source,
                 "key": key,
                 "key_repeat": key_repeat,
+                "key_shift": key_shift,
                 "input_source": input_source,
                 "cache_hit": cache_hit,
                 **state,

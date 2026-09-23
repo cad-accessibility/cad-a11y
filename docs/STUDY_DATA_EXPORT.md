@@ -39,10 +39,11 @@ choose rather than baked into the file.
 | `timestamp`, `elapsed_ms`, `step_elapsed_ms` | when, since the session started, and since the current step started |
 | `phase`, `step_id`, `step_index` | where in the protocol. `phase` is `onboarding`, `task1`, `task2`, `discussion` and so on |
 | `event_type`, `source` | what happened. `render` means the display updated; anything else is an event such as `keyboard` or `braille_send` |
-| `key`, `key_repeat` | which key was pressed, and whether it was a hold-repeat rather than a fresh press |
+| `key`, `key_repeat`, `key_shift` | which key was pressed, whether it was a hold-repeat rather than a fresh press, and whether Shift was held |
 | `input_source` | on render rows, what triggered the render |
 | `model`, `view`, `render_mode`, `layout_mode`, `depth`, `zoom`, `cache_hit` | the state of the viewer at that moment |
 | `orientation_x`, `orientation_y`, `orientation_z`, `orientation_basis` | how the object was turned. See below |
+| `axis_mode`, `cut_axis`, `cut_side`, `cut_percent` | the axis mode and where the cut was along its axis. See below |
 
 Only `render` rows record viewer state directly. On every other row the state
 columns show the most recent render in the same session, meaning what was on the
@@ -53,7 +54,7 @@ session, and nothing carries across sessions.
 
 Count keypresses using `key`, not by diffing viewer state between renders.
 
-**There is no view-switching command in the viewer.** The view label is derived
+**In Turn mode there is no view-switching command.** The view label is derived
 from whichever axis the slices are currently cut along, so a rotation that moves
 that axis changes the view as a side effect. Rotations and "axis switches" are
 therefore not two things that happen to correlate; they are one thing counted
@@ -61,22 +62,33 @@ twice. Pitch and yaw move the depth axis and take the view label with them, and
 roll does not move it, so a participant who never rolled will show a view change
 on every single rotation.
 
+XYZ mode (`axis_mode` `xyz`, added for #185) is the exception: `x`, `y` and `z`
+pick the axis and the side directly, the letter alone for the view from the
+right, the front or above and with Shift for the other side. `key` reads the
+same for both, so tell them apart with `key_shift`. The study runs in Turn mode, so a study session will only contain
+XYZ rows if someone changed the setting mid-session.
+
 | Key | Command |
 |---|---|
 | `i`, `k` | pitch up, pitch down |
 | `j`, `l` | yaw left, yaw right |
 | `u`, `o` | roll counterclockwise, roll clockwise |
-| `arrowup`, `arrowdown` | depth by 1% |
-| `pageup`, `pagedown` | depth by a larger step |
+| `arrowup`, `arrowdown` | depth by 1% (XYZ mode: the cut by 1% of the object along its axis, always toward the axis's highest value for `arrowup`) |
+| `pageup`, `pagedown` | depth by a larger step (XYZ mode: 10%) |
+| `home`, `end` | depth to the surface or the far side (XYZ mode: the object's lowest or highest coordinate on the axis) |
+| `x`, `y`, `z` | XYZ mode: cut along that axis, from the right, the front or above; with `key_shift`, from the other side. In Turn mode: nothing but a message saying so |
+| `,` | XYZ mode: where the origin is. In Turn mode: nothing but a message |
 | `2`, `3` | zoom out, zoom in |
 | `4`, `5` | zoom out, zoom in, fine |
 | `w`, `a`, `s`, `d` | pan up, left, down, right |
 | `r` | cycle render mode |
 | `t` | cycle view mode (single, side-by-side, slice graph) |
-| `.` | read back position |
+| `.` | where am I: which way the model faces, where the cut is, then the rest of the status bar |
 | `g`, `v` | slice-graph anchor, slice-graph lock |
 | `[`, `]` | toggle scrollbar, toggle slice graph |
-| `f`, `z` | fit to device, reset position |
+| `f` | fit to device |
+| `0` | reset position |
+| `z` | reset position before #185; XYZ mode's Z axis after it (in Turn mode, a message saying reset is now `0`) |
 | `h`, `?`, `p`, `escape` | help, help, print, clear focus |
 | `q`, `e` | nothing. Accepted and logged, but bound to no action |
 
@@ -115,6 +127,20 @@ after 21 seconds is included. Pull a specific one deliberately with
 session that is not completed returns 409 with its status rather than an empty
 file, so a participant cannot go quietly missing from the analysis.
 
+## Axis mode and the cut
+
+`axis_mode` is `turn` or `xyz`. The other three describe the cut, in either
+mode:
+
+* `cut_axis` is the model axis the slices are cut along, `x`, `y` or `z`.
+* `cut_side` is the side it is seen from: `above` or `below` for Z, `front` or
+  `back` for Y, `right` or `left` for X.
+* `cut_percent` is how far along the object the cut is, from its lowest
+  coordinate on that axis (0) to its highest (100). Unlike `depth`, it does not
+  change when the same plane is seen from the other side.
+
+All four are blank on rows recorded before they existed.
+
 ## Orientation
 
 Rotation happens in whole quarter turns, so `orientation_x`, `orientation_y` and
@@ -131,6 +157,28 @@ for anything that cannot live with the convention.
 
 Blank in all four columns means no orientation was recorded, which is not the
 same as zero.
+
+### Sessions from before the orientation fix (#185) read differently
+
+The fix for #185 changed what three of the six views store, so do not pool
+sessions from either side of it without accounting for this.
+
+* **Telling them apart.** It shows in the data. On a row whose `view` is `y-`,
+  `y+` or `z-`, the `forward` vector in `orientation_basis` points the other way
+  after the fix: a `y-` row recorded before it has `forward` `[0, 1, 0]`, and one
+  recorded after has `[0, -1, 0]`.
+* **Depth.** Front (`y-`), back (`y+`) and bottom (`z-`) used to measure depth in
+  from the far side. They now measure it from the surface nearest the reader, as
+  the other three always did, so the same plane reads as `100 - depth`: 30%
+  before the fix is 70% after. Rows in `z+`, `x-` and `x+` are unaffected.
+* **Angles.** Those three views were stored as mirror images rather than
+  rotations, so the angles derived from them before the fix do not describe a
+  turn that could have happened. After the fix every stored basis is a rotation
+  and every angle means what it says. Counting distinct orientations within one
+  side of the fix still works; comparing angles across it does not.
+* **What participants felt did not change for `y-` and `y+`**: the same face,
+  the same way up. Bottom did change: it used to show the top of the object
+  turned 180 degrees, and now shows the view from below.
 
 ## If something looks wrong
 
