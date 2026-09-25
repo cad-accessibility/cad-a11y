@@ -70,7 +70,9 @@ if getattr(sys, "frozen", False):
 else:
     # app/server.py lives one level below the project root.
     REPO_ROOT = Path(__file__).resolve().parent.parent
-MODEL_DIR = REPO_ROOT / "data" / "models"
+# CAD_A11Y_MODEL_DIR moves it, the way UPLOAD_MODEL_DIR moves uploads. The test
+# suite uses both, so a run cannot leave its fixture models in the real data/.
+MODEL_DIR = Path(os.getenv("CAD_A11Y_MODEL_DIR", "").strip() or REPO_ROOT / "data" / "models")
 # Tracked built-in models ship here, outside any Docker volume mount, and are
 # copied into MODEL_DIR at startup by _seed_builtin_models(). Keeping the source
 # outside the mount is what lets built-ins added later reach a server whose
@@ -1077,6 +1079,7 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
                "camera_center",
                "world_camera_center",
                "compose_scrollbar", "compose_cursor", "cursor_col", "cursor_row", "cursor_state", "compose_slicegraph", "show_view_info_box",
+               "show_origin_marker", "show_axis_letters",
                "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth", "slicegraph_mode",
                "shape", "superpositionMode",
                # The frame is drawn at this size, so two requests that differ only
@@ -1119,6 +1122,9 @@ def _build_quantized_render_key(params: dict[str, Any], model_stem: str) -> str:
         # Drawn onto the image, so leaving it out meant the checkbox was ignored
         # whenever the render came from cache, even within one window.
         "show_view_info_box": bool(params.get("show_view_info_box", False)),
+        # XYZ mode's marks, drawn onto the image for the same reason.
+        "show_origin_marker": bool(params.get("show_origin_marker", False)),
+        "show_axis_letters": bool(params.get("show_axis_letters", False)),
         # Decides whether the response carries monarch_cells_hex, so a cached
         # answer made for another device arrived without the cells the Monarch
         # needs. Narrower than it looks, since target_grid usually differs too,
@@ -1171,6 +1177,8 @@ def _build_preview_payload_cache_key(
         "cursor_state",
         "compose_slicegraph",
         "show_view_info_box",
+        "show_origin_marker",
+        "show_axis_letters",
         "slicegraph_locked",
         "slicegraph_view",
         "slicegraph_depth",
@@ -1314,6 +1322,15 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     }
     if bbox is not None:
         response["bbox"] = bbox
+    # Where the model's origin lies along each axis, as a fraction of the object's
+    # extent, for XYZ mode's "," and "where am I". The render just done cached
+    # the engine, so this is a lookup rather than a build.
+    with models_lock:
+        engine = renderers_by_model.get(str(_path_for_stem(model_stem)))
+    if engine is not None and hasattr(engine, "origin_fraction"):
+        origin_fraction = engine.origin_fraction()
+        if origin_fraction is not None:
+            response["origin_fraction"] = origin_fraction
     # Only meaningful for a request that actually asked for the slice graph:
     # slicegraph_ready otherwise carries whatever a previous request left it at,
     # which would misreport for one that wasn't building a graph. The render just

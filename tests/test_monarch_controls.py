@@ -100,7 +100,7 @@ def _by_type(command_type: str) -> list[dict]:
 
 
 def test_every_command_has_a_known_type():
-    known = {"move", "depth", "cycle-cursor"}
+    known = {"move", "depth", "cycle-cursor", "axis"}
     for key, command in _command_map().items():
         assert command.get("type") in known, f"{key} has unknown type {command.get('type')!r}"
 
@@ -184,11 +184,11 @@ def test_monarch_does_not_claim_the_tactile_display_dimensions():
 
 
 def test_depth_and_cursor_go_through_the_viewer_helpers():
+    """Depth steps through stepSliceDepth, the function Arrow Up and Down use, so
+    deeper means away from the reader in both axis modes (#235 review)."""
     source = _source()
     for helper in (
-        "window.getCurrentSliceDepth?.()",
-        "window.updateSliceDepth?.(",
-        "window.announceDepthValue?.(",
+        "window.stepSliceDepth?.(command.delta)",
         "window.whichCursor?.()",
         "window.moveCursor?.(",
         "window.cycleCursorState?.(",
@@ -216,3 +216,38 @@ def test_handler_does_not_reach_into_viewer_private_state():
 def test_code_only_ignores_comments(snippet, expected):
     """If the stripper is wrong, the negative assertions above prove nothing."""
     assert ("currentSliceDepth" in _code_only(snippet)) is expected
+
+
+# --- Axes (XYZ mode, #185) -------------------------------------------------
+
+BRAILLE_LETTERS = {"x": {1, 3, 4, 6}, "y": {1, 3, 4, 5, 6}, "z": {1, 3, 5, 6}}
+
+
+def _dots_in_first_byte(key: str) -> set[int]:
+    """Byte 0 of a report read as a dot bitfield, the reading the depth keys
+    imply: dot 1 = 1 (shallower), dot 4 = 8 (deeper)."""
+    first = int(key.split(":")[1].split(",")[0])
+    return {dot for dot in range(1, 9) if first & (1 << (dot - 1))}
+
+
+def test_each_axis_has_one_command():
+    """One chord per axis: the same chord again gives the other side, as the same
+    letter does on the keyboard, so there is no dot-7 capital to infer (#235
+    review)."""
+    commands = _by_type("axis")
+    assert sorted(c["axis"] for c in commands) == ["x", "y", "z"]
+    assert not any("side" in c for c in commands), "the side comes from pressing again"
+
+
+def test_each_axis_command_is_its_braille_letter_on_the_same_bitfield_as_depth():
+    """Checked against the property the mapping was inferred from rather than a
+    copied literal: the depth keys make byte 0 a dot bitfield, and on that
+    bitfield each axis report must spell its own letter. Whether the device sends
+    these at all is a hardware question this cannot answer."""
+    depth_dots = {tuple(sorted(_dots_in_first_byte(k))) for k, c in _command_map().items()
+                  if c.get("type") == "depth"}
+    assert depth_dots == {(1,), (4,)}, "the bitfield reading no longer holds for depth"
+    for key, command in _command_map().items():
+        if command.get("type") == "axis":
+            expected = set(BRAILLE_LETTERS[command["axis"]])
+            assert _dots_in_first_byte(key) == expected, f"{key} is not braille {command}"

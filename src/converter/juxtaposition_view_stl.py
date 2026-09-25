@@ -11,17 +11,20 @@ from .plane_intersection_utils import depth_peeling_single_depth_with_bbox, comp
 from OCC.Extend.DataExchange import write_stl_file
 from OCC.Core.gp import gp_Pnt, gp_Dir 
 
+# "dir" is the cut normal, pointing at the reader, the same convention as the
+# bases in single_view_stl.py; the eye sits on that side. Front used to point
+# along +Y, which cut it from the far side.
 views = {
     "top": {
-        "eye": gp_Pnt(0, 0, -1000),
+        "eye": gp_Pnt(0, 0, 1000),
         "dir": gp_Dir(0, 0, 1)
     },
     "front": {
         "eye": gp_Pnt(0, -1000, 0),
-        "dir": gp_Dir(0, 1, 0)
+        "dir": gp_Dir(0, -1, 0)
     },
     "side": {
-        "eye": gp_Pnt(-1000, 0, 0),
+        "eye": gp_Pnt(1000, 0, 0),
         "dir": gp_Dir(1, 0, 0)
     }
 }

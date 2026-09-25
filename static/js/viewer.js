@@ -340,12 +340,19 @@ async function sendStateToServer() {
             compose_scrollbar: viewerState.composeScrollbar,
             compose_slicegraph: viewerState.composeSliceGraph,
             show_view_info_box: viewerState.showViewInfoBox,
+            // XYZ mode's marks on the pins: where the origin is, and which way
+            // the display's two axes run. Off in Turn mode, whatever Settings
+            // says, so nothing about what a Turn-mode reader feels changes.
+            show_origin_marker: isXyzMode() && viewerState.showOriginMarker,
+            show_axis_letters: isXyzMode() && viewerState.showAxisLetters,
             output_device: getEffectiveOutputDevice(),
             slicegraph_locked: viewerState.sliceGraphLocked,
             slicegraph_view: requestedGraphView,
             slicegraph_depth: requestedGraphDepth,
             slicegraph_mode: viewerState.sliceGraphMode,
             input_source: pendingInputSource,
+            // For the study log only; the renderer does not read these.
+            ...axisLogFields(),
             // The grid of the display actually receiving output, so the render,
             // the payload sent to it and both previews all describe one thing.
             target_pixel_width: activeTactileGrid().pixelWidth,
@@ -401,6 +408,11 @@ async function sendStateToServer() {
             // Update bounding box if available in response
             if (data.bbox) {
                 updateBoundingBox(data.bbox);
+            }
+            // Where the model's origin is, for "," and "where am I" in XYZ mode.
+            if (Array.isArray(data.origin_fraction)) {
+                setModelOrigin(data.origin_fraction, state.model);
+                if (isXyzMode()) refreshDepthControls();
             }
             if (data.model_list) {
                 updateModelList(data.model_list);
@@ -523,10 +535,12 @@ async function sendStateToServer() {
 // State management
 viewerState.currentSliceDepth = 50;
 // The slice plane's position along each model axis, as a 0-1 fraction from
-// that axis's minimum end. Kept independent of viewing direction so turning
-// the model doesn't relocate the physical plane -- rotating only changes
-// which of the three is currently the active (visible) one, and from which
-// side viewerState.currentSliceDepth reads it. See activeSliceAxis/displayDepthFromPlanes.
+// that axis's minimum end (0 = the object's lowest X, Y or Z, 1 = its highest).
+// Kept independent of viewing direction so turning the model doesn't relocate
+// the physical plane -- rotating only changes which of the three is currently
+// the active (visible) one, and from which side viewerState.currentSliceDepth
+// reads it. See activeSliceAxis/displayDepthFromPlanes. (This comment used to
+// say the same thing while the code measured from the maximum.)
 viewerState.slicePlanes = { x: 0.5, y: 0.5, z: 0.5 };
 viewerState.currentView = 'x+';
 viewerState.currentZoom = 0.0;
@@ -720,21 +734,116 @@ const MAX_ZOOM = Number.POSITIVE_INFINITY;
 const ZOOM_STEP = 0.1;
 const FINE_ZOOM_STEP = 0.01;
 
-// The camera basis for each named view, in model coordinates. These mirror
-// _get_view_basis in src/converter/single_view_stl.py exactly, so sending this
-// basis for a named view renders the same picture as naming the view does.
+// The camera basis for each named view, in model coordinates: which model
+// direction points to the display's right, which to its top edge, and which out
+// of it at the reader (depth). These mirror VIEW_BASES in
+// src/converter/single_view_stl.py exactly, so sending this basis for a named
+// view renders the same picture as naming the view does.
 //
-// All three axes are tracked rather than two plus a cross product, because the
-// six views are not consistently handed: y-, y+ and z- have right x up = -depth
-// where z+, x- and x+ have +depth. Deriving `right` mirrors half of them.
+// One convention for all six: depth = right x up, so every view is right-handed,
+// the reader is always on the +depth side, and the cut removes that half. That is
+// what makes 0% the surface nearest the reader in every view, and it is what the
+// turn formulas in applyRelativeRotation assume. Each view is the OpenSCAD view
+// of the same name. Three of them used to have depth pointing away from the
+// reader instead, which is why pitch and yaw ran backwards from the default view
+// (#185).
+//
+// The tokens are the names the server, the study logs and the study defaults
+// already use, so they stay. Two of them read backwards: x- is the view from +X
+// (Right) and x+ the view from -X (Left). No one hears a token; viewName() is
+// what gets said.
 const VIEW_BASIS = {
-    'z+': { right: [1, 0, 0],  up: [0, 1, 0],  depth: [0, 0, 1] },   // top
-    'y-': { right: [1, 0, 0],  up: [0, 0, 1],  depth: [0, 1, 0] },   // front
-    'x-': { right: [0, 1, 0],  up: [0, 0, 1],  depth: [1, 0, 0] },   // left
-    'x+': { right: [0, -1, 0], up: [0, 0, 1],  depth: [-1, 0, 0] },  // right
-    'y+': { right: [-1, 0, 0], up: [0, 0, 1],  depth: [0, -1, 0] },  // back
-    'z-': { right: [-1, 0, 0], up: [0, -1, 0], depth: [0, 0, -1] },  // bottom
+    'z+': { right: [1, 0, 0],  up: [0, 1, 0],  depth: [0, 0, 1] },   // Top
+    'z-': { right: [1, 0, 0],  up: [0, -1, 0], depth: [0, 0, -1] },  // Bottom
+    'y-': { right: [1, 0, 0],  up: [0, 0, 1],  depth: [0, -1, 0] },  // Front
+    'y+': { right: [-1, 0, 0], up: [0, 0, 1],  depth: [0, 1, 0] },   // Back
+    'x-': { right: [0, 1, 0],  up: [0, 0, 1],  depth: [1, 0, 0] },   // Right
+    'x+': { right: [0, -1, 0], up: [0, 0, 1],  depth: [-1, 0, 0] },  // Left
 };
+
+// What a view is called wherever a person reads or hears it: OpenSCAD's names,
+// which is what the people this is for already know them as.
+const VIEW_NAMES = {
+    'z+': 'Top', 'z-': 'Bottom', 'y-': 'Front', 'y+': 'Back', 'x-': 'Right', 'x+': 'Left',
+};
+
+/** The name of a view token. Never leak the token itself to a person. */
+function viewName(viewToken = viewerState.currentView) {
+    return VIEW_NAMES[viewToken] || String(viewToken);
+}
+
+// ---------------------------------------------------------------------------
+// Axis mode (#185).
+//
+// Two ways to drive the same orientation model, chosen in Settings:
+//   turn  pitch, roll and yaw (U/O, I/K, J/L), a quarter turn at a time, centred
+//         on the reader. Stays the default until blind OpenSCAD users have
+//         piloted XYZ.
+//   xyz   cut along X, Y or Z. X, Y and Z pick the axis and the same key again
+//         looks from the other side. Every view is one of OpenSCAD's standard
+//         views, so there are only two things to name, the axis and the side,
+//         and nothing to roll.
+// People who model in OpenSCAD already think in axes -- cube([20,10,5]),
+// translate([0,0,12]) -- and a study participant asked for exactly this (#203).
+//
+// No key, button, chord or cube gesture does something in both. A key from the
+// other mode says which mode it belongs to and does nothing else, so a mode
+// error is heard rather than silently turning or cutting (Sellen et al. 1992).
+// The keys that move the cut (arrows, Page Up/Down, Home/End) are in both,
+// because both have a cut to move; each mode moves it in its own terms.
+// ---------------------------------------------------------------------------
+// label is what the Settings radio reads; short is what is said ("XYZ mode").
+const AXIS_MODES = [
+    { key: 'turn', label: 'Turn: pitch, roll and yaw', short: 'Turn' },
+    { key: 'xyz', label: 'XYZ: cut along X, Y or Z, as in OpenSCAD', short: 'XYZ' },
+];
+
+// The keys that belong to exactly one mode. tests/test_axis_mode.py holds the
+// two lists apart.
+const AXIS_MODE_KEYS = {
+    turn: ['u', 'o', 'i', 'k', 'j', 'l'],
+    // "," is deliberately not here: where the origin is is worth asking in Turn
+    // mode too, so it works in both, like "." (#235 review).
+    xyz: ['x', 'y', 'z'],
+};
+
+// XYZ mode's axes and the two views along each: the home view, which X, Y and Z
+// give, and the other side, which the same letter pressed again gives. Top, Front
+// and Right are home because they are the only views where both display axes
+// increase to the right and up, which is what blind co-designers expected on a
+// flat board (Kamath et al., CHI '26).
+const XYZ_AXES = {
+    x: { letter: 'X', views: ['x-', 'x+'] },
+    y: { letter: 'Y', views: ['y-', 'y+'] },
+    z: { letter: 'Z', views: ['z+', 'z-'] },
+};
+
+// Which side each view looks from, spoken and in braille.
+const VIEW_SIDES = {
+    'z+': 'above', 'z-': 'below', 'y-': 'the front', 'y+': 'the back', 'x-': 'the right', 'x+': 'the left',
+};
+const VIEW_SIDES_BRAILLE = {
+    'z+': 'above', 'z-': 'below', 'y-': 'front', 'y+': 'back', 'x-': 'right', 'x+': 'left',
+};
+
+viewerState.axisMode = 'turn';
+
+function isXyzMode() {
+    return viewerState.axisMode === 'xyz';
+}
+
+function axisModeLabel(modeKey = viewerState.axisMode) {
+    const mode = AXIS_MODES.find(m => m.key === modeKey);
+    return mode ? mode.short : String(modeKey);
+}
+
+/** The mode a key belongs to, or null for a key both modes share. */
+function axisModeForKey(key) {
+    for (const [mode, keys] of Object.entries(AXIS_MODE_KEYS)) {
+        if (keys.includes(key)) return mode;
+    }
+    return null;
+}
 
 // [1,0,0] -> "pos X", [-1,0,0] -> "neg X", [0,0,-1] -> "neg Z"
 // Words, not a +/- glyph: a sign glued to a letter ("-X") can get misread by a
@@ -794,7 +903,7 @@ function setOrientationFromView(viewToken) {
     viewerState.orientationDepth = [...basis.depth];
 }
 
-// "Position reset" (the Z shortcut and the Reset Position button) means the
+// "Position reset" (the 0 shortcut and the Reset Position button) means the
 // whole framing, not just pan: undo any roll/pitch/yaw back to the straight-on
 // basis for whatever view is currently selected, zoom back out to 0, and
 // bring the slice plane back to the middle (50%) of every axis -- otherwise a
@@ -825,6 +934,19 @@ const RELATIVE_ROTATIONS = {
 };
 
 
+// The turns are centred on the reader, not the model. Picture a model airplane
+// flying out of the display at you, nose toward you, wings left and right:
+//   pitch up    the nose swings up to the top edge; its belly now faces you
+//   pitch down  the nose swings down; its back faces you
+//   yaw left    the nose swings to your left; its right wing now faces you
+//   yaw right   the nose swings to your right
+//   roll        clockwise or counterclockwise, the same face stays toward you
+// With depth pointing at the reader in every view, "the nose" is depth and
+// each turn is two of the three vectors trading places. Written against the
+// current basis rather than a fixed model axis, so it is the same turn from any
+// view and any orientation reached from one. These used to be written for a
+// reader on the -depth side, which only three of the six views had, so from
+// the other three (the default among them) pitch and yaw went the wrong way.
 function applyRelativeRotation(rotationName, emit = announceAlert) {
     const rotation = RELATIVE_ROTATIONS[rotationName];
     const right = viewerState.orientationRight, up = viewerState.orientationUp, depth = viewerState.orientationDepth;
@@ -838,20 +960,20 @@ function applyRelativeRotation(rotationName, emit = announceAlert) {
             viewerState.orientationUp = right;
             break;
         case 'pitchUp':
-            viewerState.orientationUp = negateVec3(depth);
-            viewerState.orientationDepth = up;
-            break;
-        case 'pitchDown':
             viewerState.orientationUp = depth;
             viewerState.orientationDepth = negateVec3(up);
             break;
-        case 'yawLeft':
-            viewerState.orientationRight = depth;
-            viewerState.orientationDepth = negateVec3(right);
+        case 'pitchDown':
+            viewerState.orientationUp = negateVec3(depth);
+            viewerState.orientationDepth = up;
             break;
-        case 'yawRight':
+        case 'yawLeft':
             viewerState.orientationRight = negateVec3(depth);
             viewerState.orientationDepth = right;
+            break;
+        case 'yawRight':
+            viewerState.orientationRight = depth;
+            viewerState.orientationDepth = negateVec3(right);
             break;
         default:
             return;
@@ -896,9 +1018,10 @@ function getOrientationPayload() {
 }
 
 // Which model axis the current view slices along, and from which side.
-// sign > 0 means depth points toward that axis's positive end (0% is the
-// negative end); sign < 0 means the reverse. This sign is what makes the same
-// physical plane read as (100 - x)% after a 180-degree turn around that axis.
+// sign > 0 means depth points toward that axis's positive end, so the reader is
+// on the + side and 0% depth is the axis maximum; sign < 0 means the reverse.
+// This sign is what makes the same physical plane read as (100 - x)% after a
+// 180-degree turn around that axis.
 function activeSliceAxis() {
     const d = viewerState.orientationDepth;
     if (d[0] !== 0) return { axis: 'x', sign: Math.sign(d[0]) };
@@ -906,20 +1029,31 @@ function activeSliceAxis() {
     return { axis: 'z', sign: Math.sign(d[2]) };
 }
 
+// Convert a plane position (0-1 from the axis minimum) into the view-relative
+// depth the slider, the announcements and the server all use: percent in from
+// the surface nearest the reader. One rule for every view, because the reader
+// is always on the +depth side.
+function depthFromPlanePosition(position, sign) {
+    return (sign > 0 ? 1 - position : position) * 100;
+}
+
+function planePositionFromDepth(depthPercent, sign) {
+    const fraction = depthPercent / 100;
+    return sign > 0 ? 1 - fraction : fraction;
+}
+
 // Convert the persisted absolute plane position into the view-relative
 // percentage the slider/announcements show ("X% from where you're looking").
 function displayDepthFromPlanes() {
     const { axis, sign } = activeSliceAxis();
-    const fraction = viewerState.slicePlanes[axis];
-    return Math.round((sign > 0 ? fraction : 1 - fraction) * 100);
+    return Math.round(depthFromPlanePosition(viewerState.slicePlanes[axis], sign));
 }
 
 // The inverse: fold a view-relative percentage back into the persisted
 // absolute position of whichever axis is currently active.
 function writeDisplayDepthToPlanes(depthPercent) {
     const { axis, sign } = activeSliceAxis();
-    const fraction = depthPercent / 100;
-    viewerState.slicePlanes[axis] = sign > 0 ? fraction : 1 - fraction;
+    viewerState.slicePlanes[axis] = planePositionFromDepth(depthPercent, sign);
 }
 
 function resetSlicePlanes() {
@@ -934,11 +1068,468 @@ function resetSlicePlanes() {
 function syncSliceDepthFromPlanes() {
     const oldDepth = viewerState.currentSliceDepth;
     viewerState.currentSliceDepth = displayDepthFromPlanes();
-    if (sliceSlider) {
-        sliceSlider.value = viewerState.currentSliceDepth;
-    }
-    if (slicePercentage) slicePercentage.textContent = viewerState.currentSliceDepth;
+    refreshDepthControls();
     return oldDepth !== viewerState.currentSliceDepth;
+}
+
+// ---------------------------------------------------------------------------
+// XYZ mode: the cut along its axis.
+//
+// The position along an axis is slicePlanes[axis], a fraction from the object's
+// lowest to its highest coordinate, and it is the same number from either side,
+// so flipping keeps the cut where it is. It is read and stepped in percent of the
+// object's extent along that axis. Reading it in millimetres needs the model's
+// real coordinates and a unit that can be trusted, which is #234.
+// ---------------------------------------------------------------------------
+
+const SETTINGS_AXIS_MODE_KEY = 'settingsAxisMode';
+const SETTINGS_AXIS_LETTERS_KEY = 'settingsAxisLetters';
+const SETTINGS_ORIGIN_MARKER_KEY = 'settingsOriginMarker';
+const SETTINGS_SINGLE_KEY_SHORTCUTS_KEY = 'settingsSingleKeyShortcuts';
+
+// Settings that shape what XYZ mode draws, both drawn only in XYZ mode and both
+// on unless turned off: the axis letters at the display edges, and the origin.
+// Single-key shortcuts are on too, with a way to turn them off (WCAG 2.1.4).
+viewerState.showAxisLetters = true;
+viewerState.showOriginMarker = true;
+viewerState.singleKeyShortcuts = true;
+
+/** The model axis the current view cuts along: 'x', 'y' or 'z'. */
+function currentCutAxis() {
+    return activeSliceAxis().axis;
+}
+
+function currentBasis() {
+    return {
+        right: viewerState.orientationRight,
+        up: viewerState.orientationUp,
+        depth: viewerState.orientationDepth,
+    };
+}
+
+// Where the model's origin lies along each axis, as a fraction of the object's
+// extent (0 at its lowest coordinate, 1 at its highest, outside that range when
+// the origin is beyond the object), and which model that was measured on. The
+// server sends it with every render; null until one answers.
+viewerState.modelOrigin = null;
+
+function setModelOrigin(fraction, model = viewerState.currentModel) {
+    if (!Array.isArray(fraction) || fraction.length !== 3) return;
+    const [x, y, z] = fraction.map(value => (value === null ? NaN : Number(value)));
+    viewerState.modelOrigin = { fraction: { x, y, z }, model };
+}
+
+/** The origin's fraction along an axis for the model on screen, or null. A switch
+ * of model leaves the previous one's origin here until the next render answers,
+ * and nothing may read it as the new one's. */
+function originFraction(axis) {
+    const origin = viewerState.modelOrigin;
+    if (!origin || origin.model !== viewerState.currentModel) return null;
+    const value = origin.fraction[axis];
+    return Number.isFinite(value) ? value : null;
+}
+
+/** Where the cut is along an axis, in whole percent of the object's extent. */
+function cutPercent(axis = currentCutAxis()) {
+    return Math.round(viewerState.slicePlanes[axis] * 100);
+}
+
+/** A percentage for speech and braille. Signs are words ("minus 20"): a bare "-"
+ * before a digit is read differently by different screen readers, and in UEB a
+ * lone sign is ambiguous (dots 346, a Nemeth plus, reads as "ing"). */
+function signedPercent(value) {
+    return value < 0 ? `minus ${Math.abs(value)}` : String(value);
+}
+
+function axisLetter(axis) {
+    return XYZ_AXES[axis].letter;
+}
+
+/** "Z", +1 for [0, 0, 1]; "X", -1 for [-1, 0, 0]. */
+function signedAxisOf(vec) {
+    const index = vec.findIndex(v => v !== 0);
+    return { axis: ['x', 'y', 'z'][index], sign: Math.sign(vec[index]) };
+}
+
+/** How the two display axes run, e.g. "X to the right, Y toward the top edge":
+ * each named axis increases in the direction given. The full form is for "." and
+ * entering the mode; the short one, "X right, Y up", is what an axis key says. */
+function displayAxesPhrase(basis = currentBasis(), full = true) {
+    const right = signedAxisOf(basis.right);
+    const up = signedAxisOf(basis.up);
+    const rightWord = right.sign > 0 ? 'right' : 'left';
+    const upWord = up.sign > 0 ? 'up' : 'down';
+    const short = `${axisLetter(right.axis)} ${rightWord}, ${axisLetter(up.axis)} ${upWord}`;
+    return {
+        speech: full
+            ? `${axisLetter(right.axis)} to the ${rightWord}, ${axisLetter(up.axis)} toward the ${up.sign > 0 ? 'top' : 'bottom'} edge`
+            : short,
+        braille: short.replace(',', ''),
+    };
+}
+
+/** Which side the reader is looking from, taken from the axis pointing at them:
+ * "seen from the front" in full, "from the front" after an axis letter. */
+function sideOfView(viewToken = viewerState.currentView) {
+    const side = VIEW_SIDES[viewToken] || viewName(viewToken);
+    return {
+        speech: `seen from ${side}`,
+        short: `from ${side}`,
+        braille: `from ${VIEW_SIDES_BRAILLE[viewToken] || viewName(viewToken)}`,
+    };
+}
+
+/** "Z cut at 31 percent", with its braille form "Z 31%". */
+function cutPositionPhrase(axis = currentCutAxis()) {
+    const letter = axisLetter(axis);
+    const percent = cutPercent(axis);
+    return { speech: `${letter} cut at ${percent} percent`, braille: `${letter} ${percent}%` };
+}
+
+/** The one-line readout under the XYZ buttons, and the slider's value text. */
+function cutReadout(axis = currentCutAxis()) {
+    const letter = axisLetter(axis);
+    const percent = cutPercent(axis);
+    return { short: `${letter} ${percent}%`, spoken: `${letter} ${percent} percent` };
+}
+
+/** Where the origin sits on the display relative to the object's outline: "at
+ * the bottom left corner", "in the middle of the left edge", "past the left edge
+ * of the object". Measured along the two display axes; null until known. */
+function originDisplayPhrase(basis = currentBasis()) {
+    const place = (vec, lowWord, highWord) => {
+        const { axis, sign } = signedAxisOf(vec);
+        let t = originFraction(axis);
+        if (t === null) return null;
+        // Where the origin falls between the edge that is low on the display and
+        // the edge that is high: flipped when the axis runs the other way.
+        if (sign < 0) t = 1 - t;
+        if (t < -0.02) return `beyond-${lowWord}`;
+        if (t <= 0.05) return lowWord;
+        if (t < 0.95) return 'middle';
+        if (t <= 1.02) return highWord;
+        return `beyond-${highWord}`;
+    };
+    const across = place(basis.right, 'left', 'right');
+    const vertical = place(basis.up, 'bottom', 'top');
+    if (across === null || vertical === null) return null;
+    const beyond = [vertical, across].filter(p => p.startsWith('beyond-')).map(p => p.slice(7));
+    if (beyond.length) {
+        // "Past the bottom edge", not "below": in the view from above, "below"
+        // would read as the Z direction rather than the display's.
+        const edges = beyond.length === 2 ? `${beyond[0]} and ${beyond[1]} edges` : `${beyond[0]} edge`;
+        return { speech: `past the ${edges} of the object`, braille: `past ${beyond.join(' ')}` };
+    }
+    if (across !== 'middle' && vertical !== 'middle') return { speech: `at the ${vertical} ${across} corner`, braille: `${vertical} ${across}` };
+    if (across !== 'middle') return { speech: `in the middle of the ${across} edge`, braille: `${across} edge` };
+    if (vertical !== 'middle') return { speech: `in the middle of the ${vertical} edge`, braille: `${vertical} edge` };
+    return { speech: 'inside the outline of the object', braille: 'inside' };
+}
+
+/** The whole XYZ picture, result first, for entering the mode and for ".". */
+function xyzDescription({ lead = '', detail = false } = {}) {
+    const cut = cutPositionPhrase();
+    const side = sideOfView();
+    const axes = displayAxesPhrase(currentBasis(), true);
+    const speech = [`${lead}${cut.speech}, ${side.speech}.`, `${axes.speech}.`];
+    const braille = [`${lead ? 'XYZ mode ' : ''}${cut.braille}`, axes.braille];
+    if (detail) {
+        const origin = originDisplayPhrase();
+        if (origin) {
+            speech.push(`Origin ${origin.speech}.`);
+            braille.push(`origin ${origin.braille}`);
+        }
+    }
+    return { speech: speech.join(' '), braille };
+}
+
+/** The Turn-mode picture for ".": which way the model faces, then how deep. */
+function turnDescription() {
+    const side = sideOfView();
+    const axes = displayAxesPhrase(currentBasis(), true);
+    const depth = viewerState.currentSliceDepth;
+    return {
+        speech: `${side.speech.charAt(0).toUpperCase()}${side.speech.slice(1)}. ${axes.speech}. Depth ${depth}%.`,
+        braille: [`${viewName()} ${depth}%`, axes.braille],
+    };
+}
+
+function capitalize(text) {
+    return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
+
+/** How far one press moves the cut, in percent of the object's extent: 1 for the
+ * Arrow keys and 10 for Page Up and Down, the ARIA slider pattern's steps. */
+function xyzStepPercent(coarse) {
+    return coarse ? 10 : 1;
+}
+
+/** Put the XYZ cut at a position along its axis (0 lowest, 1 highest), render
+ * and, unless told not to, say where it landed. */
+function setCutPosition(axis, position, emit = announceAlert, { render = true, announce: shouldAnnounce = true } = {}) {
+    const clamped = Math.min(1, Math.max(0, position));
+    const changed = clamped !== viewerState.slicePlanes[axis];
+    viewerState.slicePlanes[axis] = clamped;
+    syncSliceDepthFromPlanes();
+    refreshViewInfoSummary();
+    if (render && changed) sendStateToServer();
+    if (shouldAnnounce) announceCutStep(axis, emit);
+    return changed;
+}
+
+/** Move the XYZ cut `step` percent toward +axis (direction 1) or -axis (-1), onto
+ * whole percents so a run of presses reads 31, 32, 33 whatever position the cut
+ * started from. */
+function stepCut(direction, step, emit = announceAlert) {
+    const axis = currentCutAxis();
+    const percent = viewerState.slicePlanes[axis] * 100;
+    const onGrid = direction > 0
+        ? Math.floor(percent + 1e-6) + step
+        : Math.ceil(percent - 1e-6) - step;
+    return setCutPosition(axis, Math.min(100, Math.max(0, onGrid)) / 100, emit);
+}
+
+/** Move the cut deltaPercent deeper, away from the reader, or shallower when it
+ * is negative, and say where it landed. The depth keys, the DotPad's depth dots
+ * and the Monarch's depth keys all come through here, so deeper means the same
+ * in both modes (#235 review). XYZ mode still reads the cut out along its axis,
+ * so from above, the right and the back, deeper lowers the number. */
+function stepSliceDepth(deltaPercent, emit = announceAlert) {
+    const delta = Number(deltaPercent);
+    if (!Number.isFinite(delta) || delta === 0) return false;
+    if (isXyzMode()) {
+        // The reader is on the +depth side of the cut axis, so deeper runs
+        // toward -sign along it.
+        const { sign } = activeSliceAxis();
+        return stepCut(-sign * Math.sign(delta), Math.abs(delta), emit);
+    }
+    const previousDepth = viewerState.currentSliceDepth;
+    const nextDepth = Math.max(0, Math.min(100, previousDepth + delta));
+    const changed = updateSliceDepth(nextDepth, false);
+    announceDepthValue(nextDepth, previousDepth, emit);
+    return changed;
+}
+
+/** Home and End: the surface nearest the reader, or the far side, in either mode. */
+function goToSliceEnd(farSide, emit = announceAlert) {
+    if (isXyzMode()) {
+        const { axis, sign } = activeSliceAxis();
+        const nearest = sign > 0 ? 1 : 0;
+        return setCutPosition(axis, farSide ? 1 - nearest : nearest, emit);
+    }
+    const previousDepth = viewerState.currentSliceDepth;
+    const nextDepth = farSide ? 100 : 0;
+    const changed = updateSliceDepth(nextDepth, false);
+    announceDepthValue(nextDepth, previousDepth, emit);
+    return changed;
+}
+
+/** "Z 32 percent" the first time, then just "32", like zoom and depth. The
+ * braille line always carries the axis: a bare number under the fingers says
+ * nothing. The ends are named, since a press there does nothing. */
+function announceCutStep(axis = currentCutAxis(), emit = announceAlert) {
+    const letter = axisLetter(axis);
+    const position = viewerState.slicePlanes[axis];
+    const end = position >= 1 ? 'maximum' : position <= 0 ? 'minimum' : '';
+    const endSpoken = end ? `, ${end}` : '';
+    const endBraille = end ? ` ${end.slice(0, 3)}` : '';
+    const percent = cutPercent(axis);
+    announceParameterValue(`cut-${axis}`, `${letter} ${percent} percent${endSpoken}`, `${percent}${endSpoken}`, emit, {
+        braille: `${letter} ${percent}%${endBraille}`,
+    });
+}
+
+/** Show a standard view in XYZ mode and say it the way the #235 review asked:
+ * the axis and the side, then which way the other two run, "Y from the front, X
+ * right, Z up". Pressing Y again says "Y from the back, X left, Z up", so the
+ * change is heard in the same words. The side is named rather than given as plus
+ * or minus, since for X the view tokens name the side opposite the reader's and
+ * "plus" could not mean one thing on every axis. Where the cut is along the axis
+ * is "."'s to say. */
+function showXyzView(viewToken, emit = announceAlert) {
+    updateView(viewToken, false);
+    syncAxisModeUI();
+    const letter = axisLetter(currentCutAxis());
+    const side = sideOfView(viewToken);
+    const axes = displayAxesPhrase(currentBasis(), false);
+    emit(`${letter} ${side.short}, ${axes.speech}.`, {
+        braille: [`${letter} ${side.braille}`, axes.braille],
+    });
+}
+
+/** X, Y or Z: cut along that axis from its home view (Right, Front, Top), and
+ * the same letter again from the other side (Left, Back, Bottom). A letter always
+ * names the axis, the way OpenSCAD's View menu and Blender's numpad do; which of
+ * its two sides you get depends only on which one is showing, so a third press
+ * comes back to the first. Each axis keeps its own cut position throughout. */
+function selectAxis(axis, emit = announceAlert) {
+    if (!XYZ_AXES[axis]) return;
+    const [home, other] = XYZ_AXES[axis].views;
+    const showing = viewerState.currentView;
+    const onThisAxis = showing === home || showing === other;
+    // A letter for another axis lands on that axis's home view; the same letter
+    // again gives the other side, and a third press comes back. So minus is
+    // always two presses of one key, with no modifier to hold and nothing for
+    // Caps Lock to interfere with, and a DotPad chord or a Monarch key is the
+    // same press as the keyboard's (#235 review).
+    const target = onThisAxis ? (showing === home ? other : home) : home;
+    showXyzView(target, emit);
+}
+
+/** The same axis from the other side, whichever side is showing: the "Other side"
+ * button. From the keyboard or a device this is the axis letter pressed again. */
+function flipSide(emit = announceAlert) {
+    const axis = currentCutAxis();
+    const [home, other] = XYZ_AXES[axis].views;
+    showXyzView(viewerState.currentView === home ? other : home, emit);
+}
+
+/** Change the axis mode. Entering XYZ squares the model up to the standard view
+ * whose axis already faces the reader, so nothing turns away and the cut stays
+ * where it was; leaving keeps the view as it is. */
+function setAxisMode(mode, { announce: shouldAnnounce = true, persist = true, render = true } = {}) {
+    if (!AXIS_MODES.some(m => m.key === mode)) return false;
+    const previous = viewerState.axisMode;
+    viewerState.axisMode = mode;
+    if (persist) {
+        try {
+            window.localStorage.setItem(SETTINGS_AXIS_MODE_KEY, mode);
+        } catch (_) {
+            // Ignore localStorage failures (e.g., privacy mode, or /demo's shim).
+        }
+    }
+    if (mode === 'xyz' && previous !== 'xyz') {
+        const viewToken = orientationViewFromDepth(viewerState.orientationDepth);
+        viewerState.currentView = viewToken;
+        setOrientationFromView(viewToken);
+    }
+    syncSliceDepthFromPlanes();
+    syncAxisModeUI();
+    updateSideBySideAxisLabels();
+    refreshViewInfoSummary();
+    if (previous === mode) return false;
+    // The basis may have just been squared up, and XYZ mode's marks on the
+    // pins come and go with it.
+    if (render) sendStateToServer();
+    if (shouldAnnounce) {
+        if (mode === 'xyz') {
+            const description = xyzDescription({ lead: 'XYZ mode. ' });
+            announce(description.speech, { braille: description.braille });
+        } else {
+            const description = turnDescription();
+            announce(`Turn mode. ${description.speech}`, { braille: ['Turn mode', ...description.braille] });
+        }
+    }
+    return true;
+}
+
+/** A key from the other mode does nothing but say whose it is. */
+function announceWrongModeKey(key, keyMode, emit = announceAlert) {
+    const label = key.toUpperCase();
+    const does = keyMode === 'turn' ? `${label} turns the model` : `${label} cuts along ${label}`;
+    // Z was the reset key until Reset moved to 0, and hands remember.
+    const reset = key === 'z' ? ' Reset is now 0.' : '';
+    emit(`${does} in ${axisModeLabel(keyMode)} mode. You're in ${axisModeLabel()} mode; change it in Settings.${reset}`, {
+        braille: `${label} is ${axisModeLabel(keyMode)} only`,
+    });
+}
+
+/** ".": where am I, in either mode, result first. XYZ mode adds the object's
+ * extent and where its origin is; the rest of the status bar follows. This is
+ * also #193's "which way am I facing": the first sentence answers it in both
+ * modes, and it is correct from every view now that depth has one meaning. */
+function announceWhereAmI(emit = announceAlert) {
+    const description = isXyzMode() ? xyzDescription({ detail: true }) : turnDescription();
+    emit(`${description.speech} ${statusBarRest()}`, { braille: description.braille });
+}
+
+/** ",": where the origin is against the cut and the object's outline, in either
+ * mode. XYZ mode names it by its coordinate on the same percent scale as the
+ * cut; Turn mode has no axis to name it by (#235 review). */
+function announceOrigin(emit = announceAlert) {
+    const axis = currentCutAxis();
+    const fraction = originFraction(axis);
+    const place = originDisplayPhrase();
+    if (fraction === null || !place) {
+        emit("Where the model's origin is is not known yet.");
+        return;
+    }
+    const letter = axisLetter(axis);
+    const originPercent = Math.round(fraction * 100);
+    const cut = cutPercent(axis);
+    if (originPercent === cut) {
+        emit(`The cut passes through the origin, ${place.speech}.`, { braille: ['origin on cut', `origin ${place.braille}`] });
+        return;
+    }
+    let relation;
+    let relationBraille;
+    if (axis === 'z') {
+        const below = originPercent < cut;
+        relation = below ? 'below this cut' : 'above this cut';
+        relationBraille = below ? 'below cut' : 'above cut';
+    } else {
+        // The reader is on the +depth side of the plane.
+        const towardReader = (originPercent - cut) * activeSliceAxis().sign > 0;
+        relation = towardReader ? 'in front of this cut, toward you' : 'behind this cut';
+        relationBraille = towardReader ? 'toward you' : 'behind cut';
+    }
+    // Turn mode is not working in an axis, so it gets where the origin sits
+    // against the cut and the outline, without a coordinate to name it by.
+    if (!isXyzMode()) {
+        emit(`Origin is ${relation}, ${place.speech}.`, {
+            braille: [`origin ${relationBraille}`, `origin ${place.braille}`],
+        });
+        return;
+    }
+    emit(`Origin is at ${letter} ${signedPercent(originPercent)} percent, ${relation}, ${place.speech}.`, {
+        braille: [`origin ${letter} ${signedPercent(originPercent)}%`, `origin ${place.braille}`],
+    });
+}
+
+/** Bring the axis-mode parts of the page in line with the mode and the cut. */
+function syncAxisModeUI() {
+    syncRadioGroup(axisModeRadios(), viewerState.axisMode, 'axis-mode');
+    const xyz = isXyzMode();
+    if (turnControls) turnControls.hidden = xyz;
+    if (xyzControls) xyzControls.hidden = !xyz;
+    for (const [axis, button] of Object.entries(axisButtons())) {
+        if (!button) continue;
+        if (xyz && currentCutAxis() === axis) {
+            button.setAttribute('aria-current', 'true');
+        } else {
+            button.removeAttribute('aria-current');
+        }
+    }
+    if (turnShortcutsSection) turnShortcutsSection.hidden = xyz;
+    if (xyzShortcutsSection) xyzShortcutsSection.hidden = !xyz;
+    refreshDepthControls();
+}
+
+/** The slider, its readout and the step buttons, in the current mode's terms.
+ * The slider reads the cut from the object's lowest coordinate in XYZ mode, and
+ * depth in from the reader's side in Turn mode. Its aria-valuetext used to stay
+ * at "50 percent depth" whatever it was set to. */
+function refreshDepthControls() {
+    const xyz = isXyzMode();
+    const axis = currentCutAxis();
+    if (sliceSlider) {
+        const value = xyz
+            ? Math.round(viewerState.slicePlanes[axis] * 100)
+            : Math.round(viewerState.currentSliceDepth);
+        sliceSlider.value = value;
+        sliceSlider.setAttribute('aria-valuenow', String(value));
+        sliceSlider.setAttribute('aria-valuetext', xyz
+            ? cutReadout(axis).spoken
+            : `${Math.round(viewerState.currentSliceDepth)} percent depth`);
+    }
+    if (slicePercentage) {
+        slicePercentage.textContent = xyz ? cutReadout(axis).short : `${viewerState.currentSliceDepth}%`;
+    }
+    if (sliceHeading) sliceHeading.textContent = xyz ? 'Cut' : 'Depth';
+    if (xyzPosition) {
+        xyzPosition.textContent = xyz ? `${cutPositionPhrase(axis).speech}, ${sideOfView().speech}.` : '';
+    }
+    if (typeof updateButtonLabels === 'function' && deeperBtn) updateButtonLabels();
 }
 
 // DOM elements
@@ -951,6 +1542,24 @@ const currentZoomInfo = document.getElementById('current-zoom-info');
 const currentBBoxDimensionsInfo = document.getElementById('current-bbox-dimensions-info');
 const deeperBtn = document.getElementById('deeper-btn');
 const shallowerBtn = document.getElementById('shallower-btn');
+const deeperHelp = document.getElementById('deeper-help');
+const shallowerHelp = document.getElementById('shallower-help');
+const sliceHeading = document.getElementById('slice-heading');
+const turnControls = document.getElementById('turn-controls');
+const xyzControls = document.getElementById('xyz-controls');
+const xyzPosition = document.getElementById('xyz-position');
+const axisFlipBtn = document.getElementById('axis-flip-btn');
+const axisButtons = () => ({
+    x: document.getElementById('axis-x-btn'),
+    y: document.getElementById('axis-y-btn'),
+    z: document.getElementById('axis-z-btn'),
+});
+const turnShortcutsSection = document.getElementById('turn-shortcuts-section');
+const xyzShortcutsSection = document.getElementById('xyz-shortcuts-section');
+const axisModeRadios = () => document.querySelectorAll('input[name="axis-mode"]');
+const settingsAxisLettersCheckbox = document.getElementById('settings-axis-letters');
+const settingsOriginMarkerCheckbox = document.getElementById('settings-origin-marker');
+const settingsSingleKeyCheckbox = document.getElementById('settings-single-key-shortcuts');
 const zoomInput = document.getElementById('zoom-input');
 const zoomLevelValue = document.getElementById('zoom-level-value');
 const zoomOutBtn = document.getElementById('zoom-out-btn');
@@ -1008,6 +1617,7 @@ function getRenderPipelineParams(uiRenderMode) {
 // Status bar elements
 const sbView = document.getElementById('sb-view');
 const sbDepth = document.getElementById('sb-depth');
+const sbDepthLabel = document.getElementById('sb-depth-label');
 const sbRenderMode = document.getElementById('sb-render-mode');
 const sbZoom = document.getElementById('sb-zoom');
 const sbViewMode = document.getElementById('sb-view-mode');
@@ -1038,10 +1648,13 @@ function formatCenter2(value) {
 const announcementWindow = document.getElementById('announcement-window');
 const announcementWindowPolite = document.getElementById('announcement-window-polite');
 
-/** Update the top status bar to reflect current state. */
+/** Update the top status bar to reflect current state. In XYZ mode it leads
+ * with the axis, the side and the cut, the order the pilot asked for. */
 function refreshStatusBar() {
-    if (sbView) sbView.textContent = viewerState.currentView;
-    if (sbDepth) sbDepth.textContent = viewerState.currentSliceDepth + '%';
+    const xyz = isXyzMode();
+    if (sbView) sbView.textContent = xyz ? `${axisLetter(currentCutAxis())} ${sideOfView().braille}` : viewName();
+    if (sbDepth) sbDepth.textContent = xyz ? cutReadout().short : viewerState.currentSliceDepth + '%';
+    if (sbDepthLabel) sbDepthLabel.textContent = xyz ? 'Cut' : 'Depth';
     if (sbRenderMode) sbRenderMode.textContent = renderModeLabel();
     if (sbZoom) sbZoom.textContent = Number(viewerState.currentZoom).toFixed(1);
     if (sbViewMode) sbViewMode.textContent = representationModeLabel();
@@ -1070,6 +1683,13 @@ function clampDepth(value) {
 // already interrupts and replaces whatever's currently being spoken
 
 function announceDepthValue(depthValue, previousDepth = null, emit = announceAlert) {
+    // The Trinkey slider and stepSliceDepth say where depth landed through this in
+    // both modes. In XYZ mode the same move is a cut along the axis, and it is
+    // said that way.
+    if (isXyzMode()) {
+        announceCutStep(currentCutAxis(), emit);
+        return;
+    }
     const to = clampDepth(depthValue);
     if (to === null) return;
     announceParameterValue("depth", `Depth ${to}%`, `${to}%`, emit);
@@ -1087,14 +1707,14 @@ function announceZoomValue(zoomValue, previousZoom = null, emit = announceAlert)
 // announcement in between resets the run, so the fuller phrasing returns once the
 // context is no longer obvious. Only zoom and depth use this; everything else
 // calls announceAlert()/announce() directly.
-function announceParameterValue(parameterKey, firstText, repeatText, emit = announceAlert) {
+function announceParameterValue(parameterKey, firstText, repeatText, emit = announceAlert, options = {}) {
     const normalizedKey = String(parameterKey || '').trim().toLowerCase();
     const useFirst = normalizedKey === '' || normalizedKey !== lastAnnouncedParameterKey;
     const message = useFirst ? String(firstText) : String(repeatText);
 
     // emit() clears lastAnnouncedParameterKey; re-establish this parameter's key
     // afterwards so a run of the SAME parameter still drops to the arrow.
-    emit(message);
+    emit(message, options);
     if (normalizedKey) {
         lastAnnouncedParameterKey = normalizedKey;
     }
@@ -1125,21 +1745,47 @@ function getStatusBarAnnouncement() {
     };
 
     return [
-        `View: ${readText(sbView, viewerState.currentView)}`,
-        `Depth: ${readText(sbDepth, `${viewerState.currentSliceDepth}%`)}`,
+        `View: ${readText(sbView, viewName())}`,
+        `${isXyzMode() ? 'Cut' : 'Depth'}: ${readText(sbDepth, `${viewerState.currentSliceDepth}%`)}`,
+        statusBarRest(),
+    ].join('. ');
+}
+
+/** The status bar after the view and the cut: what "." reads once it has said
+ * where you are. */
+function statusBarRest() {
+    const readText = (element, fallback = '--') => {
+        const text = element && typeof element.textContent === 'string'
+            ? element.textContent.trim()
+            : '';
+        return text || fallback;
+    };
+    return [
         `Render: ${readText(sbRenderMode, renderModeLabel())}`,
         `Zoom: ${readText(sbZoom, Number(viewerState.currentZoom).toFixed(1))}`,
         `Layout: ${readText(sbViewMode, representationModeLabel())}`,
         `Model: ${readText(sbModel)}`,
         `DotPad: ${readText(sbDotPad)}`,
-    ].join('. ');
+    ].join('. ') + '.';
 }
 
-// Update button labels with current state information
+// Update button labels with current state information. In XYZ mode the two
+// step buttons move the cut toward +axis and -axis by the coarse step, the same
+// as Page Up and Page Down, and say so in the axis's own units.
 function updateButtonLabels() {
-    const depthText = `${viewerState.currentSliceDepth}%`;
+    if (isXyzMode()) {
+        const letter = axisLetter(currentCutAxis());
+        const amount = `${xyzStepPercent(true)}%`;
+        deeperBtn.textContent = `${letter} plus ${amount}`;
+        shallowerBtn.textContent = `${letter} minus ${amount}`;
+        if (deeperHelp) deeperHelp.textContent = `Moves the cut toward the object's highest ${letter}.`;
+        if (shallowerHelp) shallowerHelp.textContent = `Moves the cut toward the object's lowest ${letter}.`;
+        return;
+    }
     deeperBtn.textContent = `Deeper 10%`;
     shallowerBtn.textContent = `Shallower 10%`;
+    if (deeperHelp) deeperHelp.textContent = '+10%';
+    if (shallowerHelp) shallowerHelp.textContent = '-10%';
 }
 
 function updateSliceGraphLockUI() {
@@ -1155,7 +1801,7 @@ function updateSliceGraphLockUI() {
         }
     } else {
         if (isSliceGraphMode) {
-            sliceGraphLockStatus.textContent = `view ${viewerState.sliceGraphAnchorView}, depth ${viewerState.sliceGraphAnchorDepth}%`;
+            sliceGraphLockStatus.textContent = `${viewName(viewerState.sliceGraphAnchorView)} view, depth ${viewerState.sliceGraphAnchorDepth}%`;
         } else {
             sliceGraphLockStatus.textContent = 'Switch to Slice Graph mode to use refresh.';
         }
@@ -1726,6 +2372,8 @@ function fetchExportSourceState() {
         compose_scrollbar: viewerState.composeScrollbar,
         compose_slicegraph: viewerState.composeSliceGraph,
         show_view_info_box: viewerState.showViewInfoBox,
+        show_origin_marker: isXyzMode() && viewerState.showOriginMarker,
+        show_axis_letters: isXyzMode() && viewerState.showAxisLetters,
         output_device: viewerState.currentOutputDevice,
         slicegraph_locked: viewerState.sliceGraphLocked,
         slicegraph_view: requestedGraphView,
@@ -1757,7 +2405,7 @@ function updateHighFidelityPreview(data) {
     }
 
     highFidelityPreviewImg.src = 'data:image/png;base64,' + previewBase64;
-    highFidelityPreviewImg.alt = `Render preview: ${viewerState.currentView} view, ${viewerState.currentSliceDepth}% depth, ${renderModeLabel()}`;
+    highFidelityPreviewImg.alt = `Render preview: ${previewDescription()}`;
 
     highFidelityPreviewMeta.textContent = previewCaption(shape);
 }
@@ -1807,11 +2455,21 @@ async function exportCurrentSliceAsPng() {
 
 // Update slice depth display and announce changes
 function updateSliceDepth(newDepth, shouldAnnounce = true) {
+    // In XYZ mode the number is a position along the cut axis -- the same 0-100
+    // the on-screen slider, the cut keys and the readout use -- not depth from
+    // the reader. The two run opposite ways from Top, Front and Right, so a
+    // device left on the depth scale moved the cut the other way from what the
+    // screen said and the announcement read out the complement (#235 review).
+    if (isXyzMode()) {
+        const position = Number(newDepth);
+        if (!Number.isFinite(position)) return false;
+        return setCutPosition(currentCutAxis(), position / 100, announceAlert, { announce: shouldAnnounce });
+    }
+
     const oldDepth = viewerState.currentSliceDepth;
     viewerState.currentSliceDepth = Math.max(0, Math.min(100, newDepth));
     writeDisplayDepthToPlanes(viewerState.currentSliceDepth);
-    sliceSlider.value = viewerState.currentSliceDepth;
-    slicePercentage.textContent = viewerState.currentSliceDepth;
+    refreshDepthControls();
     refreshViewInfoSummary();
 
     // Only mutate button labels and trigger a render when the value actually
@@ -1833,6 +2491,11 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
 }
 
 function getCurrentSliceDepth(){
+    // Paired with updateSliceDepth, so in XYZ mode it is the same position along
+    // the axis that updateSliceDepth expects: what the Trinkey slider sets, and
+    // what the on-screen slider shows. The DotPad's and the Monarch's depth keys
+    // step through stepSliceDepth instead, so their "deeper" matches Arrow Up.
+    if (isXyzMode()) return cutPercent(currentCutAxis());
     return viewerState.currentSliceDepth;
 }
 
@@ -2050,8 +2713,8 @@ function updateSideBySideAxisLabels() {
     if (viewerState.currentRepresentationMode === 'side-by-side') {
         const rightAxis = viewerState.currentView;
         const leftAxis = getLegendAxisForSliceAxis(rightAxis);
-        leftLabel.textContent = `Left view: ${leftAxis}`;
-        rightLabel.textContent = `Right view: ${rightAxis}`;
+        leftLabel.textContent = `Left panel: ${viewName(leftAxis)} view`;
+        rightLabel.textContent = `Right panel: ${viewName(rightAxis)} view`;
         labelsContainer.hidden = false;
     } else {
         labelsContainer.hidden = true;
@@ -2067,7 +2730,7 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
         setOrientationFromView(viewerState.currentView);
         syncSliceDepthFromPlanes();
     }
-    if (currentViewSpan) currentViewSpan.textContent = viewerState.currentView;
+    if (currentViewSpan) currentViewSpan.textContent = viewName();
     refreshViewInfoSummary();
     updateButtonLabels();
     updateSideBySideAxisLabels();
@@ -2075,7 +2738,7 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
     if (oldView !== viewerState.currentView && shouldAnnounce) {
         // Only real caller: the WitMotion orientation-cube hardware reporting a
         // new face (applyRelativeRotation and page-load both call with false/no-op).
-        announceAlert(`${viewerState.currentView.toLowerCase()} view`);
+        announceAlert(`${viewName()} view`);
     }
 
     // Send state to server if changed
@@ -2090,11 +2753,21 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
     return oldView !== viewerState.currentView;
 }
 
+/** What either preview shows, in words, for its alt text. */
+function previewDescription() {
+    if (isXyzMode()) {
+        return `${cutPositionPhrase().speech}, ${sideOfView().speech}, ${renderModeLabel()}`;
+    }
+    return `${viewName()} view, ${viewerState.currentSliceDepth}% depth, ${renderModeLabel()}`;
+}
+
 /** Caption for either preview. Both go through this so they cannot disagree
  * about the order of the dimensions, or about which display they describe.
  * `shape` is [height, width], as numpy reports it. */
 function previewCaption(shape) {
-    const parts = [viewerState.currentView, `${viewerState.currentSliceDepth}%`, renderModeLabel()];
+    const parts = isXyzMode()
+        ? [`${axisLetter(currentCutAxis())} ${sideOfView().braille}`, cutReadout().short, renderModeLabel()]
+        : [viewName(), `${viewerState.currentSliceDepth}%`, renderModeLabel()];
     if (shape && shape.length > 1) {
         parts.push(`${shape[1]}\u00d7${shape[0]}px`);
     }
@@ -2113,7 +2786,7 @@ function updateTactilePreview(base64, shape) {
     const img = document.getElementById('tactile-display-img');
     const meta = document.getElementById('tactile-preview-meta');
     img.src = 'data:image/png;base64,' + base64;
-    img.alt = `Tactile display: ${viewerState.currentView} view, ${viewerState.currentSliceDepth}% depth, ${renderModeLabel()}`;
+    img.alt = `Tactile display: ${previewDescription()}`;
     meta.textContent = previewCaption(shape);
 }
 
@@ -2699,7 +3372,13 @@ function cycleRepresentationMode(shouldAnnounce = true) {
 
 // Announce a change: updates the message window, speaks via the SR live region,
 // echoes to the tactile display.
-function emitAnnouncement(message, politeness) {
+//
+// `braille` is what the tactile display's text line shows instead of the
+// spoken message: a line (or lines, most important first) of 20 cells or fewer,
+// written for the fingers rather than cut from the speech, e.g. "Z 31%" for
+// "Z cut at 31 percent". Without it the display shows the start of the message,
+// as it always has.
+function emitAnnouncement(message, politeness, braille = null) {
     const normalizedMessage = String(message);
     // Any announcement ends the current zoom/depth run: the next such change
     // re-includes its label, since the context is no longer obvious. A parameter
@@ -2717,7 +3396,8 @@ function emitAnnouncement(message, politeness) {
         try {
             window.onTactileAnnouncement({
                 message: normalizedMessage,
-                politeness
+                politeness,
+                braille: brailleLines(braille),
             });
         } catch (err) {
             console.warn('Tactile announcement failed:', err);
@@ -2730,30 +3410,79 @@ function emitAnnouncement(message, politeness) {
     reportStudyInteraction('announcement', { message: normalizedMessage, politeness });
 }
 
+/** A braille option as a list of lines, or null when there is none. */
+function brailleLines(braille) {
+    if (braille === null || braille === undefined || braille === '') return null;
+    const lines = (Array.isArray(braille) ? braille : [braille])
+        .map(line => String(line).trim())
+        .filter(Boolean);
+    return lines.length ? lines : null;
+}
+
 /**
  * Announce a background/system event politely: it waits for the user to pause
  * rather than interrupting. Reserve for things not tied to an immediate action —
  * a server reconnecting, a model finishing a load that was kicked off moments
  * ago — since the user may be doing something else entirely when it lands.
  */
-function announce(message) {
-    emitAnnouncement(message, 'polite');
+function announce(message, options = {}) {
+    emitAnnouncement(message, 'polite', options && options.braille);
 }
 
 /**
  * Announce assertively, interrupting whatever the AT is currently speaking.
  */
-function announceAlert(message) {
-    emitAnnouncement(message, 'assertive');
+function announceAlert(message, options = {}) {
+    emitAnnouncement(message, 'assertive', options && options.braille);
+}
+
+// Hardware modules say what triggered the next render through this. They used
+// to assign window.pendingInputSource, which is not the variable
+// sendStateToServer reads (a top-level let is not a property of window), so
+// every cube and slider render was logged as keyboard.
+function setPendingInputSource(source) {
+    pendingInputSource = String(source || 'keyboard');
+}
+
+/** The cube reporting which face is up. In Turn mode that named view, as it
+ * always was. In XYZ mode the face pointing up is the axis coming out of the
+ * display, so it picks the axis and the side and keeps that axis's cut. */
+function selectViewFromCube(viewToken) {
+    if (!VIEW_BASIS[viewToken]) return;
+    pendingInputSource = 'witmotion';
+    if (isXyzMode()) {
+        if (viewToken === viewerState.currentView) return;
+        showXyzView(viewToken, announceAlert);
+        return;
+    }
+    updateView(viewToken);
+}
+
+/** A braille display's X, Y or Z command: the same as the keyboard's, including
+ * saying whose mode it is when pressed in Turn mode, and including the other side
+ * on the second press. One chord per axis is all either display needs, which
+ * suits the DotPad, where x, y and z already use all six dots. */
+function axisCommandFromDevice(axis, source) {
+    if (!XYZ_AXES[axis]) return;
+    pendingInputSource = String(source || 'device');
+    if (!isXyzMode()) {
+        announceWrongModeKey(axis, 'xyz');
+        return;
+    }
+    selectAxis(axis);
 }
 
 // External API used by hardware integration modules.
+window.setPendingInputSource = setPendingInputSource;
+window.selectViewFromCube = selectViewFromCube;
+window.axisCommandFromDevice = axisCommandFromDevice;
 window.moveCursor = moveCursor;
 window.cycleCursorState = cycleCursorState;
 window.whichCursor = whichCursor;
 window.getCurrentSliceDepth = getCurrentSliceDepth;
 window.updateSliceDepth = updateSliceDepth;
 window.announceDepthValue = announceDepthValue;
+window.stepSliceDepth = stepSliceDepth;
 
 // ---------------------------------------------------------------------------
 // Study mode API, used by static/js/study.js.
@@ -2771,6 +3500,13 @@ window.announceDepthValue = announceDepthValue;
  * a comparison is between models rather than between viewpoints. */
 function applyStudyDefaults(defaults) {
     const wanted = defaults || {};
+
+    // The protocol's axis mode (Turn, until XYZ has been piloted). Applied at
+    // every load like the rest, and not saved: this is the study's choice, not
+    // the participant's browser's.
+    if (AXIS_MODES.some(m => m.key === wanted.axis_mode)) {
+        viewerState.axisMode = wanted.axis_mode;
+    }
 
     if (wanted.view && VIEW_BASIS[wanted.view]) {
         viewerState.currentView = wanted.view;
@@ -2802,12 +3538,12 @@ function applyStudyDefaults(defaults) {
         viewerState.composeScrollbar = wanted.compose_scrollbar;
     }
 
-    if (sliceSlider) sliceSlider.value = viewerState.currentSliceDepth;
-    if (slicePercentage) slicePercentage.textContent = viewerState.currentSliceDepth;
+    refreshDepthControls();
     if (zoomInput) zoomInput.value = viewerState.currentZoom;
     if (zoomLevelValue) zoomLevelValue.textContent = Number(viewerState.currentZoom).toFixed(1);
-    if (currentViewSpan) currentViewSpan.textContent = viewerState.currentView;
+    if (currentViewSpan) currentViewSpan.textContent = viewName();
     syncRadios();
+    syncAxisModeUI();
     updateButtonLabels();
     refreshViewInfoSummary();
     refreshStatusBar();
@@ -2838,6 +3574,20 @@ function loadStudyModel(stem, label, defaults) {
     return true;
 }
 
+/** The axis mode and where the cut is along its axis, for the study log: the
+ * axis it cuts along, the side it is seen from, and how far along the object
+ * (percent from its lowest coordinate, the same from either side). Sent with
+ * every render too, so the render rows and the CSV carry it. */
+function axisLogFields() {
+    const axis = currentCutAxis();
+    return {
+        axis_mode: viewerState.axisMode,
+        cut_axis: axis,
+        cut_side: VIEW_SIDES_BRAILLE[viewerState.currentView] || null,
+        cut_percent: Math.round(viewerState.slicePlanes[axis] * 10000) / 100,
+    };
+}
+
 /** The viewer state at this instant, attached to every reported event so a study
  * log line can be read without joining it against anything else. */
 function viewerStateSnapshot() {
@@ -2851,6 +3601,7 @@ function viewerStateSnapshot() {
         orientation: getOrientationPayload(),
         cursor_state: whichCursor(),
         output_device: getEffectiveOutputDevice(),
+        ...axisLogFields(),
     };
 }
 
@@ -2895,13 +3646,20 @@ function reportStudyInteraction(eventType, eventData) {
 // Slice depth slider with enhanced feedback
 let sliderUpdateTimeout = null;
 
+// Dragging moves the plane as it goes, without a render per step; the render
+// comes once, on release. The plane used to be left behind -- only the number
+// moved -- so the next turn of the model jumped back to wherever it had been.
 sliceSlider.addEventListener('input', function() {
-    const newValue = parseInt(this.value);
-    viewerState.currentSliceDepth = newValue;
-    slicePercentage.textContent = viewerState.currentSliceDepth;
-
-    // Update button labels immediately
-    updateButtonLabels();
+    const newValue = parseInt(this.value, 10);
+    if (!Number.isFinite(newValue)) return;
+    if (isXyzMode()) {
+        setCutPosition(currentCutAxis(), newValue / 100, announceAlert, { render: false, announce: false });
+        return;
+    }
+    viewerState.currentSliceDepth = Math.max(0, Math.min(100, newValue));
+    writeDisplayDepthToPlanes(viewerState.currentSliceDepth);
+    refreshDepthControls();
+    refreshViewInfoSummary();
 });
 
 sliceSlider.addEventListener('change', function() {
@@ -2980,15 +3738,23 @@ showViewInfoBoxCheckbox.addEventListener('change', function() {
     sendStateToServer();
 });
 
-// Deeper depth button
+// Deeper depth button (in XYZ mode: toward +axis by the coarse step)
 deeperBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
+    if (isXyzMode()) {
+        stepCut(1, xyzStepPercent(true));
+        return;
+    }
     updateSliceDepth(viewerState.currentSliceDepth + 10, true);
 });
 
-// Shallower depth button
+// Shallower depth button (in XYZ mode: toward -axis by the coarse step)
 shallowerBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
+    if (isXyzMode()) {
+        stepCut(-1, xyzStepPercent(true));
+        return;
+    }
     updateSliceDepth(viewerState.currentSliceDepth - 10, true);
 });
 
@@ -3015,14 +3781,14 @@ sliceGraphModeRadios().forEach((radio) => {
 if (resetPositionBtn) {
     resetPositionBtn.addEventListener('click', function() {
         pendingInputSource = 'ui';
-        // Drop the remembered per-view centre -- see the 'z' case in the
+        // Drop the remembered per-view centre -- see the '0' case in the
         // keydown handler for why.
         clearCameraCenterState();
         // "Position reset" also means undoing any roll/pitch/yaw, zoom, and
         // slice depth, not just pan -- see resetOrientationZoomAndDepth.
         resetOrientationZoomAndDepth();
         // currentMoveCamera is reset inside sendStateToServer itself, only
-        // once actually consumed -- see the 'z' case in the keydown handler.
+        // once actually consumed -- see the '0' case in the keydown handler.
         viewerState.currentMoveCamera = "reset";
         sendStateToServer();
         announce('Position reset');
@@ -3046,9 +3812,100 @@ for (const [buttonId, rotationName] of Object.entries(ORIENTATION_BUTTONS)) {
     const button = document.getElementById(buttonId);
     if (!button) continue;
     button.addEventListener('click', function() {
+        // Hidden in XYZ mode; refused as well, so no control acts in both.
+        if (isXyzMode()) return;
         pendingInputSource = 'ui';
         applyRelativeRotation(rotationName, announce);
     });
+}
+
+// XYZ mode's buttons: the same as the keys. "Cut along X" is X, the home view;
+// "Other side" turns whichever axis is showing round.
+for (const [axis, button] of Object.entries(axisButtons())) {
+    if (!button) continue;
+    button.addEventListener('click', function() {
+        if (!isXyzMode()) return;
+        pendingInputSource = 'ui';
+        selectAxis(axis, announce);
+    });
+}
+if (axisFlipBtn) {
+    axisFlipBtn.addEventListener('click', function() {
+        if (!isXyzMode()) return;
+        pendingInputSource = 'ui';
+        flipSide(announce);
+    });
+}
+
+// --- Axis mode and the settings that go with it (#185) ---------------------
+
+axisModeRadios().forEach((radio) => {
+    radio.addEventListener('change', function() {
+        if (!this.checked) return;
+        pendingInputSource = 'ui';
+        setAxisMode(this.value);
+    });
+});
+
+function persistSetting(key, value) {
+    try {
+        window.localStorage.setItem(key, value ? '1' : '0');
+    } catch (_) {
+        // Ignore localStorage failures (e.g., privacy mode, or /demo's shim).
+    }
+}
+
+if (settingsAxisLettersCheckbox) {
+    settingsAxisLettersCheckbox.addEventListener('change', function() {
+        viewerState.showAxisLetters = this.checked;
+        persistSetting(SETTINGS_AXIS_LETTERS_KEY, this.checked);
+        if (isXyzMode()) sendStateToServer();
+    });
+}
+if (settingsOriginMarkerCheckbox) {
+    settingsOriginMarkerCheckbox.addEventListener('change', function() {
+        viewerState.showOriginMarker = this.checked;
+        persistSetting(SETTINGS_ORIGIN_MARKER_KEY, this.checked);
+        if (isXyzMode()) sendStateToServer();
+    });
+}
+if (settingsSingleKeyCheckbox) {
+    settingsSingleKeyCheckbox.addEventListener('change', function() {
+        viewerState.singleKeyShortcuts = this.checked;
+        persistSetting(SETTINGS_SINGLE_KEY_SHORTCUTS_KEY, this.checked);
+    });
+}
+
+/** Read the axis settings back, before the first render so it draws in the
+ * saved mode. Unset means the default: Turn, with the edge letters and the
+ * origin marked in XYZ mode, and single-key shortcuts on. */
+function initializeAxisSettings() {
+    const read = (key) => {
+        try {
+            return window.localStorage.getItem(key);
+        } catch (_) {
+            return null;
+        }
+    };
+    viewerState.showAxisLetters = read(SETTINGS_AXIS_LETTERS_KEY) !== '0';
+    viewerState.showOriginMarker = read(SETTINGS_ORIGIN_MARKER_KEY) !== '0';
+    viewerState.singleKeyShortcuts = read(SETTINGS_SINGLE_KEY_SHORTCUTS_KEY) !== '0';
+    if (settingsAxisLettersCheckbox) settingsAxisLettersCheckbox.checked = viewerState.showAxisLetters;
+    if (settingsOriginMarkerCheckbox) settingsOriginMarkerCheckbox.checked = viewerState.showOriginMarker;
+    if (settingsSingleKeyCheckbox) settingsSingleKeyCheckbox.checked = viewerState.singleKeyShortcuts;
+    // In study mode the protocol owns the axis mode (Turn, see VIEWER_DEFAULTS),
+    // and nothing may render before the protocol loads its first model.
+    const storedMode = studyMode ? 'turn' : read(SETTINGS_AXIS_MODE_KEY);
+    if (storedMode === 'xyz') {
+        // A page opening in XYZ mode starts looking down at the print bed, Z from
+        // above, rather than squaring up the Turn-mode default: that is the view
+        // from -X, where Y runs to the left, and nothing has been shown yet.
+        viewerState.currentView = 'z+';
+        setOrientationFromView('z+');
+    }
+    // No render of its own: the page's first render follows, and it may be for
+    // a model named in the address that this one would not know about yet.
+    setAxisMode(storedMode === 'xyz' ? 'xyz' : 'turn', { announce: false, persist: false, render: false });
 }
 
 exportSliceSvgBtn.addEventListener('click', function() {
@@ -3098,6 +3955,7 @@ document.addEventListener('keydown', function(e) {
     const key = rawKey.toLowerCase();
     const code = String(e.code || '');
     const normalizedKey = (
+        code === 'Digit0' || code === 'Numpad0' ? '0' :
         code === 'Digit2' || code === 'Numpad2' ? '2' :
         code === 'Digit3' || code === 'Numpad3' ? '3' :
         code === 'Digit4' || code === 'Numpad4' ? '4' :
@@ -3105,15 +3963,24 @@ document.addEventListener('keydown', function(e) {
         key
     );
     const supportedShortcuts = new Set([
-        'arrowup', 'arrowdown', 'pageup', 'pagedown',
+        'arrowup', 'arrowdown', 'pageup', 'pagedown', 'home', 'end',
          '2', '3', 'q', 'e',
         'u', 'i', 'o', 'j', 'k', 'l',
-        '4', '5',
-        'r', 't', 'g', 'v', 'z',
+        'x', 'y', 'z', ',',
+        '4', '5', '0',
+        'r', 't', 'g', 'v',
         'w', 'a', 's', 'd', '[', ']', 'h', '?', 'p', '.', 'escape', 'f'
     ]);
 
     if (!supportedShortcuts.has(normalizedKey)) {
+        return;
+    }
+
+    // WCAG 2.1.4: single-character shortcuts can be switched off in Settings,
+    // for anyone whose screen reader or speech input sends letters the viewer
+    // would otherwise act on. The named keys (arrows, Page Up/Down, Home/End,
+    // Escape) are not character keys and keep working.
+    if (!viewerState.singleKeyShortcuts && normalizedKey.length === 1) {
         return;
     }
 
@@ -3148,49 +4015,79 @@ document.addEventListener('keydown', function(e) {
         raw_key: rawKey,
         code,
         repeat: Boolean(e.repeat),
+        // Shift is a coarser step for zoom and pan; the axis letters ignore it.
+        shift: Boolean(e.shiftKey),
         active_element_id: document.activeElement?.id || null,
     });
 
-    switch(normalizedKey) {
-        case 'arrowup':
-            // Go deeper (increase depth by 1%)
+    // A key that belongs to the other axis mode says so and does nothing else.
+    const keyMode = axisModeForKey(normalizedKey);
+    if (keyMode && keyMode !== viewerState.axisMode) {
+        e.preventDefault();
+        announceWrongModeKey(normalizedKey, keyMode);
+        return;
+    }
+
+    // The depth keys go deeper or shallower in both modes (the cases below). The
+    // one exception is the depth slider itself while it has focus: in XYZ mode it
+    // shows the position along the axis, and a focused slider's Up has to raise
+    // the value it reports (the ARIA slider pattern), so there they step along it.
+    if (isXyzMode() && target === sliceSlider) {
+        const sliderKeys = {
+            arrowup: () => stepCut(1, xyzStepPercent(false)),
+            arrowdown: () => stepCut(-1, xyzStepPercent(false)),
+            pageup: () => stepCut(1, xyzStepPercent(true)),
+            pagedown: () => stepCut(-1, xyzStepPercent(true)),
+            home: () => setCutPosition(currentCutAxis(), 0),
+            end: () => setCutPosition(currentCutAxis(), 1),
+        };
+        if (sliderKeys[normalizedKey]) {
             e.preventDefault();
-            {
-                const previousDepth = viewerState.currentSliceDepth;
-                const nextDepth = Math.min(100, viewerState.currentSliceDepth + 1);
-                updateSliceDepth(nextDepth, false);
-                announceDepthValue(nextDepth, previousDepth);
-            }
+            sliderKeys[normalizedKey]();
+            return;
+        }
+    }
+
+    switch(normalizedKey) {
+        case 'x':
+        case 'y':
+        case 'z':
+            // The same letter again gives the other side, so there is no
+            // modifier to hold and Caps Lock cannot matter. The letter is read
+            // from e.key, so a QWERTZ keyboard's swapped Y and Z still name the
+            // axis on the keycap.
+            e.preventDefault();
+            selectAxis(normalizedKey);
+            break;
+
+        case ',':
+            e.preventDefault();
+            announceOrigin();
+            break;
+
+        // The depth keys, the same in both modes (#235 review): Up and Page Up go
+        // deeper, away from the reader; Home is the surface nearest them, End the
+        // far side.
+        case 'home':
+        case 'end':
+            e.preventDefault();
+            goToSliceEnd(normalizedKey === 'end');
+            break;
+        case 'arrowup':
+            e.preventDefault();
+            stepSliceDepth(1);
             break;
         case 'arrowdown':
-            // Go shallower (decrease depth by 1%)
             e.preventDefault();
-            {
-                const previousDepth = viewerState.currentSliceDepth;
-                const nextDepth = Math.max(0, viewerState.currentSliceDepth - 1);
-                updateSliceDepth(nextDepth, false);
-                announceDepthValue(nextDepth, previousDepth);
-            }
+            stepSliceDepth(-1);
             break;
         case 'pageup':
-            // Go deeper (increase depth by 10%)
             e.preventDefault();
-            {
-                const previousDeeperDepth = viewerState.currentSliceDepth;
-                const newDeeperDepth = Math.min(100, viewerState.currentSliceDepth + 10);
-                updateSliceDepth(newDeeperDepth, false);
-                announceDepthValue(newDeeperDepth, previousDeeperDepth);
-            }
+            stepSliceDepth(10);
             break;
         case 'pagedown':
-            // Go shallower (decrease depth by 10%)
             e.preventDefault();
-            {
-                const previousShallowerDepth = viewerState.currentSliceDepth;
-                const newShallowerDepth = Math.max(0, viewerState.currentSliceDepth - 10);
-                updateSliceDepth(newShallowerDepth, false);
-                announceDepthValue(newShallowerDepth, previousShallowerDepth);
-            }
+            stepSliceDepth(-10);
             break;
 
         case '2':
@@ -3269,9 +4166,10 @@ document.addEventListener('keydown', function(e) {
             break;
 
         case '.':
-            // Read the full top-of-page status bar.
+            // Where am I: which way the model faces and where the cut is, then
+            // the rest of the status bar.
             e.preventDefault();
-            announceAlert(getStatusBarAnnouncement());
+            announceWhereAmI();
             break;
 
         case 'g':
@@ -3282,7 +4180,7 @@ document.addEventListener('keydown', function(e) {
             }
             captureSliceGraphAnchor(true);
             sendStateToServer();
-            announceAlert(`view ${viewerState.sliceGraphAnchorView}, depth ${viewerState.sliceGraphAnchorDepth}%`);
+            announceAlert(`${viewName(viewerState.sliceGraphAnchorView)} view, depth ${viewerState.sliceGraphAnchorDepth}%`);
             break;
 
         case 'v':
@@ -3374,7 +4272,10 @@ document.addEventListener('keydown', function(e) {
             print_view();
             break;
 
-        case 'z':
+        case '0':
+            // Reset, for everyone, in both modes. It was Z, which cannot mean
+            // "reset" in one mode and "cut along Z" in the other; 0 is what
+            // resets zoom in a browser (Ctrl+0).
             e.preventDefault();
             // Drop the remembered per-view centre so this request omits
             // camera_center entirely. Without this, the stale remembered centre still went out on
@@ -3569,6 +4470,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     initializeDebugPipelineVisibility();
     initializeOptionalSectionVisibility();
     initializeSliceGraphMode();
+    initializeAxisSettings();
     updateGenericDeviceConnectUI();
 
     // Pre-select a model when opened via /workshop?model=<stem> or ?model=<stem>.

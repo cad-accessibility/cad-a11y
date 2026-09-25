@@ -22,6 +22,18 @@
         '32:1,0,0': { type: 'depth', delta: -10 },
         '32:8,0,0': { type: 'depth', delta: 10 },
         '32:0,1,0': { type: 'cycle-cursor' },
+        // XYZ mode's axes (#185), as the braille letters: x = dots 1346, y =
+        // 13456, z = 1356. One chord per axis: the same chord again gives the
+        // other side, as the same letter does on the keyboard, so there is no
+        // dot-7 capital to guess at. INFERRED, NOT YET SEEN ON HARDWARE: byte 0
+        // looks like a dot bitfield (dot 1 = 1 and dot 4 = 8 are the depth keys
+        // above), and these are what those chords should send. Press them and
+        // read the "[Monarch HID] Input report" line in the console before
+        // relying on them. If bare dots type text on the device instead, use
+        // Space + x/y/z.
+        '32:45,0,0': { type: 'axis', axis: 'x' },
+        '32:61,0,0': { type: 'axis', axis: 'y' },
+        '32:53,0,0': { type: 'axis', axis: 'z' },
     };
 
     function setStatus(msg) {
@@ -128,13 +140,15 @@
             return;
         }
 
-        if (command.type === 'depth') {
-            const previousDepth = window.getCurrentSliceDepth?.();
-            if (previousDepth == null) return;
+        if (command.type === 'axis') {
+            window.axisCommandFromDevice?.(command.axis, 'monarch');
+            return;
+        }
 
-            const nextDepth = Math.max(0, Math.min(100, previousDepth + command.delta));
-            window.updateSliceDepth?.(nextDepth, false);
-            window.announceDepthValue?.(nextDepth, previousDepth);
+        if (command.type === 'depth') {
+            // The same step as Arrow Up and Down, so deeper is away from the
+            // reader in both modes (#235 review).
+            window.stepSliceDepth?.(command.delta);
             return;
         }
 

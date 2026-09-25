@@ -141,7 +141,7 @@
                     if (lastHardwareDepth === null || Math.abs(depth - lastHardwareDepth) >= MIN_DEPTH_CHANGE) {
                         lastHardwareDepth = depth;
                         if (typeof updateSliceDepth === 'function') {
-                            window.pendingInputSource = 'slider';
+                            window.setPendingInputSource?.('slider');
                             updateSliceDepth(depth, false);
                         }
                     }

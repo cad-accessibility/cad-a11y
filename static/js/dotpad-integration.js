@@ -312,15 +312,25 @@ function onKey(device, currKeyCode, keyMsg) {
     const letter = byte6ToLetter(byte6);
     const cursorState = window.whichCursor ? window.whichCursor() : 'none';
     const n = 10; // TODO: make this global and dynamic
-    if (
-        typeof window.getCurrentSliceDepth !== 'function' ||
-        typeof window.updateSliceDepth !== 'function' ||
-        typeof window.announceDepthValue !== 'function'
-    ) {
+    if (typeof window.stepSliceDepth !== 'function') {
         console.warn('DotPad depth controls are unavailable because viewer depth helpers are not exposed.');
         return;
     }
 
+    // X, Y and Z spelled as braille chords pick the axis in XYZ mode (#185):
+    // dots 1346, 13456 and 1356, the letters themselves, from the home view, and
+    // the chord for the axis already showing flips it to the other side, as the
+    // same letter pressed again does on the keyboard. Each chord contains shorter ones that mean
+    // something else (dot 1 alone is shallower), so this relies on the SDK
+    // reporting a chord once it is complete, as the "v" chord below already
+    // does. If a sub-chord is seen firing first, decode on key release instead
+    // (SDK 3.0.1+ reports key up with the raw key state).
+    if (letter === 'x' || letter === 'y' || letter === 'z') {
+        if (typeof window.axisCommandFromDevice === 'function') {
+            window.axisCommandFromDevice(letter, 'dotpad');
+        }
+        return;
+    }
     if (letter === 'v'){
         if (typeof window.cycleCursorState === 'function') {
             window.cycleCursorState();
@@ -329,20 +339,16 @@ function onKey(device, currKeyCode, keyMsg) {
         }
         return;
     }
+    // Dots 1 and 4 step the depth like Arrow Down and Arrow Up, through the same
+    // function, so deeper is away from the reader in both modes (#235 review).
     if (byte6 === 0x01){
-        // Go shallower (decrease depth by 100/N)
-        const previousDepth = window.getCurrentSliceDepth();
-        const nextDepth = Math.max(0, previousDepth - 100/n); // TODO: calculate integer value
-        window.updateSliceDepth(nextDepth, false);
-        window.announceDepthValue(nextDepth, previousDepth);
+        // Go shallower by 100/N
+        window.stepSliceDepth(-100/n);
         return;
     }
     if (byte6 === 0x08){
-        // Go deeper (increase depth by 100/N)
-        const previousDepth = window.getCurrentSliceDepth();
-        const nextDepth = Math.min(100, previousDepth + 100/n); // TODO: calculate integer value
-        window.updateSliceDepth(nextDepth, false);
-        window.announceDepthValue(nextDepth, previousDepth);
+        // Go deeper by 100/N
+        window.stepSliceDepth(100/n);
         return;
     }
     if (typeof window.moveCursor != 'function') return;
@@ -510,11 +516,20 @@ function encodeAnnouncementForDotPad(message, cellCount) {
     return hex;
 }
 
-function sendAnnouncementToDotPad({message}) {
+// The lines behind the one on the text line now, most important first. The
+// viewer writes a braille form for announcements that need one ("Z 31%" for
+// "Z cut at 31 percent"), sometimes over more than one 20-cell line; only
+// the first fits. Kept so a text-scroll control (PR #166) can page through the
+// rest, as #154 asks.
+window._dotpadBrailleLines = [];
+
+function sendAnnouncementToDotPad({message, braille}) {
     if (!connectedDevice) return;
 
     const cellCount = connectedDevice.numberBrailleCellColumns || 20;
-    const textHex = encodeAnnouncementForDotPad(message, cellCount);
+    const lines = Array.isArray(braille) && braille.length ? braille : [message];
+    window._dotpadBrailleLines = lines.slice();
+    const textHex = encodeAnnouncementForDotPad(String(lines[0]), cellCount);
     sdk.displayTextData(textHex, connectedDevice, DisplayMode.TextMode);
 }
 

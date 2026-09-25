@@ -374,8 +374,9 @@ class TestViewerDefaults:
         assert defaults["depth"] == 50
         assert defaults["zoom"] == 0.0
         assert defaults["reset_pan"] is True
-        # 180 degrees of yaw from the viewer's own x+ default, which is what puts
-        # the mug upright with the handle to the right.
+        # 180 degrees of yaw from the viewer's own x+ default: OpenSCAD's Right
+        # view, which stands the mug upright with its handle (toward -Y in the
+        # STL) at the left edge.
         assert defaults["view"] == "x-"
 
 

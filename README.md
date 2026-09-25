@@ -67,6 +67,31 @@ cad-a11y/
 └── docker-compose.dev.yml        # Optional local-development bind mounts
 ```
 
+## Axis modes: Turn and XYZ
+
+Settings → Axis Mode chooses how the model is oriented. The two never share a
+key: a key from the other mode only says which mode it belongs to.
+
+- **Turn** (the default): U/O roll, I/K pitch and J/L yaw the model a quarter
+  turn at a time. Left, right, up and down are as they are on the display,
+  whichever way the model faces.
+- **XYZ**: X, Y and Z cut along that axis, and the same letter again looks from
+  the other side. Every view is one of OpenSCAD's standard views: Z is Top
+  (X to the right, Y toward the top edge) and Z again Bottom, Y is Front and Y
+  again Back, X is Right and X again Left. A third press comes back, so the
+  other side is always two presses of one key, and each press says the axis,
+  the side and how the other two run ("Y from the front, X right, Z up"). The
+  depth keys work as in Turn mode: Arrow Up/Down go 1% deeper or shallower,
+  Page Up/Down 10%, Home to the surface nearest you and End to the far side. The
+  cut is read out as its position along the axis, so seen from above, the right
+  or the back, going deeper lowers the number. "," says where the
+  origin is. On the display, the axis letters sit at the edges they increase
+  toward and a small hollow square marks the origin; both can be turned off in
+  Settings.
+
+"." says where you are in either mode, and 0 resets the view (it was Z, which
+XYZ mode needs).
+
 ## Hardware setup
 
 The viewer works without any hardware. Connect devices for full tactile and braille output.
@@ -84,6 +109,7 @@ The Monarch supports cursor controls and depth changes with the following inputs
 
 - dot 1: change depth shallower by 10%.
 - dot 4: change depth deeper by 10%.
+- dots 1-3-4-6, 1-3-4-5-6 and 1-3-5-6 (the letters x, y and z): cut along that axis in XYZ mode; add dot 7 (the capital letter) to see it from the other side. Not yet confirmed on a Monarch: the reports are inferred from how dots 1 and 4 arrive, so check the "[Monarch HID] Input report" line in the browser console before relying on them.
 - spacebar: cycles through these cursor modes
     - `none`: hides the cursor and disables cursor movement.
     - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
@@ -105,7 +131,11 @@ NOTE: Cursor or guideline movements only work when the cursor or guidelines are 
 3. Pick the device in the browser's pairing prompt.
 
 Turning the cube changes the view in that browser window only. Needs a browser
-with Web Bluetooth, which today means a Chromium-based one.
+with Web Bluetooth, which today means a Chromium-based one. A face has to be
+clearly up, and stay up for a moment, before the view changes, so the cube held
+near a corner no longer flickers between two views. In XYZ mode the face
+pointing up is the axis coming out of the display, and turning to it keeps that
+axis's cut where it was.
 
 ### Adafruit Slider Trinkey
 
@@ -130,6 +160,7 @@ The DotPad supports cursor controls and depth changes with the following inputs:
 
 - dot 1: change depth shallower by 10%.
 - dot 4: change depth deeper by 10%.
+- letters `x`, `y` and `z` (dot chords 1 3 4 6, 1 3 4 5 6 and 1 3 5 6): cut along that axis in XYZ mode; the same chord again looks from the other side, exactly as the keyboard's letters do. The chord is read as a whole letter, the way `v` is.
 - letter `v` or dot chord 1 2 3 6: cycles through these cursor modes
     - `none`: hides the cursor and disables cursor movement.
     - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
@@ -387,6 +418,8 @@ Models live in two directories, and which one a file is in decides who can see i
 To add a built-in model, put the file in `builtin_models/` and rebuild. Do not put it in `data/models` directly: that directory is runtime state and is not tracked.
 
 The two directories must never be the same. Classification is by location, so if uploads landed in the built-in directory every uploaded file would be served to every visitor. That is exactly what happened in #102 once the move to Docker named volumes made `data/models` writable. The server now refuses to start if `UPLOAD_MODEL_DIR` resolves to the built-in directory.
+
+`CAD_A11Y_MODEL_DIR` moves the built-in directory itself, the way `UPLOAD_MODEL_DIR` moves uploads, and the same check applies wherever it points. The test suite sets both to a temporary directory (`tests/conftest.py`), so running it leaves nothing in the repo's `data/`.
 
 ### Uploads on managed servers
 
