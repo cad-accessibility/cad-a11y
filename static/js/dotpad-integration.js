@@ -332,7 +332,7 @@ function onKey(device, currKeyCode, keyMsg) {
     // (SDK 3.0.1+ reports key up with the raw key state).
     if (letter === 'x' || letter === 'y' || letter === 'z') {
         if (typeof window.axisCommandFromDevice === 'function') {
-            window.axisCommandFromDevice(letter, 'dotpad', { flipOnRepeat: true });
+            window.axisCommandFromDevice(letter, 'dotpad');
         }
         return;
     }

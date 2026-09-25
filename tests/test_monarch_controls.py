@@ -230,16 +230,19 @@ def _dots_in_first_byte(key: str) -> set[int]:
     return {dot for dot in range(1, 9) if first & (1 << (dot - 1))}
 
 
-def test_each_axis_has_a_home_view_and_an_other_side():
-    pairs = sorted((c["axis"], c.get("side", "home")) for c in _by_type("axis"))
-    assert pairs == [(a, s) for a in "xyz" for s in ("home", "other")]
+def test_each_axis_has_one_command():
+    """One chord per axis: the same chord again gives the other side, as the same
+    letter does on the keyboard, so there is no dot-7 capital to infer (#235
+    review)."""
+    commands = _by_type("axis")
+    assert sorted(c["axis"] for c in commands) == ["x", "y", "z"]
+    assert not any("side" in c for c in commands), "the side comes from pressing again"
 
 
 def test_each_axis_command_is_its_braille_letter_on_the_same_bitfield_as_depth():
     """Checked against the property the mapping was inferred from rather than a
     copied literal: the depth keys make byte 0 a dot bitfield, and on that
-    bitfield each axis report must spell its own letter, with dot 7 (the
-    computer-braille capital) for the other side. Whether the device sends
+    bitfield each axis report must spell its own letter. Whether the device sends
     these at all is a hardware question this cannot answer."""
     depth_dots = {tuple(sorted(_dots_in_first_byte(k))) for k, c in _command_map().items()
                   if c.get("type") == "depth"}
@@ -247,6 +250,4 @@ def test_each_axis_command_is_its_braille_letter_on_the_same_bitfield_as_depth()
     for key, command in _command_map().items():
         if command.get("type") == "axis":
             expected = set(BRAILLE_LETTERS[command["axis"]])
-            if command.get("side") == "other":
-                expected |= {7}
             assert _dots_in_first_byte(key) == expected, f"{key} is not braille {command}"

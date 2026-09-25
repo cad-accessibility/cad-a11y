@@ -75,10 +75,11 @@ key: a key from the other mode only says which mode it belongs to.
 - **Turn** (the default): U/O roll, I/K pitch and J/L yaw the model a quarter
   turn at a time. Left, right, up and down are as they are on the display,
   whichever way the model faces.
-- **XYZ**: X, Y and Z cut along that axis and Shift with the same letter looks
-  from the other side. Every view is one of OpenSCAD's standard views: Z is Top
-  (X to the right, Y toward the top edge) and Shift+Z Bottom, Y is Front and
-  Shift+Y Back, X is Right and Shift+X Left. Arrow Up/Down move the cut 1% of the object along that
+- **XYZ**: X, Y and Z cut along that axis, and the same letter again looks from
+  the other side. Every view is one of OpenSCAD's standard views: Z is Top
+  (X to the right, Y toward the top edge) and Z again Bottom, Y is Front and Y
+  again Back, X is Right and X again Left. A third press comes back, so the
+  other side is always two presses of one key. Arrow Up/Down move the cut 1% of the object along that
   axis and Page Up/Down 10%, always toward the axis's higher values for Up; Home
   and End go to the object's lowest and highest coordinate. "," says where the
   origin is. On the display, the axis letters sit at the edges they increase
@@ -156,7 +157,7 @@ The DotPad supports cursor controls and depth changes with the following inputs:
 
 - dot 1: change depth shallower by 10%.
 - dot 4: change depth deeper by 10%.
-- letters `x`, `y` and `z` (dot chords 1 3 4 6, 1 3 4 5 6 and 1 3 5 6): cut along that axis in XYZ mode; the same chord again looks from the other side, since the DotPad has no key left for Shift. The chord is read as a whole letter, the way `v` is.
+- letters `x`, `y` and `z` (dot chords 1 3 4 6, 1 3 4 5 6 and 1 3 5 6): cut along that axis in XYZ mode; the same chord again looks from the other side, exactly as the keyboard's letters do. The chord is read as a whole letter, the way `v` is.
 - letter `v` or dot chord 1 2 3 6: cycles through these cursor modes
     - `none`: hides the cursor and disables cursor movement.
     - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.

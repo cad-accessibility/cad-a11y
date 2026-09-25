@@ -808,7 +808,7 @@ const AXIS_MODE_KEYS = {
 };
 
 // XYZ mode's axes and the two views along each: the home view, which X, Y and Z
-// give, and the other side, which Shift+X, Shift+Y and Shift+Z give. Top, Front
+// give, and the other side, which the same letter pressed again gives. Top, Front
 // and Right are home because they are the only views where both display axes
 // increase to the right and up, which is what blind co-designers expected on a
 // flat board (Kamath et al., CHI '26).
@@ -1328,28 +1328,27 @@ function showXyzView(viewToken, emit = announceAlert, { flipped = false } = {}) 
     });
 }
 
-/** X, Y or Z: cut along that axis from its home view (Right, Front, Top), or
- * with otherSide (Shift) from the other side (Left, Back, Bottom). Each key names
- * one view, the way OpenSCAD's View menu and Blender's numpad do, so what a key
- * does never depends on what was pressed before, or on what the cube last did.
- * Pressing it again when that view is already showing changes nothing and says
- * where the cut is. Each axis keeps its own cut position either way. */
-function selectAxis(axis, emit = announceAlert, { otherSide = false } = {}) {
+/** X, Y or Z: cut along that axis from its home view (Right, Front, Top), and
+ * the same letter again from the other side (Left, Back, Bottom). A letter always
+ * names the axis, the way OpenSCAD's View menu and Blender's numpad do; which of
+ * its two sides you get depends only on which one is showing, so a third press
+ * comes back to the first. Each axis keeps its own cut position throughout. */
+function selectAxis(axis, emit = announceAlert) {
     if (!XYZ_AXES[axis]) return;
     const [home, other] = XYZ_AXES[axis].views;
-    const target = otherSide ? other : home;
-    if (target === viewerState.currentView) {
-        const cut = cutPositionPhrase(axis);
-        emit(`${cut.speech}, ${sideOfView().speech}.`, {
-            braille: [cut.braille.replace(' ', ' cut '), `${axisLetter(axis)} ${sideOfView().braille}`],
-        });
-        return;
-    }
-    showXyzView(target, emit, { flipped: axis === currentCutAxis() });
+    const showing = viewerState.currentView;
+    const onThisAxis = showing === home || showing === other;
+    // A letter for another axis lands on that axis's home view; the same letter
+    // again gives the other side, and a third press comes back. So minus is
+    // always two presses of one key, with no modifier to hold and nothing for
+    // Caps Lock to interfere with, and a DotPad chord or a Monarch key is the
+    // same press as the keyboard's (#235 review).
+    const target = onThisAxis ? (showing === home ? other : home) : home;
+    showXyzView(target, emit, { flipped: onThisAxis });
 }
 
 /** The same axis from the other side, whichever side is showing: the "Other side"
- * button, and a DotPad chord repeated (it has no key to spare for Shift). */
+ * button. From the keyboard or a device this is the axis letter pressed again. */
 function flipSide(emit = announceAlert) {
     const axis = currentCutAxis();
     const [home, other] = XYZ_AXES[axis].views;
@@ -3431,22 +3430,17 @@ function selectViewFromCube(viewToken) {
 }
 
 /** A braille display's X, Y or Z command: the same as the keyboard's, including
- * saying whose mode it is when pressed in Turn mode. otherSide is the Monarch's
- * letter with dot 7, a capital in computer braille, standing in for Shift. The
- * DotPad has no key to spare (x, y and z already use all six), so there
- * flipOnRepeat makes the chord for the axis already showing flip it instead. */
-function axisCommandFromDevice(axis, source, { otherSide = false, flipOnRepeat = false } = {}) {
+ * saying whose mode it is when pressed in Turn mode, and including the other side
+ * on the second press. One chord per axis is all either display needs, which
+ * suits the DotPad, where x, y and z already use all six dots. */
+function axisCommandFromDevice(axis, source) {
     if (!XYZ_AXES[axis]) return;
     pendingInputSource = String(source || 'device');
     if (!isXyzMode()) {
         announceWrongModeKey(axis, 'xyz');
         return;
     }
-    if (flipOnRepeat && axis === currentCutAxis()) {
-        flipSide();
-        return;
-    }
-    selectAxis(axis, announceAlert, { otherSide });
+    selectAxis(axis);
 }
 
 // External API used by hardware integration modules.
@@ -3991,7 +3985,7 @@ document.addEventListener('keydown', function(e) {
         raw_key: rawKey,
         code,
         repeat: Boolean(e.repeat),
-        // Shift+Z is Z from the other side, and key alone reads "z" for both.
+        // Shift is a coarser step for zoom and pan; the axis letters ignore it.
         shift: Boolean(e.shiftKey),
         active_element_id: document.activeElement?.id || null,
     });
@@ -4026,11 +4020,12 @@ document.addEventListener('keydown', function(e) {
         case 'x':
         case 'y':
         case 'z':
-            // Shift, not the letter's case, picks the other side, so Caps Lock
-            // cannot. The letter is read from e.key, so a QWERTZ keyboard's
-            // swapped Y and Z still name the axis on the keycap.
+            // The same letter again gives the other side, so there is no
+            // modifier to hold and Caps Lock cannot matter. The letter is read
+            // from e.key, so a QWERTZ keyboard's swapped Y and Z still name the
+            // axis on the keycap.
             e.preventDefault();
-            selectAxis(normalizedKey, announceAlert, { otherSide: e.shiftKey });
+            selectAxis(normalizedKey);
             break;
 
         case ',':

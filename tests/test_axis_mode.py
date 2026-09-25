@@ -178,17 +178,19 @@ def _function(name: str) -> str:
     return js[start:js.index("\n}\n", start)]
 
 
-def test_each_axis_key_always_gives_the_same_view():
-    """X, Y and Z give the home view and Shift gives the other side, whatever was
-    showing before and whatever the cube last did. A key that toggled meant the
-    first Z on a page opened on Top went to Bottom."""
+def test_an_axis_key_lands_on_the_home_view_unless_that_axis_is_showing():
+    """A letter for another axis gives that axis's home view, whatever was showing
+    before and whatever the cube last did, so X from anywhere on Y is Right. Only
+    the letter of the axis already on show changes side, which is what makes the
+    other side reachable without a modifier and never by accident."""
     select = _function("selectAxis")
-    assert "const target = otherSide ? other : home;" in select
-    assert "currentView === home ? other : home" not in select, "the axis keys must not toggle"
+    assert "const onThisAxis = showing === home || showing === other;" in select
+    assert "const target = onThisAxis ? (showing === home ? other : home) : home;" in select
     handler = _keydown_handler()
     case = handler[handler.index("case 'x':"):]
     case = case[:case.index("break;")]
-    assert "selectAxis(normalizedKey, announceAlert, { otherSide: e.shiftKey })" in case
+    assert "selectAxis(normalizedKey)" in case
+    assert "shiftKey" not in case, "the axis keys ignore Shift, so Caps Lock cannot matter"
 
 
 def test_caps_lock_does_not_pick_the_other_side():
@@ -199,22 +201,24 @@ def test_caps_lock_does_not_pick_the_other_side():
     assert "toUpperCase" not in case and "rawKey" not in case
 
 
-def test_the_same_key_again_repeats_the_cut_rather_than_flipping():
+def test_the_same_key_again_gives_the_other_side_and_a_third_comes_back():
+    """Minus is two presses of one key (#235 review). The letter of the axis on
+    show swaps its two views, so a third press returns to the first."""
     select = _function("selectAxis")
-    already = select[select.index("if (target === viewerState.currentView)"):]
-    already = already[:already.index("return;")]
-    assert "showXyzView" not in already and "emit(" in already
+    assert "showing === home ? other : home" in select
+    assert "otherSide" not in select, "nothing should be left of the Shift argument"
 
 
-def test_other_side_is_the_one_toggle():
-    """The button for pointer users, and a repeated DotPad chord, since the DotPad
-    has no key left to hold for Shift."""
+def test_the_other_side_button_and_the_devices_use_the_same_rule():
+    """The button is for pointer users. A braille display sends the plain axis
+    letter and gets the second-press flip from selectAxis, so one rule covers the
+    keyboard, the DotPad and the Monarch instead of three."""
     js = _js()
     flip_button = js[js.index("axisFlipBtn.addEventListener('click'"):]
     assert "flipSide(announce)" in flip_button[:flip_button.index("});")]
     device = _function("axisCommandFromDevice")
-    assert "if (flipOnRepeat && axis === currentCutAxis())" in device
-    assert "selectAxis(axis, announceAlert, { otherSide })" in device
+    assert "selectAxis(axis)" in device
+    assert "flipOnRepeat" not in device and "otherSide" not in device
 
 
 def test_the_log_says_whether_shift_was_held():
@@ -226,7 +230,8 @@ def test_the_log_says_whether_shift_was_held():
 def test_the_help_names_both_sides():
     xyz = _html()[_html().index('id="xyz-shortcuts-section"'):]
     xyz = xyz[:xyz.index("</div>")]
-    assert "<kbd>Shift</kbd>" in xyz
+    assert "<kbd>Shift</kbd>" not in xyz, "Shift no longer picks the side"
+    assert "again" in xyz, "the help should say the same letter again gives the other side"
 
 
 # --- Defaults, and where Reset went -------------------------------------------------
@@ -343,7 +348,7 @@ def test_the_dotpad_axis_chords_are_read_before_the_depth_dots():
     code = (ROOT / "static" / "js" / "dotpad-integration.js").read_text(encoding="utf-8")
     axis = code.index("if (letter === 'x' || letter === 'y' || letter === 'z')")
     assert axis < code.index("if (byte6 === 0x01)") and axis < code.index("if (byte6 === 0x08)")
-    assert "window.axisCommandFromDevice(letter, 'dotpad', { flipOnRepeat: true })" in code
+    assert "window.axisCommandFromDevice(letter, 'dotpad')" in code
 
 
 # --- The cube (witmotion-imu.js) -----------------------------------------------------

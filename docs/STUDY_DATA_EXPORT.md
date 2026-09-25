@@ -64,8 +64,10 @@ on every single rotation.
 
 XYZ mode (`axis_mode` `xyz`, added for #185) is the exception: `x`, `y` and `z`
 pick the axis and the side directly, the letter alone for the view from the
-right, the front or above and with Shift for the other side. `key` reads the
-same for both, so tell them apart with `key_shift`. The study runs in Turn mode, so a study session will only contain
+right, the front or above, and the same letter again for the other side. `key`
+reads the same for both presses, and `key_shift` does not tell them apart, so
+read the side off the row itself: `cut_side` says which side the cut was seen
+from. The study runs in Turn mode, so a study session will only contain
 XYZ rows if someone changed the setting mid-session.
 
 | Key | Command |
@@ -76,8 +78,8 @@ XYZ rows if someone changed the setting mid-session.
 | `arrowup`, `arrowdown` | depth by 1% (XYZ mode: the cut by 1% of the object along its axis, always toward the axis's highest value for `arrowup`) |
 | `pageup`, `pagedown` | depth by a larger step (XYZ mode: 10%) |
 | `home`, `end` | depth to the surface or the far side (XYZ mode: the object's lowest or highest coordinate on the axis) |
-| `x`, `y`, `z` | XYZ mode: cut along that axis, from the right, the front or above; with `key_shift`, from the other side. In Turn mode: nothing but a message saying so |
-| `,` | XYZ mode: where the origin is. In Turn mode: nothing but a message |
+| `x`, `y`, `z` | XYZ mode: cut along that axis, from the right, the front or above; the same key again, from the other side (see `cut_side`). In Turn mode: nothing but a message saying so |
+| `,` | where the origin is, in both modes (XYZ names its coordinate on the axis) |
 | `2`, `3` | zoom out, zoom in |
 | `4`, `5` | zoom out, zoom in, fine |
 | `w`, `a`, `s`, `d` | pan up, left, down, right |
