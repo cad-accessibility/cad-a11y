@@ -152,27 +152,76 @@ def test_count_raised_pixels_handles_empty_and_degenerate_geometry():
     ) == 0
 
 
-def test_precompute_cache_persists_slice_pixel_counts(tmp_path):
-    """Slice Area reads these and nothing else.
+def test_slice_area_profile_flags_its_placeholder(monkeypatch):
+    """Before the counts exist the profile is a flat placeholder, and says so, the
+    same way the Difference profile does. The client refreshes only on
+    slicegraph_ready being false, so without this a Slice Area graph opened while
+    precompute runs would stay a flat line."""
+    renderer = _bare_renderer()
+    monkeypatch.setattr(renderer, "start_background_slice_precompute", lambda: None)
 
-    Leaving them out of the cache means a future cache-warm start restores the
-    Difference graph while Slice Area stays silently empty.
-    """
-    renderer = cad_lib.CADComparisonRenderer.__new__(cad_lib.CADComparisonRenderer)
-    renderer.cache_path = str(tmp_path / "cache.json")
-    renderer.cache_version = 3
-    renderer.view_limits = np.zeros((6, 2, 2))
-    renderer.view_current_camera_center = np.zeros((6, 2))
-    renderer.view_diff_mats = {"top": np.zeros((2, 2))}
-    renderer.view_slice_pixel_counts = {"top": [1, 2, 3]}
+    profile = renderer._get_slice_pixel_count_profile("top")
+    assert not profile.any()
+    assert renderer.slicegraph_ready is False
 
-    renderer._save_precompute_cache({"before": {}, "after": {}})
+    renderer.view_slice_pixel_counts = {"top": [0, 5, 10]}
+    profile = renderer._get_slice_pixel_count_profile("top")
+    np.testing.assert_array_equal(profile, [0.0, 0.5, 1.0])
+    assert renderer.slicegraph_ready is True
 
-    import json
 
-    payload = json.loads((tmp_path / "cache.json").read_text())
-    assert payload["slice_pixel_counts"] == {"top": [1, 2, 3]}
-    assert payload["cache_version"] == 3, (
-        "adding a key without bumping the version leaves older caches readable "
-        "but missing the counts"
+# ---------------------------------------------------------------------------
+# The counts in the precompute cache
+#
+# Slice Area reads the counts and nothing else, so a cache that restores the
+# difference matrices and cut polygons without them brings the Difference graph
+# back after a restart while Slice Area stays flat.
+# ---------------------------------------------------------------------------
+
+import gzip
+import json
+from pathlib import Path
+
+CUBE = Path(__file__).resolve().parents[1] / "builtin_models" / "cube.stl"
+
+
+def _cold_renderer(tmp_path):
+    cold = cad_lib.CADComparisonRenderer(str(CUBE), str(CUBE))
+    cold.cache_path = str(tmp_path / "cube.json.gz")
+    cold.start_background_slice_precompute()
+    assert cold._precompute_done.wait(600), "precompute did not finish"
+    assert cold.view_slice_pixel_counts, "precompute produced no counts"
+    return cold
+
+
+def _warm_renderer(cache_path):
+    warm = cad_lib.CADComparisonRenderer(str(CUBE), str(CUBE))
+    warm.cache_path = cache_path
+    return warm
+
+
+def test_precompute_cache_brings_the_slice_pixel_counts_back(tmp_path):
+    cold = _cold_renderer(tmp_path)
+
+    warm = _warm_renderer(cold.cache_path)
+    assert warm.load_precompute_cache()
+    assert warm.view_slice_pixel_counts == cold.view_slice_pixel_counts
+
+
+def test_a_cache_without_the_counts_is_a_miss(tmp_path):
+    """A version-3 file, from before the counts were stored, must be recomputed
+    rather than half restored. So must a current one that has lost them."""
+    cold = _cold_renderer(tmp_path)
+    with gzip.open(cold.cache_path, "rt", encoding="utf-8") as fp:
+        payload = json.load(fp)
+    assert payload["cache_version"] > 3, (
+        "adding the counts without bumping the version leaves version-3 files "
+        "readable but missing them"
     )
+    del payload["slice_pixel_counts"]
+
+    for version in (3, payload["cache_version"]):
+        payload["cache_version"] = version
+        with gzip.open(cold.cache_path, "wt", encoding="utf-8") as fp:
+            json.dump(payload, fp)
+        assert not _warm_renderer(cold.cache_path).load_precompute_cache(), version

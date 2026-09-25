@@ -3,13 +3,13 @@ Flask>=3.1.3
 flask-cors>=6.0.5
 
 # Numeric + image stack
-numpy>=2.5.1
+numpy>=2.5.3
 Pillow>=12.3.0
 matplotlib>=3.11.1
 scikit-image
 
 # CAD / geometry stack
-trimesh>=4.12.2
+trimesh>=5.1.0
 shapely>=2.1.2
 cascadio
 networkx
@@ -19,11 +19,15 @@ svgwrite
 
 # Braille / hardware integrations
 hidapi>=0.15.0
-pyserial>=3.5
 bleak>=3.0.2
 
 # Utility / testing helpers
 requests>=2.34.2
+
+# Backend for trimesh's quadric decimation. Optional at runtime: without it the
+# renderer still loads every model, it just keeps detail the display cannot
+# resolve and pays for it on each render.
+fast_simplification>=0.2.0
 
 # NOTE:
 # pythonocc-core is required by the renderer but is typically installed via conda

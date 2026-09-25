@@ -102,7 +102,7 @@ def get_juxtaposition_view(shapes, bbox, cut_depth=0.9, view_key="top", renderin
         plt.close(fig.number)
 
     # extract outline
-    if rendering_mode in ["filled", "slice"]:
+    if rendering_mode in ["filled", "cut"]:
         return img_np, ax_limits
     if rendering_mode == "outline":
         outlines_np = get_outlines(img_np)
