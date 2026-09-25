@@ -802,7 +802,9 @@ const AXIS_MODES = [
 // two lists apart.
 const AXIS_MODE_KEYS = {
     turn: ['u', 'o', 'i', 'k', 'j', 'l'],
-    xyz: ['x', 'y', 'z', ','],
+    // "," is deliberately not here: where the origin is is worth asking in Turn
+    // mode too, so it works in both, like "." (#235 review).
+    xyz: ['x', 'y', 'z'],
 };
 
 // XYZ mode's axes and the two views along each: the home view, which X, Y and Z
@@ -1395,10 +1397,8 @@ function setAxisMode(mode, { announce: shouldAnnounce = true, persist = true, re
 
 /** A key from the other mode does nothing but say whose it is. */
 function announceWrongModeKey(key, keyMode, emit = announceAlert) {
-    const label = key === ',' ? 'Comma' : key.toUpperCase();
-    const does = keyMode === 'turn'
-        ? `${label} turns the model`
-        : (key === ',' ? 'Comma says where the origin is' : `${label} cuts along ${label}`);
+    const label = key.toUpperCase();
+    const does = keyMode === 'turn' ? `${label} turns the model` : `${label} cuts along ${label}`;
     // Z was the reset key until Reset moved to 0, and hands remember.
     const reset = key === 'z' ? ' Reset is now 0.' : '';
     emit(`${does} in ${axisModeLabel(keyMode)} mode. You're in ${axisModeLabel()} mode; change it in Settings.${reset}`, {
@@ -1415,8 +1415,9 @@ function announceWhereAmI(emit = announceAlert) {
     emit(`${description.speech} ${statusBarRest()}`, { braille: description.braille });
 }
 
-/** ",": where the origin is, on the same percent scale as the cut, and where it
- * sits against the object's outline. */
+/** ",": where the origin is against the cut and the object's outline, in either
+ * mode. XYZ mode names it by its coordinate on the same percent scale as the
+ * cut; Turn mode has no axis to name it by (#235 review). */
 function announceOrigin(emit = announceAlert) {
     const axis = currentCutAxis();
     const fraction = originFraction(axis);
@@ -1433,12 +1434,24 @@ function announceOrigin(emit = announceAlert) {
         return;
     }
     let relation;
+    let relationBraille;
     if (axis === 'z') {
-        relation = originPercent < cut ? 'below this cut' : 'above this cut';
+        const below = originPercent < cut;
+        relation = below ? 'below this cut' : 'above this cut';
+        relationBraille = below ? 'below cut' : 'above cut';
     } else {
         // The reader is on the +depth side of the plane.
         const towardReader = (originPercent - cut) * activeSliceAxis().sign > 0;
         relation = towardReader ? 'in front of this cut, toward you' : 'behind this cut';
+        relationBraille = towardReader ? 'toward you' : 'behind cut';
+    }
+    // Turn mode is not working in an axis, so it gets where the origin sits
+    // against the cut and the outline, without a coordinate to name it by.
+    if (!isXyzMode()) {
+        emit(`Origin is ${relation}, ${place.speech}.`, {
+            braille: [`origin ${relationBraille}`, `origin ${place.braille}`],
+        });
+        return;
     }
     emit(`Origin is at ${letter} ${signedPercent(originPercent)} percent, ${relation}, ${place.speech}.`, {
         braille: [`origin ${letter} ${signedPercent(originPercent)}%`, `origin ${place.braille}`],
@@ -2414,6 +2427,17 @@ async function exportCurrentSliceAsPng() {
 
 // Update slice depth display and announce changes
 function updateSliceDepth(newDepth, shouldAnnounce = true) {
+    // In XYZ mode the number is a position along the cut axis -- the same 0-100
+    // the on-screen slider, the cut keys and the readout use -- not depth from
+    // the reader. The two run opposite ways from Top, Front and Right, so a
+    // device left on the depth scale moved the cut the other way from what the
+    // screen said and the announcement read out the complement (#235 review).
+    if (isXyzMode()) {
+        const position = Number(newDepth);
+        if (!Number.isFinite(position)) return false;
+        return setCutPosition(currentCutAxis(), position / 100, announceAlert, { announce: shouldAnnounce });
+    }
+
     const oldDepth = viewerState.currentSliceDepth;
     viewerState.currentSliceDepth = Math.max(0, Math.min(100, newDepth));
     writeDisplayDepthToPlanes(viewerState.currentSliceDepth);
@@ -2439,6 +2463,11 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
 }
 
 function getCurrentSliceDepth(){
+    // The devices read this, add their own step and hand it back through
+    // updateSliceDepth, so in XYZ mode it has to be the same position along the
+    // axis that updateSliceDepth expects. That makes a device's "deeper" mean
+    // toward +axis, like the deeper button and Arrow Up in this mode.
+    if (isXyzMode()) return cutPercent(currentCutAxis());
     return viewerState.currentSliceDepth;
 }
 

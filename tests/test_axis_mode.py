@@ -295,8 +295,12 @@ def test_the_help_has_a_section_for_each_mode_and_shows_one():
     assert re.search(r'<div id="xyz-shortcuts-section" hidden>', html)
     xyz = html[html.index('id="xyz-shortcuts-section"'):]
     xyz = xyz[:xyz.index("</div>")]
-    for key in ("X", "Y", "Z", ","):
+    for key in ("X", "Y", "Z"):
         assert f"<kbd>{key}</kbd>" in xyz, f"XYZ help does not list {key}"
+    # "," works in both modes, so it belongs outside the mode-specific sections
+    # rather than in this one (#235 review).
+    assert "<kbd>,</kbd>" not in xyz
+    assert "<kbd>,</kbd>" in html
 
 
 # --- WCAG 2.1.4 ------------------------------------------------------------------
@@ -385,3 +389,56 @@ def test_the_cube_goes_through_the_viewer_and_waits_for_a_settled_face():
     assert "alignment < FACE_UP_MIN_ALIGNMENT" in handler
     assert "now - candidateSince < FACE_SETTLE_MS" in handler
     assert handler.index("FACE_SETTLE_MS") < handler.index("window.selectViewFromCube(view)")
+
+
+# --- What the review of #235 turned up -------------------------------------------
+
+
+def test_the_hardware_depth_inputs_use_the_axis_scale_in_xyz_mode():
+    """The DotPad depth dots, the Monarch depth keys and the Trinkey slider all go
+    through window.getCurrentSliceDepth and window.updateSliceDepth. In XYZ mode
+    those have to speak the position along the cut axis, the number the on-screen
+    slider and the cut keys use.
+
+    Left on Turn mode's depth-from-the-reader they ran the other way: from the
+    default views the slider pushed to 30 put the plane at 1 - 0.30, the readout
+    jumped to 70, and the DotPad's "shallower" dot raised Z.
+    """
+    js = _js()
+    setter = js[js.index("function updateSliceDepth("):]
+    setter = setter[:setter.index("\nfunction ")]
+    assert "isXyzMode()" in setter, "updateSliceDepth still treats every mode as depth"
+    assert "setCutPosition(currentCutAxis()" in setter
+    assert setter.index("setCutPosition") < setter.index("writeDisplayDepthToPlanes"), (
+        "the XYZ branch must return before the depth-from-the-reader path"
+    )
+
+    getter = js[js.index("function getCurrentSliceDepth("):]
+    getter = getter[:getter.index("\n}")]
+    assert "cutPercent(currentCutAxis())" in getter, (
+        "a device reads this, adds its step and hands it back, so it must be the "
+        "same scale updateSliceDepth expects"
+    )
+
+
+def test_asking_where_the_origin_is_works_in_both_modes():
+    """"," was XYZ-only, which made it say "Comma is XYZ only" in Turn mode. Where
+    the origin sits against the cut and the outline is worth asking in either, so
+    it belongs to neither mode's key list.
+    """
+    keys = _mode_keys()
+    assert "," not in keys["xyz"], '"," is no longer an XYZ-only key'
+    assert "," not in keys["turn"]
+    assert "," in _supported_shortcuts()
+    assert "case ',':" in _keydown_handler()
+
+    js = _js()
+    origin = js[js.index("function announceOrigin("):]
+    origin = origin[:origin.index("\n}")]
+    assert "!isXyzMode()" in origin, "announceOrigin has no wording for Turn mode"
+    turn_branch = origin[origin.index("if (!isXyzMode())"):]
+    turn_branch = turn_branch[:turn_branch.index("return;")]
+    assert "signedPercent" not in turn_branch, (
+        "Turn mode is not working in an axis, so it should not be given a "
+        "coordinate along one"
+    )
