@@ -160,6 +160,27 @@ for anything that cannot live with the convention.
 Blank in all four columns means no orientation was recorded, which is not the
 same as zero.
 
+### What the `view` tokens mean, and the one that reads backwards
+
+`view` holds the token the viewer has used since long before #185. For Y and Z it
+names the side the reader is on; for X it names the opposite one:
+
+| `view` | Reader is on | OpenSCAD view | `cut_side` |
+|---|---|---|---|
+| `z+` | +Z | Top | `above` |
+| `z-` | −Z | Bottom | `below` |
+| `y-` | −Y | Front | `front` |
+| `y+` | +Y | Back | `back` |
+| `x-` | **+X** | Right | `right` |
+| `x+` | **−X** | Left | `left` |
+
+So an `x-` row is the view from the +X side, not the −X side. Nobody hears these
+tokens — the viewer says "seen from the right" and never "x minus" — but they are
+in this data, so anyone filtering on `view` has to know about the flip. Renaming
+them would silently change what every stored row means, including the sessions
+already collected, which is why they stand. Use `cut_side` where you want a name
+that reads the way it sounds.
+
 ### Sessions from before the orientation fix (#185) read differently
 
 The fix for #185 changed what three of the six views store, so do not pool
