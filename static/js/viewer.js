@@ -1152,25 +1152,29 @@ function signedAxisOf(vec) {
 }
 
 /** How the two display axes run, e.g. "X to the right, Y toward the top edge":
- * each named axis increases in the direction given. The first mention in an
- * announcement says "toward the top edge", later ones just "up". */
-function displayAxesPhrase(basis = currentBasis(), firstMention = true) {
+ * each named axis increases in the direction given. The full form is for "." and
+ * entering the mode; the short one, "X right, Y up", is what an axis key says. */
+function displayAxesPhrase(basis = currentBasis(), full = true) {
     const right = signedAxisOf(basis.right);
     const up = signedAxisOf(basis.up);
-    const across = `${axisLetter(right.axis)} to the ${right.sign > 0 ? 'right' : 'left'}`;
-    const vertical = firstMention
-        ? `${axisLetter(up.axis)} toward the ${up.sign > 0 ? 'top' : 'bottom'} edge`
-        : `${axisLetter(up.axis)} ${up.sign > 0 ? 'up' : 'down'}`;
+    const rightWord = right.sign > 0 ? 'right' : 'left';
+    const upWord = up.sign > 0 ? 'up' : 'down';
+    const short = `${axisLetter(right.axis)} ${rightWord}, ${axisLetter(up.axis)} ${upWord}`;
     return {
-        speech: `${across}, ${vertical}`,
-        braille: `${axisLetter(right.axis)} ${right.sign > 0 ? 'right' : 'left'} ${axisLetter(up.axis)} ${up.sign > 0 ? 'up' : 'down'}`,
+        speech: full
+            ? `${axisLetter(right.axis)} to the ${rightWord}, ${axisLetter(up.axis)} toward the ${up.sign > 0 ? 'top' : 'bottom'} edge`
+            : short,
+        braille: short.replace(',', ''),
     };
 }
 
-/** Which side the reader is looking from, taken from the axis pointing at them. */
+/** Which side the reader is looking from, taken from the axis pointing at them:
+ * "seen from the front" in full, "from the front" after an axis letter. */
 function sideOfView(viewToken = viewerState.currentView) {
+    const side = VIEW_SIDES[viewToken] || viewName(viewToken);
     return {
-        speech: `seen from ${VIEW_SIDES[viewToken] || viewName(viewToken)}`,
+        speech: `seen from ${side}`,
+        short: `from ${side}`,
         braille: `from ${VIEW_SIDES_BRAILLE[viewToken] || viewName(viewToken)}`,
     };
 }
@@ -1273,17 +1277,51 @@ function setCutPosition(axis, position, emit = announceAlert, { render = true, a
     return changed;
 }
 
-/** One press of an Arrow or Page key in XYZ mode: toward +axis (direction 1) or
- * -axis (-1), onto whole percents so a run of presses reads 31, 32, 33 whatever
- * position the cut started from. */
-function stepCut(direction, coarse, emit = announceAlert) {
+/** Move the XYZ cut `step` percent toward +axis (direction 1) or -axis (-1), onto
+ * whole percents so a run of presses reads 31, 32, 33 whatever position the cut
+ * started from. */
+function stepCut(direction, step, emit = announceAlert) {
     const axis = currentCutAxis();
-    const step = xyzStepPercent(coarse);
     const percent = viewerState.slicePlanes[axis] * 100;
     const onGrid = direction > 0
         ? Math.floor(percent + 1e-6) + step
         : Math.ceil(percent - 1e-6) - step;
     return setCutPosition(axis, Math.min(100, Math.max(0, onGrid)) / 100, emit);
+}
+
+/** Move the cut deltaPercent deeper, away from the reader, or shallower when it
+ * is negative, and say where it landed. The depth keys, the DotPad's depth dots
+ * and the Monarch's depth keys all come through here, so deeper means the same
+ * in both modes (#235 review). XYZ mode still reads the cut out along its axis,
+ * so from above, the right and the back, deeper lowers the number. */
+function stepSliceDepth(deltaPercent, emit = announceAlert) {
+    const delta = Number(deltaPercent);
+    if (!Number.isFinite(delta) || delta === 0) return false;
+    if (isXyzMode()) {
+        // The reader is on the +depth side of the cut axis, so deeper runs
+        // toward -sign along it.
+        const { sign } = activeSliceAxis();
+        return stepCut(-sign * Math.sign(delta), Math.abs(delta), emit);
+    }
+    const previousDepth = viewerState.currentSliceDepth;
+    const nextDepth = Math.max(0, Math.min(100, previousDepth + delta));
+    const changed = updateSliceDepth(nextDepth, false);
+    announceDepthValue(nextDepth, previousDepth, emit);
+    return changed;
+}
+
+/** Home and End: the surface nearest the reader, or the far side, in either mode. */
+function goToSliceEnd(farSide, emit = announceAlert) {
+    if (isXyzMode()) {
+        const { axis, sign } = activeSliceAxis();
+        const nearest = sign > 0 ? 1 : 0;
+        return setCutPosition(axis, farSide ? 1 - nearest : nearest, emit);
+    }
+    const previousDepth = viewerState.currentSliceDepth;
+    const nextDepth = farSide ? 100 : 0;
+    const changed = updateSliceDepth(nextDepth, false);
+    announceDepthValue(nextDepth, previousDepth, emit);
+    return changed;
 }
 
 /** "Z 32 percent" the first time, then just "32", like zoom and depth. The
@@ -1301,30 +1339,21 @@ function announceCutStep(axis = currentCutAxis(), emit = announceAlert) {
     });
 }
 
-/** Show a standard view in XYZ mode and say what changed: the axis and the cut
- * after a switch, the side and the flipped display axis after a flip. */
-function showXyzView(viewToken, emit = announceAlert, { flipped = false } = {}) {
-    const before = currentBasis();
+/** Show a standard view in XYZ mode and say it the way the #235 review asked:
+ * the axis and the side, then which way the other two run, "Y from the front, X
+ * right, Z up". Pressing Y again says "Y from the back, X left, Z up", so the
+ * change is heard in the same words. The side is named rather than given as plus
+ * or minus, since for X the view tokens name the side opposite the reader's and
+ * "plus" could not mean one thing on every axis. Where the cut is along the axis
+ * is "."'s to say. */
+function showXyzView(viewToken, emit = announceAlert) {
     updateView(viewToken, false);
     syncAxisModeUI();
-    const axis = currentCutAxis();
-    const after = currentBasis();
-    const axes = displayAxesPhrase(after, false);
-    if (flipped) {
-        const side = sideOfView(viewToken);
-        const rightFlipped = signedAxisOf(after.right).sign !== signedAxisOf(before.right).sign;
-        const turned = signedAxisOf(rightFlipped ? after.right : after.up);
-        const direction = rightFlipped
-            ? (turned.sign > 0 ? 'to the right' : 'to the left')
-            : (turned.sign > 0 ? 'toward the top edge' : 'toward the bottom edge');
-        emit(`${capitalize(side.speech)}. ${axisLetter(turned.axis)} now increases ${direction}.`, {
-            braille: [`${axisLetter(axis)} ${side.braille}`, axes.braille],
-        });
-        return;
-    }
-    const cut = cutPositionPhrase(axis);
-    emit(`${cut.speech}. ${axes.speech}.`, {
-        braille: [cut.braille.replace(' ', ' cut '), axes.braille],
+    const letter = axisLetter(currentCutAxis());
+    const side = sideOfView(viewToken);
+    const axes = displayAxesPhrase(currentBasis(), false);
+    emit(`${letter} ${side.short}, ${axes.speech}.`, {
+        braille: [`${letter} ${side.braille}`, axes.braille],
     });
 }
 
@@ -1344,7 +1373,7 @@ function selectAxis(axis, emit = announceAlert) {
     // Caps Lock to interfere with, and a DotPad chord or a Monarch key is the
     // same press as the keyboard's (#235 review).
     const target = onThisAxis ? (showing === home ? other : home) : home;
-    showXyzView(target, emit, { flipped: onThisAxis });
+    showXyzView(target, emit);
 }
 
 /** The same axis from the other side, whichever side is showing: the "Other side"
@@ -1352,7 +1381,7 @@ function selectAxis(axis, emit = announceAlert) {
 function flipSide(emit = announceAlert) {
     const axis = currentCutAxis();
     const [home, other] = XYZ_AXES[axis].views;
-    showXyzView(viewerState.currentView === home ? other : home, emit, { flipped: true });
+    showXyzView(viewerState.currentView === home ? other : home, emit);
 }
 
 /** Change the axis mode. Entering XYZ squares the model up to the standard view
@@ -1654,9 +1683,9 @@ function clampDepth(value) {
 // already interrupts and replaces whatever's currently being spoken
 
 function announceDepthValue(depthValue, previousDepth = null, emit = announceAlert) {
-    // The DotPad, the Monarch and the slider move depth through this and
-    // updateSliceDepth in both modes. In XYZ mode the same move is a cut along
-    // the axis, and it is said that way.
+    // The Trinkey slider and stepSliceDepth say where depth landed through this in
+    // both modes. In XYZ mode the same move is a cut along the axis, and it is
+    // said that way.
     if (isXyzMode()) {
         announceCutStep(currentCutAxis(), emit);
         return;
@@ -2462,10 +2491,10 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
 }
 
 function getCurrentSliceDepth(){
-    // The devices read this, add their own step and hand it back through
-    // updateSliceDepth, so in XYZ mode it has to be the same position along the
-    // axis that updateSliceDepth expects. That makes a device's "deeper" mean
-    // toward +axis, like the deeper button and Arrow Up in this mode.
+    // Paired with updateSliceDepth, so in XYZ mode it is the same position along
+    // the axis that updateSliceDepth expects: what the Trinkey slider sets, and
+    // what the on-screen slider shows. The DotPad's and the Monarch's depth keys
+    // step through stepSliceDepth instead, so their "deeper" matches Arrow Up.
     if (isXyzMode()) return cutPercent(currentCutAxis());
     return viewerState.currentSliceDepth;
 }
@@ -3423,7 +3452,7 @@ function selectViewFromCube(viewToken) {
     pendingInputSource = 'witmotion';
     if (isXyzMode()) {
         if (viewToken === viewerState.currentView) return;
-        showXyzView(viewToken, announceAlert, { flipped: viewToken[0] === currentCutAxis() });
+        showXyzView(viewToken, announceAlert);
         return;
     }
     updateView(viewToken);
@@ -3453,6 +3482,7 @@ window.whichCursor = whichCursor;
 window.getCurrentSliceDepth = getCurrentSliceDepth;
 window.updateSliceDepth = updateSliceDepth;
 window.announceDepthValue = announceDepthValue;
+window.stepSliceDepth = stepSliceDepth;
 
 // ---------------------------------------------------------------------------
 // Study mode API, used by static/js/study.js.
@@ -3712,7 +3742,7 @@ showViewInfoBoxCheckbox.addEventListener('change', function() {
 deeperBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
     if (isXyzMode()) {
-        stepCut(1, true);
+        stepCut(1, xyzStepPercent(true));
         return;
     }
     updateSliceDepth(viewerState.currentSliceDepth + 10, true);
@@ -3722,7 +3752,7 @@ deeperBtn.addEventListener('click', function() {
 shallowerBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
     if (isXyzMode()) {
-        stepCut(-1, true);
+        stepCut(-1, xyzStepPercent(true));
         return;
     }
     updateSliceDepth(viewerState.currentSliceDepth - 10, true);
@@ -3998,20 +4028,22 @@ document.addEventListener('keydown', function(e) {
         return;
     }
 
-    // In XYZ mode the cut keys move along the axis, and Up is always toward +axis,
-    // whichever side it is seen from, so they read like the coordinates.
-    if (isXyzMode()) {
-        const xyzCutKeys = {
-            arrowup: () => stepCut(1, false),
-            arrowdown: () => stepCut(-1, false),
-            pageup: () => stepCut(1, true),
-            pagedown: () => stepCut(-1, true),
+    // The depth keys go deeper or shallower in both modes (the cases below). The
+    // one exception is the depth slider itself while it has focus: in XYZ mode it
+    // shows the position along the axis, and a focused slider's Up has to raise
+    // the value it reports (the ARIA slider pattern), so there they step along it.
+    if (isXyzMode() && target === sliceSlider) {
+        const sliderKeys = {
+            arrowup: () => stepCut(1, xyzStepPercent(false)),
+            arrowdown: () => stepCut(-1, xyzStepPercent(false)),
+            pageup: () => stepCut(1, xyzStepPercent(true)),
+            pagedown: () => stepCut(-1, xyzStepPercent(true)),
             home: () => setCutPosition(currentCutAxis(), 0),
             end: () => setCutPosition(currentCutAxis(), 1),
         };
-        if (xyzCutKeys[normalizedKey]) {
+        if (sliderKeys[normalizedKey]) {
             e.preventDefault();
-            xyzCutKeys[normalizedKey]();
+            sliderKeys[normalizedKey]();
             return;
         }
     }
@@ -4033,57 +4065,29 @@ document.addEventListener('keydown', function(e) {
             announceOrigin();
             break;
 
+        // The depth keys, the same in both modes (#235 review): Up and Page Up go
+        // deeper, away from the reader; Home is the surface nearest them, End the
+        // far side.
         case 'home':
         case 'end':
-            // Turn mode: the surface nearest you, or the far side.
             e.preventDefault();
-            {
-                const previousDepth = viewerState.currentSliceDepth;
-                const nextDepth = normalizedKey === 'home' ? 0 : 100;
-                updateSliceDepth(nextDepth, false);
-                announceDepthValue(nextDepth, previousDepth);
-            }
+            goToSliceEnd(normalizedKey === 'end');
             break;
-
         case 'arrowup':
-            // Go deeper (increase depth by 1%)
             e.preventDefault();
-            {
-                const previousDepth = viewerState.currentSliceDepth;
-                const nextDepth = Math.min(100, viewerState.currentSliceDepth + 1);
-                updateSliceDepth(nextDepth, false);
-                announceDepthValue(nextDepth, previousDepth);
-            }
+            stepSliceDepth(1);
             break;
         case 'arrowdown':
-            // Go shallower (decrease depth by 1%)
             e.preventDefault();
-            {
-                const previousDepth = viewerState.currentSliceDepth;
-                const nextDepth = Math.max(0, viewerState.currentSliceDepth - 1);
-                updateSliceDepth(nextDepth, false);
-                announceDepthValue(nextDepth, previousDepth);
-            }
+            stepSliceDepth(-1);
             break;
         case 'pageup':
-            // Go deeper (increase depth by 10%)
             e.preventDefault();
-            {
-                const previousDeeperDepth = viewerState.currentSliceDepth;
-                const newDeeperDepth = Math.min(100, viewerState.currentSliceDepth + 10);
-                updateSliceDepth(newDeeperDepth, false);
-                announceDepthValue(newDeeperDepth, previousDeeperDepth);
-            }
+            stepSliceDepth(10);
             break;
         case 'pagedown':
-            // Go shallower (decrease depth by 10%)
             e.preventDefault();
-            {
-                const previousShallowerDepth = viewerState.currentSliceDepth;
-                const newShallowerDepth = Math.max(0, viewerState.currentSliceDepth - 10);
-                updateSliceDepth(newShallowerDepth, false);
-                announceDepthValue(newShallowerDepth, previousShallowerDepth);
-            }
+            stepSliceDepth(-10);
             break;
 
         case '2':

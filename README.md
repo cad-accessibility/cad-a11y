@@ -79,9 +79,12 @@ key: a key from the other mode only says which mode it belongs to.
   the other side. Every view is one of OpenSCAD's standard views: Z is Top
   (X to the right, Y toward the top edge) and Z again Bottom, Y is Front and Y
   again Back, X is Right and X again Left. A third press comes back, so the
-  other side is always two presses of one key. Arrow Up/Down move the cut 1% of the object along that
-  axis and Page Up/Down 10%, always toward the axis's higher values for Up; Home
-  and End go to the object's lowest and highest coordinate. "," says where the
+  other side is always two presses of one key, and each press says the axis,
+  the side and how the other two run ("Y from the front, X right, Z up"). The
+  depth keys work as in Turn mode: Arrow Up/Down go 1% deeper or shallower,
+  Page Up/Down 10%, Home to the surface nearest you and End to the far side. The
+  cut is read out as its position along the axis, so seen from above, the right
+  or the back, going deeper lowers the number. "," says where the
   origin is. On the display, the axis letters sit at the edges they increase
   toward and a small hollow square marks the origin; both can be turned off in
   Settings.

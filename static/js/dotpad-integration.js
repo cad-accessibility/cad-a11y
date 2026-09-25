@@ -312,20 +312,15 @@ function onKey(device, currKeyCode, keyMsg) {
     const letter = byte6ToLetter(byte6);
     const cursorState = window.whichCursor ? window.whichCursor() : 'none';
     const n = 10; // TODO: make this global and dynamic
-    if (
-        typeof window.getCurrentSliceDepth !== 'function' ||
-        typeof window.updateSliceDepth !== 'function' ||
-        typeof window.announceDepthValue !== 'function'
-    ) {
+    if (typeof window.stepSliceDepth !== 'function') {
         console.warn('DotPad depth controls are unavailable because viewer depth helpers are not exposed.');
         return;
     }
 
     // X, Y and Z spelled as braille chords pick the axis in XYZ mode (#185):
-    // dots 1346, 13456 and 1356, the letters themselves, from the home view. The
-    // keyboard reaches the other side with Shift; these chords use all six keys,
-    // so there is nothing left to hold, and the chord for the axis already
-    // showing flips it instead. Each chord contains shorter ones that mean
+    // dots 1346, 13456 and 1356, the letters themselves, from the home view, and
+    // the chord for the axis already showing flips it to the other side, as the
+    // same letter pressed again does on the keyboard. Each chord contains shorter ones that mean
     // something else (dot 1 alone is shallower), so this relies on the SDK
     // reporting a chord once it is complete, as the "v" chord below already
     // does. If a sub-chord is seen firing first, decode on key release instead
@@ -344,20 +339,16 @@ function onKey(device, currKeyCode, keyMsg) {
         }
         return;
     }
+    // Dots 1 and 4 step the depth like Arrow Down and Arrow Up, through the same
+    // function, so deeper is away from the reader in both modes (#235 review).
     if (byte6 === 0x01){
-        // Go shallower (decrease depth by 100/N)
-        const previousDepth = window.getCurrentSliceDepth();
-        const nextDepth = Math.max(0, previousDepth - 100/n); // TODO: calculate integer value
-        window.updateSliceDepth(nextDepth, false);
-        window.announceDepthValue(nextDepth, previousDepth);
+        // Go shallower by 100/N
+        window.stepSliceDepth(-100/n);
         return;
     }
     if (byte6 === 0x08){
-        // Go deeper (increase depth by 100/N)
-        const previousDepth = window.getCurrentSliceDepth();
-        const nextDepth = Math.min(100, previousDepth + 100/n); // TODO: calculate integer value
-        window.updateSliceDepth(nextDepth, false);
-        window.announceDepthValue(nextDepth, previousDepth);
+        // Go deeper by 100/N
+        window.stepSliceDepth(100/n);
         return;
     }
     if (typeof window.moveCursor != 'function') return;

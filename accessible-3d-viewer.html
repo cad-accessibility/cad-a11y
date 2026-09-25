@@ -268,7 +268,7 @@
                     aria-valuetext="50 percent depth"
                     aria-describedby="slice-help"
                 >
-                <div id="slice-help" class="help-text sr-only">In Turn mode, 0% is the surface nearest you and 100% the far side, whichever way the model is facing. Keys: Up deeper 1%, Down shallower 1%, Page Up deeper 10%, Page Down shallower 10%, Home the surface, End the far side. In XYZ mode, the cut's position along its axis, from the object's lowest coordinate to its highest; Up and Page Up always move toward the highest.</div>
+                <div id="slice-help" class="help-text sr-only">In Turn mode, 0% is the surface nearest you and 100% the far side, whichever way the model is facing. Keys: Up deeper 1%, Down shallower 1%, Page Up deeper 10%, Page Down shallower 10%, Home the surface, End the far side. In XYZ mode, the cut's position along its axis, from the object's lowest coordinate to its highest; on this slider Up and Page Up move toward the highest, while elsewhere they go deeper.</div>
                 <div class="button-group">
                     <button type="button" id="deeper-btn" aria-describedby="deeper-help">Deeper: 50%</button>
                     <button type="button" id="shallower-btn" aria-describedby="shallower-help">Shallower: 50%</button>
@@ -542,15 +542,6 @@
                 <li><kbd>J</kbd> Yaw left (90°): rotate around vertical axis. </li>
                 <li><kbd>L</kbd> Yaw right (90°): rotate around vertical axis</li>
             </ul>
-            <h3>Depth (Turn mode)</h3>
-            <ul class="shortcuts-list">
-                <li><kbd>Arrow Up</kbd> Deeper 1%</li>
-                <li><kbd>Arrow Down</kbd> Shallower 1%</li>
-                <li><kbd>Page Up</kbd> Deeper 10%</li>
-                <li><kbd>Page Down</kbd> Shallower 10%</li>
-                <li><kbd>Home</kbd> The surface nearest you</li>
-                <li><kbd>End</kbd> The far side</li>
-            </ul>
             <p class="help-text">Other axis mode: XYZ, which cuts along X, Y or Z as in OpenSCAD. Change it in Settings.</p>
         </div>
         <div id="xyz-shortcuts-section" hidden>
@@ -559,17 +550,19 @@
                 <li><kbd>X</kbd>, <kbd>Y</kbd>, <kbd>Z</kbd> Cut along that axis: X seen from the right, Y from the front, Z from above</li>
                 <li><kbd>X</kbd>, <kbd>Y</kbd> or <kbd>Z</kbd> again The same axis from the other side: the left, the back, or below</li>
             </ul>
-            <h3>Cut (XYZ mode)</h3>
-            <ul class="shortcuts-list">
-                <li><kbd>Arrow Up</kbd> 1% toward the object's highest coordinate on this axis</li>
-                <li><kbd>Arrow Down</kbd> 1% toward its lowest</li>
-                <li><kbd>Page Up</kbd> 10% toward the highest</li>
-                <li><kbd>Page Down</kbd> 10% toward the lowest</li>
-                <li><kbd>Home</kbd> The object's lowest coordinate on this axis</li>
-                <li><kbd>End</kbd> Its highest</li>
-            </ul>
             <p class="help-text">Other axis mode: Turn, which turns the model with pitch, roll and yaw. Change it in Settings.</p>
         </div>
+
+        <h3>Depth</h3>
+        <ul class="shortcuts-list">
+            <li><kbd>Arrow Up</kbd> Deeper 1%</li>
+            <li><kbd>Arrow Down</kbd> Shallower 1%</li>
+            <li><kbd>Page Up</kbd> Deeper 10%</li>
+            <li><kbd>Page Down</kbd> Shallower 10%</li>
+            <li><kbd>Home</kbd> The surface nearest you</li>
+            <li><kbd>End</kbd> The far side</li>
+        </ul>
+        <p class="help-text">The same in both axis modes. In XYZ mode the cut is read out as its position along the axis, so seen from above, the right or the back, going deeper lowers the number.</p>
 
         <h3>Zoom</h3>
         <ul class="shortcuts-list">

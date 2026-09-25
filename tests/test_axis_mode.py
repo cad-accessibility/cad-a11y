@@ -400,14 +400,14 @@ def test_the_cube_goes_through_the_viewer_and_waits_for_a_settled_face():
 
 
 def test_the_hardware_depth_inputs_use_the_axis_scale_in_xyz_mode():
-    """The DotPad depth dots, the Monarch depth keys and the Trinkey slider all go
-    through window.getCurrentSliceDepth and window.updateSliceDepth. In XYZ mode
-    those have to speak the position along the cut axis, the number the on-screen
-    slider and the cut keys use.
+    """The Trinkey slider sets depth through window.updateSliceDepth, and
+    window.getCurrentSliceDepth reads it back. In XYZ mode those have to speak the
+    position along the cut axis, the number the on-screen slider shows.
 
     Left on Turn mode's depth-from-the-reader they ran the other way: from the
-    default views the slider pushed to 30 put the plane at 1 - 0.30, the readout
-    jumped to 70, and the DotPad's "shallower" dot raised Z.
+    default views the slider pushed to 30 put the plane at 1 - 0.30 and the
+    readout jumped to 70. (The DotPad's and the Monarch's depth keys step through
+    stepSliceDepth instead; see the next test.)
     """
     js = _js()
     setter = js[js.index("function updateSliceDepth("):]
@@ -447,3 +447,96 @@ def test_asking_where_the_origin_is_works_in_both_modes():
         "Turn mode is not working in an axis, so it should not be given a "
         "coordinate along one"
     )
+
+
+def _function(name: str) -> str:
+    js = _js()
+    body = js[js.index(f"function {name}("):]
+    return body[:body.index("\n}\n")]
+
+
+def test_the_depth_keys_move_the_cut_the_same_way_in_both_modes():
+    """Jen's review asked for a given key to move the cut the same way in both
+    modes. XYZ mode had its own table sending Up toward +axis, which from Top,
+    Right and Back is toward the reader, the opposite of Turn mode's Up. Now there
+    is one set of cases, and they go through functions that handle both modes."""
+    handler = _code_only(_keydown_handler())
+    assert "xyzCutKeys" not in handler, "XYZ mode still has its own depth-key table"
+    compact = re.sub(r"\s+", "", handler)
+    for key, call in (
+        ("arrowup", "stepSliceDepth(1);"),
+        ("arrowdown", "stepSliceDepth(-1);"),
+        ("pageup", "stepSliceDepth(10);"),
+        ("pagedown", "stepSliceDepth(-10);"),
+    ):
+        case = compact[compact.index(f"case'{key}':"):]
+        case = case[:case.index("break;")]
+        assert call in case, f"{key} does not step the depth through stepSliceDepth"
+    ends = compact[compact.index("case'home':"):]
+    ends = ends[:ends.index("break;")]
+    assert "goToSliceEnd(normalizedKey==='end');" in ends
+
+
+def test_deeper_is_away_from_the_reader_in_xyz_mode():
+    """The reader is on the +depth side of the cut axis, so deeper runs toward
+    -sign. From Top, Right and Back the reader is on the + side, so deeper lowers
+    the number read out; that is what the help and the README say."""
+    step = _code_only(_function("stepSliceDepth"))
+    xyz = step[step.index("if (isXyzMode())"):]
+    xyz = xyz[:xyz.index("return stepCut(")+60]
+    assert "activeSliceAxis()" in xyz
+    assert "-sign * Math.sign(delta)" in xyz
+
+    lowers = {t for t, b in _view_basis().items() if b["depth"].sum() > 0}
+    assert lowers == {"z+", "x-", "y+"}, "the views where deeper lowers the number"
+    names = {"z+": "above", "x-": "the right", "y+": "the back"}
+    js = _js()
+    assert all(names[t] == re.search(rf"'{re.escape(t)}': '([^']+)'", js[js.index("const VIEW_SIDES = {"):]).group(1)
+               for t in lowers)
+    help_text = _html()[_html().index("<h3>Depth</h3>"):]
+    assert "seen from above, the right or the back, going deeper lowers the number" in help_text
+
+    ends = _code_only(_function("goToSliceEnd"))
+    assert "const nearest = sign > 0 ? 1 : 0;" in ends, "Home must be the surface nearest the reader"
+
+
+def test_the_device_depth_keys_step_like_the_arrow_keys():
+    """The DotPad's depth dots and the Monarch's depth keys used to add their step
+    to the axis position, so their "deeper" went toward +axis. They now call the
+    same function as Arrow Up and Down."""
+    dotpad = _code_only((ROOT / "static" / "js" / "dotpad-integration.js").read_text(encoding="utf-8"))
+    monarch = _code_only((ROOT / "static" / "js" / "monarch-hid.js").read_text(encoding="utf-8"))
+    assert "window.stepSliceDepth(-100/n)" in dotpad and "window.stepSliceDepth(100/n)" in dotpad
+    assert "window.stepSliceDepth?.(command.delta)" in monarch
+    for source in (dotpad, monarch):
+        assert "getCurrentSliceDepth" not in source
+
+
+def test_a_focused_depth_slider_keeps_the_slider_pattern():
+    """The slider shows the position along the axis in XYZ mode, and a focused
+    slider's Up has to raise the value it reports. So while it has focus the keys
+    step along the axis; everywhere else they go deeper."""
+    handler = _code_only(_keydown_handler())
+    block = handler[handler.index("if (isXyzMode() && target === sliceSlider)"):]
+    block = block[:block.index("switch(normalizedKey)")]
+    assert "arrowup: () => stepCut(1," in block
+    assert "home: () => setCutPosition(currentCutAxis(), 0)" in block
+    assert handler.index("target === sliceSlider") < handler.index("switch(normalizedKey)")
+
+
+def test_an_axis_key_says_the_axis_the_side_and_how_the_other_two_run():
+    """Jen's review asked for a much shorter announcement: the axis and side, then
+    the other two axes, "Y from the front, X right, Z up", and pressing Y again
+    "Y from the back, X left, Z up". The side is named rather than said as plus or
+    minus: for X the tokens name the side opposite the reader's, so "plus" could
+    not mean one thing on every axis."""
+    show = _code_only(_function("showXyzView"))
+    assert "cutPositionPhrase" not in show, "the axis key still reads the cut position out"
+    assert "now increases" not in show
+    assert "${letter} ${side.short}, ${axes.speech}." in show
+    assert "displayAxesPhrase(currentBasis(), false)" in show
+
+    axes = _code_only(_function("displayAxesPhrase"))
+    assert "${axisLetter(right.axis)} ${rightWord}, ${axisLetter(up.axis)} ${upWord}" in axes
+    side = _code_only(_function("sideOfView"))
+    assert "short: `from ${side}`" in side

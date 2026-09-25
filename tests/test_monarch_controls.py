@@ -184,11 +184,11 @@ def test_monarch_does_not_claim_the_tactile_display_dimensions():
 
 
 def test_depth_and_cursor_go_through_the_viewer_helpers():
+    """Depth steps through stepSliceDepth, the function Arrow Up and Down use, so
+    deeper means away from the reader in both axis modes (#235 review)."""
     source = _source()
     for helper in (
-        "window.getCurrentSliceDepth?.()",
-        "window.updateSliceDepth?.(",
-        "window.announceDepthValue?.(",
+        "window.stepSliceDepth?.(command.delta)",
         "window.whichCursor?.()",
         "window.moveCursor?.(",
         "window.cycleCursorState?.(",

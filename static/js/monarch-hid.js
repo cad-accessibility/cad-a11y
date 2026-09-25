@@ -146,12 +146,9 @@
         }
 
         if (command.type === 'depth') {
-            const previousDepth = window.getCurrentSliceDepth?.();
-            if (previousDepth == null) return;
-
-            const nextDepth = Math.max(0, Math.min(100, previousDepth + command.delta));
-            window.updateSliceDepth?.(nextDepth, false);
-            window.announceDepthValue?.(nextDepth, previousDepth);
+            // The same step as Arrow Up and Down, so deeper is away from the
+            // reader in both modes (#235 review).
+            window.stepSliceDepth?.(command.delta);
             return;
         }
 
