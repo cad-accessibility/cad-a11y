@@ -43,7 +43,7 @@ from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
 
-from . import db, recording, study, study_db, study_protocol
+from . import api, db, recording, study, study_db, study_protocol
 from .braille_display import (
     _pixels_to_braille_cells,
     _pixels_to_braille_cells_dotpad,
@@ -62,6 +62,8 @@ CORS(app)
 # Cap request bodies (uploads and /ingest); default 100 MB. Oversized requests
 # are rejected with 413 before the handler runs.
 app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_UPLOAD_MB", "100") or "100") * 1024 * 1024
+# /api/v1, where tools will send models (#236), and its one error shape.
+api.install(app)
 
 
 if getattr(sys, "frozen", False):
@@ -1565,32 +1567,17 @@ def ingest_test():
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify(
-        {
-            "status": "running",
-            "message": "Accessible 3D Viewer server",
-            "endpoints": {
-                "/render": "POST - Render CAD view with parameters",
-                "/render/fit-view": "POST - Render with the model framed to fit the display",
-                "/models": "GET - List available models",
-                "/upload": "POST - Upload an STL or STEP model file",
-                "/ingest": "POST - Ingest an STL from an external tool; optional first_name, returns a workshop_url + user_id",
-                "/workshop": "GET - Simplified viewer; ?model= pre-loads, ?name= resolves a participant's first name",
-                "/ingest-test": "GET - Static harness to send the sample STL to /ingest from a browser",
-                "/get_data": "GET - Optional cube/slider state",
-                "/render/dotpad-hex": "POST - Get render as DotPad hex string for Web SDK",
-                "/viewer": "GET - Serve the HTML viewer (required for DotPad Web SDK)",
-                "/study": "GET - Participant view for a study session; models load per protocol step",
-                "/study/control": "GET - Experimenter control panel (requires ?token=)",
-                "/session/me": "GET - Return current session metadata",
-                "/session/identify": "POST - Store email/consent for current session",
-                "/session/models": "GET - List uploaded models for current session",
-                "/models/<filename>": "DELETE - Delete an uploaded model",
-                "/events/track": "POST - Record a client-side interaction event",
-                "/health": "GET - Deployment self-check: storage layout, writability, database",
-            },
-        }
-    )
+    """The site's address opens the viewer (#232).
+
+    It used to answer with a hand-written list of endpoints, so the first thing
+    anyone following a link saw, and heard read out a line at a time, was raw
+    JSON naming routes the release keeps out of sight. The list had also drifted
+    from the routes that exist. Maintainers can list every route with
+    `flask --app app.server routes`; the API tools integrate with is described
+    at /api/v1/openapi.json.
+    """
+    query = request.query_string.decode("utf-8", "replace")
+    return redirect("/viewer" + (f"?{query}" if query else ""), code=302)
 
 
 @app.route("/health", methods=["GET"])

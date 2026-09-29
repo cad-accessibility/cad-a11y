@@ -1,0 +1,36 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "CAD A11y integration API",
+    "version": "1",
+    "description": "For tools that send models to CAD A11y. There are no routes yet: tools send models to /ingest until this API replaces it. Every error under /api/v1 is answered with the Error schema below."
+  },
+  "servers": [
+    {
+      "url": "/api/v1"
+    }
+  ],
+  "paths": {},
+  "components": {
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["status", "code", "message"],
+        "properties": {
+          "status": {
+            "const": "error"
+          },
+          "code": {
+            "type": "string",
+            "description": "Stable and machine-readable, named after the HTTP status.",
+            "examples": ["not_found", "method_not_allowed", "request_entity_too_large"]
+          },
+          "message": {
+            "type": "string",
+            "description": "For a person to read. The wording may change."
+          }
+        }
+      }
+    }
+  }
+}
