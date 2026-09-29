@@ -19,6 +19,17 @@ Thanks for your interest in improving CAD A11y.
 
 Code changes in `app/`, `src/`, and `static/` require a rebuild (`docker compose up --build`).
 
+## Listing the server's routes
+
+Flask prints every route the server answers, with its methods, straight from its routing table:
+
+```bash
+docker compose exec app conda run -n cad-a11y python -m flask --app app.server routes
+```
+
+Most of these belong to the viewer and change with it. The API other tools integrate with is described
+separately, at `/api/v1/openapi.json`.
+
 ## Branching
 
 Create a short-lived branch from `master` named with a Conventional Commit prefix:

@@ -1515,6 +1515,22 @@ function updateGenericDeviceConnectUI() {
     }
 }
 
+// A browser with neither Web HID nor Web Bluetooth cannot connect either
+// display, so say so before anyone tries, as part of what Connect is described
+// by (#232). Asked of the browser rather than read from its name, so a
+// Chromium browser that has the APIs is not told to switch.
+function noteWhenThisBrowserCannotConnect() {
+    const note = document.getElementById('browser-support-note');
+    if (!note || !deviceConnectBtn) return;
+    if ('hid' in navigator || 'bluetooth' in navigator) return;
+    note.hidden = false;
+    const describedBy = (deviceConnectBtn.getAttribute('aria-describedby') || '').split(/\s+/);
+    if (!describedBy.includes(note.id)) {
+        deviceConnectBtn.setAttribute('aria-describedby', [note.id, ...describedBy].join(' ').trim());
+    }
+}
+noteWhenThisBrowserCannotConnect();
+
 if (deviceConnectBtn) {
     deviceConnectBtn.addEventListener('click', () => {
         // Calls the real connect logic directly (exposed by monarch-hid.js /
