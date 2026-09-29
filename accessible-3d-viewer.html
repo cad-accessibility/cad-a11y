@@ -856,9 +856,6 @@
                             main.setAttribute('tabindex', '-1');
                             main.focus();
                         }
-                        // Email may link this session to prior uploads on other devices;
-                        // refresh the model list so those files appear immediately.
-                        initSessionModels();
                         return;
                     }
                     return res.json().catch(function () { return {}; }).then(function (body) {

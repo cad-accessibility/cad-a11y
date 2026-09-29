@@ -131,6 +131,9 @@ class NullRecorder:
     def identify_session(self, *_args: Any, **_kwargs: Any) -> None:
         self._seen()
 
+    def enroll_workshop_participant(self, *_args: Any, **_kwargs: Any) -> None:
+        self._seen()
+
     def register_model(self, *_args: Any, **_kwargs: Any) -> None:
         self._seen()
 
@@ -190,11 +193,12 @@ class PersistentRecorder:
     def touch_session(self, session_id: str) -> None:
         self._analytics.upsert_session(session_id)
 
-    def identify_session(
-        self, session_id: str, email: str | None, *, consent: bool, is_workshop: bool = False
-    ) -> None:
+    def identify_session(self, session_id: str, email: str | None, *, consent: bool) -> None:
+        self._analytics.save_session_email(session_id, email, consent_given=consent)
+
+    def enroll_workshop_participant(self, session_id: str, first_name: str) -> None:
         self._analytics.save_session_identifier(
-            session_id, email, consent_given=consent, is_workshop=is_workshop
+            session_id, first_name, consent_given=False, is_workshop=True
         )
 
     def register_model(

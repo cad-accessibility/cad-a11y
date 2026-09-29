@@ -91,10 +91,64 @@ class TestDbSession:
     def test_save_identifier(self, tmp_db):
         sid = "aaaaaaaa-0000-0000-0000-000000000003"
         db_module.upsert_session(sid)
-        db_module.save_session_identifier(sid, "user@example.com", True)
+        db_module.save_session_identifier(sid, "alex", False, is_workshop=True)
         row = db_module.get_session(sid)
-        assert row["identifier"] == "user@example.com"
+        assert row["identifier"] == "alex"
+        assert row["is_workshop"] == 1
+        assert row["email"] is None
+
+    def test_save_email_leaves_the_identifier_alone(self, tmp_db):
+        sid = "aaaaaaaa-0000-0000-0000-000000000004"
+        db_module.upsert_session(sid)
+        db_module.save_session_email(sid, "user@example.com", True)
+        row = db_module.get_session(sid)
+        assert row["email"] == "user@example.com"
+        assert row["identifier"] is None
         assert row["consent_given"] == 1
+
+    def test_emails_already_in_identifier_move_to_email(self, tmp_db):
+        """Before #237 a consent-dialog email was stored in identifier, alongside
+        workshop first names. Opening the database moves each one across."""
+        import sqlite3
+        conn = sqlite3.connect(str(tmp_db))
+        conn.execute(
+            "INSERT INTO sessions (id, identifier, consent_given, is_workshop)"
+            " VALUES ('viewer', 'old@example.com', 1, 0), ('workshop', 'zoe', 0, 1)"
+        )
+        conn.commit()
+        conn.close()
+
+        db_module._local.__dict__.clear()
+        db_module.init_db()
+
+        viewer = db_module.get_session("viewer")
+        assert viewer["email"] == "old@example.com"
+        assert viewer["identifier"] is None
+        workshop = db_module.get_session("workshop")
+        assert workshop["identifier"] == "zoe"
+        assert workshop["email"] is None
+
+    def test_an_older_database_gains_the_email_column(self, tmp_path, monkeypatch):
+        import sqlite3
+        db_path = tmp_path / "old.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, identifier TEXT, consent_given INTEGER,"
+            " is_workshop INTEGER DEFAULT 0, created_at DATETIME, last_seen_at DATETIME)"
+        )
+        conn.execute("INSERT INTO sessions (id, identifier, consent_given) VALUES ('s', 'x@y.org', 1)")
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(db_module, "DB_PATH", db_path)
+        db_module._local.__dict__.clear()
+        try:
+            db_module.init_db()
+            row = db_module.get_session("s")
+        finally:
+            db_module._local.__dict__.clear()
+        assert row["email"] == "x@y.org"
+        assert row["identifier"] is None
 
     def test_get_session_none_for_unknown(self, tmp_db):
         assert db_module.get_session("does-not-exist") is None
@@ -252,13 +306,14 @@ class TestSessionIdentify:
         )
         assert resp.status_code == 200
         me = client.get("/session/me").get_json()
-        assert me["identifier"] == "hello@example.com"
+        assert me["email"] == "hello@example.com"
+        assert me["identifier"] is None  # the email is a contact address, not a key
         assert me["consent_given"] == 1
 
     def test_decline_stores_no_email(self, client):
         client.post("/session/identify", json={"email": None, "consent": False})
         me = client.get("/session/me").get_json()
-        assert me["identifier"] is None
+        assert me["email"] is None
         assert me["consent_given"] == 0
 
     def test_rejects_invalid_email(self, client):
@@ -511,11 +566,13 @@ class TestIngestWorkshop:
 
 
 # ---------------------------------------------------------------------------
-# Cross-session model aggregation by email identifier
+# The same email on two sessions links nothing (#237)
 # ---------------------------------------------------------------------------
 
-class TestCrossSessionModels:
-    """A user who provides the same email on a second device sees all their uploads."""
+class TestEmailLinksNoSessions:
+    """Typing an email used to list, and let you delete, the uploads of every
+    session that had typed the same address, with nothing to show the address
+    was yours. It is a contact address now and nothing reads it."""
 
     def _upload(self, client, filename="test.stl"):
         return client.post(
@@ -524,42 +581,31 @@ class TestCrossSessionModels:
             content_type="multipart/form-data",
         )
 
-    def test_second_session_sees_first_session_models(self, tmp_db):
+    def test_a_second_session_with_the_same_email_sees_nothing(self, tmp_db):
         flask_app.config["TESTING"] = True
 
-        # Session A: identify with email first (creates the session), then upload.
         with flask_app.test_client() as client_a:
             client_a.post("/session/identify", json={"email": "user@example.com", "consent": True})
             upload_resp = self._upload(client_a, "model_a.stl")
             assert upload_resp.get_json()["status"] == "success"
 
-        # Session B: fresh client (different cookie), same email.
         with flask_app.test_client() as client_b:
             client_b.post("/session/identify", json={"email": "user@example.com", "consent": True})
-            resp = client_b.get("/session/models")
-            models = resp.get_json()["models"]
-            filenames = [m["filename"] for m in models]
-            assert any("model_a" in f for f in filenames), (
-                f"Expected model_a in cross-session list, got {filenames}"
-            )
+            assert client_b.get("/session/models").get_json()["models"] == []
 
-    def test_second_session_can_delete_first_session_model(self, tmp_db):
+    def test_a_second_session_with_the_same_email_cannot_delete(self, tmp_db):
         flask_app.config["TESTING"] = True
-        filename_a = None
 
         with flask_app.test_client() as client_a:
             client_a.post("/session/identify", json={"email": "user@example.com", "consent": True})
-            upload_resp = self._upload(client_a, "shared.stl")
-            filename_a = upload_resp.get_json()["filename"]
+            filename_a = self._upload(client_a, "shared.stl").get_json()["filename"]
 
-        with flask_app.test_client() as client_b:
-            client_b.post("/session/identify", json={"email": "user@example.com", "consent": True})
-            del_resp = client_b.delete(f"/models/{filename_a}")
-            assert del_resp.status_code == 200
+            with flask_app.test_client() as client_b:
+                client_b.post("/session/identify", json={"email": "user@example.com", "consent": True})
+                assert client_b.delete(f"/models/{filename_a}").status_code == 404
 
-            # Model should no longer appear for either session.
-            models_b = client_b.get("/session/models").get_json()["models"]
-            assert all(m["filename"] != filename_a for m in models_b)
+            models_a = client_a.get("/session/models").get_json()["models"]
+            assert [m["filename"] for m in models_a] == [filename_a]
 
     def test_anonymous_session_cannot_see_identified_session_models(self, tmp_db):
         flask_app.config["TESTING"] = True

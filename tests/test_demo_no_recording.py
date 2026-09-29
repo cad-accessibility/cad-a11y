@@ -439,6 +439,7 @@ STUDY_SOURCE = (ROOT / "app" / "study.py").read_text(encoding="utf-8")
         "db.record_page_event(",
         "db.upsert_session(",
         "db.save_session_identifier(",
+        "db.save_session_email(",
         "db.register_model(",
         "db.mark_model_deleted(",
     ],
