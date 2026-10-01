@@ -323,3 +323,46 @@ def test_footer_funded_by_row_links_to_nsf_and_create():
     hrefs = [el["href"] for el in elements if el["tag"] == "a"]
     assert "https://nsf.gov" in hrefs
     assert "https://create.uw.edu" in hrefs
+
+
+# ---------------------------------------------------------------------------
+# Feedback without a GitHub account (#223)
+# ---------------------------------------------------------------------------
+
+def _address_like(text: str) -> list[str]:
+    import re
+    return re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", text)
+
+
+def test_the_page_and_its_script_hold_no_address_a_crawler_could_harvest():
+    """The feedback address is put together in the browser, so neither the HTML
+    nor viewer.js contains it as written. The consent dialog's example address
+    is the only one in the page."""
+    html = VIEWER_HTML.read_text(encoding="utf-8")
+    assert _address_like(html) == ["you@example.com"]
+    assert _address_like(VIEWER_JS.read_text(encoding="utf-8")) == []
+
+
+def test_the_footer_and_help_dialog_have_a_place_for_the_address():
+    """Hidden until viewer.js fills them in, so nothing reads as an empty link."""
+    collector = _ElementCollector()
+    collector.feed(VIEWER_HTML.read_text(encoding="utf-8"))
+    links = [el for el in collector.elements if el["tag"] == "a" and "contact-email" in el["class"].split()]
+    assert len(links) == 2, "expected the footer's link and the help dialog's"
+    reveals = [el for el in collector.elements if "contact-email-reveal" in el["class"].split()]
+    assert reveals and all(el["hidden"] for el in reveals)
+
+
+def test_the_script_fills_in_a_link_a_screen_reader_can_read_out_of_context():
+    js = VIEWER_JS.read_text(encoding="utf-8")
+    assert "function fillInContactAddress()" in js
+    assert "\nfillInContactAddress();" in js
+    assert "mailto:" in js
+    html = VIEWER_HTML.read_text(encoding="utf-8")
+    assert 'data-label="Email feedback to"' in html
+
+
+def test_report_a_bug_says_where_it_goes():
+    html = VIEWER_HTML.read_text(encoding="utf-8")
+    assert "<span>Report a bug on GitHub</span>" in html
+    assert "<h3>Problems and feedback</h3>" in html
