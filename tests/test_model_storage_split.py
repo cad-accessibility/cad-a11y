@@ -439,6 +439,146 @@ def test_an_upload_named_in_capitals_renders_the_upload_not_the_default(client):
         client.post("/uploads/cleanup", json={"upload_session_id": tab})
 
 
+# --- A model that isn't there is refused, never replaced (#238) -------------
+
+_RENDER_BODY = {"view": "y-", "zoom": "0", "depth": 0, "renderMode": "Filled", "mode": "single",
+                "export_width": 120, "dotpad_cols": 30, "dotpad_rows": 10}
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/render", "/render/preview", "/render/dotpad-hex", "/render/export-source", "/render/fit-view"],
+)
+def test_a_model_that_isnt_there_is_refused_not_replaced(client, path):
+    """It used to be answered with the default model, so the reader explored a
+    different object while the viewer announced the one they chose."""
+    response = client.post(path, json={**_RENDER_BODY, "current_model": "no_such_model_238"})
+    assert response.status_code == 404
+    body = response.get_json()
+    assert body["code"] == "model_not_available"
+    assert "no_such_model_238" not in response.get_data(as_text=True)
+
+
+def test_asking_for_no_model_still_gets_the_default(client):
+    """How a page starts: no model chosen yet."""
+    from app import server
+
+    body = client.post("/render", json={**_RENDER_BODY, "current_model": None}).get_json()
+    assert body["model"] == server.DEFAULT_MODEL.stem
+
+
+def test_a_render_names_the_model_it_rendered(client):
+    """So the viewer's list and status bar can name what is on the display."""
+    from app import server
+
+    stem = next(p.stem for p in server.AVAILABLE_MODELS if p.stem != server.DEFAULT_MODEL.stem)
+    body = client.post("/render", json={**_RENDER_BODY, "current_model": stem}).get_json()
+    assert body["model"] == stem
+
+
+def test_a_position_past_the_end_of_the_list_is_refused(client):
+    response = client.post("/render", json={**_RENDER_BODY, "current_model": "99999"})
+    assert response.status_code == 404
+
+
+def test_slice_graph_status_reads_not_ready_for_a_model_that_isnt_there(client):
+    response = client.post("/render/status", json={"current_model": "no_such_model_238"})
+    assert response.status_code == 200
+    assert response.get_json() == {"slice_graphs_ready": False}
+
+
+def _capture_pushes(monkeypatch):
+    from app import server
+
+    pushed: list[dict] = []
+    monkeypatch.setattr(server, "_push_sse", pushed.append)
+    return pushed
+
+
+def test_open_viewers_are_told_when_the_models_change(client, monkeypatch):
+    """Without this, a list kept offering a model that had gone for up to five
+    seconds, until the next poll. The signal names nothing (#237)."""
+    pushed = _capture_pushes(monkeypatch)
+    tab = "tab-" + "c238" * 8
+    response = client.post(
+        "/upload",
+        data={"file": (io.BytesIO(b"solid x\nendsolid x\n"), "signal_238.stl"), "upload_session_id": tab},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200
+    assert {"models_changed": True} in pushed, "an upload was not signalled"
+
+    pushed.clear()
+    client.post("/uploads/cleanup", json={"upload_session_id": tab})
+    assert {"models_changed": True} in pushed, "a removal was not signalled"
+    assert all(set(message) == {"models_changed"} for message in pushed)
+
+
+def test_a_file_changed_behind_the_apps_back_is_noticed_on_the_next_poll(client, monkeypatch):
+    """/get_data is what every open viewer polls, so it is where a file added or
+    removed by an operator shows up, even when nobody is rendering."""
+    from app import server
+
+    pushed = _capture_pushes(monkeypatch)
+    stray = MODEL_DIR / "dropped_in_238.stl"
+    stray.write_bytes(b"solid x\nendsolid x\n")
+    try:
+        server._model_list_last_refresh = 0.0
+        assert "dropped_in_238" in client.get("/get_data").get_json()["model_list"]
+        assert {"models_changed": True} in pushed
+    finally:
+        stray.unlink(missing_ok=True)
+        server._model_list_last_refresh = 0.0
+        server._refresh_model_list_if_stale()
+
+
+VIEWER_JS = (ROOT / "static" / "js" / "viewer.js").read_text(encoding="utf-8")
+
+
+def _js_function(name: str) -> str:
+    import re
+
+    match = re.search(rf"function {name}\(.*?\n\}}", VIEWER_JS, re.DOTALL)
+    assert match, f"{name} not found in viewer.js"
+    return match.group(0)
+
+
+def test_the_viewer_treats_a_refusal_as_a_model_that_isnt_available():
+    """Not as a failed render: nothing was rendered, so the controls go back to
+    the model on the display, and the reader is told the one they chose isn't
+    available."""
+    assert "body.code === 'model_not_available'" in VIEWER_JS
+    assert "handleModelNotAvailable(state.current_model, activeModelLoadTask)" in VIEWER_JS
+    handler = _js_function("handleModelNotAvailable")
+    assert "showModelInControls(lastShownModel)" in handler
+    assert "announceModelUnavailable(missing)" in handler
+    assert "isn't available." in _js_function("announceModelUnavailable")
+
+
+def test_the_viewer_asks_for_its_list_as_soon_as_the_models_change():
+    state = _js_function("applyServerState")
+    assert "data.models_changed" in state
+    assert "pollServerState()" in state
+
+
+def test_the_viewer_says_so_when_the_model_on_the_display_leaves_the_list():
+    """And renders what the list now names, so a response still in flight for the
+    model that has gone cannot leave the display and the list disagreeing."""
+    update = _js_function("updateModelList")
+    assert "announceModelUnavailable(gone" in update
+    assert "modelLoadAnnouncement = null;" in update
+    after = update[update.index("announceModelUnavailable(gone"):]
+    assert "sendStateToServer();" in after
+
+
+def test_refreshing_the_owned_uploads_keeps_this_tabs_own():
+    """Without a cookie a tab's uploads are in no session, so rebuilding the set
+    from /session/models dropped them, and since the refresh now runs on every
+    change signal, that happened right after each upload."""
+    refresh = _js_function("initSessionModels")
+    assert "...tabUploadedModels" in refresh
+
+
 def test_the_writability_probe_is_cached(monkeypatch, tmp_path):
     """/health is unauthenticated by design and polled every 30s, and each probe
     writes and unlinks a file. Repeated calls must not repeatedly touch disk."""

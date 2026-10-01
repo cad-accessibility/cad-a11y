@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Fixed
 *   A model whose file extension is in capitals, such as `MUG.STL`, opens. It used to be accepted and saved, and then never found, so the viewer announced the upload and showed the default model instead without saying so. Several CAD tools export `.STL` in capitals by default.
+*   The viewer no longer shows a different model from the one you chose. A model that can't be shown, because it has gone or can't be opened, is refused: the viewer says it isn't available and stays on the model you were exploring. It used to show the default model instead, and announce the one you chose as loaded.
+*   The model list keeps up. When a model is uploaded or removed, in this window or another, every open viewer updates its list straight away instead of up to five seconds later. If the model on the display is removed, the viewer says so, and says which model it shows instead.
 
 ### 2026-08-19
 

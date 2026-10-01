@@ -528,7 +528,12 @@ _MODEL_LIST_REFRESH_INTERVAL = 2.0  # seconds
 
 
 def _refresh_model_list_if_stale() -> None:
-    """Refresh AVAILABLE_MODELS/MODEL_NAME_LIST from disk at most every 2 s."""
+    """Refresh AVAILABLE_MODELS/MODEL_NAME_LIST from disk at most every 2 s.
+
+    A file added or removed behind the app's back, by an operator or a cleanup
+    script, shows up here, so open viewers are told the same way they are for an
+    upload or a delete.
+    """
     global AVAILABLE_MODELS, MODEL_NAME_LIST, _model_list_last_refresh
     now = time.monotonic()
     if now - _model_list_last_refresh < _MODEL_LIST_REFRESH_INTERVAL:
@@ -536,9 +541,40 @@ def _refresh_model_list_if_stale() -> None:
     with models_lock:
         if now - _model_list_last_refresh < _MODEL_LIST_REFRESH_INTERVAL:
             return  # another thread already refreshed
+        before = AVAILABLE_MODELS
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
         _model_list_last_refresh = time.monotonic()
+    if AVAILABLE_MODELS != before:
+        _announce_models_changed()
+
+
+def _announce_models_changed() -> None:
+    """Tell every open viewer that the set of models changed, so each asks for
+    its list now instead of at its next poll, up to five seconds later. A list
+    that still offers a model that has gone is how someone ends up choosing it
+    (#238).
+
+    It names nothing. What a viewer may see is for that viewer to ask.
+    """
+    _push_sse({"models_changed": True})
+
+
+class ModelNotAvailable(LookupError):
+    """A request named a model this server cannot show it."""
+
+
+@app.errorhandler(ModelNotAvailable)
+def _model_not_available(_error: ModelNotAvailable):
+    """Refused, in the same words whatever the reason, and without repeating the
+    name back. The viewer knows which model it asked for."""
+    return jsonify(
+        {
+            "status": "error",
+            "code": "model_not_available",
+            "message": "That model isn't available.",
+        }
+    ), 404
 
 
 def _resolve_model_stem(raw_value: Any) -> str:
@@ -550,9 +586,12 @@ def _resolve_model_stem(raw_value: Any) -> str:
     started rendering somebody else's model. This is the crossover the workshop
     reported.
 
-    A name does not renumber. An unknown one falls back to the default model,
-    never to whatever another window happens to be looking at, which is what the
-    process-wide "current model" used to supply.
+    A name does not renumber. One that names no model is refused with
+    ModelNotAvailable, never answered with another model. It used to fall back
+    to the default, so a model that had gone, or a name the server could not
+    find, put a different object under the reader's fingers while the viewer
+    went on announcing the one they chose (#238). Asking for no model at all
+    still gets the default: that is how a page starts.
 
     Numeric values are still accepted, so a browser holding an older viewer.js
     keeps working until it reloads.
@@ -573,10 +612,10 @@ def _resolve_model_stem(raw_value: Any) -> str:
     try:
         index = int(text)
     except ValueError:
-        return DEFAULT_MODEL.stem
+        raise ModelNotAvailable(text) from None
     if 0 <= index < len(AVAILABLE_MODELS):
         return AVAILABLE_MODELS[index].stem
-    return DEFAULT_MODEL.stem
+    raise ModelNotAvailable(text)
 
 
 def _path_for_stem(model_stem: str) -> Path:
@@ -1303,6 +1342,9 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
         "status": "success",
         "image_base64": _img_to_base64_png(preview_payload),
         "image_shape": list(preview_payload.shape),
+        # Which model this is, so the viewer's list and status bar can always
+        # name the model actually on the display.
+        "model": model_stem,
         "model_list": MODEL_NAME_LIST,
         # Where this render ended up looking, so the window that asked can send
         # it back next time. This is what keeps a pan inside the window that
@@ -1741,6 +1783,8 @@ def render_view():
         if cacheable:
             _set_quantized_cached_response(quantized_cache_key, response)
         return jsonify(response), 200
+    except ModelNotAvailable:
+        raise  # answered by _model_not_available: a 404, not a failed render
     except Exception as error:
         _log(f"Error rendering: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
@@ -1769,7 +1813,10 @@ def render_status():
     yet — "not ready" is the correct answer for that case anyway.
     """
     data = request.get_json(silent=True) or {}
-    model_stem = _resolve_model_stem(data.get("model", data.get("current_model")))
+    try:
+        model_stem = _resolve_model_stem(data.get("model", data.get("current_model")))
+    except ModelNotAvailable:
+        return jsonify({"slice_graphs_ready": False}), 200
     with models_lock:
         engine = renderers_by_model.get(str(_path_for_stem(model_stem)))
     slice_graphs_ready = bool(engine is not None and getattr(engine, "_slice_graphs_ready", False))
@@ -1883,6 +1930,8 @@ def _cleanup_uploaded_models_for_session(session_id: str | None) -> dict[str, An
     with preview_payload_cache_lock:
         preview_payload_cache.clear()
 
+    if deleted:
+        _announce_models_changed()
     return {"deleted": deleted, "errors": errors}
 
 
@@ -1965,6 +2014,7 @@ def _save_and_index_stl(
     # Processed in the background, so whoever uploaded it is not also the one who
     # waits for its first render.
     enqueue_model_for_warmup(dest)
+    _announce_models_changed()
 
     with quantized_render_cache_lock:
         quantized_render_cache.clear()
@@ -2226,6 +2276,7 @@ def delete_model(filename: str):
     with preview_payload_cache_lock:
         preview_payload_cache.clear()
 
+    _announce_models_changed()
     return jsonify({"status": "success", "filename": safe_name}), 200
 
 
@@ -2308,6 +2359,9 @@ def sse_events():
 
 @app.route("/get_data", methods=["GET"])
 def get_data():
+    # Every open viewer polls this, so a file added or removed behind the app's
+    # back is noticed here even when nobody is rendering.
+    _refresh_model_list_if_stale()
     with models_lock:
         payload = {
             "status": "success",
@@ -2359,6 +2413,8 @@ def render_export_source():
             "export_height": export_height,
         }
         return jsonify(response), 200
+    except ModelNotAvailable:
+        raise  # answered by _model_not_available: a 404, not a failed render
     except Exception as error:
         _log(f"Error rendering export source: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
@@ -2395,6 +2451,8 @@ def render_preview():
                 "render_preview_shape": preview_shape,
             }
         ), 200
+    except ModelNotAvailable:
+        raise  # answered by _model_not_available: a 404, not a failed render
     except Exception as error:
         _log(f"Error rendering preview: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
@@ -2444,6 +2502,8 @@ def render_dotpad_hex():
             "dotpad_graphic_hex": hex_string,
             "cell_count": total_cells,
         }), 200
+    except ModelNotAvailable:
+        raise  # answered by _model_not_available: a 404, not a failed render
     except Exception as error:
         _log(f"Error rendering DotPad hex: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
