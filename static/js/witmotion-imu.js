@@ -236,6 +236,7 @@
         if (anglesEl)    anglesEl.textContent    = '--';
         setStatus(reason || 'Not connected.');
         if (typeof announce === 'function') announce('WitMotion IMU disconnected.');
+        window.reportDeviceConnection?.('cube', false);
     }
 
     async function connectGatt() {
@@ -269,6 +270,8 @@
         setStatus('Connected — receiving orientation…');
         disconnectBtn.disabled = false;
         if (typeof announce === 'function') announce('WitMotion IMU connected.');
+        // An interaction event as well, for the study log and the tutorial.
+        window.reportDeviceConnection?.('cube', true);
     }
 
     function onCharacteristicChanged(event) {
