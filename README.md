@@ -405,3 +405,7 @@ docker compose exec app python scripts/cleanup_ingest_models.py
 ```
 
 That reports only. Re-run with `--apply` to delete. It never touches anything shipped in `builtin_models/`, and it warns about models that share a stem, since a stem names one model to the client.
+
+## License
+
+BSD 3-Clause, in the University of Washington's wording: see [LICENSE](LICENSE). It covers this project's own code. The libraries it depends on keep their own licenses.
