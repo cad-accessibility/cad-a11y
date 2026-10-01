@@ -437,20 +437,23 @@ def _renderer_stdio_guard():
     return contextlib.nullcontext(), contextlib.nullcontext()
 
 
-# The extensions a model file can carry, compared case-insensitively. Discovery
-# below still globs a fixed set of spellings, so a file named .STL is not indexed
-# and cannot be opened; _stem_is_taken uses this set anyway, so such a file still
-# reserves its name and cannot be shadowed by an upload.
+# The extensions a model file can carry, compared case-insensitively everywhere
+# they are checked: discovery, the upload check and _stem_is_taken. Discovery
+# used to glob a fixed set of spellings, and glob matches case even on a disk
+# that ignores it, so an upload named MUG.STL passed the upload check, was saved,
+# and was never found. The viewer then asked for MUG and silently got the default
+# model (#238). Several CAD tools export .STL in capitals by default.
 MODEL_SUFFIXES = frozenset({".stl", ".step"})
 
 
 def _discover_models() -> list[Path]:
-    patterns = ("*.stl", "*.step", "*.STEP")
     models: list[Path] = []
     search_dirs = list(dict.fromkeys([MODEL_DIR, UPLOAD_DIR]))
     for model_dir in search_dirs:
-        for pattern in patterns:
-            models.extend(sorted(model_dir.glob(pattern)))
+        found = [p for p in model_dir.glob("*") if p.suffix.lower() in MODEL_SUFFIXES]
+        # STL ahead of STEP, as when each spelling was globbed in turn, so the
+        # first model found, which is the default, is the same one as before.
+        models.extend(sorted(found, key=lambda p: (p.suffix.lower() != ".stl", p)))
     # Deduplicate while preserving order.
     return list(dict.fromkeys(models))
 
@@ -1804,7 +1807,6 @@ def models_endpoint():
     ), 200
 
 
-_ALLOWED_EXTENSIONS = {".stl", ".step"}
 _MAX_UPLOAD_SESSION_ID_LEN = 128
 
 # Tracks uploaded model paths by browser-tab session id so they can be cleaned up
@@ -1914,7 +1916,7 @@ def _save_and_index_stl(
     if not filename:
         raise ValueError("No file selected")
     suffix = Path(filename).suffix.lower()
-    if suffix not in _ALLOWED_EXTENSIONS:
+    if suffix not in MODEL_SUFFIXES:
         raise ValueError(f"Unsupported file type '{suffix}'. Use .stl or .step")
 
     target_dir = MODEL_DIR if public else UPLOAD_DIR

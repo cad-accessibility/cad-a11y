@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-10-01
+
+#### Fixed
+*   A model whose file extension is in capitals, such as `MUG.STL`, opens. It used to be accepted and saved, and then never found, so the viewer announced the upload and showed the default model instead without saying so. Several CAD tools export `.STL` in capitals by default.
+
 ### 2026-08-19
 
 #### Added

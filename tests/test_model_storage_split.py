@@ -363,6 +363,82 @@ def test_stem_is_taken_ignores_files_that_are_not_models():
         note.unlink(missing_ok=True)
 
 
+# --- Extension case (#238) -------------------------------------------------
+
+
+def test_discovery_finds_a_model_whatever_the_case_of_its_extension(monkeypatch, tmp_path):
+    """Discovery globbed "*.stl", "*.step" and "*.STEP", and glob matches case
+    even on a Mac, whose disk ignores it. A file saved as MUG.STL was never found."""
+    from app import server
+
+    models, uploads = tmp_path / "models", tmp_path / "uploads"
+    models.mkdir()
+    uploads.mkdir()
+    for name in ("MUG.STL", "cup.Stl", "PART.STEP", "gear.Step", "notes.txt"):
+        (uploads / name).write_bytes(b"x")
+    monkeypatch.setattr(server, "MODEL_DIR", models)
+    monkeypatch.setattr(server, "UPLOAD_DIR", uploads)
+
+    found = {path.name for path in server._discover_models()}
+    assert found == {"MUG.STL", "cup.Stl", "PART.STEP", "gear.Step"}
+
+
+def test_discovery_still_lists_stl_ahead_of_step(monkeypatch, tmp_path):
+    """The first model found is the default, so the order that decides it stays
+    what it was when each spelling was globbed in turn."""
+    from app import server
+
+    models, uploads = tmp_path / "models", tmp_path / "uploads"
+    models.mkdir()
+    uploads.mkdir()
+    for name in ("a_first.step", "b_second.STL", "c_third.stl"):
+        (models / name).write_bytes(b"x")
+    monkeypatch.setattr(server, "MODEL_DIR", models)
+    monkeypatch.setattr(server, "UPLOAD_DIR", uploads)
+
+    names = [path.name for path in server._discover_models()]
+    assert names == ["b_second.STL", "c_third.stl", "a_first.step"]
+
+
+def test_an_upload_named_in_capitals_renders_the_upload_not_the_default(client):
+    """The reported case. The upload check lowercased the suffix and accepted
+    MUG.STL, the viewer asked for MUG, and the server, not knowing that name,
+    rendered the default model without saying so."""
+    from app import server
+
+    tab = "tab-" + "238" * 10
+    headers = {"X-Upload-Session": tab}
+    geometry = (BUILTIN_SOURCE_DIR / "guide_signature.stl").read_bytes()
+
+    def upload(name):
+        response = client.post(
+            "/upload",
+            data={"file": (io.BytesIO(geometry), name), "upload_session_id": tab},
+            content_type="multipart/form-data",
+            headers=headers,
+        )
+        assert response.status_code == 200, response.get_data(as_text=True)
+        return response.get_json()
+
+    def render(model):
+        body = {"current_model": model, "view": "y-", "zoom": "0", "depth": 0,
+                "renderMode": "Filled", "mode": "single"}
+        response = client.post("/render", json=body, headers=headers)
+        assert response.status_code == 200, response.get_data(as_text=True)
+        return response.get_json()["image_base64"]
+
+    try:
+        shouting = upload("SHOUTING_238.STL")
+        quiet = upload("quiet_238.stl")
+        server._model_list_last_refresh = 0.0
+
+        assert shouting["model_stem"] in shouting["model_list"], "the upload was saved and not found"
+        assert render(shouting["model_stem"]) == render(quiet["model_stem"])
+        assert render(shouting["model_stem"]) != render(server.DEFAULT_MODEL.stem)
+    finally:
+        client.post("/uploads/cleanup", json={"upload_session_id": tab})
+
+
 def test_the_writability_probe_is_cached(monkeypatch, tmp_path):
     """/health is unauthenticated by design and polled every 30s, and each probe
     writes and unlinks a file. Repeated calls must not repeatedly touch disk."""
