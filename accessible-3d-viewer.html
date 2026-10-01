@@ -286,8 +286,11 @@
                     Choose how to visualize the model
                 </div>
                 <div id="view-mode-block" aria-describedby="view-mode-help">
-                    <fieldset role="radiogroup" aria-labelledby="render-heading">
-                        <legend class="sr-only">View Mode Options</legend>
+                    <!-- Named by its own legend, not by the section heading: both groups used to
+                         take "Rendering Mode" from it, so a screen reader announced two groups with
+                         one name (#209). "Layout" is what the status bar and "." call this. -->
+                    <fieldset role="radiogroup">
+                        <legend class="sr-only">Layout</legend>
                         <label>
                             <input type="radio" name="view-mode" id="view-mode-single" value="single" checked>
                             Single (with scrollbar)
@@ -529,10 +532,10 @@
             <li><kbd>2</kbd> Zoom out 10%</li>
         </ul>
 
-        <h3>View &amp; Render Mode</h3>
+        <h3>Render Mode &amp; Layout</h3>
         <ul class="shortcuts-list">
             <li><kbd>R</kbd> Cycle render mode</li>
-            <li><kbd>T</kbd> Cycle view mode</li>
+            <li><kbd>T</kbd> Cycle layout</li>
             <li><kbd>F</kbd> Fit current slice to tactile display</li>
             <li><kbd>.</kbd> Read current status</li>
         </ul>
