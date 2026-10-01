@@ -127,6 +127,25 @@ The GitHub CLI documentation is at https://cli.github.com/manual/
 - Add comments only where logic is non-obvious.
 - Ruff is used for linting; run `ruff check .` before pushing.
 
+## Dependencies
+
+`requirements.txt` lists what the app depends on, with minimum versions. The exact versions the Docker image and
+CI install come from two files, so a rebuild installs what was tested rather than whatever is newest that day:
+
+- `environment.yml` pins what conda installs: Python, pythonocc-core, numpy, matplotlib, pillow and the Python
+  packages they bring with them.
+- `requirements-lock.txt` pins what pip installs on top of that.
+
+No package is in both: pip would replace conda's copy with its own, which is how numpy came to be installed twice.
+
+To change a version, change it in whichever of the two pins it, and in `requirements.txt` too if it is a direct
+dependency, one package at a time, so CI tests that change on its own. Tests fail when the files disagree, which
+includes a Dependabot pull request that raises a minimum in `requirements.txt` without the pin.
+
+Dependabot proposes these changes once a month: one pull request bundling the minor and patch releases for pip, one
+for conda, and one for each major release, never for a release less than a week old. It changes the pins and leaves a
+minimum in `requirements.txt` alone unless the new release needs it. Security updates are not held back by any of this.
+
 ## Reporting bugs
 
 Please include:

@@ -32,12 +32,14 @@ RUN conda env create -f environment.yml && conda clean -afy
 # All subsequent RUN commands execute inside the conda env.
 SHELL ["conda", "run", "-n", "cad-a11y", "/bin/bash", "-c"]
 
-# Install pip dependencies.
+# Install pip dependencies at the versions in requirements-lock.txt, so a rebuild
+# installs what was tested rather than whatever is newest that day (#240).
+# requirements.txt lists the direct dependencies; the lock decides the versions.
 # polyscope is optional — failures are non-fatal.
-COPY requirements.txt .
-RUN grep -vE '^\s*(#|polyscope)' requirements.txt \
+COPY requirements-lock.txt .
+RUN grep -vE '^\s*(#|polyscope)' requirements-lock.txt \
       | pip install --no-cache-dir -r /dev/stdin
-RUN pip install --no-cache-dir polyscope || true
+RUN pip install --no-cache-dir "$(grep -E '^polyscope==' requirements-lock.txt)" || true
 
 # --- Application source (invalidates only when code changes) ---
 

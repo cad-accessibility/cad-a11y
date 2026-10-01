@@ -30,9 +30,10 @@ jobs:
       - name: Install pip dependencies
         shell: bash -l {0}
         run: |
-          grep -vE '^\s*(#|polyscope)' requirements.txt \
+          # The versions the image installs, so the tests run on what ships (#240).
+          grep -vE '^\s*(#|polyscope)' requirements-lock.txt \
             | micromamba run -n cad-a11y pip install --no-cache-dir -r /dev/stdin
-          micromamba run -n cad-a11y pip install --no-cache-dir polyscope || true
+          micromamba run -n cad-a11y pip install --no-cache-dir "$(grep -E '^polyscope==' requirements-lock.txt)" || true
           micromamba run -n cad-a11y pip install --no-cache-dir pytest ruff
 
       - name: Lint (errors only)
