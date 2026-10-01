@@ -142,4 +142,4 @@ Use the issue templates at https://github.com/cad-accessibility/cad-a11y/issues/
 
 ## License
 
-By contributing, you agree that your contributions are licensed under the BSD 3-Clause License in this repository.
+By contributing, you agree that your contributions are licensed under the BSD 3-Clause License in [LICENSE](LICENSE).
