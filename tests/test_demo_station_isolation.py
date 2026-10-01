@@ -346,4 +346,4 @@ def test_a_demo_station_derives_no_identity_from_a_shared_counter():
     # The one handle a demo tab keeps is generated in the browser and held in
     # memory; on the demo path even the storage it would use is the in-memory shim.
     assert "getUploadSessionId" in VIEWER_SOURCE
-    assert "Math.random()" in VIEWER_SOURCE
+    assert "crypto.getRandomValues" in VIEWER_SOURCE

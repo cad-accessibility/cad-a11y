@@ -310,12 +310,12 @@ def test_a_numeric_model_is_ambiguous_by_position_unlike_a_name(monkeypatch):
     risk explicitly, so nobody reads more protection into the numeric path than
     the by-name fix actually gives it. A name is immune, shown here alongside.
     """
-    import pathlib
-
     import app.server as server
 
-    before = [pathlib.Path("/m/beta.stl"), pathlib.Path("/m/mug.stl")]
-    after = [pathlib.Path("/m/aaa.stl"), pathlib.Path("/m/beta.stl"), pathlib.Path("/m/mug.stl")]
+    # Built-ins, so ownership (#237) plays no part: they are visible to everyone.
+    models = server.MODEL_DIR
+    before = [models / "beta.stl", models / "mug.stl"]
+    after = [models / "aaa.stl", models / "beta.stl", models / "mug.stl"]
 
     monkeypatch.setattr(server, "AVAILABLE_MODELS", before)
     assert server._resolve_model_stem("0") == "beta"

@@ -46,6 +46,8 @@ DB_PATH: Path = Path(os.environ["DB_PATH"]) if os.environ.get("DB_PATH") else _d
 _local = threading.local()
 
 _DDL = """
+-- identifier is a workshop participant's first name and nothing else (#237). An
+-- email from the consent dialog is not kept on a session at all: see contacts.
 CREATE TABLE IF NOT EXISTS sessions (
     id            TEXT PRIMARY KEY,
     identifier    TEXT,
@@ -70,9 +72,18 @@ CREATE TABLE IF NOT EXISTS uploaded_models (
 CREATE INDEX IF NOT EXISTS idx_uploaded_models_session
     ON uploaded_models(session_id, deleted_at);
 
--- Supports cross-session model lookup and deletion by email identifier.
+-- Supports the workshop's first-name lookup.
 CREATE INDEX IF NOT EXISTS idx_sessions_identifier
     ON sessions(identifier) WHERE identifier IS NOT NULL;
+
+-- Addresses given in the consent dialog, to send project updates to. Kept apart
+-- from sessions on purpose: nothing here names a session, a time or an order of
+-- arrival, so no address can be matched to the usage data recorded under a
+-- session. That is what lets the dialog call that data anonymous (#220).
+-- WITHOUT ROWID stores rows in address order, not in the order they came in.
+CREATE TABLE IF NOT EXISTS contacts (
+    email TEXT PRIMARY KEY COLLATE NOCASE
+) WITHOUT ROWID;
 
 -- One row per successful /render call. session_id is nullable: renders triggered
 -- without a browser session (direct API calls) are still recorded for aggregate stats.
@@ -149,6 +160,38 @@ def _migrate(conn: sqlite3.Connection) -> None:
     session_cols = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)")}
     if "is_workshop" not in session_cols:
         conn.execute("ALTER TABLE sessions ADD COLUMN is_workshop INTEGER DEFAULT 0")
+    _move_emails_to_contacts(conn, session_cols)
+
+
+def _move_emails_to_contacts(conn: sqlite3.Connection, session_cols: set[str]) -> None:
+    """Move every address the consent dialog stored on a session into contacts,
+    and with that drop its link to the session.
+
+    identifier used to hold both a viewer's email and a workshop participant's
+    first name, so /workshop?name=<email> found a viewer's session and handed it
+    over (#237), and the address sat next to the session its usage data is
+    recorded under, so that data was only anonymous for people who left none
+    (#220). Every workshop row has always been written with is_workshop = 1, since
+    the column and the workshop arrived together, so any other row with an
+    identifier holds an email. A pre-release build of #237 kept the address in a
+    sessions.email column instead; that is emptied the same way.
+
+    Idempotent: nothing writes an address to a session any more.
+    """
+    conn.execute(
+        """INSERT OR IGNORE INTO contacts (email)
+           SELECT identifier FROM sessions
+           WHERE COALESCE(is_workshop, 0) = 0 AND identifier IS NOT NULL"""
+    )
+    conn.execute(
+        """UPDATE sessions SET identifier = NULL
+           WHERE COALESCE(is_workshop, 0) = 0 AND identifier IS NOT NULL"""
+    )
+    if "email" in session_cols:
+        conn.execute(
+            "INSERT OR IGNORE INTO contacts (email) SELECT email FROM sessions WHERE email IS NOT NULL"
+        )
+        conn.execute("UPDATE sessions SET email = NULL WHERE email IS NOT NULL")
 
 
 def _backfill_render_mode_labels(conn: sqlite3.Connection) -> None:
@@ -183,32 +226,55 @@ def upsert_session(session_id: str) -> dict[str, Any]:
 
 def get_session(session_id: str) -> dict[str, Any] | None:
     row = _get_conn().execute(
-        "SELECT id, identifier, consent_given, is_workshop, created_at, last_seen_at FROM sessions WHERE id = ?",
+        "SELECT id, identifier, consent_given, is_workshop, created_at, last_seen_at"
+        " FROM sessions WHERE id = ?",
         (session_id,),
     ).fetchone()
     return dict(row) if row else None
 
 
 def save_session_identifier(
-    session_id: str, email: str | None, consent_given: bool, is_workshop: bool = False
+    session_id: str, identifier: str | None, consent_given: bool, is_workshop: bool = False
 ) -> None:
+    """Bind a workshop participant's first name to their session."""
     conn = _get_conn()
     conn.execute(
         "UPDATE sessions SET identifier = ?, consent_given = ?, is_workshop = ? WHERE id = ?",
-        (email, 1 if consent_given else 0, 1 if is_workshop else 0, session_id),
+        (identifier, 1 if consent_given else 0, 1 if is_workshop else 0, session_id),
     )
     conn.commit()
 
 
-def get_session_id_for_identifier(identifier: str) -> str | None:
-    """Return the most recent session id bound to this identifier, or None.
+def save_session_consent(session_id: str, consent_given: bool) -> None:
+    """Record the consent dialog's answer to analytics on the session."""
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE sessions SET consent_given = ? WHERE id = ?",
+        (1 if consent_given else 0, session_id),
+    )
+    conn.commit()
 
-    Used to reuse a session across workshop uploads sharing the same word code,
-    and as the collision check when assigning a new code.
+
+def add_contact(email: str) -> None:
+    """Keep an address to send project updates to, with nothing that ties it to
+    a session or to anything recorded under one (#220)."""
+    conn = _get_conn()
+    conn.execute("INSERT OR IGNORE INTO contacts (email) VALUES (?)", (email,))
+    conn.commit()
+
+
+def get_session_id_for_identifier(identifier: str) -> str | None:
+    """Return the most recent workshop session bound to this first name, or None.
+
+    Used to reuse a session across workshop uploads sharing the same first name.
+    Only workshop sessions match, so nothing typed into /workshop?name= can reach
+    a viewer's session.
     """
     conn = _get_conn()
     row = conn.execute(
-        "SELECT id FROM sessions WHERE identifier = ? ORDER BY last_seen_at DESC LIMIT 1",
+        """SELECT id FROM sessions
+           WHERE identifier = ? AND is_workshop = 1
+           ORDER BY last_seen_at DESC LIMIT 1""",
         (identifier,),
     ).fetchone()
     return row["id"] if row else None
@@ -221,41 +287,29 @@ def get_session_id_for_identifier(identifier: str) -> str | None:
 def get_session_models(session_id: str) -> list[dict[str, Any]]:
     """Return non-deleted uploaded_models rows for this session.
 
-    When the session has a known identifier (email), models from every session
-    sharing that identifier are included so a returning user on a new device
-    sees their full upload history.
+    This session's only. Uploads used to be shared across every session that had
+    typed the same email, which let anyone who typed someone else's address list
+    and delete their files (#237).
     """
-    session = get_session(session_id)
-    conn = _get_conn()
-    if session and session["identifier"]:
-        rows = conn.execute(
-            """SELECT um.filename, um.original_name, um.file_size, um.sha256, um.uploaded_at
-               FROM uploaded_models um
-               JOIN sessions s ON um.session_id = s.id
-               WHERE s.identifier = ? AND um.deleted_at IS NULL
-               ORDER BY um.uploaded_at""",
-            (session["identifier"],),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """SELECT filename, original_name, file_size, sha256, uploaded_at
-               FROM uploaded_models
-               WHERE session_id = ? AND deleted_at IS NULL
-               ORDER BY uploaded_at""",
-            (session_id,),
-        ).fetchall()
+    rows = _get_conn().execute(
+        """SELECT filename, original_name, file_size, sha256, uploaded_at
+           FROM uploaded_models
+           WHERE session_id = ? AND deleted_at IS NULL
+           ORDER BY uploaded_at""",
+        (session_id,),
+    ).fetchall()
     return [dict(row) for row in rows]
 
 
 def get_latest_model_for_identifier(identifier: str) -> str | None:
     """Return the filename of the most recently uploaded, non-deleted model for
-    any session bound to this identifier, or None. Backs /workshop code lookup."""
+    any workshop session bound to this first name, or None. Backs /workshop?name=."""
     conn = _get_conn()
     row = conn.execute(
         """SELECT um.filename
            FROM uploaded_models um
            JOIN sessions s ON um.session_id = s.id
-           WHERE s.identifier = ? AND um.deleted_at IS NULL
+           WHERE s.identifier = ? AND s.is_workshop = 1 AND um.deleted_at IS NULL
            ORDER BY um.uploaded_at DESC, um.id DESC
            LIMIT 1""",
         (identifier,),
@@ -281,49 +335,24 @@ def register_model(
 
 
 def session_owns_model(session_id: str, filename: str) -> bool:
-    """Return True if this session (or any session sharing its identifier) owns the file."""
-    session = get_session(session_id)
-    conn = _get_conn()
-    if session and session["identifier"]:
-        row = conn.execute(
-            """SELECT COUNT(*) FROM uploaded_models
-               WHERE filename = ? AND deleted_at IS NULL
-               AND session_id IN (SELECT id FROM sessions WHERE identifier = ?)""",
-            (filename, session["identifier"]),
-        ).fetchone()
-    else:
-        row = conn.execute(
-            """SELECT COUNT(*) FROM uploaded_models
-               WHERE session_id = ? AND filename = ? AND deleted_at IS NULL""",
-            (session_id, filename),
-        ).fetchone()
+    """Return True if this session uploaded the file and has not deleted it."""
+    row = _get_conn().execute(
+        """SELECT COUNT(*) FROM uploaded_models
+           WHERE session_id = ? AND filename = ? AND deleted_at IS NULL""",
+        (session_id, filename),
+    ).fetchone()
     return row[0] > 0
 
 
 def mark_model_deleted(session_id: str, filename: str) -> bool:
-    """Soft-delete a model row. Returns True if a row was updated.
-
-    When the session has a known identifier (email), deletion is allowed for
-    any model uploaded by any session sharing that identifier — not just the
-    current session UUID — so a user on a new device can remove their own files.
-    """
-    session = get_session(session_id)
+    """Soft-delete a model row this session uploaded. Returns True if a row was updated."""
     conn = _get_conn()
-    if session and session["identifier"]:
-        cursor = conn.execute(
-            """UPDATE uploaded_models
-               SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-               WHERE filename = ? AND deleted_at IS NULL
-               AND session_id IN (SELECT id FROM sessions WHERE identifier = ?)""",
-            (filename, session["identifier"]),
-        )
-    else:
-        cursor = conn.execute(
-            """UPDATE uploaded_models
-               SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-               WHERE session_id = ? AND filename = ? AND deleted_at IS NULL""",
-            (session_id, filename),
-        )
+    cursor = conn.execute(
+        """UPDATE uploaded_models
+           SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+           WHERE session_id = ? AND filename = ? AND deleted_at IS NULL""",
+        (session_id, filename),
+    )
     conn.commit()
     return cursor.rowcount > 0
 

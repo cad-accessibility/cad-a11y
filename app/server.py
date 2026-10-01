@@ -346,7 +346,7 @@ def _participant_for_name(first_name: str) -> str:
         return existing
     user_id = str(uuid.uuid4())
     recording.current().touch_session(user_id)
-    recording.current().identify_session(user_id, first_name, consent=False, is_workshop=True)
+    recording.current().enroll_workshop_participant(user_id, first_name)
     return user_id
 
 
@@ -538,6 +538,55 @@ def _refresh_model_list_if_stale() -> None:
         _model_list_last_refresh = time.monotonic()
 
 
+# ---------------------------------------------------------------------------
+# Who can see which upload (#237)
+#
+# An upload belongs to the browser that sent it and to nobody else. Two things
+# can say a request comes from that browser: its cad_session cookie, if it has
+# answered the consent dialog, and its tab's upload id, which every request from
+# the viewer carries. The tab id is the one that always exists, because pressing
+# Escape on the consent dialog or using /demo leaves a tab with no cookie.
+#
+# The browser used to do this filtering and the server did none, so anyone who
+# asked the server directly could list, render and export every upload.
+# ---------------------------------------------------------------------------
+def _request_upload_session_id() -> str | None:
+    """The tab's upload id: a header on fetches, a query parameter on the event
+    stream, which cannot set headers."""
+    return _sanitize_upload_session_id(
+        request.headers.get("X-Upload-Session") or request.args.get("upload_session_id")
+    )
+
+
+def _caller_upload_names(tab_id: str | None = None) -> set[str]:
+    """Filenames in UPLOAD_DIR that the current request may see.
+
+    Outside a request, such as the startup render, that is none.
+    """
+    if not has_request_context():
+        return set()
+    owned: set[str] = set()
+    cookie_sid = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE))
+    # Not on the demo path, which keeps no ownership records to read.
+    if cookie_sid and recording.current().records:
+        owned.update(m["filename"] for m in db.get_session_models(cookie_sid))
+    tab_id = tab_id or _request_upload_session_id()
+    if tab_id:
+        with uploaded_models_lock:
+            owned.update(Path(p).name for p in uploaded_models_by_session.get(tab_id, ()))
+    return owned
+
+
+def _visible_models(tab_id: str | None = None) -> list[Path]:
+    """The built-ins, plus the uploads the current request owns."""
+    owned = _caller_upload_names(tab_id)
+    return [p for p in AVAILABLE_MODELS if _is_builtin(p) or p.name in owned]
+
+
+def _visible_model_names(tab_id: str | None = None) -> list[str]:
+    return [p.stem for p in _visible_models(tab_id)]
+
+
 def _resolve_model_stem(raw_value: Any) -> str:
     """The model a request means, named rather than numbered.
 
@@ -551,8 +600,14 @@ def _resolve_model_stem(raw_value: Any) -> str:
     never to whatever another window happens to be looking at, which is what the
     process-wide "current model" used to supply.
 
+    Somebody else's upload is an unknown name here. It resolves to the default
+    exactly as a name that does not exist does, so the answer cannot be used to
+    find out which uploads exist. Every endpoint that takes a model comes through
+    this function, which is what makes it the one place ownership is enforced.
+
     Numeric values are still accepted, so a browser holding an older viewer.js
-    keeps working until it reloads.
+    keeps working until it reloads. They count within the models the caller can
+    see, so a position cannot reach anyone else's upload either.
     """
     if raw_value is None:
         return DEFAULT_MODEL.stem
@@ -561,9 +616,12 @@ def _resolve_model_stem(raw_value: Any) -> str:
     if not text:
         return DEFAULT_MODEL.stem
 
-    known = {path.stem for path in AVAILABLE_MODELS}
-    if text in known:
-        return text
+    for path in AVAILABLE_MODELS:
+        if path.stem == text:
+            # Built-ins first, so the common case never reads ownership.
+            if _is_builtin(path) or path.name in _caller_upload_names():
+                return text
+            return DEFAULT_MODEL.stem
 
     # Legacy: a position in the list. Ambiguous by nature, which is the whole
     # problem, but resolving it once here is better than rejecting the request.
@@ -571,8 +629,9 @@ def _resolve_model_stem(raw_value: Any) -> str:
         index = int(text)
     except ValueError:
         return DEFAULT_MODEL.stem
-    if 0 <= index < len(AVAILABLE_MODELS):
-        return AVAILABLE_MODELS[index].stem
+    visible = _visible_models()
+    if 0 <= index < len(visible):
+        return visible[index].stem
     return DEFAULT_MODEL.stem
 
 
@@ -1300,7 +1359,7 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
         "status": "success",
         "image_base64": _img_to_base64_png(preview_payload),
         "image_shape": list(preview_payload.shape),
-        "model_list": MODEL_NAME_LIST,
+        "model_list": _visible_model_names(),
         # Where this render ended up looking, so the window that asked can send
         # it back next time. This is what keeps a pan inside the window that
         # made it: the renderer no longer remembers, and must not.
@@ -1700,7 +1759,7 @@ def render_view():
         if not skip_cache and not is_pan_request and merged_params.get("print_view") is not True:
             cached_response = _get_quantized_cached_response(quantized_cache_key)
             if cached_response is not None:
-                cached_response["model_list"] = MODEL_NAME_LIST
+                cached_response["model_list"] = _visible_model_names()
                 debug = dict(cached_response.get("debug", {}))
                 debug.update(
                     {
@@ -1783,12 +1842,14 @@ def fit_render_view():
 
 @app.route("/models", methods=["GET"])
 def models_endpoint():
-    """List the models on disk.
+    """List the built-ins and the caller's own uploads, by name.
 
     Read only. Selecting a model is not a server-side action: a render names the
     model it wants, so there is nothing here to set. The POST branch that used to
     write a process-wide "current model" is gone, since one window choosing a
     model would change what every other window rendered next.
+
+    It used to list every upload on the server, with each file's absolute path.
     """
     global AVAILABLE_MODELS, MODEL_NAME_LIST
 
@@ -1798,8 +1859,7 @@ def models_endpoint():
     return jsonify(
         {
             "status": "success",
-            "model_list": MODEL_NAME_LIST,
-            "model_paths": [str(model) for model in AVAILABLE_MODELS],
+            "model_list": _visible_model_names(),
         }
     ), 200
 
@@ -2007,7 +2067,9 @@ def upload_model():
     return jsonify({
         "status": "success",
         "filename": filename,
-        "model_list": MODEL_NAME_LIST,
+        # The form field names the tab as well as the header does, so the new
+        # upload is in the list whichever of the two the client sent.
+        "model_list": _visible_model_names(upload_session_id),
         # The name is how a model is addressed. new_model_index is kept for one
         # release for anything still reading it; it is a position in a list that
         # the next upload renumbers.
@@ -2155,6 +2217,12 @@ def session_identify():
     does not, so no identifier is stored before the user answers the consent dialog.
     Email is validated before the row is created, so a rejected request leaves no
     orphan session behind. The response carries the persistent cad_session cookie.
+
+    The email is a contact address and nothing more. It used to double as a key,
+    so typing somebody else's address listed their uploads and let you delete
+    them (#237). It is now kept apart from the session altogether, so nothing
+    ties it to the usage data recorded under one, which is what lets the dialog
+    call that data anonymous (#220).
     """
     data = request.get_json(silent=True) or {}
     email = data.get("email")
@@ -2169,7 +2237,9 @@ def session_identify():
     session_id = _get_or_create_session_id()  # reuse a valid cookie or mint a new UUID
     recorder = recording.current()
     recorder.touch_session(session_id)
-    recorder.identify_session(session_id, email, consent=bool(consent))
+    recorder.identify_session(session_id, consent=bool(consent))
+    if email:
+        recorder.add_contact(email)
 
     response = jsonify({"status": "success"})
     # The cookie is a write too: it is the identifier that would survive the tab
@@ -2271,16 +2341,15 @@ def sse_events():
     Replaces 1-second polling for hardware input — events are pushed immediately
     when device state changes, reducing perceived latency from ~1000 ms to ~10 ms.
     """
+    # Read while the request is still the one asking, before the stream starts.
+    initial = {"model_list": _visible_model_names()}
+
     def generate():
         client_queue = _queue_module.Queue(maxsize=20)
         with _sse_clients_lock:
             _sse_clients.append(client_queue)
         try:
             # Send current state immediately on connect so the client is in sync.
-            with models_lock:
-                initial = {
-                    "model_list": MODEL_NAME_LIST,
-                }
             yield f"data: {json.dumps(initial)}\n\n"
             while True:
                 try:
@@ -2309,7 +2378,7 @@ def get_data():
     with models_lock:
         payload = {
             "status": "success",
-            "model_list": MODEL_NAME_LIST,
+            "model_list": _visible_model_names(),
             "builtin_model_stems": _builtin_model_stems(),
         }
     return jsonify(payload), 200

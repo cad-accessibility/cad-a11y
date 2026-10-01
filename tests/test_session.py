@@ -36,6 +36,16 @@ def client(tmp_db):
         yield c
 
 
+def _contacts(db_path) -> list[str]:
+    """Every address in the contact list."""
+    import sqlite3
+    conn = sqlite3.connect(str(db_path))
+    try:
+        return [row[0] for row in conn.execute("SELECT email FROM contacts")]
+    finally:
+        conn.close()
+
+
 def _identify(client, email=None, consent=True):
     """Establish a session the way the app now does, via the consent endpoint.
 
@@ -91,10 +101,92 @@ class TestDbSession:
     def test_save_identifier(self, tmp_db):
         sid = "aaaaaaaa-0000-0000-0000-000000000003"
         db_module.upsert_session(sid)
-        db_module.save_session_identifier(sid, "user@example.com", True)
+        db_module.save_session_identifier(sid, "alex", False, is_workshop=True)
         row = db_module.get_session(sid)
-        assert row["identifier"] == "user@example.com"
+        assert row["identifier"] == "alex"
+        assert row["is_workshop"] == 1
+
+    def test_consent_is_kept_on_the_session_and_the_email_apart_from_it(self, tmp_db):
+        """Analytics are recorded under the session, so an address kept there
+        would tie them to a person (#220)."""
+        sid = "aaaaaaaa-0000-0000-0000-000000000004"
+        db_module.upsert_session(sid)
+        db_module.save_session_consent(sid, True)
+        db_module.add_contact("user@example.com")
+        row = db_module.get_session(sid)
         assert row["consent_given"] == 1
+        assert row["identifier"] is None
+        assert "user@example.com" not in row.values()
+        assert _contacts(tmp_db) == ["user@example.com"]
+
+    def test_the_contact_list_holds_nothing_but_the_address(self, tmp_db):
+        """No session, no time, no order of arrival: nothing to match an address
+        to the usage data recorded under a session."""
+        import sqlite3
+        conn = sqlite3.connect(str(tmp_db))
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(contacts)")]
+        conn.close()
+        assert columns == ["email"]
+
+    def test_an_address_is_kept_once_whatever_its_case(self, tmp_db):
+        db_module.add_contact("User@Example.com")
+        db_module.add_contact("user@example.com")
+        assert len(_contacts(tmp_db)) == 1
+
+    def test_emails_already_on_sessions_move_to_the_contact_list(self, tmp_db):
+        """Before #237 a consent-dialog email was stored in identifier, alongside
+        workshop first names. Opening the database moves each one to the contact
+        list and leaves the session without it."""
+        import sqlite3
+        conn = sqlite3.connect(str(tmp_db))
+        conn.execute(
+            "INSERT INTO sessions (id, identifier, consent_given, is_workshop)"
+            " VALUES ('viewer', 'old@example.com', 1, 0), ('workshop', 'zoe', 0, 1)"
+        )
+        conn.commit()
+        conn.close()
+
+        db_module._local.__dict__.clear()
+        db_module.init_db()
+
+        assert db_module.get_session("viewer")["identifier"] is None
+        assert db_module.get_session("workshop")["identifier"] == "zoe"
+        assert _contacts(tmp_db) == ["old@example.com"]
+
+    @pytest.mark.parametrize("with_email_column", [False, True])
+    def test_an_older_database_moves_its_emails_to_the_contact_list(
+        self, tmp_path, monkeypatch, with_email_column
+    ):
+        """Both older layouts: the address in identifier, as master had it, and in
+        the sessions.email column a pre-release build of #237 added."""
+        import sqlite3
+        db_path = tmp_path / "old.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, identifier TEXT, consent_given INTEGER,"
+            " is_workshop INTEGER DEFAULT 0, created_at DATETIME, last_seen_at DATETIME"
+            + (", email TEXT" if with_email_column else "") + ")"
+        )
+        if with_email_column:
+            conn.execute("INSERT INTO sessions (id, email, consent_given) VALUES ('s', 'x@y.org', 1)")
+        else:
+            conn.execute("INSERT INTO sessions (id, identifier, consent_given) VALUES ('s', 'x@y.org', 1)")
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(db_module, "DB_PATH", db_path)
+        db_module._local.__dict__.clear()
+        try:
+            db_module.init_db()
+        finally:
+            db_module._local.__dict__.clear()
+
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        row = dict(conn.execute("SELECT * FROM sessions WHERE id = 's'").fetchone())
+        conn.close()
+        assert "x@y.org" not in row.values()
+        assert _contacts(db_path) == ["x@y.org"]
 
     def test_get_session_none_for_unknown(self, tmp_db):
         assert db_module.get_session("does-not-exist") is None
@@ -245,21 +337,52 @@ class TestSessionIdentify:
         conn.close()
         assert rows == [(0,)]
 
-    def test_stores_email_and_consent(self, client):
+    def test_stores_email_and_consent(self, client, tmp_db):
         resp = client.post(
             "/session/identify",
             json={"email": "hello@example.com", "consent": True},
         )
         assert resp.status_code == 200
         me = client.get("/session/me").get_json()
-        assert me["identifier"] == "hello@example.com"
         assert me["consent_given"] == 1
+        assert me["identifier"] is None  # the email is a contact address, not a key
+        assert "hello@example.com" not in me.values()
+        assert _contacts(tmp_db) == ["hello@example.com"]
 
-    def test_decline_stores_no_email(self, client):
+    def test_an_email_given_with_analytics_is_not_tied_to_them(self, client, tmp_db):
+        """The dialog calls the analytics anonymous (#220). They are recorded
+        under the session, so no table that names a session may hold the address."""
+        import sqlite3
+        client.post("/session/identify", json={"email": "hello@example.com", "consent": True})
+        client.post("/events/track", json={"event_type": "keyboard_shortcut", "event_data": {"key": "1"}})
+
+        conn = sqlite3.connect(str(tmp_db))
+        tables = [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+        for table in tables:
+            if table == "contacts":
+                continue
+            for row in conn.execute(f"SELECT * FROM {table}"):
+                assert "hello@example.com" not in [str(value) for value in row], f"{table} holds the address"
+        conn.close()
+        assert _contacts(tmp_db) == ["hello@example.com"]
+
+    def test_decline_stores_no_email(self, client, tmp_db):
         client.post("/session/identify", json={"email": None, "consent": False})
         me = client.get("/session/me").get_json()
-        assert me["identifier"] is None
         assert me["consent_given"] == 0
+        assert _contacts(tmp_db) == []
+
+    def test_an_email_with_analytics_declined_is_kept_for_updates_only(self, client, tmp_db):
+        """The case #220 called undefined: an address, and Don't track me. The
+        address is kept to send project updates to, and nothing is recorded."""
+        import sqlite3
+        client.post("/session/identify", json={"email": "hello@example.com", "consent": False})
+        client.post("/events/track", json={"event_type": "keyboard_shortcut", "event_data": {"key": "1"}})
+        assert client.get("/session/me").get_json()["consent_given"] == 0
+        assert _contacts(tmp_db) == ["hello@example.com"]
+        conn = sqlite3.connect(str(tmp_db))
+        assert conn.execute("SELECT COUNT(*) FROM page_events").fetchone()[0] == 0
+        conn.close()
 
     def test_rejects_invalid_email(self, client):
         resp = client.post("/session/identify", json={"email": "notanemail", "consent": True})
@@ -511,11 +634,13 @@ class TestIngestWorkshop:
 
 
 # ---------------------------------------------------------------------------
-# Cross-session model aggregation by email identifier
+# The same email on two sessions links nothing (#237)
 # ---------------------------------------------------------------------------
 
-class TestCrossSessionModels:
-    """A user who provides the same email on a second device sees all their uploads."""
+class TestEmailLinksNoSessions:
+    """Typing an email used to list, and let you delete, the uploads of every
+    session that had typed the same address, with nothing to show the address
+    was yours. It is a contact address now and nothing reads it."""
 
     def _upload(self, client, filename="test.stl"):
         return client.post(
@@ -524,42 +649,31 @@ class TestCrossSessionModels:
             content_type="multipart/form-data",
         )
 
-    def test_second_session_sees_first_session_models(self, tmp_db):
+    def test_a_second_session_with_the_same_email_sees_nothing(self, tmp_db):
         flask_app.config["TESTING"] = True
 
-        # Session A: identify with email first (creates the session), then upload.
         with flask_app.test_client() as client_a:
             client_a.post("/session/identify", json={"email": "user@example.com", "consent": True})
             upload_resp = self._upload(client_a, "model_a.stl")
             assert upload_resp.get_json()["status"] == "success"
 
-        # Session B: fresh client (different cookie), same email.
         with flask_app.test_client() as client_b:
             client_b.post("/session/identify", json={"email": "user@example.com", "consent": True})
-            resp = client_b.get("/session/models")
-            models = resp.get_json()["models"]
-            filenames = [m["filename"] for m in models]
-            assert any("model_a" in f for f in filenames), (
-                f"Expected model_a in cross-session list, got {filenames}"
-            )
+            assert client_b.get("/session/models").get_json()["models"] == []
 
-    def test_second_session_can_delete_first_session_model(self, tmp_db):
+    def test_a_second_session_with_the_same_email_cannot_delete(self, tmp_db):
         flask_app.config["TESTING"] = True
-        filename_a = None
 
         with flask_app.test_client() as client_a:
             client_a.post("/session/identify", json={"email": "user@example.com", "consent": True})
-            upload_resp = self._upload(client_a, "shared.stl")
-            filename_a = upload_resp.get_json()["filename"]
+            filename_a = self._upload(client_a, "shared.stl").get_json()["filename"]
 
-        with flask_app.test_client() as client_b:
-            client_b.post("/session/identify", json={"email": "user@example.com", "consent": True})
-            del_resp = client_b.delete(f"/models/{filename_a}")
-            assert del_resp.status_code == 200
+            with flask_app.test_client() as client_b:
+                client_b.post("/session/identify", json={"email": "user@example.com", "consent": True})
+                assert client_b.delete(f"/models/{filename_a}").status_code == 404
 
-            # Model should no longer appear for either session.
-            models_b = client_b.get("/session/models").get_json()["models"]
-            assert all(m["filename"] != filename_a for m in models_b)
+            models_a = client_a.get("/session/models").get_json()["models"]
+            assert [m["filename"] for m in models_a] == [filename_a]
 
     def test_anonymous_session_cannot_see_identified_session_models(self, tmp_db):
         flask_app.config["TESTING"] = True
