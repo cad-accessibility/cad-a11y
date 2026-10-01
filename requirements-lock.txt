@@ -1,0 +1,47 @@
+# The exact versions pip installs in the Docker image and in CI (#240).
+# Linux, Python 3.12.
+#
+# requirements.txt says what the app depends on; this says which versions it
+# gets, so that building the image twice, a week apart, installs the same thing.
+# Without it every rebuild re-resolved each package to its newest release, and a
+# new geometry library shows up as a subtly different render, not as an error.
+#
+# The rest of the Python packages come from conda, pinned in environment.yml:
+# numpy, matplotlib, pillow and what they bring with them. None of those is
+# here, so pip finds them already satisfied and nothing is installed twice.
+#
+# Taken from the staging deploy of ef0970b on 2026-09-25, which is what staging
+# has run since. To change a version, change it here, and in requirements.txt if
+# it is a direct dependency, one package at a time, so CI tests that change on
+# its own.
+
+bleak==3.0.2
+blinker==1.9.0
+cascadio==0.1.1
+certifi==2026.7.22
+charset_normalizer==3.5.1
+click==8.5.0
+dbus-fast==5.0.22
+fast_simplification==0.2.0
+Flask==3.1.3
+flask-cors==6.0.5
+hidapi==0.15.0
+imageio==2.37.4
+itsdangerous==2.2.0
+jinja2==3.1.6
+lazy-loader==0.6
+markupsafe==3.0.3
+meshlib==3.1.4.297
+meshlib-core==3.1.4.297
+networkx==3.7
+requests==2.34.2
+scikit-image==0.26.0
+scipy==1.18.1
+shapely==2.1.2
+tifffile==2026.9.20
+trimesh==5.1.0
+urllib3==2.8.0
+werkzeug==3.1.8
+
+# Optional, installed on its own so that a failure does not stop the build
+polyscope==2.6.1

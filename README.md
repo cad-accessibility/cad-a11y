@@ -61,8 +61,9 @@ cad-a11y/
 ├── scripts/                      # Utility scripts (SCAD conversion, BREP generation)
 ├── tests/                        # Test suite
 ├── docs/                         # Extended documentation
-├── environment.yml               # Conda environment used inside the Docker image
-├── requirements.txt              # pip dependencies installed inside the Docker image
+├── environment.yml               # Conda packages, at exact versions, used inside the Docker image
+├── requirements.txt              # Direct dependencies, as minimum versions
+├── requirements-lock.txt         # Exact versions pip installs on top of environment.yml
 ├── docker-compose.yml            # Default Docker Compose configuration
 └── docker-compose.dev.yml        # Optional local-development bind mounts
 ```
