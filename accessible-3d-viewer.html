@@ -463,8 +463,16 @@
                 <span class="footer-sep" aria-hidden="true">&bull;</span>
                 <a href="https://github.com/cad-accessibility/cad-a11y/issues" target="_blank" rel="noopener noreferrer" class="footer-link">
                     <svg width="18" height="18" viewBox="0 0 256 256" aria-hidden="true" focusable="false"><path fill="currentColor" d="M168,92a12,12,0,1,1-12-12A12,12,0,0,1,168,92ZM100,80a12,12,0,1,0,12,12A12,12,0,0,0,100,80Zm116,64A87.76,87.76,0,0,1,213,167l22.24,9.72A8,8,0,0,1,232,192a7.89,7.89,0,0,1-3.2-.67L207.38,182a88,88,0,0,1-158.76,0L27.2,191.33A7.89,7.89,0,0,1,24,192a8,8,0,0,1-3.2-15.33L43,167A87.76,87.76,0,0,1,40,144v-8H16a8,8,0,0,1,0-16H40v-8a87.76,87.76,0,0,1,3-23L20.8,79.33a8,8,0,1,1,6.4-14.66L48.62,74a88,88,0,0,1,158.76,0l21.42-9.36a8,8,0,0,1,6.4,14.66L213,89.05a87.76,87.76,0,0,1,3,23v8h24a8,8,0,0,1,0,16H216Zm-80,0a8,8,0,0,0-16,0v64a8,8,0,0,0,16,0Zm64-32a72,72,0,0,0-144,0v8H200Z"></path></svg>
-                    <span>Report a bug</span>
+                    <span>Report a bug on GitHub</span>
                 </a>
+                <!--
+                    The address is put together by viewer.js rather than written here, so
+                    crawlers that read this page without running it find nothing to harvest
+                    (#223). Once filled in it is an ordinary link and ordinary text: a screen
+                    reader reads it out of context, and anyone can copy the address.
+                -->
+                <span class="footer-sep contact-email-reveal" aria-hidden="true" hidden>&bull;</span>
+                <a class="footer-link contact-email" data-label="Email feedback to" hidden></a>
             </div>
             <div class="footer-row footer-funders">
                 <span class="footer-funders-label"><em>Funded by:</em></span>
@@ -558,6 +566,11 @@
         <ul class="shortcuts-list">
             <li><kbd>P</kbd> Print current render</li>
         </ul>
+
+        <h3>Problems and feedback</h3>
+        <p>
+            <a href="https://github.com/cad-accessibility/cad-a11y/issues" target="_blank" rel="noopener noreferrer">Report a bug on GitHub</a><span class="contact-email-reveal" hidden>, or email <a class="contact-email"></a>. Email needs no GitHub account</span>.
+        </p>
 
         <h3>This Dialog</h3>
         <ul class="shortcuts-list">
