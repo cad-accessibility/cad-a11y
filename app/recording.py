@@ -131,6 +131,9 @@ class NullRecorder:
     def identify_session(self, *_args: Any, **_kwargs: Any) -> None:
         self._seen()
 
+    def add_contact(self, *_args: Any, **_kwargs: Any) -> None:
+        self._seen()
+
     def enroll_workshop_participant(self, *_args: Any, **_kwargs: Any) -> None:
         self._seen()
 
@@ -193,8 +196,12 @@ class PersistentRecorder:
     def touch_session(self, session_id: str) -> None:
         self._analytics.upsert_session(session_id)
 
-    def identify_session(self, session_id: str, email: str | None, *, consent: bool) -> None:
-        self._analytics.save_session_email(session_id, email, consent_given=consent)
+    def identify_session(self, session_id: str, *, consent: bool) -> None:
+        self._analytics.save_session_consent(session_id, consent_given=consent)
+
+    def add_contact(self, email: str) -> None:
+        # Not on the session: nothing may tie an address to usage data (#220).
+        self._analytics.add_contact(email)
 
     def enroll_workshop_participant(self, session_id: str, first_name: str) -> None:
         self._analytics.save_session_identifier(

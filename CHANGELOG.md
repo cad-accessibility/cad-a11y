@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Fixed
 *   Uploaded models are private to the browser that uploaded them. The server used to list every upload to anyone who asked, with its location on the server, and would render or export any of them by name. Only the viewer hid them, and it showed the whole list until it knew which models were built in. The server now lists the built-in models and your own uploads, and a request for somebody else's upload gets the default model, exactly as a name that does not exist does.
-*   An email address no longer gives access to anything. Typing somebody else's address in the welcome dialog used to list their uploads and let you delete them, and opening the workshop page with that address handed over their session. The address is now kept only to send project updates.
+*   An email address no longer gives access to anything. Typing somebody else's address in the welcome dialog used to list their uploads and let you delete them, and opening the workshop page with that address handed over their session. The address is now kept only to send project updates, in a list of its own with nothing that ties it to a browser or to what anyone did in the viewer, so the usage analytics really are anonymous, as the welcome dialog says. Addresses given before this move to that list the first time the server starts.
 
 #### Changed
 *   Giving the same email on another browser or device no longer brings your uploads with it. That link is what made the address a key, and it stays gone until there is a sign-in that proves an address is yours.

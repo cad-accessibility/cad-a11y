@@ -2201,7 +2201,6 @@ def session_me():
         {
             "session_id": row["id"],
             "identifier": row["identifier"],
-            "email": row["email"],
             "consent_given": row["consent_given"],
             "created_at": row["created_at"],
             "last_seen_at": row["last_seen_at"],
@@ -2221,7 +2220,9 @@ def session_identify():
 
     The email is a contact address and nothing more. It used to double as a key,
     so typing somebody else's address listed their uploads and let you delete
-    them (#237).
+    them (#237). It is now kept apart from the session altogether, so nothing
+    ties it to the usage data recorded under one, which is what lets the dialog
+    call that data anonymous (#220).
     """
     data = request.get_json(silent=True) or {}
     email = data.get("email")
@@ -2236,7 +2237,9 @@ def session_identify():
     session_id = _get_or_create_session_id()  # reuse a valid cookie or mint a new UUID
     recorder = recording.current()
     recorder.touch_session(session_id)
-    recorder.identify_session(session_id, email, consent=bool(consent))
+    recorder.identify_session(session_id, consent=bool(consent))
+    if email:
+        recorder.add_contact(email)
 
     response = jsonify({"status": "success"})
     # The cookie is a write too: it is the identifier that would survive the tab

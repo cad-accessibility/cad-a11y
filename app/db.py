@@ -46,13 +46,11 @@ DB_PATH: Path = Path(os.environ["DB_PATH"]) if os.environ.get("DB_PATH") else _d
 _local = threading.local()
 
 _DDL = """
--- identifier is a workshop participant's first name and nothing else. An email
--- from the consent dialog goes in email, which is a contact address only: it is
--- never looked up, and it links a session to nothing (#237).
+-- identifier is a workshop participant's first name and nothing else (#237). An
+-- email from the consent dialog is not kept on a session at all: see contacts.
 CREATE TABLE IF NOT EXISTS sessions (
     id            TEXT PRIMARY KEY,
     identifier    TEXT,
-    email         TEXT,
     consent_given INTEGER,
     is_workshop   INTEGER DEFAULT 0,
     created_at    DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
@@ -77,6 +75,15 @@ CREATE INDEX IF NOT EXISTS idx_uploaded_models_session
 -- Supports the workshop's first-name lookup.
 CREATE INDEX IF NOT EXISTS idx_sessions_identifier
     ON sessions(identifier) WHERE identifier IS NOT NULL;
+
+-- Addresses given in the consent dialog, to send project updates to. Kept apart
+-- from sessions on purpose: nothing here names a session, a time or an order of
+-- arrival, so no address can be matched to the usage data recorded under a
+-- session. That is what lets the dialog call that data anonymous (#220).
+-- WITHOUT ROWID stores rows in address order, not in the order they came in.
+CREATE TABLE IF NOT EXISTS contacts (
+    email TEXT PRIMARY KEY COLLATE NOCASE
+) WITHOUT ROWID;
 
 -- One row per successful /render call. session_id is nullable: renders triggered
 -- without a browser session (direct API calls) are still recorded for aggregate stats.
@@ -153,27 +160,38 @@ def _migrate(conn: sqlite3.Connection) -> None:
     session_cols = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)")}
     if "is_workshop" not in session_cols:
         conn.execute("ALTER TABLE sessions ADD COLUMN is_workshop INTEGER DEFAULT 0")
-    if "email" not in session_cols:
-        conn.execute("ALTER TABLE sessions ADD COLUMN email TEXT")
-    _move_emails_out_of_identifier(conn)
+    _move_emails_to_contacts(conn, session_cols)
 
 
-def _move_emails_out_of_identifier(conn: sqlite3.Connection) -> None:
-    """Move consent-dialog emails from identifier into email.
+def _move_emails_to_contacts(conn: sqlite3.Connection, session_cols: set[str]) -> None:
+    """Move every address the consent dialog stored on a session into contacts,
+    and with that drop its link to the session.
 
     identifier used to hold both a viewer's email and a workshop participant's
     first name, so /workshop?name=<email> found a viewer's session and handed it
-    over (#237). Every workshop row has always been written with is_workshop = 1,
-    since the column and the workshop arrived together, so any other row with an
-    identifier holds an email.
+    over (#237), and the address sat next to the session its usage data is
+    recorded under, so that data was only anonymous for people who left none
+    (#220). Every workshop row has always been written with is_workshop = 1, since
+    the column and the workshop arrived together, so any other row with an
+    identifier holds an email. A pre-release build of #237 kept the address in a
+    sessions.email column instead; that is emptied the same way.
 
-    Idempotent: once moved, nothing writes an email to identifier again.
+    Idempotent: nothing writes an address to a session any more.
     """
     conn.execute(
-        """UPDATE sessions
-           SET email = identifier, identifier = NULL
-           WHERE COALESCE(is_workshop, 0) = 0 AND identifier IS NOT NULL AND email IS NULL"""
+        """INSERT OR IGNORE INTO contacts (email)
+           SELECT identifier FROM sessions
+           WHERE COALESCE(is_workshop, 0) = 0 AND identifier IS NOT NULL"""
     )
+    conn.execute(
+        """UPDATE sessions SET identifier = NULL
+           WHERE COALESCE(is_workshop, 0) = 0 AND identifier IS NOT NULL"""
+    )
+    if "email" in session_cols:
+        conn.execute(
+            "INSERT OR IGNORE INTO contacts (email) SELECT email FROM sessions WHERE email IS NOT NULL"
+        )
+        conn.execute("UPDATE sessions SET email = NULL WHERE email IS NOT NULL")
 
 
 def _backfill_render_mode_labels(conn: sqlite3.Connection) -> None:
@@ -208,7 +226,7 @@ def upsert_session(session_id: str) -> dict[str, Any]:
 
 def get_session(session_id: str) -> dict[str, Any] | None:
     row = _get_conn().execute(
-        "SELECT id, identifier, email, consent_given, is_workshop, created_at, last_seen_at"
+        "SELECT id, identifier, consent_given, is_workshop, created_at, last_seen_at"
         " FROM sessions WHERE id = ?",
         (session_id,),
     ).fetchone()
@@ -227,14 +245,21 @@ def save_session_identifier(
     conn.commit()
 
 
-def save_session_email(session_id: str, email: str | None, consent_given: bool) -> None:
-    """Record the consent dialog's answer. The email is kept as a contact address
-    and nothing else: it is not an identifier and no lookup reads it."""
+def save_session_consent(session_id: str, consent_given: bool) -> None:
+    """Record the consent dialog's answer to analytics on the session."""
     conn = _get_conn()
     conn.execute(
-        "UPDATE sessions SET email = ?, consent_given = ? WHERE id = ?",
-        (email, 1 if consent_given else 0, session_id),
+        "UPDATE sessions SET consent_given = ? WHERE id = ?",
+        (1 if consent_given else 0, session_id),
     )
+    conn.commit()
+
+
+def add_contact(email: str) -> None:
+    """Keep an address to send project updates to, with nothing that ties it to
+    a session or to anything recorded under one (#220)."""
+    conn = _get_conn()
+    conn.execute("INSERT OR IGNORE INTO contacts (email) VALUES (?)", (email,))
     conn.commit()
 
 
