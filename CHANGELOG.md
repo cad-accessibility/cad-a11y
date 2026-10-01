@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-09-29
+
+#### Added
+*   A tutorial that starts by itself the first time someone opens the viewer in a browser, after the consent dialog, so people who arrive without a facilitator can learn the viewer on their own. It teaches every feature on a practice mug in 16 lessons: connecting and testing a display, what a slice is, moving the cut, render modes, the cursor, zoom and moving the model, X, Y and Z, layouts and the slice graph, the cube, the slider, Reset and Fit, help and Settings, a set of "mug detective" challenges, and loading your own model. It runs in a region at the top of the page with the real controls, not in a dialog, so every key works while it teaches them. Each step moves on when the viewer shows you did the thing (the cut reached the handle, the render mode came back to Cut), says what changed, and never moves on or repeats itself on a timer. Hints come only when asked for.
+*   Exit tutorial on every step. It pauses the tutorial rather than dismissing it: the viewer is yours straight away, and the new Tutorial button in the main menu, or the top of the keyboard shortcuts list, resumes at the same lesson and step, starts over, or opens any lesson from a list with its status. Closing the tab partway through picks up at the same place next time. Someone who has used the viewer before hears once that the tutorial is there, and it does not start by itself for them. It never starts by itself on the demo, workshop or study pages; the demo offers it from the Tutorial button, and `?tutorial=start` opens it anywhere it is offered.
+*   Key help mode, from the tutorial or the shortcuts list: every key and every Monarch or DotPad button says what it does and does nothing, the way VoiceOver's keyboard help and NVDA's input help work.
+*   A practice mug in millimetres, standing on Z = 0 with its handle toward negative Y as an OpenSCAD model would, and printable files for it and ten slice plaques at `/tutorial/prints.zip`.
+
+#### Fixed
+*   F said the output device's internal name ("View fitted to monarch_hid") and fitted the slice to the Monarch's size on every display. It now fits to the display the render is actually drawn for, and says "View fitted to the Monarch" or "the DotPad" when one is connected, otherwise "View fitted to the display".
+*   The README described a LEGO practice round the study no longer runs, a demo chooser that offered every model, and a study panel that started a session as soon as it opened. It now says what each one does.
+*   Focus went to the page title twice on every load, the second time a moment after the page was ready, which would pull it off anything focused in between, such as the tutorial's first lesson. The second move now happens only when the page comes back from the browser's cache, which is what it was for.
+
 ### 2026-09-22
 
 #### Fixed

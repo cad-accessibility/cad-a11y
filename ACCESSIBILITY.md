@@ -31,8 +31,16 @@ We apply accessible practices to the repository itself:
 
 The web viewer (`accessible-3d-viewer.html`) targets WCAG 2.1 AA. CI runs automated axe-core checks on every pull request.
 
+The first-run tutorial is a labelled region on the same page as the viewer, not a modal
+dialog, so every viewer key keeps working while it teaches them. Each step keeps its text on
+the page, speaks one polite announcement, waits for the reader (nothing is timed), and has
+real buttons for Continue, Back, Repeat, Hint and Exit tutorial, because single-letter keys
+do not reach the page in a screen reader's browse mode. Exit pauses it, and the Tutorial
+button in the main menu resumes it where it stopped.
+
 Known limitations as of this writing:
 
+- The tutorial has not yet been tried end to end by blind users, on a Monarch or a DotPad, or with NVDA, JAWS, VoiceOver and Narrator. Its display test pattern, the dot answers read from the display, and the cube and slider lessons are unverified on hardware.
 - The SVG output rendered by the converter is not yet fully described by structured alt text; this is active research.
 - Device integrations (Monarch, DotPad, Trinkey) require physical hardware and cannot be exercised in automated tests.
 

@@ -1103,6 +1103,163 @@ body.study-ui section[aria-labelledby="model-list-heading"] { display: none; }
 }
 
 /* ---------------------------------------------------------------------------
+   Tutorial (static/js/tutorial.js).
+
+   The region carries .study-region as well, so it has the study region's box,
+   dark-mode colours and forced-colours border, and the two read as one kind of
+   thing. What follows is only what the tutorial adds: a button row that wraps,
+   the lesson list, and the note on locked controls.
+
+   Nothing here sets display on a class the page ships hidden, so [hidden]
+   keeps working (tests/test_main_menu_and_layout.py checks for that).
+   --------------------------------------------------------------------------- */
+
+/* Not offered on the study page or the simplified workshop viewer: the button,
+   its section in the shortcuts dialog and the region itself are all gone, not
+   merely hidden from sight, so none of them sits in the tab order. */
+body.study-ui #nav-tutorial-btn,
+body.study-ui #tutorial-shortcuts-section,
+body.study-ui #tutorial-region,
+body.simple-ui #nav-tutorial-btn,
+body.simple-ui #tutorial-shortcuts-section,
+body.simple-ui #tutorial-region {
+    display: none;
+}
+
+/* Resume has no meaning on /demo, where nothing survives the tab. */
+body.demo-ui .tutorial-resume {
+    display: none;
+}
+
+.tutorial-region .tutorial-progress {
+    font-weight: 600;
+    margin: 4px 0;
+}
+
+.tutorial-region .tutorial-step-text {
+    margin: 8px 0;
+    font-size: 1.05em;
+}
+
+.tutorial-region .tutorial-note {
+    margin: 8px 0;
+    font-weight: 600;
+}
+
+.tutorial-region .tutorial-last {
+    margin: 8px 0;
+    color: #3d4a52;
+}
+
+.tutorial-region .tutorial-answers-label {
+    margin: 12px 0 0;
+    font-weight: 600;
+}
+
+.tutorial-region .tutorial-hints {
+    margin: 8px 0;
+    padding-left: 1.5em;
+}
+
+/* Nine or more buttons in one row: they wrap rather than run off the side,
+   and a narrow window (or 400% zoom) gets them stacked. */
+.tutorial-region .tutorial-controls {
+    margin-top: 12px;
+}
+
+.tutorial-region button {
+    min-width: 0;
+}
+
+/* The heading takes focus when the tutorial opens, and on Lessons, Resume and
+   Start over. A sighted helper watching needs to see where it went. */
+.tutorial-region h2:focus-visible,
+.tutorial-region h2:focus {
+    outline: 3px solid #f39c12;
+    outline-offset: 2px;
+}
+
+/* A toggle's state has to show without colour alone: an inset ring appears and
+   the text is underlined while Key help is on. */
+.tutorial-region button[aria-pressed="true"],
+#tutorial-shortcuts-section button[aria-pressed="true"] {
+    background: #0f3d5c;
+    box-shadow: inset 0 0 0 3px #f39c12;
+    text-decoration: underline;
+}
+
+.tutorial-region h3 {
+    margin: 16px 0 6px;
+    font-size: 1.05em;
+    color: #2c3e50;
+}
+
+.tutorial-lesson-list {
+    list-style: none;
+    margin: 0 0 8px;
+    padding: 0;
+}
+
+.tutorial-lesson-list li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
+    padding: 4px 0;
+    border-bottom: 1px solid #d5e3ec;
+}
+
+.tutorial-lesson-list .tutorial-lesson-name {
+    font-weight: 600;
+    min-width: 14em;
+}
+
+.tutorial-lesson-list .tutorial-lesson-status {
+    flex: 1 1 12em;
+}
+
+/* Beside a control the tutorial has locked for the lesson: plain words for
+   why it does nothing, rather than a control that is silently dead. */
+.tutorial-lock-note {
+    font-style: normal;
+    font-weight: 600;
+    color: #7a4100;
+}
+
+@media (prefers-color-scheme: dark) {
+    .tutorial-region,
+    .tutorial-region h2,
+    .tutorial-region h3 {
+        color: #e8f1f7;
+    }
+    .tutorial-region .tutorial-last {
+        color: #c9d8e2;
+    }
+    .tutorial-region a {
+        color: #9fd3f5;
+    }
+    .tutorial-lesson-list li {
+        border-bottom-color: #2d4b5d;
+    }
+}
+
+@media (forced-colors: active) {
+    .tutorial-region button[aria-pressed="true"],
+    #tutorial-shortcuts-section button[aria-pressed="true"] {
+        border: 3px solid Highlight;
+        forced-color-adjust: none;
+        background: Highlight;
+        color: HighlightText;
+    }
+    .tutorial-region h2:focus {
+        outline: 3px solid Highlight;
+    }
+    .tutorial-lesson-list li {
+        border-bottom: 1px solid CanvasText;
+    }
+}
+
+/* ---------------------------------------------------------------------------
    DEMO MODE INDICATOR
 
    Shown only at /demo. It has to be readable across a room at a glance -- the

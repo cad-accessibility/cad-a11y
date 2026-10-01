@@ -47,6 +47,11 @@
 	        <button type="button" id="device-disconnect-btn" hidden>Disconnect</button>
                 <button type="button" id="nav-about-btn">About</button>
                 <button type="button" id="nav-help-btn">Help</button>
+                <!-- The tutorial's permanent home: Resume, Start over and the
+                     lesson list. Hidden where the tutorial is not offered
+                     (/study, /workshop, ?ui=simple); see TUTORIAL_ROUTES in
+                     static/js/tutorial.js. -->
+                <button type="button" id="nav-tutorial-btn">Tutorial</button>
                 <button type="button" id="nav-settings-btn">Settings</button>
 	      </div>
             </nav>
@@ -195,6 +200,85 @@
                 <p id="study-ready-status" role="status" class="help-text"></p>
             </section>
 
+            <!--
+                TUTORIAL REGION -- the first-run tutorial, driven by
+                static/js/tutorial.js. It opens by itself on a first visit to
+                /viewer and from the Tutorial button in the main menu; it never
+                appears on /study or in the simplified workshop viewer (see
+                TUTORIAL_ROUTES in tutorial.js, and viewer.css).
+
+                Right after the study region, so it is the first thing in main
+                and the skip link lands on it. A region rather than a dialog: the
+                viewer ignores every key while a dialog is open, and the lessons
+                are about those keys.
+
+                Nothing in here is a live region. A step change is said once,
+                through the shared polite announcement window, and the text here
+                stays put to be read on demand, like the study region above. The
+                "Last" line is plain text for the same reason. Every answer is a
+                button, never a radio: the viewer takes Arrow Up and Down for depth
+                on anything that is not a text field.
+            -->
+            <section id="tutorial-region" class="study-region tutorial-region" aria-labelledby="tutorial-heading" hidden>
+                <h2 id="tutorial-heading" tabindex="-1">Tutorial</h2>
+
+                <div id="tutorial-lesson-view">
+                    <p id="tutorial-progress" class="tutorial-progress">Step 1 of 1</p>
+                    <p id="tutorial-step-text" class="tutorial-step-text"></p>
+                    <p id="tutorial-note" class="tutorial-note" hidden></p>
+                    <p id="tutorial-last" class="tutorial-last">Last: <span id="tutorial-last-text">nothing yet.</span></p>
+                    <div id="tutorial-answers" role="group" aria-labelledby="tutorial-answers-label" hidden>
+                        <p id="tutorial-answers-label" class="tutorial-answers-label">Answers</p>
+                        <div id="tutorial-answer-buttons" class="button-group"></div>
+                    </div>
+                    <ol id="tutorial-hints" class="tutorial-hints" aria-label="Hints so far" hidden></ol>
+                    <!--
+                        Exit is always here, on every lesson and every step: named
+                        on the first screen, one press, nothing lost (it pauses).
+                        Escape cannot be the only way out, since NVDA takes it.
+                    -->
+                    <div class="button-group tutorial-controls">
+                        <button type="button" id="tutorial-continue-btn">Continue (N)</button>
+                        <button type="button" id="tutorial-back-btn">Back (B)</button>
+                        <button type="button" id="tutorial-repeat-btn">Repeat (C)</button>
+                        <button type="button" id="tutorial-hint-btn">Hint 1 of 3</button>
+                        <button type="button" id="tutorial-restart-lesson-btn">Return to lesson start</button>
+                        <button type="button" id="tutorial-keyhelp-btn" aria-pressed="false">Key help</button>
+                        <button type="button" id="tutorial-lessons-btn">Lessons</button>
+                        <button type="button" id="tutorial-skip-btn">Skip step</button>
+                        <button type="button" id="tutorial-skip-lesson-btn" hidden>Skip lesson</button>
+                        <button type="button" id="tutorial-keys-btn" aria-expanded="false" aria-controls="tutorial-keys-help" hidden>Keys aren't working</button>
+                        <button type="button" id="tutorial-connect-monarch-btn" hidden>Connect Monarch</button>
+                        <button type="button" id="tutorial-connect-dotpad-btn" hidden>Connect DotPad</button>
+                        <button type="button" id="tutorial-exit-btn">Exit tutorial</button>
+                    </div>
+                    <div id="tutorial-keys-help" class="tutorial-keys-help" hidden>
+                        <h3 id="tutorial-keys-help-heading">When keys do nothing</h3>
+                        <ul id="tutorial-keys-help-list"></ul>
+                    </div>
+                    <p id="tutorial-prints" hidden>
+                        <a href="/tutorial/prints.zip" download>Printable tutorial mug and slice plaques (zip file)</a>
+                    </p>
+                </div>
+
+                <div id="tutorial-menu-view" hidden>
+                    <p id="tutorial-menu-intro" class="tutorial-step-text">
+                        Pick any lesson. Done lessons can be redone.
+                    </p>
+                    <div id="tutorial-menu-resume" class="tutorial-resume" hidden>
+                        <button type="button" id="tutorial-resume-btn">Resume</button>
+                    </div>
+                    <div id="tutorial-menu-groups"></div>
+                    <div class="button-group">
+                        <button type="button" id="tutorial-start-over-btn">Start over</button>
+                        <button type="button" id="tutorial-menu-exit-btn">Exit tutorial</button>
+                    </div>
+                    <p>
+                        <a href="/tutorial/prints.zip" download>Printable tutorial mug and slice plaques (zip file)</a>
+                    </p>
+                </div>
+            </section>
+
             <div class="layout">
                 <!-- LEFT COLUMN: controls (braille reading order: most-used first) -->
                 <div class="left-col" id="left-col">
@@ -324,6 +408,11 @@
                             Slice Graph
                         </label>
                     </fieldset>
+                    <!-- Shown, and pointed to from each radio, while a tutorial
+                         lesson has the layout locked (static/js/tutorial.js). -->
+                    <p id="layout-lock-note" class="help-text tutorial-lock-note" hidden>
+                        Locked during the tutorial. Exit the tutorial to change the layout.
+                    </p>
                 </div>
                 <div class="help-text" id="slice-graph-lock-status">Graph lock ON.</div>
             </section>
@@ -363,6 +452,11 @@
                 <select id="model-list-dropdown" aria-label="Select a 3D model">
                     <option value="" selected>Loading models...</option>
                 </select>
+                <!-- Shown, and pointed to from the chooser and the upload field,
+                     while a tutorial lesson has them locked (static/js/tutorial.js). -->
+                <p id="model-lock-note" class="help-text tutorial-lock-note" hidden>
+                    Locked during the tutorial. Exit the tutorial to choose or upload a model.
+                </p>
                 <button type="button" id="delete-model-btn" hidden>Remove uploaded model</button>
                 <div style="margin-top: 12px;">
                     <input type="file" id="upload-model-input" accept=".stl,.step,.STEP"
@@ -517,6 +611,29 @@
     >
         <h2 id="shortcuts-heading" tabindex="-1">Keyboard Shortcuts</h2>
         <p class="help-text">Press <kbd>Esc</kbd> or activate Close to return to where you were.</p>
+
+        <!-- The tutorial's other home, beside the Tutorial button in the main
+             menu. Each button closes this dialog first and acts once it has
+             closed, so focus ends in the tutorial rather than back on whatever
+             opened the dialog. Hidden where the tutorial is not offered (see
+             viewer.css); Resume is shown only when there is something to
+             resume, and Key help only while the tutorial is running. -->
+        <div id="tutorial-shortcuts-section">
+            <h3 id="tutorial-shortcuts-heading">Tutorial</h3>
+            <!-- A labelled group, so tabbing in says "Tutorial" before "Start over":
+                 on its own that button name does not say what it starts over. -->
+            <div class="button-group" role="group" aria-labelledby="tutorial-shortcuts-heading">
+                <button type="button" id="tutorial-dialog-resume-btn" class="tutorial-resume" hidden>Resume</button>
+                <button type="button" id="tutorial-dialog-start-over-btn">Start over</button>
+                <button type="button" id="tutorial-dialog-lessons-btn">Choose a lesson</button>
+                <button type="button" id="tutorial-dialog-keyhelp-btn" aria-pressed="false" hidden>Key help</button>
+            </div>
+            <ul class="shortcuts-list">
+                <li><kbd>N</kbd> Continue, while the tutorial is running</li>
+                <li><kbd>B</kbd> Back a step</li>
+                <li><kbd>C</kbd> Repeat the step</li>
+            </ul>
+        </div>
 
         <!-- Only meaningful at /study; hidden elsewhere and revealed by
              study.js the same way #study-region itself is (#180). Placed
@@ -789,6 +906,12 @@
          interactions to the study log. -->
     <script src="/static/js/study.js"></script>
 
+    <!-- First-run tutorial. A classic script, not deferred: it has to decide
+         before the viewer's first render whether that render is its own, and
+         listen for the consent dialog settling, which the script below reports.
+         Inert on /study. -->
+    <script src="/static/js/tutorial.js"></script>
+
     <!-- Monarch USB Browser HID integration (mirrors braille_display.py _send_to_monarch) -->
     <script src="/static/js/monarch-hid.js"></script>
 
@@ -806,6 +929,24 @@
         'use strict';
 
         // ---------------------------------------------------------------------------
+        // Consent settled: said once per load, whichever way initSession ends.
+        //
+        // The tutorial (static/js/tutorial.js) waits for this before it starts,
+        // since the consent dialog is modal and would sit on top of the first
+        // lesson, and it reads `reason` to tell a returning visitor from a new
+        // one: "decided" means this browser answered on an earlier visit.
+        // consent_given is true, false, or null where nothing was asked.
+        // ---------------------------------------------------------------------------
+        let consentSettled = false;
+        function settleConsent(reason, consentGiven) {
+            if (consentSettled) return;
+            consentSettled = true;
+            document.dispatchEvent(new CustomEvent('cad:consent-settled', {
+                detail: { reason: reason, consent_given: consentGiven },
+            }));
+        }
+
+        // ---------------------------------------------------------------------------
         // Session initialisation — runs once per page load.
         // GET /session/me tells us whether the user has already seen the consent prompt.
         // ---------------------------------------------------------------------------
@@ -814,39 +955,42 @@
             // transient, no-login flow and we deliberately set no tracking cookie there.
             const workshopSimple = location.pathname.replace(/\/+$/, '') === '/workshop'
                 || new URLSearchParams(location.search).get('ui') === 'simple';
-            if (workshopSimple) return;
+            if (workshopSimple) return settleConsent('workshop', null);
 
             // Skip it in study mode too. Study participants give informed consent
             // on paper before the session starts, so this dialog asks a question
             // that has already been answered — and it would ask it as a modal, in
             // front of a participant who is mid-onboarding on a braille display.
             // Study logging is separate from analytics and is not gated on it.
-            if (location.pathname.replace(/\/+$/, '') === '/study') return;
+            if (location.pathname.replace(/\/+$/, '') === '/study') return settleConsent('study', null);
 
             // Skip it on the demo path, and never create a session there. The
             // dialog's entire subject is a tracking cookie and an email address,
             // and a demo station sets neither -- asking would offer a choice that
             // has already been made, in the one place it cannot be answered
             // either way.
-            if (window.CAD_DEMO_MODE) return;
+            if (window.CAD_DEMO_MODE) return settleConsent('demo', null);
 
             let sessionData = null;
             try {
                 const res = await fetch('/session/me');
                 if (res.ok) sessionData = await res.json();
             } catch (_) {
-                return; // server unavailable, so skip the dialog silently
+                // server unavailable, so skip the dialog silently
+                return settleConsent('unavailable', null);
             }
 
             // Show the dialog only for a genuinely new session (no consent decision yet).
-            if (!sessionData || sessionData.consent_given !== null) return;
+            if (!sessionData) return settleConsent('unavailable', null);
+            // The database keeps consent as 1 or 0; listeners are promised true or false.
+            if (sessionData.consent_given !== null) return settleConsent('decided', Boolean(sessionData.consent_given));
 
             const dialog = document.getElementById('session-consent-dialog');
             const form = document.getElementById('consent-form');
             const emailInput = document.getElementById('consent-email');
             const errorEl = document.getElementById('consent-email-error');
             const main = document.getElementById('main-content');
-            if (!dialog || !dialog.showModal || !form) return;
+            if (!dialog || !dialog.showModal || !form) return settleConsent('no-dialog', null);
 
             // The error lives inside the dialog so its role="alert" is announced even while
             // the modal makes the rest of the page inert. We also mark the field invalid and
@@ -889,6 +1033,9 @@
             // Escape is caught via keydown and cancel, and the submit handler restores it directly.
             dialog.addEventListener('close', restoreBackground);
             dialog.addEventListener('cancel', restoreBackground);
+            // Closed without a choice (Escape). A successful submit has already
+            // settled it by the time this fires, with the choice made.
+            dialog.addEventListener('close', function () { settleConsent('dismissed', null); });
             dialog.addEventListener('keydown', function (e) {
                 if (e.key === 'Escape') restoreBackground();
             });
@@ -931,6 +1078,9 @@
                             main.setAttribute('tabindex', '-1');
                             main.focus();
                         }
+                        // After focus has moved, so the tutorial, which starts on
+                        // this, moves it once more to its own first lesson.
+                        settleConsent('submitted', action === 'accept');
                         // Email may link this session to prior uploads on other devices;
                         // refresh the model list so those files appear immediately.
                         initSessionModels();
@@ -974,6 +1124,10 @@
                 body: JSON.stringify({ event_type: eventType, event_data: eventData }),
             }).catch(function () {});
         }
+        // The tutorial's coarse progress events ("tutorial": lesson completed,
+        // exited, and so on) go through this same helper, and only once the
+        // visitor has allowed analytics; see track() in static/js/tutorial.js.
+        window.cadTrackEvent = trackEvent;
 
         // Track how long the user dwells in each labelled section.
         (function trackSectionDwell() {
