@@ -561,7 +561,7 @@ def _announce_models_changed() -> None:
 
 
 class ModelNotAvailable(LookupError):
-    """A request named a model this server cannot show it."""
+    """A request named a model this server cannot show."""
 
 
 @app.errorhandler(ModelNotAvailable)
