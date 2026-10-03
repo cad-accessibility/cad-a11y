@@ -291,15 +291,17 @@ def test_an_upload_does_not_renumber_a_model_under_an_open_window(client):
             (server.UPLOAD_DIR / filename).unlink(missing_ok=True)
 
 
-def test_an_unknown_model_falls_back_rather_than_borrowing_one(client):
+def test_an_unknown_model_is_refused_rather_than_borrowing_one(client):
     """There is no process-wide "current model" to fall back to any more, which is
-    what used to hand over whatever another window had selected. Both an unknown
-    name and a missing model resolve to the default, so their renders match the
-    default byte for byte rather than borrowing another window's model."""
+    what used to hand over whatever another window had selected. An unknown name
+    is refused rather than answered with any other model, the default included
+    (#238); asking for no model at all gets the default, byte for byte."""
     import app.server as server
 
     default_render = _render(client, model=server.DEFAULT_MODEL.stem)
-    assert _render(client, model="no_such_model_at_all")["image_base64"] == default_render["image_base64"]
+    refused = client.post("/render", json=_params(model="no_such_model_at_all"))
+    assert refused.status_code == 404
+    assert refused.get_json()["code"] == "model_not_available"
     assert _render(client, model=None)["image_base64"] == default_render["image_base64"]
 
 

@@ -386,6 +386,15 @@ async function sendStateToServer() {
             signal: renderAbortController.signal,
         })
         .then(res => {
+            // Refused: the model asked for isn't there, or isn't this window's to
+            // see. Nothing was rendered, so the display still shows the last
+            // model it did (#238).
+            if (res.status === 404) {
+                return res.json().catch(() => ({})).then(body => {
+                    if (body && body.code === 'model_not_available') return { modelNotAvailable: true };
+                    throw new Error(`HTTP ${res.status}`);
+                });
+            }
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             return res.json();
         })
@@ -397,6 +406,23 @@ async function sendStateToServer() {
                 announce('Server reconnected.');
             }
             serverConnected = true;
+
+            if (data.modelNotAvailable) {
+                handleModelNotAvailable(state.current_model, activeModelLoadTask);
+                renderDeliveredSerial = Math.max(renderDeliveredSerial, attemptSerial);
+                return;
+            }
+
+            // The model on the display, in the server's words. A page that asked
+            // for no model gets the default, and the list and status bar should
+            // name it rather than whichever model happens to be first in the list.
+            if (data.model) {
+                lastShownModel = data.model;
+                lastUnavailableModel = null;
+                if (!viewerState.currentModel && !state.current_model) {
+                    viewerState.currentModel = data.model;
+                }
+            }
 
             // Update bounding box if available in response
             if (data.bbox) {
@@ -567,6 +593,17 @@ const representationModes = [
 ];
 viewerState.currentModel = null;   // the model this window is showing, by name
 let sessionOwnedModels = new Set(); // filenames (with extension) owned by the current cookie session
+// Filenames this tab uploaded. Owned whether or not there is a cookie, so they
+// survive sessionOwnedModels being rebuilt from /session/models, which only
+// knows a cookie session's uploads.
+const tabUploadedModels = new Set();
+// The model on the display, as the server reported it. currentModel is what this
+// window last asked for; the two differ while a request is out, and when the
+// one asked for could not be shown (#238).
+let lastShownModel = null;
+// The last model said to be unavailable, so the list and the render, which can
+// both find out, don't both say it.
+let lastUnavailableModel = null;
 let builtinModelStems = null;       // stems from MODEL_DIR; null = not yet received, show all
 // On /demo only: the stems the chooser is limited to, from GET /demo/status.
 // null until it arrives, and null means show everything, so a slow or failed
@@ -2227,11 +2264,66 @@ function updateModelList(model_list) {
         dropdown.value = viewerState.currentModel;
         if (sbModel) sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
     } else {
+        const gone = viewerState.currentModel;
         dropdown.selectedIndex = 0;
         viewerState.currentModel = dropdown.value;
         if (sbModel && dropdown.options.length > 0) sbModel.textContent = dropdown.options[0].text;
+        // The model this window chose is no longer in the list. If it was the
+        // one on the display, the display is about to change under the reader:
+        // say so, say what replaces it, and show it now (#238).
+        if (gone && gone !== viewerState.currentModel) {
+            const wasShown = gone === lastShownModel;
+            // A load still in flight was for the model that has gone; it must
+            // not be announced as loaded when its response arrives.
+            modelLoadAnnouncement = null;
+            announceModelUnavailable(gone, wasShown ? viewerState.currentModel : null);
+            // Always, so a response still in flight for the model that has gone
+            // is followed by one for the model the list now names.
+            sendStateToServer();
+        }
     }
     refreshDeleteButton();
+}
+
+// Puts the given model in the list, the status bar and the delete button,
+// without sending anything. null leaves the choice to the next render, which
+// names whatever the server shows.
+function showModelInControls(stem) {
+    viewerState.currentModel = stem;
+    if (!stem) return;
+    const dropdown = document.getElementById('model-list-dropdown');
+    const option = dropdown ? [...dropdown.options].find(o => o.value === stem) : null;
+    if (option) dropdown.value = stem;
+    if (sbModel) sbModel.textContent = option ? option.text : stem;
+    refreshDeleteButton();
+}
+
+// Says once that a model can't be shown, however the viewer found out: a render
+// was refused, or the list dropped it. It adds what is shown instead only when
+// the display moves off a model the reader was exploring, the one time it
+// changes under them.
+function announceModelUnavailable(name, showing = null) {
+    if (!name || name === lastUnavailableModel) return;
+    lastUnavailableModel = name;
+    // In study mode the name is the answer to the task, so it is never said.
+    const label = studyMode ? 'This model' : name;
+    announceAlert(showing && !studyMode
+        ? `${label} isn't available. Showing ${showing}.`
+        : `${label} isn't available.`);
+}
+
+// A render was refused for the model asked for. The display was not touched, so
+// the controls go back to the model it shows, unless the reader has chosen
+// another since this request went out.
+function handleModelNotAvailable(missing, task) {
+    clearModelLoadTask(task);
+    if (viewerState.currentModel === missing) showModelInControls(lastShownModel);
+    announceModelUnavailable(missing);
+    // The list offered something that could not be shown, so it is out of date.
+    pollServerState();
+    // Nothing shown yet, from a link to a model that has gone: start where a
+    // fresh page does, on the default model.
+    if (!lastShownModel) sendStateToServer();
 }
 
 document.getElementById("model-list-dropdown").addEventListener("input", function() {
@@ -2292,7 +2384,11 @@ async function initSessionModels() {
         if (!resp.ok) return;
         const data = await resp.json();
         const available = (data.models || []).filter(m => m.available);
-        sessionOwnedModels = new Set(available.map(m => m.filename));
+        // This tab's own uploads stay. Without a cookie they are in no session,
+        // so replacing the set dropped them from the list. That never showed
+        // while this ran only at page load; it now runs whenever the models
+        // change, which includes the upload itself (#238).
+        sessionOwnedModels = new Set([...tabUploadedModels, ...available.map(m => m.filename)]);
         // Force a full rebuild so the filter and annotations are applied correctly.
         lastModelListSignature = null;
         if (lastFullModelList.length > 0) updateModelList(lastFullModelList);
@@ -2316,6 +2412,7 @@ document.getElementById('delete-model-btn').addEventListener('click', async func
         });
         if (resp.ok) {
             sessionOwnedModels.delete(filename);
+            tabUploadedModels.delete(filename);
             dropdown.remove(dropdown.selectedIndex);
             if (dropdown.options.length > 0) {
                 dropdown.selectedIndex = 0;
@@ -2361,7 +2458,10 @@ document.getElementById('upload-model-input').addEventListener('change', async f
         const data = await resp.json();
 
         if (data.status === 'success') {
-            if (data.filename) sessionOwnedModels.add(data.filename);
+            if (data.filename) {
+                sessionOwnedModels.add(data.filename);
+                tabUploadedModels.add(data.filename);
+            }
             updateModelList(data.model_list);
             // Select the newly uploaded model
             const dropdown = document.getElementById('model-list-dropdown');
@@ -2411,6 +2511,14 @@ document.getElementById('upload-model-input').addEventListener('change', async f
 // message to one window: the client registry is a list of queues with nothing
 // attached to say who is who.
 function applyServerState(data) {
+    // Something was uploaded or removed, here or in another window, or a file
+    // changed on disk. Ask for this window's own list now, so it doesn't go on
+    // offering a model that has gone (#238). The signal names no model.
+    if (data.models_changed) {
+        pollServerState();
+        if (!window.CAD_DEMO_MODE) initSessionModels();
+        return;
+    }
     if (Array.isArray(data.builtin_model_stems) && data.builtin_model_stems.length && !builtinModelStems) {
         builtinModelStems = data.builtin_model_stems;
         // Force a rebuild now that the filter is known.
@@ -2474,9 +2582,9 @@ let pollFailCount = 0;
 const POLL_FAIL_THRESHOLD = 2;
 
 // Slow fallback poll: the sole authority for serverConnected state changes.
-// Keeps model list and bbox in sync for state that isn't pushed over SSE
-// (e.g. model uploads). Runs every 5 s.
-setInterval(() => {
+// Keeps model list and bbox in sync for state that isn't pushed over SSE. Runs
+// every 5 s, and at once when the server says the set of models changed.
+function pollServerState() {
     fetch(`${SERVER_URL}/get_data`)
         .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
         .then(data => {
@@ -2497,7 +2605,8 @@ setInterval(() => {
                 announceAlert('Server unavailable — rendering paused.');
             }
         });
-}, 5000);
+}
+setInterval(pollServerState, 5000);
 
 // Update zoom information
 function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
