@@ -971,6 +971,23 @@ const shortcutsCloseBtn = document.getElementById('shortcuts-close-btn');
 const shortcutsHeading = document.getElementById('shortcuts-heading');
 const mainContent = document.getElementById('main-content');
 
+// The feedback address, for people without a GitHub account (#223). It is put
+// together here rather than written into the page, so crawlers that read the
+// HTML without running it find no address to harvest. Once filled in it is an
+// ordinary mailto: link with the address as visible text, so a screen reader
+// reads it like any other link, and anyone whose mail is on the web, where a
+// mailto: link does nothing, can still read and copy it.
+function fillInContactAddress() {
+    const address = ['cada11y', ['uw', 'edu'].join('.')].join('@');
+    document.querySelectorAll('a.contact-email').forEach(link => {
+        link.href = `mailto:${address}?subject=${encodeURIComponent('CAD A11y feedback')}`;
+        link.textContent = link.dataset.label ? `${link.dataset.label} ${address}` : address;
+        link.hidden = false;
+    });
+    document.querySelectorAll('.contact-email-reveal').forEach(el => { el.hidden = false; });
+}
+fillInContactAddress();
+
 // Main menu
 const navAboutBtn = document.getElementById('nav-about-btn');
 const navHelpBtn = document.getElementById('nav-help-btn');
