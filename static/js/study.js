@@ -1,7 +1,7 @@
 /**
- * Study session driver for the participant's view (/study).
+ * Study session driver for the participant's view (/studies/<slug>).
  *
- * Inert on every other page. On /study it does three things:
+ * Inert on every other page. On a study's page it does three things:
  *
  *   1. Keeps the study region in sync with the experimenter, over the
  *      Server-Sent Events channel, and loads the model each protocol step calls
@@ -14,12 +14,18 @@
  * It never learns the name of the model on the display. The server sends an
  * index into its model list plus a neutral label, so there is nothing here for a
  * screen reader to read out that would answer the question the participant is
- * being asked. See app/study.py.
+ * being asked. See app/studies/engine.py.
  */
 (function () {
     'use strict';
 
     if (!window.cadStudy || !window.cadStudy.isStudyMode()) return;
+
+    // Every request goes to this study's own address: /studies/<slug>/state and
+    // so on. Two studies open on one server have separate sessions, codes and
+    // logs, and the page only ever talks to the one in its URL.
+    const BASE = window.cadStudy.basePath();
+    const api = (path) => `${BASE}/${path}`;
 
     const region = document.getElementById('study-region');
     const heading = document.getElementById('study-step-heading');
@@ -39,9 +45,9 @@
     if (studyShortcuts) studyShortcuts.hidden = false;
 
     // Identifies this browser in the log. Sessions on a public deployment can in
-    // principle pick up a stray visitor at /study; tagging every event means
-    // their activity is separable in analysis rather than silently mixed in, and
-    // the experimenter panel shows how many views are attached.
+    // principle pick up a stray visitor at a study's address; tagging every event
+    // means their activity is separable in analysis rather than silently mixed
+    // in, and the experimenter panel shows how many views are attached.
     const CLIENT_ID_KEY = 'cadA11yStudyClientId';
     let clientId = null;
     try {
@@ -110,8 +116,8 @@
     let participantCode = '';
 
     // Which session this browser belongs to. Several can run at once on one
-    // deployment, so a plain /study is only unambiguous while exactly one is
-    // active; the key in the link is what makes it certain. Kept in
+    // deployment, so the study's address alone is only unambiguous while exactly
+    // one is active; the key in the link is what makes it certain. Kept in
     // sessionStorage so a reload, or the participant's screen reader restarting
     // the page, does not lose it.
     const KEY_STORAGE = 'cadA11yStudyKey';
@@ -159,7 +165,7 @@
             if (!typed) return;
             if (joinError) { joinError.hidden = true; joinError.textContent = ''; }
             rememberKey(typed);
-            fetch(withKey('/study/state'))
+            fetch(withKey(api('state')))
                 .then(function (res) { return res.ok ? res.json() : null; })
                 .then(function (state) {
                     if (state && state.active) {
@@ -203,7 +209,7 @@
     function report(eventType, eventData, viewerState) {
         if (!sessionActive) return;
         try {
-            fetch(withKey('/study/event'), {
+            fetch(withKey(api('event')), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -247,7 +253,7 @@
 
         const wasActive = sessionActive;
         sessionActive = Boolean(state.active);
-        window.cadStudy.setSessionId(sessionActive ? state.study_session_id : null);
+        window.cadStudy.setSessionKey(sessionActive ? state.participant_key : null);
 
         if (!sessionActive) {
             currentStepId = null;
@@ -382,7 +388,7 @@
         // Only actually moves the step in a solo session; in a paired one this
         // is advisory and the flag simply expires unused a few seconds from now.
         expectOwnStepChange();
-        fetch(withKey('/study/step/ready'), {
+        fetch(withKey(api('step/ready')), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -439,7 +445,7 @@
             return;
         }
         expectOwnStepChange();
-        fetch(withKey('/study/step/back'), {
+        fetch(withKey(api('step/back')), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -498,7 +504,7 @@
 
     function connect() {
         try {
-            eventSource = new EventSource(withKey('/study/stream'));
+            eventSource = new EventSource(withKey(api('stream')));
         } catch (_) {
             scheduleReconnect();
             return;
@@ -533,7 +539,7 @@
     /** One-shot state fetch. Covers the gap before the stream is up, and the
      * case where a proxy refuses to hold an SSE connection at all. */
     function refreshOnce() {
-        fetch(withKey('/study/state'))
+        fetch(withKey(api('state')))
             .then(function (res) { return res.ok ? res.json() : null; })
             .then(applyState)
             .catch(function () {});

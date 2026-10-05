@@ -1,5 +1,5 @@
 /* ---------------------------------------------------------------------------
-   Study control panel (/study/control).
+   Study control panel (/studies/<slug>/control).
 
    Loaded after viewer.css, which supplies the shared shell: .container, .field,
    .button-group, .help-text, .sr-only, .skip-link. Only what is specific to this

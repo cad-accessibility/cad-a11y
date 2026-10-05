@@ -20,14 +20,17 @@
  * screen reader users, so every change of state reaches a live region, the
  * participant's readiness signal is announced rather than only lit up, and a
  * degraded log says so in words.
+ *
+ * The page is /studies/<slug>/control, and everything it calls is under that
+ * path. It asks for the study's panel token once, and the server answers with
+ * a cookie scoped to that path, so the token is never in a URL: not in the
+ * browser's history, and not in the logs of the proxy in front of the server.
  */
 (function () {
     'use strict';
 
-    // The panel is open unless the deployment sets STUDY_CONTROL_TOKEN. When it
-    // does, the token rides in the URL; when it does not -- the default -- there
-    // is nothing to find and nothing to paste.
-    const TOKEN = new URLSearchParams(location.search).get('token') || '';
+    const BASE = location.pathname.replace(/\/control\/?$/, '');
+    const API = `${BASE}/control`;
 
     const el = (id) => document.getElementById(id);
 
@@ -77,13 +80,17 @@
     // Plumbing
     // -----------------------------------------------------------------------
 
+    /** A signed-out panel: the token was never entered, or the server has
+     * restarted since. Every request that hits this shows the sign-in form. */
+    class SignedOut extends Error {}
+
     function api(path, options) {
-        const opts = Object.assign({ headers: {} }, options || {});
+        const opts = Object.assign({ headers: {}, credentials: 'same-origin' }, options || {});
         opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers);
-        if (TOKEN) opts.headers['X-Study-Token'] = TOKEN;
         if (boundSessionId) opts.headers['X-Study-Session'] = String(boundSessionId);
-        return fetch(path, opts).then(function (res) {
+        return fetch(`${API}/${path}`, opts).then(function (res) {
             return res.json().catch(function () { return {}; }).then(function (body) {
+                if (res.status === 401) throw new SignedOut(body.message || 'Signed out');
                 if (!res.ok) throw new Error(body.message || `Request failed (${res.status})`);
                 return body;
             });
@@ -254,10 +261,11 @@
     el('help-btn')?.addEventListener('click', () => helpDialogController.open());
 
     // -----------------------------------------------------------------------
-    // Choosing the model set, and enrolment
+    // Choosing the task set, and enrolment
     //
-    // Which two objects a participant gets is the one thing starting a session
-    // needs a human to decide, so it is the first thing on screen. Everything
+    // Which tasks a participant gets, and in which order, is the one thing
+    // starting a session needs a human to decide, so it is the first thing on
+    // screen. Everything
     // else the old enrolment form asked for was already settled -- the
     // participant id comes from the database, the session number is 1 -- so it
     // asked questions with only one answer and stood between the experimenter
@@ -266,9 +274,9 @@
 
     const setSection = el('set-section');
 
-    /** Fetch the six sets with their used/unused state and draw the picker. */
+    /** Fetch the task sets with their used/unused state and draw the picker. */
     function showSetPicker() {
-        return api('/study/sets')
+        return api('sets')
             .then(function (body) {
                 renderSetPicker(body);
                 startingSection.hidden = true;
@@ -280,13 +288,13 @@
             })
             .catch(function (error) {
                 const heading = el('starting-heading');
-                if (heading) heading.textContent = 'Could not load the model sets';
+                if (heading) heading.textContent = 'Could not load the task sets';
                 const errorNode = el('starting-error');
                 if (errorNode) {
                     errorNode.hidden = false;
                     errorNode.textContent = error.message;
                 }
-                announce(`Could not load the model sets. ${error.message}`);
+                announce(`Could not load the task sets. ${error.message}`);
             });
     }
 
@@ -388,7 +396,7 @@
         if (heading) heading.textContent = 'Starting a session…';
         status(`Starting a session on ${setLabel}.`);
 
-        return api('/study/session/start', {
+        return api('session/start', {
             method: 'POST',
             body: JSON.stringify({ task_order: taskOrder }),
         })
@@ -425,7 +433,7 @@
 
     function renderSession() {
         const step = state.step || {};
-        const pair = step.pair;
+        const task = step.task;
         const model = step.model;
 
         const others = (state.active_sessions || []).filter(o => !o.is_current);
@@ -467,7 +475,7 @@
         if (clients > 1) {
             clientsNode.textContent =
                 `${clients} — every interaction is being recorded ${clients} times. `
-                + `Close the extra tabs or windows on /study.`;
+                + `Close the extra tabs or windows on the participant's page.`;
             clientsNode.classList.add('is-warning');
             if (clients !== lastClientCount) {
                 announce(`Warning: ${clients} participant views are connected. `
@@ -518,18 +526,23 @@
         // The description is spoken; the answer key is not. Two blocks, so the
         // "do not read this out" warning cannot be read as covering both.
         const objectBlock = el('object-block');
-        objectBlock.hidden = !pair;
-        if (pair) {
-            el('object-label').textContent = pair.label || '';
-            el('object-description').textContent = pair.description ? `“${pair.description}”` : '';
+        objectBlock.hidden = !task;
+        if (task) {
+            el('object-label').textContent = task.label || '';
+            el('object-description').textContent = task.description ? `“${task.description}”` : '';
+            el('object-description-note').hidden = !task.description;
         }
 
+        // Only a task that has one: a study whose tasks are not comparisons has
+        // nothing to put here, and an empty "Answer key" heading reads as if
+        // something failed to load.
+        const differences = (task && task.differences) || [];
+        const unchanged = (task && task.unchanged) || [];
         const answerBlock = el('answer-key-block');
-        answerBlock.hidden = !pair;
-        if (pair) {
-            setList(el('answer-key-differences'), pair.differences);
-            setList(el('answer-key-unchanged'), pair.unchanged);
-        }
+        answerBlock.hidden = !(differences.length || unchanged.length);
+        setList(el('answer-key-differences'), differences);
+        setList(el('answer-key-unchanged'), unchanged);
+        el('answer-key-unchanged-heading').hidden = unchanged.length === 0;
 
         setList(el('facilitator-prompts'), step.facilitator_prompts || state.facilitator_prompts);
         setList(el('strategy-prompts'), step.strategy_prompts || state.strategy_prompts);
@@ -616,7 +629,7 @@
      * already the deliberate action. Callers that want the Current Step
      * dialog to follow the move do that themselves after calling this. */
     function advance(payload) {
-        api('/study/step/advance', { method: 'POST', body: JSON.stringify(payload) })
+        api('step/advance', { method: 'POST', body: JSON.stringify(payload) })
             .then(function (body) { applyState(body.state); })
             .catch(function (error) { announce(`Could not move step. ${error.message}`); });
     }
@@ -659,16 +672,16 @@
         )) return;
         // The mode is set on the session, not carried in the URL, so a reload
         // keeps it and the log records how the session was run.
-        api('/study/session/mode', { method: 'POST', body: JSON.stringify({ mode: 'solo' }) })
+        api('session/mode', { method: 'POST', body: JSON.stringify({ mode: 'solo' }) })
             .then(function (body) {
-                location.href = `/study?s=${encodeURIComponent(body.state.participant_key)}`;
+                location.href = `${BASE}?s=${encodeURIComponent(body.state.participant_key)}`;
             })
             .catch(function (error) { announce(`Could not switch modes. ${error.message}`); });
     });
 
     function endSession(prompt) {
         if (!window.confirm(prompt)) return;
-        api('/study/session/end', { method: 'POST', body: JSON.stringify({ status: 'completed' }) })
+        api('session/end', { method: 'POST', body: JSON.stringify({ status: 'completed' }) })
             .then(function () {
                 announce('Session ended and recorded.');
                 refreshOnce();
@@ -785,7 +798,9 @@
             // The session this panel owns has ended. It does not silently start
             // another -- that would be a second participant record created by a
             // stray reload -- and it does not offer the set picker again either,
-            // for the same reason.
+            // for the same reason. The downloads are offered again, since the
+            // end of a session is when someone wants them.
+            showDataSection();
             startingSection.hidden = false;
             setSection.hidden = true;
             sessionSection.hidden = true;
@@ -804,6 +819,7 @@
 
         startingSection.hidden = true;
         setSection.hidden = true;
+        el('data-section').hidden = true;
         sessionSection.hidden = false;
         setNavButtonsVisible(true);
         renderSession();
@@ -817,7 +833,8 @@
     }
 
     function refreshOnce() {
-        api('/study/state').then(applyState).catch(function (error) {
+        api('state').then(applyState).catch(function (error) {
+            if (error instanceof SignedOut) { showSignIn(); return; }
             announce(`Could not reach the server. ${error.message}`);
         });
     }
@@ -826,13 +843,10 @@
     let reconnectDelay = 1000;
 
     function connect() {
-        // EventSource cannot set headers, so the token goes in the query string
-        // here. Same secret, same transport security; it is the only way to
-        // authenticate an SSE subscription from the browser.
+        // The sign-in cookie authenticates the stream: EventSource cannot set a
+        // header, and a token in its URL would end up in the proxy's logs.
         try {
-            eventSource = new EventSource(
-                scoped(`/study/stream?token=${encodeURIComponent(TOKEN)}`)
-            );
+            eventSource = new EventSource(scoped(`${API}/stream`));
         } catch (_) {
             scheduleReconnect();
             return;
@@ -861,24 +875,129 @@
     }
 
     // -----------------------------------------------------------------------
+    // Signing in
+    //
+    // Once per browser per working day: the cookie lasts twelve hours, and a
+    // server restart signs everyone out. The form is the only thing on screen
+    // until it succeeds, and its heading takes focus so a screen reader starts
+    // reading where the page now begins.
+    // -----------------------------------------------------------------------
+
+    const signInSection = el('sign-in-section');
+    const signInForm = el('sign-in-form');
+    const signInError = el('sign-in-error');
+
+    function showSignIn() {
+        if (eventSource) { eventSource.close(); eventSource = null; }
+        startingSection.hidden = true;
+        el('set-section').hidden = true;
+        sessionSection.hidden = true;
+        el('data-section').hidden = true;
+        setNavButtonsVisible(false);
+        signInSection.hidden = false;
+        el('protocol-version').textContent = 'Sign in to run this study.';
+        el('sign-in-heading')?.focus({ preventScroll: true });
+    }
+
+    signInForm?.addEventListener('submit', function (event) {
+        event.preventDefault();
+        const input = el('sign-in-token');
+        const token = (input.value || '').trim();
+        if (!token) return;
+        signInError.hidden = true;
+        signInError.textContent = '';
+        fetch(`${API}/sign-in`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: token }),
+        }).then(function (res) {
+            return res.json().catch(function () { return {}; }).then(function (body) {
+                if (!res.ok) throw new Error(body.message || `Sign-in failed (${res.status})`);
+            });
+        }).then(function () {
+            input.value = '';
+            signInSection.hidden = true;
+            status('Signed in.');
+            boot();
+        }).catch(function (error) {
+            signInError.hidden = false;
+            signInError.textContent = error.message;
+            input.focus();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Data: the downloads a study's panel offers before a session, and the
+    // only thing a closed study's panel offers at all.
+    // -----------------------------------------------------------------------
+
+    function showDataSection() {
+        const section = el('data-section');
+        if (!section) return;
+        el('download-archive').href = `${API}/export/archive.zip`;
+        el('download-long-csv').href = `${API}/export/long.csv`;
+        el('download-checks').href = `${API}/export/checks.json`;
+        section.hidden = false;
+    }
+
+    // -----------------------------------------------------------------------
     // Boot
     // -----------------------------------------------------------------------
 
-    api('/study/config').then(function (body) {
+    function boot() {
+        // Asked first, as a 200 either way: reading a 401 from config would put
+        // an error in the browser console on every fresh visit.
+        return fetch(`${API}/signed-in`, { credentials: 'same-origin' })
+            .then(function (res) { return res.ok ? res.json() : { signed_in: false }; })
+            .then(function (answer) {
+                if (!answer.signed_in) throw new SignedOut('Signed out');
+                return api('config');
+            })
+            .then(start)
+            .catch(function (error) {
+                if (error instanceof SignedOut) { showSignIn(); return; }
+                el('protocol-version').textContent = `Could not load the protocol: ${error.message}`;
+                announce(`Could not load the protocol. ${error.message}`);
+            });
+    }
+
+    function start(body) {
         config = body;
+        document.title = `${config.title}: Study Control Panel`;
+        el('page-title').textContent = config.title;
         el('protocol-version').textContent =
-            `Protocol version ${config.version}. Each participant explores a mug, then ${config.tasks_per_session} of the three model pairs.`;
+            `Protocol version ${config.version}. ${config.summary || ''}`.trim();
+
+        if (config.status === 'closed') {
+            // Collection is over: no session can start, and the panel is for
+            // getting the data out.
+            startingSection.hidden = false;
+            const heading = el('starting-heading');
+            if (heading) heading.textContent = 'This study is closed';
+            const note = el('starting-error');
+            if (note) {
+                note.hidden = false;
+                note.textContent = 'No new sessions can start. Download its data below.';
+            }
+            showDataSection();
+            return;
+        }
 
         // A reload continues the session this tab already owns; a fresh tab
-        // asks which model set to run. Checked before offering the picker, so
+        // asks which task set to run. Checked before offering the picker, so
         // refreshing mid-session cannot strand a participant on a session
         // nobody is driving.
         const resuming = boundSessionId
-            ? api('/study/state').then(function (state) {
+            ? api('state').then(function (state) {
                   if (state && state.active) { applyState(state); return true; }
                   bindSession(null);
                   return false;
-              }).catch(function () { bindSession(null); return false; })
+              }).catch(function (error) {
+                  if (error instanceof SignedOut) throw error;
+                  bindSession(null);
+                  return false;
+              })
             : Promise.resolve(false);
 
         return resuming.then(function (resumed) {
@@ -886,10 +1005,10 @@
             // panel still on the picker is bound to nothing. It is opened here
             // for the resumed case and after the session starts otherwise.
             if (resumed) { connect(); return; }
+            showDataSection();
             return showSetPicker();
         });
-    }).catch(function (error) {
-        el('protocol-version').textContent = `Could not load the protocol: ${error.message}`;
-        announce(`Could not load the protocol. ${error.message}`);
-    });
+    }
+
+    boot();
 })();

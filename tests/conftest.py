@@ -33,8 +33,12 @@ DATA_ENV = {
     "CAD_A11Y_PRECOMPUTE_DIR": str(SCRATCH / "precompute"),
     "BRAILLE_LOG_PATH": str(SCRATCH / "logs" / "braille_send_events.jsonl"),
     "DB_PATH": str(SCRATCH / "db" / "usage.db"),
+    # The retired comparison study's data, where it was written before studies
+    # had directories of their own; and every other study's.
     "STUDY_DB_PATH": str(SCRATCH / "db" / "study.db"),
     "STUDY_LOG_DIR": str(SCRATCH / "logs" / "study"),
+    "STUDIES_DB_DIR": str(SCRATCH / "db" / "studies"),
+    "STUDIES_LOG_DIR": str(SCRATCH / "logs" / "studies"),
 }
 os.environ.update(DATA_ENV)
 

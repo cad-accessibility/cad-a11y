@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-10-05
+
+#### Removed
+*   The comparison study is retired, and `/study` and everything under it are gone (#207). Its control panel was open on both servers, so anyone who found the address could advance a live session, read the answer key and download a participant's interaction log, and its spreadsheet needed no token at all. Its protocol is kept as the record of what its sessions did, and the last code that served it is tagged `study-instrument-2026`. Its data stays where it was written; `docs/STUDIES.md` says how to export it.
+*   `STUDY_CONTROL_TOKEN` no longer does anything.
+
+#### Added
+*   Studies are defined in the repository and run at `/studies/<name>`, with the control panel at `/studies/<name>/control`. Each has a status (draft, open, closed or retired), and a server serves exactly what that status allows. Several can be open at once, each with its own database, logs, participant numbers and join codes. `docs/STUDIES.md` is the guide, and `app/studies/definitions/example.py` is a short study to copy.
+*   Each study's control panel needs that study's token. It is typed once into a sign-in form and lasts the working day in that browser, and it is never part of an address, so it ends up in no browser history and no server log. A study without a token is not served.
+*   A closed study keeps its control panel's downloads after collection ends, so its data can come off a server without shell access.
+*   A study's data downloads as one zip: a consistent copy of the database, every session log, the long spreadsheet with a codebook for every column, a table of sessions, a report of known data problems, and a checksum for every file. `python -m app.studies export` makes the same zip from a server or a restored backup, and `scripts/download_study_data.sh` downloads it.
+*   The data checks look for the problems the review of the study code found (#183), sessions ended twice and participant numbers issued with no session, and also for sessions still running, sessions with no recorded end, rows recorded after the end, and logs that disagree with the database.
+*   Every session records the version of the app and a fingerprint of the protocol it ran, so sessions from either side of a change can be told apart from the data.
+*   Latin square and balanced Latin square helpers for a study's counterbalancing.
+
+#### Fixed
+*   Closing idle sessions could end a session an experimenter had just ended, adding a second end to its record and changing it from completed to abandoned. A session now ends once, and ending it again says so (#183).
+*   A refused request to start a session could still issue a participant number, leaving a number with no session and moving everyone after it one place along the rotation. It now issues nothing (#183).
+*   A render could be recorded against any running session by naming its number, which counts up from 1. Renders are now matched to a session by its join code.
+
+#### Security
+*   Spreadsheet downloads put a quote in front of any cell a spreadsheet would run as a formula.
+
 ### 2026-09-22
 
 #### Fixed

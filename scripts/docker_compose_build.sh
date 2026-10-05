@@ -17,6 +17,14 @@ set -uo pipefail
 
 BUILDKIT_REQUIRED_MSG="the --mount option requires BuildKit"
 
+# Which release this is, for the record every study session keeps. The tag on a
+# production deploy, the commit on staging; docker-compose.yml passes it in.
+# Falls back to asking git, for a run outside the pipeline.
+if [ -z "${CAD_A11Y_VERSION:-}" ]; then
+    CAD_A11Y_VERSION="${CI_COMMIT_TAG:-${CI_COMMIT_SHORT_SHA:-$(git describe --tags --always --dirty 2>/dev/null || true)}}"
+fi
+export CAD_A11Y_VERSION
+
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 

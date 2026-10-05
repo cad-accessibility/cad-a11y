@@ -22,6 +22,7 @@ the recorder to report on itself would test nothing.
 
 from __future__ import annotations
 
+import dataclasses
 import io
 from pathlib import Path
 
@@ -30,12 +31,22 @@ import pytest
 import app.db as db
 import app.recording as recording
 import app.server as server
-import app.study as study_module
-import app.study_db as study_db
+import app.studies.engine as engine
 from app.server import app as flask_app
-
+from app.studies import registry, tokens
+from app.studies.definition import Status
+from app.studies.definitions import comparison_2026, example
+from app.studies.registry import StudyRuntime
+from app.studies.store import StudyStore
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# The example study, opened under its own slug for these tests.
+STUDY_SLUG = "demo-check"
+STUDY_TOKEN = "demo-check-token"
+OPEN_STUDY = dataclasses.replace(
+    example.STUDY, slug=STUDY_SLUG, status=Status.OPEN, token_hash=tokens.hash_token(STUDY_TOKEN)
+)
 
 
 class SinkCounters:
@@ -83,20 +94,23 @@ def sinks(tmp_path, monkeypatch):
 
     data_root = tmp_path / "data"
     (data_root / "db").mkdir(parents=True)
-    (data_root / "logs" / "study").mkdir(parents=True)
+    (data_root / "logs" / "studies" / STUDY_SLUG).mkdir(parents=True)
     (data_root / "renders").mkdir(parents=True)
 
     monkeypatch.setattr(db, "DB_PATH", data_root / "db" / "usage.db")
-    monkeypatch.setattr(study_db, "DB_PATH", data_root / "db" / "study.db")
-    monkeypatch.setattr(study_db, "LOG_DIR", data_root / "logs" / "study")
     monkeypatch.setattr(server, "BRAILLE_LOG_PATH", data_root / "logs" / "braille_send_events.jsonl")
     monkeypatch.setattr(server, "RENDERS_DIR", data_root / "renders")
     db._local.__dict__.clear()
-    study_db._local.__dict__.clear()
+    # An open study on the same server, so a demo client has something real to
+    # be refused by.
+    study_store = StudyStore(
+        data_root / "db" / "studies" / f"{STUDY_SLUG}.db", data_root / "logs" / "studies" / STUDY_SLUG
+    )
     # Created before the counters go on, so schema setup is not mistaken for a
     # recording -- and so the control case below has real tables to write into.
     db.init_db()
-    study_db.init_db()
+    study_store.init_db()
+    registry.install(StudyRuntime(study=OPEN_STUDY, store=study_store, served_as=Status.OPEN))
 
     # The render caches are process-wide and content-addressed, so a render this
     # test already asked for comes back without touching the braille log. Cleared
@@ -107,7 +121,7 @@ def sinks(tmp_path, monkeypatch):
         server.preview_payload_cache.clear()
 
     # -- database writes ----------------------------------------------------
-    for module, key in ((db, "usage_db_execute"), (study_db, "study_db_execute")):
+    for module, key in ((db, "usage_db_execute"), (study_store, "study_db_execute")):
         real_get_conn = module._get_conn
 
         def counting_get_conn(_real=real_get_conn, _key=key):
@@ -142,7 +156,7 @@ def sinks(tmp_path, monkeypatch):
         lambda event: counters.bump("braille_log_write", str(event.get("model_stem", ""))),
     )
     monkeypatch.setattr(
-        study_db,
+        study_store,
         "_append_jsonl",
         lambda session, record: counters.bump("study_jsonl_write", str(record.get("event_type", ""))),
     )
@@ -153,19 +167,21 @@ def sinks(tmp_path, monkeypatch):
     )
 
     # -- identity -----------------------------------------------------------
-    real_create_participant = study_db.create_participant
-    real_create_session = study_db.create_session
+    # The inserts rather than the public methods: enrolment writes both rows in
+    # one transaction and goes straight to these.
+    real_insert_participant = study_store._insert_participant
+    real_insert_session = study_store._insert_session
 
-    def counting_create_participant(*a, **kw):
+    def counting_insert_participant(*a, **kw):
         counters.bump("participant_allocated")
-        return real_create_participant(*a, **kw)
+        return real_insert_participant(*a, **kw)
 
-    def counting_create_session(*a, **kw):
+    def counting_insert_session(*a, **kw):
         counters.bump("study_session_created")
-        return real_create_session(*a, **kw)
+        return real_insert_session(*a, **kw)
 
-    monkeypatch.setattr(study_db, "create_participant", counting_create_participant)
-    monkeypatch.setattr(study_db, "create_session", counting_create_session)
+    monkeypatch.setattr(study_store, "_insert_participant", counting_insert_participant)
+    monkeypatch.setattr(study_store, "_insert_session", counting_insert_session)
 
     real_attach = server._attach_session_cookie
 
@@ -184,7 +200,7 @@ def sinks(tmp_path, monkeypatch):
         recording.PersistentRecorder(
             analytics=db,
             braille_writer=lambda event: server._write_braille_event(event),
-            study_render_writer=study_module.record_render_for_request,
+            study_render_writer=engine.record_render_for_request,
             print_writer=lambda p, r, i: server._write_print_render(p, r, i),
             cookie_writer=lambda resp, sid: server._attach_session_cookie(resp, sid),
         ),
@@ -192,8 +208,9 @@ def sinks(tmp_path, monkeypatch):
 
     counters.data_root = data_root
     yield counters
+    registry.remove(STUDY_SLUG)
     db._local.__dict__.clear()
-    study_db._local.__dict__.clear()
+    study_store._local.__dict__.clear()
 
 
 @pytest.fixture()
@@ -344,11 +361,12 @@ def test_a_demo_render_still_puts_a_picture_on_the_display(client, sinks):
 @pytest.mark.parametrize(
     "method,path,body",
     [
-        ("post", "/study/session/start", {}),
-        ("post", "/study/event", {"event_type": "keyboard", "event_data": {"key": "r"}}),
-        ("post", "/study/step/advance", {"direction": "next"}),
-        ("get", "/study", None),
-        ("get", "/study/control", None),
+        ("post", f"/studies/{STUDY_SLUG}/control/session/start", {}),
+        ("post", f"/studies/{STUDY_SLUG}/event", {"event_type": "keyboard", "event_data": {"key": "r"}}),
+        ("post", f"/studies/{STUDY_SLUG}/control/step/advance", {"direction": "next"}),
+        ("post", f"/studies/{STUDY_SLUG}/control/sign-in", {"token": STUDY_TOKEN}),
+        ("get", f"/studies/{STUDY_SLUG}", None),
+        ("get", f"/studies/{STUDY_SLUG}/control", None),
         ("post", "/ingest", {}),
     ],
 )
@@ -356,10 +374,11 @@ def test_the_study_and_ingest_paths_are_closed_to_a_demo_client(client, sinks, m
     """Those two write durable state that does not pass through the recorder --
     participant identifiers and session logs on one, a public model file on the
     other -- so for them the swap is not the whole answer and the request is
-    refused. A demo station does not serve /study at all; this is the same door
-    closed on a server serving both."""
+    refused. A demo station does not serve /studies at all; this is the same
+    door closed on a server serving both."""
     call = getattr(client, method)
-    response = call(path, json=body, headers=DEMO_HEADERS) if body is not None else call(path, headers=DEMO_HEADERS)
+    headers = {**DEMO_HEADERS, "X-Study-Token": STUDY_TOKEN}
+    response = call(path, json=body, headers=headers) if body is not None else call(path, headers=headers)
 
     assert response.status_code == 404, f"{path} answered a demo client"
     assert sinks.total == 0, f"{path} wrote {sinks.nonzero()} for a demo client"
@@ -367,8 +386,19 @@ def test_the_study_and_ingest_paths_are_closed_to_a_demo_client(client, sinks, m
 
 def test_the_study_path_still_works_for_a_study_client(client, sinks):
     """The other half: closing it to demo clients must not close it to everyone."""
-    assert client.get("/study").status_code == 200
+    assert client.get(f"/studies/{STUDY_SLUG}").status_code == 200
+    started = client.post(
+        f"/studies/{STUDY_SLUG}/control/session/start", json={}, headers={"X-Study-Token": STUDY_TOKEN}
+    )
+    assert started.status_code == 200
+    assert sinks.counts["participant_allocated"] == 1, "the participant counter never fires"
+    assert sinks.counts["study_session_created"] == 1, "the session counter never fires"
+    assert sinks.counts["study_db_execute"] > 0, "the study database counter never fires"
 
+
+def test_the_retired_study_path_is_gone_for_everyone(client, sinks):
+    for path in ("/study", "/study/control", "/study/state", "/study/export/long.csv"):
+        assert client.get(path).status_code == 404, f"{path} still answers"
 
 def test_a_demo_tab_asks_for_its_uploads_to_be_deleted_when_it_closes():
     """An uploaded model must not outlive somebody's turn at the display. The
@@ -380,31 +410,25 @@ def test_a_demo_tab_asks_for_its_uploads_to_be_deleted_when_it_closes():
     assert "keepalive: true" in viewer, "the request would be cancelled as the tab unloads"
 
 
-def test_the_demo_chooser_offers_the_studys_six_objects(client, sinks):
-    """The demo lists the study's three pairs and nothing else.
+def test_the_demo_chooser_offers_the_comparison_studys_six_objects(client, sinks):
+    """The demo lists the six objects the comparison study compared, and nothing
+    else.
 
-    Derived from the protocol rather than listed here, so the two cannot drift:
-    when the coat rack stopped being part of the study, a hand-written copy of
-    this list would have gone on offering it.
-
-    The onboarding mug is deliberately absent. It is what the study teaches the
-    system on, not one of the objects under comparison.
+    Its own list now, since the study is retired, checked here against the
+    study's definition so a typo in the copy cannot slip through. The onboarding
+    mug is deliberately absent: it is what the study taught the system on, not
+    one of the objects under comparison.
     """
-    import app.study_protocol as study_protocol
-
     reported = client.get("/demo/status").get_json()["models"]
 
     expected = []
-    for key in study_protocol.MAIN_PAIRS:
-        pair = study_protocol.MODEL_PAIRS.get(key) or {}
+    for key in comparison_2026.MAIN_PAIRS:
+        pair = comparison_2026.MODEL_PAIRS[key]
         for version in ("a", "b"):
-            stem = (pair.get(version) or {}).get("model")
-            if stem and stem not in expected:
-                expected.append(stem)
+            expected.append(pair[version]["model"])
 
-    assert sorted(reported) == sorted(expected)
-    assert len(reported) == 6, f"expected the study's six, got {reported}"
-    assert study_protocol.ONBOARDING_MODEL not in reported
+    assert reported == expected
+    assert comparison_2026.ONBOARDING_MODEL not in reported
 
 
 def test_narrowing_the_demo_list_does_not_narrow_anything_else(client, sinks):
@@ -429,7 +453,6 @@ def test_narrowing_the_demo_list_does_not_narrow_anything_else(client, sinks):
 # ---------------------------------------------------------------------------
 
 SERVER_SOURCE = (ROOT / "app" / "server.py").read_text(encoding="utf-8")
-STUDY_SOURCE = (ROOT / "app" / "study.py").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -498,7 +521,7 @@ def test_a_demo_station_does_not_register_the_study_routes(tmp_path, data_env):
     result = subprocess.run(
         [sys.executable, "-c",
          "from app.server import app;"
-         "print([str(r) for r in app.url_map.iter_rules() if str(r).startswith('/study')])"],
+         "print([str(r) for r in app.url_map.iter_rules() if str(r).startswith('/stud')])"],
         cwd=ROOT,
         # HOME points at a temp directory: matplotlib writes a font cache into it
         # on first import, and the repo is not the place for that. data_env does

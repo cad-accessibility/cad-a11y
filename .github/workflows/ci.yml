@@ -58,6 +58,10 @@ jobs:
           sudo chown -R 48:48 data/db data/renders data/logs
 
       - name: Start app with Docker Compose
+        # The example study is a draft, so no server runs it; this opens it here
+        # so its pages go through the same checks as the viewer.
+        env:
+          CAD_A11Y_OPEN_STUDIES: example
         run: docker compose up -d --build
 
       - name: Wait for app to be ready
@@ -100,33 +104,49 @@ jobs:
             page.on('pageerror', (err) => consoleErrors.push(err.message));
 
             // The study pages are checked as well as the viewer, and in the
-            // states they are actually used in. A session has to exist first:
-            // the participant page asks for a code, and the panel is only
-            // interesting once it is running a session.
+            // states they are actually used in: the panel before sign-in, the
+            // participant page waiting for a code and in a session, and the
+            // panel choosing a task set and running one. The example study is
+            // the one CI opens; its panel token is published for that reason
+            // (app/studies/definitions/example.py).
             const base = 'http://localhost:8635';
-            await page.goto(`${base}/viewer`, { waitUntil: 'domcontentloaded' });
-            const started = await page.evaluate(async (origin) => {
-              const res = await fetch(`${origin}/study/session/start`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: '{}',
-              });
-              return (await res.json()).state;
-            }, base);
+            const study = `${base}/studies/example`;
+            const signIn = async () => {
+              await page.goto(`${study}/control`, { waitUntil: 'domcontentloaded' });
+              return page.evaluate(async (control) => {
+                const signedIn = await fetch(`${control}/sign-in`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ token: 'example-panel-token' }),
+                });
+                if (!signedIn.ok) throw new Error(`sign-in failed: ${signedIn.status}`);
+                const res = await fetch(`${control}/session/start`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: '{}',
+                });
+                return (await res.json()).state;
+              }, `${study}/control`);
+            };
 
             // The panel remembers its session in sessionStorage, not in the URL,
-            // so a fresh context always opens on the model-set picker. Both of
-            // its states are checked: the picker, and the running session
-            // reached by choosing a set from it. Checking only the first would
-            // leave the whole of the in-session panel unexamined.
+            // so a fresh tab always opens on the task-set picker. Both of its
+            // states are checked: the picker, and the running session reached
+            // by choosing a set from it.
+            let started = null;
             const pages = [
-              { name: '/viewer', url: `${base}/viewer` },
-              { name: '/study (waiting for a code)', url: `${base}/study` },
-              { name: '/study (in a session)', url: `${base}/study?s=${started.participant_key}` },
-              { name: '/study/control (choosing a model set)', url: `${base}/study/control` },
+              { name: '/viewer', url: () => `${base}/viewer` },
+              { name: '/studies/example/control (signing in)', url: () => `${study}/control` },
               {
-                name: '/study/control (running a session)',
-                url: `${base}/study/control`,
+                name: '/studies/example (waiting for a code)',
+                before: async () => { started = await signIn(); },
+                url: () => study,
+              },
+              { name: '/studies/example (in a session)', url: () => `${study}?s=${started.participant_key}` },
+              { name: '/studies/example/control (choosing a task set)', url: () => `${study}/control` },
+              {
+                name: '/studies/example/control (running a session)',
+                url: () => `${study}/control`,
                 after: async () => {
                   await page.click('#set-list button');
                   await page.waitForSelector('#session-section:not([hidden])');
@@ -136,8 +156,9 @@ jobs:
 
             let failed = false;
             for (const target of pages) {
+              if (target.before) await target.before();
               consoleErrors.length = 0;
-              await page.goto(target.url, { waitUntil: 'domcontentloaded' });
+              await page.goto(target.url(), { waitUntil: 'domcontentloaded' });
               await page.waitForTimeout(2000);
               if (target.after) await target.after();
 

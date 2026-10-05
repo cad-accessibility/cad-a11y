@@ -20,8 +20,10 @@ import pytest
 
 import app.cad_comparison_lib as cad_lib
 import app.db as analytics_db
-from app import server, study_db
+from app import server
 from app.server import app as flask_app
+from app.studies import definition as study_definition
+from app.studies.definitions import comparison_2026
 
 ROOT = Path(__file__).resolve().parents[1]
 REAL_DATA = (ROOT / "data").resolve()
@@ -50,8 +52,10 @@ WHERE_THE_APP_WRITES = {
     "slice cache": _slice_cache_path,
     "braille log": lambda: server.BRAILLE_LOG_PATH,
     "usage database": lambda: analytics_db.DB_PATH,
-    "study database": lambda: study_db.DB_PATH,
-    "study logs": lambda: study_db.LOG_DIR,
+    "study databases": study_definition.studies_db_dir,
+    "study logs": study_definition.studies_log_dir,
+    "retired study's database": lambda: comparison_2026.STUDY.resolve_storage().db_path,
+    "retired study's logs": lambda: comparison_2026.STUDY.resolve_storage().log_dir,
 }
 
 

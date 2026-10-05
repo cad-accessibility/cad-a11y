@@ -1071,7 +1071,7 @@ body.simple-ui #tactile-preview-section { display: block; }
 }
 
 /* ---------------------------------------------------------------------------
-   Study mode (/study).
+   Study mode (/studies/<slug>).
 
    The participant works in the ordinary viewer, so almost nothing is hidden:
    the interface they were onboarded on has to be the interface they do the

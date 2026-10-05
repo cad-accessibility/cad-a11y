@@ -130,7 +130,7 @@
        <main id="main-content">
 
             <!--
-                STUDY SESSION REGION — only shown at /study (viewer.js adds
+                STUDY SESSION REGION — only shown at /studies/<slug> (viewer.js adds
                 body.study-ui; see viewer.css). First thing inside main, so the
                 skip link lands on it and a screen reader meets the current step
                 before the controls.
@@ -524,7 +524,7 @@
         <h2 id="shortcuts-heading" tabindex="-1">Keyboard Shortcuts</h2>
         <p class="help-text">Press <kbd>Esc</kbd> or activate Close to return to where you were.</p>
 
-        <!-- Only meaningful at /study; hidden elsewhere and revealed by
+        <!-- Only meaningful at /studies/<slug>; hidden elsewhere and revealed by
              study.js the same way #study-region itself is (#180). Placed
              first since it's the most relevant reference during a session. -->
         <div id="study-shortcuts-section" hidden>
@@ -790,7 +790,7 @@
 
     <script src="/static/js/viewer.js"></script>
 
-    <!-- Study session driver. Inert everywhere except /study, where it reveals the
+    <!-- Study session driver. Inert everywhere except /studies/<slug>, where it reveals the
          study region above, loads the model for each protocol step, and reports
          interactions to the study log. -->
     <script src="/static/js/study.js"></script>
@@ -823,11 +823,11 @@
             if (workshopSimple) return;
 
             // Skip it in study mode too. Study participants give informed consent
-            // on paper before the session starts, so this dialog asks a question
+            // before the session starts, so this dialog asks a question
             // that has already been answered — and it would ask it as a modal, in
             // front of a participant who is mid-onboarding on a braille display.
             // Study logging is separate from analytics and is not gated on it.
-            if (location.pathname.replace(/\/+$/, '') === '/study') return;
+            if (/^\/studies\/[a-z0-9]+(?:-[a-z0-9]+)*\/?$/.test(location.pathname)) return;
 
             // Skip it on the demo path, and never create a session there. The
             // dialog's entire subject is a tracking cookie and an email address,

@@ -43,7 +43,9 @@ from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
 
-from . import db, recording, study, study_db, study_protocol
+from . import db, recording
+from .studies import engine as studies_engine
+from .studies import registry as studies_registry
 from .braille_display import (
     _pixels_to_braille_cells,
     _pixels_to_braille_cells_dotpad,
@@ -474,20 +476,26 @@ MODEL_NAME_LIST = [model_path.stem for model_path in AVAILABLE_MODELS]
 
 _MODEL_DIR_RESOLVED = MODEL_DIR.resolve()
 
-# The /study endpoints live in their own module. They need two things from here —
-# the current model list (to check the protocol's models are all present) and the
-# repo root (to serve the two HTML pages). Passed as callables rather than
+# The /studies endpoints live in their own package. They need two things from
+# here -- the current model list (to check a study's models are all present) and
+# the repo root (to serve the two HTML pages). Passed as callables rather than
 # imported, because MODEL_NAME_LIST is rebound whenever the model set changes,
-# and because study.py importing server.py would be a cycle.
-study.set_model_list_provider(lambda: MODEL_NAME_LIST)
-study.set_repo_root_provider(lambda: REPO_ROOT)
+# and because the engine importing server.py would be a cycle.
+studies_engine.set_model_list_provider(lambda: MODEL_NAME_LIST)
+studies_engine.set_repo_root_provider(lambda: REPO_ROOT)
 # Not registered at all on a demo station. The study path is not merely unused
 # there -- it is the thing that allocates participant identifiers and opens
 # session logs, and the surest way to know it cannot run is for its URLs not to
-# exist. /study, /study/control and everything under them return 404.
+# exist. /studies and everything under it return 404.
+#
+# Elsewhere which studies are served is decided once, here, from each study's
+# definition (app/studies/definitions). The comparison study that ran at /study
+# is retired, so nothing answers there any more.
 DEMO_ONLY = recording.demo_only_process()
+STUDY_LOAD_MESSAGES: list[str] = []
 if not DEMO_ONLY:
-    app.register_blueprint(study.study_bp)
+    app.register_blueprint(studies_engine.studies_bp)
+    STUDY_LOAD_MESSAGES = studies_registry.load()
 
 
 def _is_builtin(model_path: Path) -> bool:
@@ -1396,7 +1404,7 @@ else:
         recording.PersistentRecorder(
             analytics=db,
             braille_writer=_write_braille_event,
-            study_render_writer=study.record_render_for_request,
+            study_render_writer=studies_engine.record_render_for_request,
             print_writer=_write_print_render,
             cookie_writer=_attach_session_cookie,
         )
@@ -1404,15 +1412,15 @@ else:
 
 
 # Paths a demo client has no business on. Two of them write durable state that
-# does not pass through the recorder -- /study allocates participant identifiers
-# and opens session logs, /ingest writes a model into the public built-in
-# directory -- so for those the recorder swap is not the whole answer and the
-# request is refused outright.
+# does not pass through the recorder -- /studies allocates participant
+# identifiers and opens session logs, /ingest writes a model into the public
+# built-in directory -- so for those the recorder swap is not the whole answer
+# and the request is refused outright.
 #
 # On a station launched with CAD_A11Y_DEMO=1 the study routes do not exist at
 # all, which is the stronger guarantee. This closes the same door on a server
 # that is serving both, where a demo page shares an origin with a study session.
-_CLOSED_TO_DEMO = ("/study", "/ingest")
+_CLOSED_TO_DEMO = ("/studies", "/ingest")
 
 
 @app.before_request
@@ -1442,21 +1450,24 @@ def _bind_recorder_for_request():
 # The demo endpoint
 # ---------------------------------------------------------------------------
 
-def _demo_model_stems() -> list[str]:
-    """The models the demo chooser offers: the study's three pairs.
+# The models the demo chooser offers: the six the comparison study compared, each
+# pair's original then its edited version. Listed here rather than read from the
+# study, which is retired: the demo goes on offering them, and a future study's
+# choice of models is not a reason for the demo's to change.
+DEMO_MODEL_STEMS: tuple[str, ...] = (
+    "pencil_holder_2x2",
+    "pencil_holder_2x3",
+    "cane_tip_hook",
+    "cane_tip_fitted",
+    "lego_2x3",
+    "lego_2x4",
+)
 
-    The onboarding mug is deliberately not here. It is the object the study uses
-    to teach the system rather than one of the objects under comparison, and the
-    ask was for the six.
-    """
-    stems: list[str] = []
-    for key in study_protocol.MAIN_PAIRS:
-        pair = study_protocol.MODEL_PAIRS.get(key) or {}
-        for version in ("a", "b"):
-            stem = (pair.get(version) or {}).get("model")
-            if stem and stem not in stems:
-                stems.append(stem)
-    return stems
+
+def _demo_model_stems() -> list[str]:
+    """The models the demo chooser offers. The onboarding mug is deliberately not
+    here: the ask was for the six objects under comparison."""
+    return list(DEMO_MODEL_STEMS)
 
 
 @app.route("/demo", methods=["GET"])
@@ -1474,8 +1485,8 @@ def demo_view():
     * ``viewer.js`` refuses to start on this path if that shim did not run.
 
     There is no consent flow, no onboarding, no task sequence and no facilitator
-    panel here: those live on /study, which a demo station does not register at
-    all.
+    panel here: those live under /studies, which a demo station does not register
+    at all.
     """
     return send_file(REPO_ROOT / "accessible-3d-viewer.html")
 
@@ -1497,16 +1508,13 @@ def demo_status():
             "recorder": recorder.name,
             "process_demo_only": recording.demo_only_process(),
             "study_routes_registered": any(
-                str(rule).startswith("/study") for rule in app.url_map.iter_rules()
+                str(rule).startswith("/studies") for rule in app.url_map.iter_rules()
             ),
             # Counts calls that reached the null recorder and wrote nothing. Zero
             # is normal on a freshly opened page; it climbs as somebody explores,
             # and it is the count of writes that did *not* happen.
             "suppressed_writes": getattr(recorder, "writes", 0),
-            # The stems the demo chooser is limited to. Read from the protocol
-            # rather than listed here, so the demo shows whatever the study is
-            # actually using and cannot drift from it: the coat rack leaving the
-            # study is the kind of change that would otherwise be missed.
+            # The stems the demo chooser is limited to, DEMO_MODEL_STEMS.
             #
             # This filters what the page displays. It does not change where
             # models are loaded from, what the server will render, or what an
@@ -1602,8 +1610,8 @@ def home():
                 "/get_data": "GET - Optional cube/slider state",
                 "/render/dotpad-hex": "POST - Get render as DotPad hex string for Web SDK",
                 "/viewer": "GET - Serve the HTML viewer (required for DotPad Web SDK)",
-                "/study": "GET - Participant view for a study session; models load per protocol step",
-                "/study/control": "GET - Experimenter control panel (requires ?token=)",
+                "/studies/<slug>": "GET - Participant view for an open study's session; models load per protocol step",
+                "/studies/<slug>/control": "GET - Experimenter control panel; signs in with the study's token",
                 "/session/me": "GET - Return current session metadata",
                 "/session/identify": "POST - Store email/consent for current session",
                 "/session/models": "GET - List uploaded models for current session",
@@ -1637,8 +1645,8 @@ def health():
     # resolved BRAILLE_LOG_PATH.parent. Reporting the resolved path would make
     # /health green whenever braille telemetry had fallen back to /tmp, and the
     # fallback is not equivalent: /tmp is inside the container and is discarded
-    # on every redeploy, and study_db writes participant session logs to
-    # data/logs/study with no fallback at all, so they fail outright while the
+    # on every redeploy, and studies write participant session logs under
+    # data/logs/studies with no fallback at all, so they fail outright while the
     # deployment still looked healthy. The entrypoint repairs the ownership that
     # made the directory unwritable, so this reports a condition that is now
     # fixable rather than one we have to live with.
@@ -2519,11 +2527,12 @@ def main() -> int:
         _log("Output mode: quiet (set SERVER_VERBOSE=1 for debug logs)", force=True)
 
     db.init_db()
-    # A separate database from the analytics one, so a study session that cannot
-    # be re-run is never at the mercy of a change to product telemetry.
-    study_db.init_db()
-    _log(f"Study database: {study_db.DB_PATH}", force=True)
-    _log("Study control panel: /study/control", force=True)
+    # Each study has a database of its own, separate from the analytics one, so
+    # a session that cannot be re-run is never at the mercy of a change to
+    # product telemetry. They were opened when the registry loaded; this says
+    # which studies are served and which definitions were refused.
+    for message in STUDY_LOAD_MESSAGES or ["No studies are served by this process."]:
+        _log(message, force=True)
     # Backgrounded rather than awaited: this used to run before app.run(), so
     # nothing -- not even /health -- answered until the first default-params
     # render finished. A cold model's mesh load and slice precompute is easily

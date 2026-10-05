@@ -183,11 +183,28 @@ class TestStudyRegionMarkup:
 
 class TestStudyModeBehaviour:
     def test_consent_dialog_is_skipped_on_study(self):
-        """Study participants consent on paper before the session. A modal in
-        front of a participant mid-onboarding would be both redundant and
-        disruptive."""
+        """Study participants consent before the session. A modal in front of a
+        participant mid-onboarding would be both redundant and disruptive."""
         html = VIEWER_HTML.read_text(encoding="utf-8")
-        assert "'/study'" in html and "return" in html
+        assert (
+            "if (/^\\/studies\\/[a-z0-9]+(?:-[a-z0-9]+)*\\/?$/.test(location.pathname)) return;"
+            in html
+        )
+
+    def test_study_mode_is_any_studys_participant_page_and_nothing_else(self):
+        """/studies/<slug>, not its control panel, and not the retired /study."""
+        js = VIEWER_JS.read_text(encoding="utf-8")
+        assert "const STUDY_PATH = /^\\/studies\\/([a-z0-9]+(?:-[a-z0-9]+)*)\\/?$/;" in js
+        assert "=== '/study'" not in js
+
+    def test_the_participant_driver_talks_to_its_own_study(self):
+        """Two studies open on one server keep separate sessions; a page talks
+        only to the one in its URL."""
+        study_js = STUDY_JS.read_text(encoding="utf-8")
+        assert "const BASE = window.cadStudy.basePath();" in study_js
+        assert "'/study/" not in study_js
+        viewer_js = VIEWER_JS.read_text(encoding="utf-8")
+        assert "basePath: () => (studySlug ? `/studies/${studySlug}` : null)," in viewer_js
 
     def test_model_chooser_is_hidden_in_study_mode(self):
         """The model is decided by the protocol step; a participant browsing to a
@@ -204,8 +221,15 @@ class TestStudyModeBehaviour:
         assert "if (studyMode) {" in js
 
     def test_render_requests_are_tagged_with_the_session(self):
+        """By the study and the session's join code. Not by the session id: ids
+        are small sequential numbers, and a guessed one used to be enough to
+        write renders into someone else's session."""
         js = VIEWER_JS.read_text(encoding="utf-8")
-        assert "X-Study-Session" in js
+        assert "renderHeaders['X-Study'] = studySlug;" in js
+        assert "renderHeaders['X-Study-Key'] = studySessionKey;" in js
+        assert "X-Study-Session" not in js
+        study_js = STUDY_JS.read_text(encoding="utf-8")
+        assert "window.cadStudy.setSessionKey(sessionActive ? state.participant_key : null);" in study_js
 
     def test_page_load_does_not_render_in_study_mode(self):
         """The first render belongs to the protocol step, not to page load;
@@ -221,12 +245,12 @@ class TestStudyModeBehaviour:
 
     def test_study_driver_reports_interactions(self):
         js = STUDY_JS.read_text(encoding="utf-8")
-        assert "/study/event" in js
+        assert "fetch(withKey(api('event')), {" in js
         assert "onInteraction.push(report)" in js
 
     def test_study_driver_sends_the_ready_signal(self):
         js = STUDY_JS.read_text(encoding="utf-8")
-        assert "/study/step/ready" in js
+        assert "fetch(withKey(api('step/ready')), {" in js
 
     def test_the_model_stem_is_used_to_load_and_never_to_display(self):
         """The stem has to reach the browser -- a model is addressed by name now,
@@ -439,15 +463,44 @@ class TestControlPanelAccessibility:
 
 
 class TestControlPanelBehaviour:
-    def test_the_panel_needs_no_token_by_default(self):
-        """Running a session should be: open the app, start. A secret to find in
-        a server log was the single biggest piece of friction in this flow."""
+    def test_the_panel_signs_in_rather_than_carrying_the_token_in_its_url(self):
+        """The comparison study's panel was open unless a token was set, and a
+        set token rode in the URL: into browser history, bookmarks and the
+        proxy's logs. Now the token is typed once into a password field and
+        answered with a cookie."""
         js = CONTROL_JS.read_text(encoding="utf-8")
-        assert "if (TOKEN) opts.headers['X-Study-Token'] = TOKEN;" in js, (
-            "the panel should send a token only when the deployment sets one"
-        )
+        assert "get('token')" not in js and "?token=" not in js
+        assert "fetch(`${API}/sign-in`, {" in js
+        assert "credentials: 'same-origin'" in js
+        assert "if (error instanceof SignedOut) { showSignIn(); return; }" in js
         html = CONTROL_HTML.read_text(encoding="utf-8")
-        assert 'id="token' not in html
+        assert '<label for="sign-in-token">Panel token</label>' in html
+        assert 'type="password" id="sign-in-token"' in html
+        assert '<p id="sign-in-error" class="error-text" role="alert" hidden></p>' in html
+        # Nothing on the page sends its URL to another site.
+        assert '<meta name="referrer" content="no-referrer">' in html
+
+    def test_the_panel_talks_to_its_own_study(self):
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "const BASE = location.pathname.replace(/\\/control\\/?$/, '');" in js
+        assert "fetch(`${API}/${path}`, opts)" in js
+        assert "'/study/" not in js and "`/study" not in js
+
+    def test_the_data_downloads_are_plain_links(self):
+        """The sign-in cookie lets them through, so there is nothing to paste
+        into a terminal; and they are said in words, not as icons."""
+        html = CONTROL_HTML.read_text(encoding="utf-8")
+        for link in ("download-archive", "download-long-csv", "download-checks"):
+            assert f'id="{link}"' in html
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "el('download-archive').href = `${API}/export/archive.zip`;" in js
+
+    def test_a_closed_study_offers_only_its_data(self):
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        closed = js[js.index("if (config.status === 'closed') {"):]
+        closed = closed[: closed.index("return;") + len("return;")]
+        assert "showDataSection();" in closed
+        assert "showSetPicker" not in closed
 
     def test_opening_the_panel_asks_for_the_model_set_then_starts(self):
         """Which two objects the participant gets is the one thing starting a
@@ -457,7 +510,7 @@ class TestControlPanelBehaviour:
         js = CONTROL_JS.read_text(encoding="utf-8")
         assert "function showSetPicker()" in js
         assert "function startSession(taskOrder" in js
-        assert "'/study/sets'" in js
+        assert "api('sets')" in js
         assert "enrollment-form" not in js, "the enrolment form should be gone"
         html = CONTROL_HTML.read_text(encoding="utf-8")
         assert 'id="enrollment-form"' not in html
@@ -731,25 +784,39 @@ class TestFocusIsMovedOnlyByWhoeverCausedTheChange:
 
 class TestBothStudyPagesAreCheckedByAxe:
     def test_ci_runs_axe_on_the_study_pages_too(self):
-        """The automated check only covered /viewer, so neither study page had
-        ever been through it."""
+        """On the example study, which CI opens for the purpose: no server runs
+        a draft."""
         ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        assert "/study (in a session)" in ci
-        assert "/study/control" in ci
-        assert "/study (waiting for a code)" in ci
+        assert "CAD_A11Y_OPEN_STUDIES: example" in ci
+        assert "/studies/example (in a session)" in ci
+        assert "/studies/example (waiting for a code)" in ci
 
-    def test_both_panel_states_are_checked(self):
-        """The panel opens on the model-set picker and only reaches the session
-        by being used, so checking the page it lands on covers roughly none of
-        the markup a session renders."""
+    def test_every_panel_state_is_checked(self):
+        """The panel opens on sign-in, then the task-set picker, and only
+        reaches the session by being used, so checking the page it lands on
+        covers roughly none of the markup a session renders."""
         ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        assert "/study/control (choosing a model set)" in ci
-        assert "/study/control (running a session)" in ci
+        assert "/studies/example/control (signing in)" in ci
+        assert "/studies/example/control (choosing a task set)" in ci
+        assert "/studies/example/control (running a session)" in ci
         assert "page.click('#set-list button')" in ci
 
     def test_the_study_pages_are_checked_in_a_real_session(self):
         """An empty panel and a participant page with no session exercise almost
         none of the markup that a session actually renders."""
         ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        assert "/study/session/start" in ci, "axe should run against a live session"
+        assert "${control}/sign-in" in ci and "${control}/session/start" in ci
         assert "participant_key" in ci
+
+    def test_the_token_ci_uses_is_the_examples_published_one(self):
+        from app.studies.definitions import example
+
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        assert f"token: '{example.TOKEN}'" in ci
+
+    def test_a_fresh_panel_asks_whether_it_is_signed_in_before_anything_else(self):
+        """Reading a 401 from config would log a console error on every fresh
+        visit, which the CI check above fails on."""
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        boot = js[js.index("    function boot() {"):js.index("    function start(body) {")]
+        assert boot.index("${API}/signed-in") < boot.index("api('config')")

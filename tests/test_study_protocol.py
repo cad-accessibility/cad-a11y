@@ -1,18 +1,22 @@
-"""The study protocol as data: counterbalancing, step resolution, and the
-invariants a session depends on.
+"""The comparison study's protocol, resolved: counterbalancing, step resolution,
+and the invariants a session depended on.
 
 These are cheap tests guarding expensive mistakes. A protocol that assigns the
 same model pair twice, or resolves task 2 to task 1's model, produces a session
-that cannot be re-run and data that cannot be used.
+that cannot be re-run and data that cannot be used. The study is retired, and
+its definition is still the record of what every one of its sessions did, so
+these stay. test_studies_definitions.py covers the helpers on their own and
+every other study.
 """
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
-from app import study_protocol
+from app.studies import protocol
+from app.studies.definitions import comparison_2026 as comparison
+
+STUDY = comparison.STUDY
 
 
 def _script_text(step: dict) -> str:
@@ -40,66 +44,66 @@ def _spoken_text(step: dict) -> str:
 class TestCounterbalancing:
     def test_each_participant_gets_two_distinct_pairs(self):
         for sequence_number in range(1, 25):
-            order = study_protocol.assign_task_order(sequence_number)
-            assert len(order) == study_protocol.TASKS_PER_SESSION
+            order = protocol.assign_task_order(STUDY, sequence_number)
+            assert len(order) == comparison.TASKS_PER_SESSION
             assert len(set(order)) == len(order), f"repeat pair at {sequence_number}"
 
     def test_only_main_pairs_are_assigned(self):
         for sequence_number in range(1, 25):
-            order = study_protocol.assign_task_order(sequence_number)
+            order = protocol.assign_task_order(STUDY, sequence_number)
             for key in order:
-                assert key in study_protocol.MAIN_PAIRS
+                assert key in comparison.MAIN_PAIRS
 
     def test_the_retired_coat_rack_is_never_assigned(self):
         """It was a fourth pair and is out of the study. Its STLs still ship, so
         nothing fails loudly if it creeps back into an assignment -- a
         participant would simply be given an object the protocol no longer
         counts."""
-        assert "coat_rack" not in study_protocol.MODEL_PAIRS
-        assert "coat_rack" not in study_protocol.MAIN_PAIRS
+        assert "coat_rack" not in comparison.MODEL_PAIRS
+        assert "coat_rack" not in comparison.MAIN_PAIRS
         for sequence_number in range(1, 25):
-            assert "coat_rack" not in study_protocol.assign_task_order(sequence_number)
+            assert "coat_rack" not in protocol.assign_task_order(STUDY, sequence_number)
 
     def test_the_lego_brick_is_a_task_not_a_rehearsal(self):
         """It used to be the practice round. There is no practice round now, so
         it has to be reachable as a real task or it is not in the study at all."""
-        assert "lego" in study_protocol.MAIN_PAIRS
+        assert "lego" in comparison.MAIN_PAIRS
         assigned = {
             key
             for sequence_number in range(1, 7)
-            for key in study_protocol.assign_task_order(sequence_number)
+            for key in protocol.assign_task_order(STUDY, sequence_number)
         }
         assert "lego" in assigned
-        assert not hasattr(study_protocol, "PRACTICE_PAIR")
+        assert not hasattr(comparison, "PRACTICE_PAIR")
 
     def test_balanced_over_one_full_cycle(self):
         """Across six participants each pair appears twice in each position, and
         every ordered pair of models occurs exactly once. This is the property
         that keeps 'differences found in task 2' from being confounded with
         'task 2 was always the cane tip'."""
-        orders = [study_protocol.assign_task_order(n) for n in range(1, 7)]
+        orders = [protocol.assign_task_order(STUDY, n) for n in range(1, 7)]
 
         firsts = [order[0] for order in orders]
         seconds = [order[1] for order in orders]
-        for key in study_protocol.MAIN_PAIRS:
+        for key in comparison.MAIN_PAIRS:
             assert firsts.count(key) == 2, f"{key} unbalanced in first position"
             assert seconds.count(key) == 2, f"{key} unbalanced in second position"
 
         assert len({tuple(order) for order in orders}) == 6
 
     def test_cycle_repeats_after_six(self):
-        assert study_protocol.assign_task_order(7) == study_protocol.assign_task_order(1)
-        assert study_protocol.assign_task_order(13) == study_protocol.assign_task_order(1)
+        assert protocol.assign_task_order(STUDY, 7) == protocol.assign_task_order(STUDY, 1)
+        assert protocol.assign_task_order(STUDY, 13) == protocol.assign_task_order(STUDY, 1)
 
     def test_sequence_number_is_clamped_not_crashed(self):
         """A zero or negative position must still produce a usable assignment;
         failing here would block enrollment rather than just misassign."""
-        assert study_protocol.assign_task_order(0)
-        assert study_protocol.assign_task_order(-5)
+        assert protocol.assign_task_order(STUDY, 0)
+        assert protocol.assign_task_order(STUDY, -5)
 
     def test_preview_matches_assignment(self):
-        for row in study_protocol.latin_square_preview():
-            assert row["task_order"] == study_protocol.assign_task_order(row["sequence_number"])
+        for row in protocol.design_preview(STUDY):
+            assert row["task_order"] == protocol.assign_task_order(STUDY, row["sequence_number"])
             assert len(row["labels"]) == len(row["task_order"])
 
 
@@ -107,34 +111,34 @@ class TestTaskSets:
     """The list the experimenter picks from in the control panel."""
 
     def test_one_set_per_cell_of_the_design(self):
-        sets = study_protocol.task_sets()
+        sets = protocol.task_sets(STUDY)
         assert len(sets) == 6, "three objects taken two at a time, in order"
         assert len({entry["id"] for entry in sets}) == 6, "duplicate set"
 
     def test_every_set_is_a_full_assignment(self):
-        for entry in study_protocol.task_sets():
-            assert len(entry["task_order"]) == study_protocol.TASKS_PER_SESSION
+        for entry in protocol.task_sets(STUDY):
+            assert len(entry["task_order"]) == comparison.TASKS_PER_SESSION
             assert len(set(entry["task_order"])) == len(entry["task_order"])
             assert len(entry["labels"]) == len(entry["task_order"])
             for key in entry["task_order"]:
-                assert key in study_protocol.MODEL_PAIRS
+                assert key in comparison.MODEL_PAIRS
 
     def test_the_id_distinguishes_order(self):
         """The two orders of the same objects are different cells of the design.
         An id that collapsed them would mark both as run once either had been."""
-        assert study_protocol.set_id(["cane_tip", "lego"]) != study_protocol.set_id(
+        assert protocol.set_id(["cane_tip", "lego"]) != protocol.set_id(
             ["lego", "cane_tip"]
         )
 
     def test_the_id_matches_what_a_session_stores(self):
         """A session's task_order has to map onto a set without a lookup table --
         that is how the panel knows which sets have been run."""
-        ids = {entry["id"] for entry in study_protocol.task_sets()}
+        ids = {entry["id"] for entry in protocol.task_sets(STUDY)}
         for sequence_number in range(1, 7):
-            assert study_protocol.set_id(study_protocol.assign_task_order(sequence_number)) in ids
+            assert protocol.set_id(protocol.assign_task_order(STUDY, sequence_number)) in ids
 
     def test_labels_are_human_readable_not_keys(self):
-        labels = {label for entry in study_protocol.task_sets() for label in entry["labels"]}
+        labels = {label for entry in protocol.task_sets(STUDY) for label in entry["labels"]}
         assert "Lego brick" in labels
         assert "pencil_holder" not in labels
 
@@ -142,7 +146,7 @@ class TestTaskSets:
 class TestStepResolution:
     @pytest.fixture()
     def steps(self):
-        return study_protocol.resolve_steps(["cane_tip", "lego"])
+        return protocol.resolve_steps(STUDY, ["cane_tip", "lego"])
 
     def test_step_ids_are_unique(self, steps):
         ids = [step["id"] for step in steps]
@@ -162,8 +166,8 @@ class TestStepResolution:
     def test_task_order_actually_changes_the_models(self):
         """Guards the bug that would silently ruin counterbalancing: a resolver
         that ignores the assignment and always returns the same pair."""
-        first = study_protocol.resolve_steps(["cane_tip", "lego"])
-        second = study_protocol.resolve_steps(["lego", "cane_tip"])
+        first = protocol.resolve_steps(STUDY, ["cane_tip", "lego"])
+        second = protocol.resolve_steps(STUDY, ["lego", "cane_tip"])
         by_id_first = {s["id"]: s for s in first}
         by_id_second = {s["id"]: s for s in second}
         assert (
@@ -187,8 +191,8 @@ class TestStepResolution:
     def test_every_exploration_step_has_an_answer_key(self, steps):
         for step in steps:
             if step["id"].endswith((".a.virtual", ".b.virtual", ".a.physical", ".b.physical")):
-                assert step["pair"], f"{step['id']} has no pair"
-                assert step["pair"]["differences"], f"{step['id']} has no answer key"
+                assert step["task"], f"{step['id']} has no task"
+                assert step["task"]["differences"], f"{step['id']} has no answer key"
 
     def test_script_placeholders_are_substituted(self, steps):
         """An unresolved placeholder would be read aloud to a participant."""
@@ -200,7 +204,7 @@ class TestStepResolution:
     def test_part_a_script_carries_the_pair_description(self, steps):
         by_id = {step["id"]: step for step in steps}
         script = _script_text(by_id["task1.a.virtual"])
-        assert study_protocol.MODEL_PAIRS["cane_tip"]["description"] in script
+        assert comparison.MODEL_PAIRS["cane_tip"]["description"] in script
 
     def test_physical_model_reminders_resolve(self, steps):
         by_id = {step["id"]: step for step in steps}
@@ -233,18 +237,18 @@ class TestStepResolution:
     def test_a_plain_string_script_still_loads(self):
         """A protocol override written before the block format existed must not
         render an empty step in the middle of a session."""
-        blocks = study_protocol._resolve_script("just some prose", None)
+        blocks = protocol._resolve_script("just some prose", None)
         assert blocks == [{"kind": "note", "text": "just some prose"}]
 
     def test_an_unknown_block_kind_degrades_to_a_note(self):
-        blocks = study_protocol._resolve_script([{"kind": "shout", "text": "hi"}], None)
+        blocks = protocol._resolve_script([{"kind": "shout", "text": "hi"}], None)
         assert blocks[0]["kind"] == "note"
 
 
 class TestScriptContent:
     @pytest.fixture()
     def by_id(self):
-        return {s["id"]: s for s in study_protocol.resolve_steps(["cane_tip", "lego"])}
+        return {s["id"]: s for s in protocol.resolve_steps(STUDY, ["cane_tip", "lego"])}
 
     def test_the_opening_does_not_take_consent(self, by_id):
         """Consent is given before the session -- the participant would not have
@@ -310,13 +314,13 @@ class TestScriptContent:
         """Asked verbally, but the experimenter should not need a second document
         open beside the panel."""
         text = _script_text(by_id["background.questionnaire"])
-        for question in study_protocol.BACKGROUND_QUESTIONS:
+        for question in comparison.BACKGROUND_QUESTIONS:
             assert question["text"] in text
 
     def test_rating_items_are_present_to_read_after_each_task(self, by_id):
         for step_id in ("task1.rating", "task2.rating"):
             text = _script_text(by_id[step_id])
-            for item in study_protocol.RATING_ITEMS:
+            for item in comparison.RATING_ITEMS:
                 assert item["text"] in text, f"{item['text']} missing from {step_id}"
 
     def test_question_steps_say_the_answers_go_on_paper(self, by_id):
@@ -340,16 +344,16 @@ class TestScriptContent:
     def test_unassigned_slots_resolve_to_nothing_rather_than_guessing(self):
         """A session started with one pair must leave task 2 empty rather than
         quietly reusing task 1's model."""
-        steps = study_protocol.resolve_steps(["cane_tip"])
+        steps = protocol.resolve_steps(STUDY, ["cane_tip"])
         by_id = {step["id"]: step for step in steps}
         assert by_id["task2.a.virtual"]["model"] is None
 
 
 class TestRequiredModels:
     def test_lists_every_model_the_protocol_loads(self):
-        required = study_protocol.required_models()
+        required = protocol.required_models(STUDY)
         assert "mug" in required
-        for pair in study_protocol.MODEL_PAIRS.values():
+        for pair in comparison.MODEL_PAIRS.values():
             assert pair["a"]["model"] in required
             assert pair["b"]["model"] in required
 
@@ -360,14 +364,14 @@ class TestRequiredModels:
 
         builtin_dir = Path(__file__).resolve().parent.parent / "builtin_models"
         shipped = {path.stem for path in builtin_dir.iterdir() if path.is_file()}
-        missing = [stem for stem in study_protocol.required_models() if stem not in shipped]
+        missing = [stem for stem in protocol.required_models(STUDY) if stem not in shipped]
         assert not missing, f"protocol needs models that do not ship: {missing}"
 
 
 class TestViewerDefaults:
     def test_matches_the_agreed_study_defaults(self):
         """Issue #163: the state every model load starts from."""
-        defaults = study_protocol.VIEWER_DEFAULTS
+        defaults = comparison.VIEWER_DEFAULTS
         assert defaults["render_mode"] == "cut"
         assert defaults["representation_mode"] == "single"
         assert defaults["compose_scrollbar"] is True
@@ -378,38 +382,3 @@ class TestViewerDefaults:
         # view, which stands the mug upright with its handle (toward -Y in the
         # STL) at the left edge.
         assert defaults["view"] == "x-"
-
-
-class TestProtocolOverride:
-    def test_uses_the_builtin_protocol_by_default(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("STUDY_PROTOCOL_PATH", str(tmp_path / "absent.json"))
-        study_protocol.load_protocol()
-        assert study_protocol.load_protocol()["source"] == "builtin"
-        assert study_protocol.override_error() is None
-
-    def test_a_valid_override_replaces_the_steps(self, tmp_path, monkeypatch):
-        override = tmp_path / "protocol.json"
-        override.write_text(
-            json.dumps({"version": "test-1", "steps": [{"id": "only", "part_id": "p", "title": "t"}]}),
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("STUDY_PROTOCOL_PATH", str(override))
-        protocol = study_protocol.load_protocol()
-        assert protocol["version"] == "test-1"
-        assert len(protocol["steps"]) == 1
-
-    def test_a_broken_override_falls_back_instead_of_raising(self, tmp_path, monkeypatch):
-        """A typo in an edited protocol must not take down a session in progress."""
-        override = tmp_path / "protocol.json"
-        override.write_text("{ not json", encoding="utf-8")
-        monkeypatch.setenv("STUDY_PROTOCOL_PATH", str(override))
-        protocol = study_protocol.load_protocol()
-        assert protocol["source"] == "builtin"
-        assert study_protocol.override_error() is not None
-
-    def test_an_empty_override_falls_back(self, tmp_path, monkeypatch):
-        override = tmp_path / "protocol.json"
-        override.write_text(json.dumps({"steps": []}), encoding="utf-8")
-        monkeypatch.setenv("STUDY_PROTOCOL_PATH", str(override))
-        assert study_protocol.load_protocol()["source"] == "builtin"
-        assert study_protocol.override_error() is not None

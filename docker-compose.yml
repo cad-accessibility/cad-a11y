@@ -19,11 +19,15 @@ services:
       # Uploads must never land in data/models: that directory is the built-in
       # set and everything in it is public to every visitor (#102).
       UPLOAD_MODEL_DIR: /project/data/uploads
-      # Optional gate on the experimenter control panel. Unset -- the normal
-      # case -- the panel is open: opening it starts a session, which is the
-      # whole flow. Set it in .env to require /study/control?token=<value>, at
-      # the cost of having something to distribute again.
-      STUDY_CONTROL_TOKEN: "${STUDY_CONTROL_TOKEN:-}"
+      # The release or commit being deployed, recorded with every study
+      # session. scripts/docker_compose_build.sh sets it from the pipeline; the
+      # image has no .git to ask.
+      CAD_A11Y_VERSION: "${CAD_A11Y_VERSION:-}"
+      # Draft studies to serve, by slug, comma-separated. For development and
+      # CI only: CI opens the example study here for the accessibility check.
+      # Whether a real study runs is its status in app/studies/definitions,
+      # which this cannot change.
+      CAD_A11Y_OPEN_STUDIES: "${CAD_A11Y_OPEN_STUDIES:-}"
     volumes:
       # Docker-managed named volumes (not host bind mounts). On first mount,
       # Docker seeds each volume from the image's /project/data/<name>, which
