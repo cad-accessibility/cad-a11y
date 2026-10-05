@@ -591,6 +591,8 @@ viewerState.currentZoom = 0.0;
 viewerState.currentRenderMode = 'cut';
 viewerState.currentRepresentationMode = 'single';
 viewerState.currentMoveCamera = "none";
+// Nothing sets this since P stopped printing (#245 review): the server's print
+// path has never worked (see #49), and a key can come back with a fix.
 viewerState.currentPrintView = false;
 // The output-device radio the user picked: 'monarch' or 'dotpad'. Also flipped
 // automatically on a successful connect — see setMonarchHidConnected /
@@ -1932,13 +1934,6 @@ function setSliceGraphLocked(locked) {
 
 function toggleSliceGraphLock() {
     setSliceGraphLocked(!viewerState.sliceGraphLocked);
-}
-
-function print_view(){
-    // currentPrintView is reset inside sendStateToServer itself, only once
-    // actually consumed -- see the moveCamera/printView comment there.
-    viewerState.currentPrintView = true;
-    sendStateToServer();
 }
 
 function formatDebugValue(value) {
@@ -4160,7 +4155,7 @@ document.addEventListener('keydown', function(e) {
         'x', 'y', 'z', ',',
         '4', '5', '0',
         'r', 't', 'g', 'v',
-        'w', 'a', 's', 'd', '[', ']', 'h', '?', 'p', '.', 'escape', 'f'
+        'w', 'a', 's', 'd', '[', ']', 'h', '?', '.', 'escape', 'f'
     ]);
 
     if (!supportedShortcuts.has(normalizedKey)) {
@@ -4472,11 +4467,6 @@ document.addEventListener('keydown', function(e) {
         case '?':
             e.preventDefault();
             openShortcutsDialog();
-            break;
-
-        case 'p':
-            announceAlert('Printing current render');
-            print_view();
             break;
 
         case '0':

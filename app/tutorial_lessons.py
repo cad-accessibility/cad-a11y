@@ -172,7 +172,6 @@ KEYS: dict[str, dict[str, Any]] = {
     "shortcuts": _k("H", "h", "opens the list of keyboard shortcuts"),
     "shortcuts_question": _k("Question mark", "?", "opens the list of keyboard shortcuts"),
     "escape": _k("Escape", "escape", "closes a dialog; anywhere else, clears focus"),
-    "print": _k("P", "p", "saves a copy of the render on the server; nothing prints or downloads"),
     # The cursor lives only on the displays. The DotPad moves it with two
     # function keys and the two panning keys; one tap moves 1 pin, two quick taps
     # 5 and three 12. No lesson teaches it while it has nothing to do (#245
@@ -1285,8 +1284,6 @@ LESSONS: list[dict[str, Any]] = [
                     "Choose the Export Current View as Image button.",
                 ),
             ),
-            # The print key is not taught: it does not work as it says, and it is to
-            # come out of the help (#245 review).
             _step(
                 "props_and_end",
                 "One last thing: if you want the printed mug and ten slice plaques to hold, the "

@@ -104,7 +104,7 @@ REQUIRED_KEY_NAMES = {
     "depth_far", "axis_x", "axis_y", "axis_z", "where_am_i", "origin", "reset", "render_mode",
     "layout", "fit", "zoom_in_10", "zoom_out_10", "zoom_in_1", "zoom_out_1", "pan_up", "pan_left",
     "pan_down", "pan_right", "scrollbar_overlay", "graph_overlay", "graph_refresh", "graph_lock",
-    "shortcuts", "print", "cursor_mode", "cursor_move", "turn_pitch_up", "turn_pitch_down",
+    "shortcuts", "cursor_mode", "cursor_move", "turn_pitch_up", "turn_pitch_down",
     "turn_yaw_left", "turn_yaw_right", "turn_roll_ccw", "turn_roll_cw", "tutorial_continue",
     "tutorial_back", "tutorial_repeat",
 }
@@ -1016,7 +1016,6 @@ KEY_EFFECTS = {
     "shortcuts": "openShortcutsDialog()",
     "shortcuts_question": "openShortcutsDialog()",
     "escape": ".blur()",
-    "print": "print_view()",
 }
 
 
@@ -1159,10 +1158,6 @@ KEY_COVERAGE = {
     "h": "help_and_settings", "?": "help_and_settings", "escape": "help_and_settings",
 }
 KEYS_THAT_DO_NOTHING = {"q", "e"}
-# Shortcuts the viewer has and no lesson teaches, each with the reason. P is not
-# taught because it does not do what it says; the #245 review asked for it to
-# come out of the help instead.
-KEYS_NOT_TAUGHT = {"p": "does not work as the help says; to come out of the help"}
 
 # Every main-menu button, dialog, Settings control and page control, the lesson
 # that teaches it, and words that lesson has to contain about it.
@@ -1253,12 +1248,10 @@ DEVICE_BUTTONS_NOT_TAUGHT = {"cursor", "move-left", "move-right", "move-up", "mo
 
 def test_every_viewer_shortcut_is_taught():
     supported = _supported_shortcuts()
-    expected = supported - KEYS_THAT_DO_NOTHING - set(KEYS_NOT_TAUGHT)
-    assert set(KEY_COVERAGE) == expected, (
+    assert set(KEY_COVERAGE) == supported - KEYS_THAT_DO_NOTHING, (
         "a viewer shortcut has no lesson, or a lesson teaches one that is gone: "
-        f"{sorted(set(KEY_COVERAGE) ^ expected)}"
+        f"{sorted(set(KEY_COVERAGE) ^ (supported - KEYS_THAT_DO_NOTHING))}"
     )
-    assert set(KEYS_NOT_TAUGHT) <= supported, "a key left untaught is no longer in the viewer"
     by_code: dict[str, set[str]] = {}
     for name, entry in tl.KEYS.items():
         if entry["code"]:
