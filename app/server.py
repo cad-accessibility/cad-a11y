@@ -1372,6 +1372,11 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
         origin_fraction = engine.origin_fraction()
         if origin_fraction is not None:
             response["origin_fraction"] = origin_fraction
+    # Where the origin landed on this frame, across from the left edge and up
+    # from the bottom, as fractions of the display: what "," and "." say
+    # (#235 review). Absent when the layout has no single view to place it in.
+    if render_result.origin_display is not None:
+        response["origin_display"] = [float(value) for value in render_result.origin_display]
     # Only meaningful for a request that actually asked for the slice graph:
     # slicegraph_ready otherwise carries whatever a previous request left it at,
     # which would misreport for one that wasn't building a graph. The render just

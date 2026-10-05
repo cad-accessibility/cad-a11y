@@ -290,11 +290,11 @@
             <!-- 1a. Orientation — most frequently changed -->
             <section class="section" aria-labelledby="orientation-heading">
                 <h2 id="orientation-heading">Orientation</h2>
-                <!-- Turn mode (the default): pitch, roll and yaw. Only one of these
-                     two groups is ever shown, and each one's buttons refuse to act
-                     in the other mode, so no control does something in both. The
-                     mode is chosen in Settings, under Axis Mode. -->
-                <div id="turn-controls">
+                <!-- Turn mode: pitch, roll and yaw. Only one of these two groups
+                     is ever shown, and each one's buttons refuse to act in the
+                     other mode, so no control does something in both. The mode is
+                     chosen in Settings, under Axis Mode; XYZ is the default. -->
+                <div id="turn-controls" hidden>
                     <div id="orientation-help" class="help-text">
                         Each turns the model a quarter turn. Left and right, up and down,
                         and clockwise are as they are on the display, whichever way the
@@ -314,19 +314,25 @@
                     </div>
                 </div>
                 <!-- XYZ mode: cut along X, Y or Z, each seen as one of OpenSCAD's
-                     standard views. -->
-                <div id="xyz-controls" hidden>
+                     standard views. One button per axis and side, the side being
+                     where the reader looks from (#235 review); the one showing is
+                     marked current. -->
+                <div id="xyz-controls">
                     <div id="xyz-help" class="help-text">
-                        Cut along X, Y or Z, as in OpenSCAD. Other side looks at the
-                        same cut from the opposite side.
+                        Cut along X, Y or Z, as in OpenSCAD. Plus or minus is the
+                        side you look from.
                     </div>
                     <div class="button-group" aria-describedby="xyz-help">
-                        <button type="button" id="axis-x-btn">Cut along X</button>
-                        <button type="button" id="axis-y-btn">Cut along Y</button>
-                        <button type="button" id="axis-z-btn">Cut along Z</button>
+                        <button type="button" id="view-x-plus-btn" data-axis="x" data-side="plus">X plus</button>
+                        <button type="button" id="view-x-minus-btn" data-axis="x" data-side="minus">X minus</button>
                     </div>
                     <div class="button-group" style="margin-top: 8px;">
-                        <button type="button" id="axis-flip-btn">Other side</button>
+                        <button type="button" id="view-y-plus-btn" data-axis="y" data-side="plus">Y plus</button>
+                        <button type="button" id="view-y-minus-btn" data-axis="y" data-side="minus">Y minus</button>
+                    </div>
+                    <div class="button-group" style="margin-top: 8px;">
+                        <button type="button" id="view-z-plus-btn" data-axis="z" data-side="plus">Z plus</button>
+                        <button type="button" id="view-z-minus-btn" data-axis="z" data-side="minus">Z minus</button>
                     </div>
                     <p id="xyz-position" class="help-text"></p>
                 </div>
@@ -352,13 +358,13 @@
                     aria-valuetext="50 percent depth"
                     aria-describedby="slice-help"
                 >
-                <div id="slice-help" class="help-text sr-only">In Turn mode, 0% is the surface nearest you and 100% the far side, whichever way the model is facing. Keys: Up deeper 1%, Down shallower 1%, Page Up deeper 10%, Page Down shallower 10%, Home the surface, End the far side. In XYZ mode, the cut's position along its axis, from the object's lowest coordinate to its highest; on this slider Up and Page Up move toward the highest, while elsewhere they go deeper.</div>
+                <div id="slice-help" class="help-text sr-only">In Turn mode, 0% is the surface nearest you and 100% the far side, whichever way the model is facing. Keys: Up deeper 1%, Down shallower 1%, Page Up deeper 10%, Page Down shallower 10%, Home the surface, End the far side. In XYZ mode, the cut's position along its axis, in percent of the object's size with 0% at the model's origin. The slider runs from the object's lowest coordinate to its highest; on it Up and Page Up move toward the highest, while elsewhere they go deeper.</div>
                 <div class="button-group">
                     <button type="button" id="deeper-btn" aria-describedby="deeper-help">Deeper: 50%</button>
                     <button type="button" id="shallower-btn" aria-describedby="shallower-help">Shallower: 50%</button>
                 </div>
-                <div id="deeper-help" class="sr-only">+10%</div>
-                <div id="shallower-help" class="sr-only">-10%</div>
+                <div id="deeper-help" class="sr-only">Moves the cut 10% further from you.</div>
+                <div id="shallower-help" class="sr-only">Moves the cut 10% nearer to you.</div>
             </section>
 
             <!-- 1c. Render mode -->
@@ -649,7 +655,7 @@
 
         <!-- Only the active axis mode's keys are shown, with one line naming the
              other mode, like the study section above. -->
-        <div id="turn-shortcuts-section">
+        <div id="turn-shortcuts-section" hidden>
             <h3>Orientation (Turn mode)</h3>
             <ul class="shortcuts-list">
                 <li><kbd>U</kbd> Roll counterclockwise (90°): Rotate around forward facing axis </li>
@@ -661,11 +667,11 @@
             </ul>
             <p class="help-text">Other axis mode: XYZ, which cuts along X, Y or Z as in OpenSCAD. Change it in Settings.</p>
         </div>
-        <div id="xyz-shortcuts-section" hidden>
+        <div id="xyz-shortcuts-section">
             <h3>Axes (XYZ mode)</h3>
             <ul class="shortcuts-list">
-                <li><kbd>X</kbd>, <kbd>Y</kbd>, <kbd>Z</kbd> Cut along that axis: X seen from the right, Y from the front, Z from above</li>
-                <li><kbd>X</kbd>, <kbd>Y</kbd> or <kbd>Z</kbd> again The same axis from the other side: the left, the back, or below</li>
+                <li><kbd>X</kbd>, <kbd>Y</kbd>, <kbd>Z</kbd> Cut along that axis: X from plus, Y from minus, Z from plus, the side you look from</li>
+                <li><kbd>X</kbd>, <kbd>Y</kbd> or <kbd>Z</kbd> again The same axis from the other side</li>
             </ul>
             <p class="help-text">Other axis mode: Turn, which turns the model with pitch, roll and yaw. Change it in Settings.</p>
         </div>
@@ -679,7 +685,7 @@
             <li><kbd>Home</kbd> The surface nearest you</li>
             <li><kbd>End</kbd> The far side</li>
         </ul>
-        <p class="help-text">The same in both axis modes. In XYZ mode the cut is read out as its position along the axis, so seen from above, the right or the back, going deeper lowers the number.</p>
+        <p class="help-text">The same in both axis modes. In XYZ mode the cut is read out as its position along the axis, with 0% at the model's origin, so from X plus, Y plus or Z plus, going deeper lowers the number.</p>
 
         <h3>Zoom</h3>
         <ul class="shortcuts-list">
@@ -694,8 +700,8 @@
             <li><kbd>R</kbd> Cycle render mode</li>
             <li><kbd>T</kbd> Cycle view mode</li>
             <li><kbd>F</kbd> Fit current slice to tactile display</li>
-            <li><kbd>.</kbd> Where am I: which way the model faces, where the cut is, then the status bar</li>
-            <li><kbd>,</kbd> Where the model's origin is, against the cut and the outline</li>
+            <li><kbd>.</kbd> Where am I: the view, the cut, the origin, render, zoom and model</li>
+            <li><kbd>,</kbd> Where the model's origin is on the display, across from the left edge and up from the bottom</li>
         </ul>
 
         <h3>Slice Graph</h3>
@@ -768,11 +774,11 @@
         <fieldset>
             <legend class="sr-only">Axis mode</legend>
             <label>
-                <input type="radio" name="axis-mode" id="axis-mode-turn" value="turn" checked>
+                <input type="radio" name="axis-mode" id="axis-mode-turn" value="turn">
                 Turn: pitch, roll and yaw
             </label>
             <label>
-                <input type="radio" name="axis-mode" id="axis-mode-xyz" value="xyz">
+                <input type="radio" name="axis-mode" id="axis-mode-xyz" value="xyz" checked>
                 XYZ: cut along X, Y or Z, as in OpenSCAD
             </label>
         </fieldset>

@@ -123,21 +123,16 @@ def test_the_turn_buttons_refuse_in_xyz_mode_and_the_axis_buttons_in_turn_mode()
     turn_handler = turn_handler[:turn_handler.index("\n}\n")]
     assert "if (isXyzMode()) return;" in turn_handler
 
-    wiring = [m.start() for m in re.finditer(
-        re.escape("for (const [axis, button] of Object.entries(axisButtons()))"), js)]
-    axis_handler = next(
-        js[start:js.index("\n}\n", start)] for start in wiring
-        if "addEventListener('click'" in js[start:js.index("\n}\n", start)]
-    )
-    assert "if (!isXyzMode()) return;" in axis_handler
-    flip = js[js.index("axisFlipBtn.addEventListener('click'"):]
-    assert "if (!isXyzMode()) return;" in flip[:flip.index("});")]
+    view_handler = js[js.index("for (const button of viewButtons()) {\n    button.addEventListener('click'"):]
+    view_handler = view_handler[:view_handler.index("\n}\n")]
+    assert "if (!isXyzMode()) return;" in view_handler
 
 
 def test_the_page_shows_one_mode_s_controls_at_a_time():
+    """XYZ is the default, so its controls are the ones the page starts with."""
     html = _html()
-    assert re.search(r'<div id="turn-controls">', html), "turn controls should show by default"
-    assert re.search(r'<div id="xyz-controls" hidden>', html), "XYZ controls should start hidden"
+    assert re.search(r'<div id="xyz-controls">', html), "XYZ controls should show by default"
+    assert re.search(r'<div id="turn-controls" hidden>', html), "turn controls should start hidden"
     sync = _js()[_js().index("function syncAxisModeUI()"):]
     sync = sync[:sync.index("\n}\n")]
     assert "turnControls.hidden = xyz" in sync and "xyzControls.hidden = !xyz" in sync
@@ -209,16 +204,50 @@ def test_the_same_key_again_gives_the_other_side_and_a_third_comes_back():
     assert "otherSide" not in select, "nothing should be left of the Shift argument"
 
 
-def test_the_other_side_button_and_the_devices_use_the_same_rule():
-    """The button is for pointer users. A braille display sends the plain axis
-    letter and gets the second-press flip from selectAxis, so one rule covers the
-    keyboard, the DotPad and the Monarch instead of three."""
-    js = _js()
-    flip_button = js[js.index("axisFlipBtn.addEventListener('click'"):]
-    assert "flipSide(announce)" in flip_button[:flip_button.index("});")]
+def test_the_devices_use_the_keys_rule():
+    """A braille display sends the plain axis letter and gets the second-press
+    flip from selectAxis, so one rule covers the keyboard, the DotPad and the
+    Monarch instead of three."""
     device = _function("axisCommandFromDevice")
     assert "selectAxis(axis)" in device
     assert "flipOnRepeat" not in device and "otherSide" not in device
+
+
+def test_there_is_a_button_for_each_axis_and_side_and_no_other_side_button():
+    """The #235 review asked for "X plus" to "Z minus" in place of three axis
+    buttons and Other side, grouped by axis, with no button that turns round."""
+    html = _html()
+    controls = html[html.index('<div id="xyz-controls">'):]
+    controls = controls[:controls.index('<p id="xyz-position"')]
+    buttons = re.findall(r'<button type="button" id="([\w-]+)" data-axis="(\w)" data-side="(\w+)">([^<]+)</button>', controls)
+    assert [(axis, side, label) for _id, axis, side, label in buttons] == [
+        ("x", "plus", "X plus"), ("x", "minus", "X minus"),
+        ("y", "plus", "Y plus"), ("y", "minus", "Y minus"),
+        ("z", "plus", "Z plus"), ("z", "minus", "Z minus"),
+    ]
+    assert "Other side" not in controls and "axis-flip-btn" not in html
+    assert "flipSide" not in _js() and "axisFlipBtn" not in _js()
+
+
+def test_a_view_button_shows_its_own_view_and_never_turns_round():
+    """Pressing the one showing says it again: turning round is X then X again."""
+    js = _js()
+    handler = js[js.index("for (const button of viewButtons()) {\n    button.addEventListener('click'"):]
+    handler = handler[:handler.index("\n}\n")]
+    assert "showXyzView(viewFrom(this.dataset.axis, this.dataset.side === 'plus' ? 1 : -1), announce)" in handler
+    assert "selectAxis" not in handler
+
+
+def test_a_view_button_looks_from_the_side_it_names():
+    """X plus is the view from +X: the one whose depth points at +X, the token x-.
+    viewFrom finds it from the depth vectors rather than from the token names."""
+    view_from = _code_only(_function("viewFrom"))
+    assert "Math.sign(VIEW_BASIS[token].depth[index]) === sign" in view_from
+    basis = _view_basis()
+    expected = {("x", 1): "x-", ("x", -1): "x+", ("y", 1): "y+", ("y", -1): "y-", ("z", 1): "z+", ("z", -1): "z-"}
+    for (axis, sign), token in expected.items():
+        (found,) = [t for t, b in basis.items() if np.sign(b["depth"]["xyz".index(axis)]) == sign]
+        assert found == token
 
 
 def test_the_log_says_whether_shift_was_held():
@@ -237,9 +266,13 @@ def test_the_help_names_both_sides():
 # --- Defaults, and where Reset went -------------------------------------------------
 
 
-def test_turn_stays_the_default_until_the_pilot():
-    assert "viewerState.axisMode = 'turn';" in _js()
-    assert re.search(r'id="axis-mode-turn" value="turn" checked', _html())
+def test_xyz_is_the_default_and_turn_is_kept_when_chosen():
+    """Jen's review of #235: XYZ, not pitch, roll and yaw, is the default. A stored
+    choice of Turn is kept, and the study protocol still runs in Turn."""
+    init = _function("initializeAxisSettings")
+    assert "(studyMode || read(SETTINGS_AXIS_MODE_KEY) === 'turn') ? 'turn' : 'xyz'" in init
+    assert re.search(r'id="axis-mode-xyz" value="xyz" checked', _html())
+    assert not re.search(r'id="axis-mode-turn" value="turn" checked', _html())
     assert study_protocol.VIEWER_DEFAULTS["axis_mode"] == "turn"
 
 
@@ -274,7 +307,7 @@ def test_the_study_never_starts_in_xyz_mode():
     js = _js()
     init = js[js.index("function initializeAxisSettings()"):]
     init = init[:init.index("\n}\n")]
-    assert "studyMode ? 'turn'" in init
+    assert "(studyMode || " in init and "? 'turn' :" in init
     defaults = js[js.index("function applyStudyDefaults(defaults)"):]
     defaults = defaults[:defaults.index("\n}\n")]
     assert "wanted.axis_mode" in defaults
@@ -296,8 +329,8 @@ def test_z_in_turn_mode_says_where_reset_went():
 
 def test_the_help_has_a_section_for_each_mode_and_shows_one():
     html = _html()
-    assert 'id="turn-shortcuts-section"' in html
-    assert re.search(r'<div id="xyz-shortcuts-section" hidden>', html)
+    assert re.search(r'<div id="turn-shortcuts-section" hidden>', html)
+    assert re.search(r'<div id="xyz-shortcuts-section">', html)
     xyz = html[html.index('id="xyz-shortcuts-section"'):]
     xyz = xyz[:xyz.index("</div>")]
     for key in ("X", "Y", "Z"):
@@ -420,16 +453,18 @@ def test_the_hardware_depth_inputs_use_the_axis_scale_in_xyz_mode():
 
     getter = js[js.index("function getCurrentSliceDepth("):]
     getter = getter[:getter.index("\n}")]
-    assert "cutPercent(currentCutAxis())" in getter, (
+    assert "Math.round(viewerState.slicePlanes[currentCutAxis()] * 100)" in getter, (
         "a device reads this, adds its step and hands it back, so it must be the "
-        "same scale updateSliceDepth expects"
+        "same scale updateSliceDepth expects, 0 to 100 across the object, not the "
+        "readout measured from the origin"
     )
+    assert "position / 100" in setter
 
 
 def test_asking_where_the_origin_is_works_in_both_modes():
     """"," was XYZ-only, which made it say "Comma is XYZ only" in Turn mode. Where
-    the origin sits against the cut and the outline is worth asking in either, so
-    it belongs to neither mode's key list.
+    the origin is on the display is worth asking in either, so it belongs to
+    neither mode's key list, and it is said the same way in both.
     """
     keys = _mode_keys()
     assert "," not in keys["xyz"], '"," is no longer an XYZ-only key'
@@ -437,15 +472,58 @@ def test_asking_where_the_origin_is_works_in_both_modes():
     assert "," in _supported_shortcuts()
     assert "case ',':" in _keydown_handler()
 
-    js = _js()
-    origin = js[js.index("function announceOrigin("):]
-    origin = origin[:origin.index("\n}")]
-    assert "!isXyzMode()" in origin, "announceOrigin has no wording for Turn mode"
-    turn_branch = origin[origin.index("if (!isXyzMode())"):]
-    turn_branch = turn_branch[:turn_branch.index("return;")]
-    assert "signedPercent" not in turn_branch, (
-        "Turn mode is not working in an axis, so it should not be given a "
-        "coordinate along one"
+    origin = _code_only(_function("announceOrigin"))
+    assert "isXyzMode" not in origin, "where the origin is on the display does not depend on the mode"
+    assert "originOnDisplayPhrase()" in origin
+
+
+def test_the_origin_is_said_as_where_it_is_on_the_display():
+    """The #235 review: "Horizontal: 42%, Vertical: 42%", and past the edges when
+    it is off the display, "Horizontal: minus 200%"; "H: 42% V: 42%" in braille.
+    Measured from the left and bottom edges, so the numbers rise the way "X right,
+    Z up" does."""
+    phrase = _code_only(_function("originOnDisplayPhrase"))
+    assert "speech: `Horizontal: ${across}%, Vertical: ${up}%`" in phrase
+    assert "braille: `H: ${place.across}% V: ${place.up}%`" in phrase
+    assert "signedPercent(place.across)" in phrase, "a minus is said as a word"
+    setter = _code_only(_function("setOriginDisplay"))
+    assert "Math.round(across * 100)" in setter and "Math.round(up * 100)" in setter
+    render = _js()[_js().index("if (data.image_base64) setOriginDisplay(data.origin_display);"):]
+    assert render, "the origin's place is taken from each frame as it arrives"
+
+
+def test_where_am_i_is_short_and_names_the_model_on_display():
+    """The #235 review's "." : view, cut plane, origin, render, zoom, model. No
+    layout or DotPad, and the model is the one being rendered, not the status
+    bar's text, which kept the previous model's name after /ingest opened one."""
+    where = _code_only(_function("announceWhereAmI"))
+    for part in ("Origin: ${origin.short}.", "Render: ${render}.", "Zoom: ${zoom}.", "Model: ${modelLabel()}."):
+        assert part in where
+    assert "Layout" not in where and "DotPad" not in where and "statusBarRest" not in _js()
+    xyz = _code_only(_function("xyzDescription"))
+    assert "View from ${side.speech}, ${axes.speech}. ${cut.speech}." in xyz
+    cut = _code_only(_function("cutPlanePhrase"))
+    assert "speech: `Cut plane: ${letter}=${signedPercent(percent)}%`" in cut
+    assert "braille: `Cut: ${percent}%`" in cut
+    label = _code_only(_function("modelLabel"))
+    assert "viewerState.currentModel" in label
+    assert "sbModel.textContent = modelLabel();" in _function("refreshStatusBar")
+
+
+def test_the_cut_is_measured_from_the_origin():
+    """The #235 review: 0% is the model's origin, so a cube from -20 to +20 is cut
+    through its middle at 0%. The plane is still stored as a fraction of the
+    object, which is what the server and the Trinkey use."""
+    percent = _code_only(_function("cutPercent"))
+    assert "(viewerState.slicePlanes[axis] - origin) * 100" in percent
+    assert "if (origin === null) return null;" in percent
+    step = _code_only(_function("stepCut"))
+    assert "(viewerState.slicePlanes[axis] - origin) * 100" in step
+    assert "onGrid / 100 + origin" in step
+    announce = _code_only(_function("announceCutStep"))
+    assert "pendingCutAnnouncement = { axis, emit };" in announce, (
+        "a step made before the origin is known is said once it is, never on the "
+        "object's own scale"
     )
 
 
@@ -489,12 +567,12 @@ def test_deeper_is_away_from_the_reader_in_xyz_mode():
 
     lowers = {t for t, b in _view_basis().items() if b["depth"].sum() > 0}
     assert lowers == {"z+", "x-", "y+"}, "the views where deeper lowers the number"
-    names = {"z+": "above", "x-": "the right", "y+": "the back"}
-    js = _js()
-    assert all(names[t] == re.search(rf"'{re.escape(t)}': '([^']+)'", js[js.index("const VIEW_SIDES = {"):]).group(1)
-               for t in lowers)
+    # Those are the plus sides: the reader is on the + side of the axis.
+    side = _code_only(_function("axisSide"))
+    assert "const word = sign > 0 ? 'plus' : 'minus';" in side
+    assert "signedAxisOf(basis ? basis.depth" in side
     help_text = _html()[_html().index("<h3>Depth</h3>"):]
-    assert "seen from above, the right or the back, going deeper lowers the number" in help_text
+    assert "from X plus, Y plus or Z plus, going deeper lowers the number" in help_text
 
     ends = _code_only(_function("goToSliceEnd"))
     assert "const nearest = sign > 0 ? 1 : 0;" in ends, "Home must be the surface nearest the reader"
@@ -525,18 +603,48 @@ def test_a_focused_depth_slider_keeps_the_slider_pattern():
 
 
 def test_an_axis_key_says_the_axis_the_side_and_how_the_other_two_run():
-    """Jen's review asked for a much shorter announcement: the axis and side, then
-    the other two axes, "Y from the front, X right, Z up", and pressing Y again
-    "Y from the back, X left, Z up". The side is named rather than said as plus or
-    minus: for X the tokens name the side opposite the reader's, so "plus" could
-    not mean one thing on every axis."""
+    """Jen's review asked for a much shorter announcement, with the side said as
+    plus or minus: "X from plus, Y right, Z up", or "X+ Y right Z up" in braille.
+    Plus is the side the reader looks from, taken from the depth vector, since
+    the token for the view from +X is x-."""
     show = _code_only(_function("showXyzView"))
-    assert "cutPositionPhrase" not in show, "the axis key still reads the cut position out"
-    assert "now increases" not in show
-    assert "${letter} ${side.short}, ${axes.speech}." in show
-    assert "displayAxesPhrase(currentBasis(), false)" in show
+    assert "cutPlanePhrase" not in show, "the axis key still reads the cut position out"
+    assert "${side.letter} from ${side.word}, ${axes.speech}." in show
+    assert "braille: `${side.braille} ${axes.braille}`" in show
 
     axes = _code_only(_function("displayAxesPhrase"))
-    assert "${axisLetter(right.axis)} ${rightWord}, ${axisLetter(up.axis)} ${upWord}" in axes
-    side = _code_only(_function("sideOfView"))
-    assert "short: `from ${side}`" in side
+    assert "${axisLetter(right.axis)} ${right.sign > 0 ? 'right' : 'left'}, ${axisLetter(up.axis)} ${up.sign > 0 ? 'up' : 'down'}" in axes
+    side = _code_only(_function("axisSide"))
+    assert "braille: `${letter}${sign > 0 ? '+' : '-'}`" in side
+
+
+def test_the_step_buttons_say_deeper_and_shallower_in_both_modes():
+    """In XYZ mode they read "X plus 10%", which would sit next to the "X plus"
+    view button and mean something else. They now go through stepSliceDepth like
+    Page Up and Page Down."""
+    labels = _code_only(_function("updateButtonLabels"))
+    assert "isXyzMode" not in labels and "plus" not in labels
+    js = _js()
+    deeper = js[js.index("deeperBtn.addEventListener('click'"):]
+    assert "stepSliceDepth(xyzStepPercent(true))" in deeper[:deeper.index("});")]
+    shallower = js[js.index("shallowerBtn.addEventListener('click'"):]
+    assert "stepSliceDepth(-xyzStepPercent(true))" in shallower[:shallower.index("});")]
+
+
+def test_a_focused_list_radio_or_slider_keeps_its_own_navigation_keys():
+    """The #235 review: Home and End were taken from a focused list, radio group
+    or slider, and the arrows and Page Up/Down with them, so a screen reader user
+    could not jump within the control. Those keys now go to the control, except on
+    the depth slider, whose keys the viewer handles in the slider's own terms."""
+    handler = _code_only(_keydown_handler())
+    guard = handler[handler.index("const ownsNavigationKeys"):]
+    guard = guard[:guard.index("return;")]
+    for selector in ("select", 'input[type="radio"]', 'input[type="range"]', '[role="radio"]',
+                     '[role="listbox"]', '[role="slider"]'):
+        assert selector in guard
+    assert "target !== sliceSlider" in guard
+    native = re.search(r"const NATIVE_NAVIGATION_KEYS = \[([^\]]*)\]", handler)
+    assert set(re.findall(r"'([^']+)'", native.group(1))) == {
+        "arrowup", "arrowdown", "pageup", "pagedown", "home", "end"}
+    assert handler.index("const ownsNavigationKeys") < handler.index("switch(normalizedKey)")
+    assert handler.index("const ownsNavigationKeys") < handler.index("reportStudyInteraction('keyboard'")
