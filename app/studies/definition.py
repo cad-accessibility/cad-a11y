@@ -125,8 +125,8 @@ class Study:
     model_labels: dict[str, str] = field(default_factory=dict)
     facilitator_prompts: list[str] = field(default_factory=list)
     strategy_prompts: list[str] = field(default_factory=list)
-    # Overrides the per-slug default. Only the retired comparison study needs
-    # it: its data was written before studies had directories of their own.
+    # Overrides the per-slug default. Only the comparison study needs it: its
+    # data was written before studies had directories of their own.
     storage: Callable[[], Storage] | None = None
     # The git tag of the last code that ran this study, once it is retired.
     instrument_tag: str | None = None

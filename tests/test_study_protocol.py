@@ -3,7 +3,7 @@ and the invariants a session depended on.
 
 These are cheap tests guarding expensive mistakes. A protocol that assigns the
 same model pair twice, or resolves task 2 to task 1's model, produces a session
-that cannot be re-run and data that cannot be used. The study is retired, and
+that cannot be re-run and data that cannot be used. The study is over, and
 its definition is still the record of what every one of its sessions did, so
 these stay. test_studies_definitions.py covers the helpers on their own and
 every other study.

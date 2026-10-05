@@ -29,8 +29,9 @@ Both need the study's panel token; the script asks for it when `STUDY_TOKEN` is
 not set. A server serves a study's data while the study is open or closed.
 Staging updates on every merge to `master`, production on a `v*` release tag.
 
-The comparison study is retired, so neither works for it. [STUDIES.md](STUDIES.md)
-says how its data is exported.
+The comparison study is closed, so both work for it with its own token:
+`scripts/download_study_data.sh comparison-2026`. [STUDIES.md](STUDIES.md) has
+the rest of getting its data out.
 
 `long.json`, beside `long.csv` in the zip, describes every column below in a
 form a script can read: its description, its levels where it has a fixed set,

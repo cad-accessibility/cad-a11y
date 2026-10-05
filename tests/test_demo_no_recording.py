@@ -414,7 +414,7 @@ def test_the_demo_chooser_offers_the_comparison_studys_six_objects(client, sinks
     """The demo lists the six objects the comparison study compared, and nothing
     else.
 
-    Its own list now, since the study is retired, checked here against the
+    Its own list now, since the study is over, checked here against the
     study's definition so a typo in the copy cannot slip through. The onboarding
     mug is deliberately absent: it is what the study taught the system on, not
     one of the objects under comparison.

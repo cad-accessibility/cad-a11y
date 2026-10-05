@@ -123,7 +123,7 @@ def _model_list() -> list[str]:
         return []
     try:
         return list(_model_list_provider() or [])
-    except Exception:
+    except Exception:  # noqa: BLE001 - an unreadable model list is an empty one
         return []
 
 

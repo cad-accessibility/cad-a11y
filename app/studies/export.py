@@ -597,7 +597,8 @@ def build_archive(
     """Everything about a study, as a zip written to ``target`` (a temporary
     file when omitted), positioned at its start and ready to send."""
     log_dir = Path(log_dir)
-    archive = target if target is not None else tempfile.TemporaryFile()
+    # Not a with block: the file is handed back open, and send_file closes it.
+    archive = target if target is not None else tempfile.TemporaryFile()  # noqa: SIM115
     with readable_copy(Path(db_path), log_dir) as (snapshot, store):
         files: dict[str, bytes] = {}
 

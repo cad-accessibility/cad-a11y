@@ -16,7 +16,7 @@ code.
 |---|---|
 | `app/studies/definitions/` | One file per study, plus `__init__.py`, which lists them all |
 | `app/studies/definitions/example.py` | A short study to copy when starting a new one |
-| `app/studies/definitions/comparison_2026.py` | The comparison study, retired |
+| `app/studies/definitions/comparison_2026.py` | The comparison study, closed until its data is stored |
 | `/studies/<slug>` | The participant's page |
 | `/studies/<slug>/control` | The control panel |
 | `python -m app.studies` | The command line: list studies, make tokens, check and export data. It runs in the project's conda environment (`environment.yml`) and needs nothing else |
@@ -242,24 +242,27 @@ deletes it there deliberately.
 
 ## The comparison study
 
-The comparison study ran in 2026 at `/study` and is retired. The last code that
-served it is tagged `study-instrument-2026`. Its definition is
-`app/studies/definitions/comparison_2026.py`, unchanged since it ran.
+The comparison study ran in 2026 at `/study`, and the last code that served it
+is tagged `study-instrument-2026`. Its definition is
+`app/studies/definitions/comparison_2026.py`, unchanged since it ran except for
+its status.
 
-Its data is where that code wrote it, from before studies had directories of their
-own: `data/db/study.db` and `data/logs/study/`, on both servers. Nobody on the
-team has shell access to them, so it comes off them through the app:
+It is closed, so `/study` is gone and only its data downloads are served, behind
+its own token. Its data is where that code wrote it, from before studies had
+directories of their own: `data/db/study.db` and `data/logs/study/`, on both
+servers. Nobody on the team has shell access to them, so it comes off them
+through the app:
 
-1. In a pull request, set its status to `closed` and give it a `token_hash` from
-   `python -m app.studies token`.
-2. Once that is deployed, download the zip from `/studies/comparison-2026/control`
-   on staging. Production needs a release first; then download it there too. The
-   zip reads a database from before #185 as it is, without changing it.
-3. Check both: run the data checks, and compare each manifest's session count with
+1. Download the zip from `/studies/comparison-2026/control` on staging, which
+   serves it once this change is on `master`, and on production after the next
+   release. The zip reads a database from before #185 as it is, without changing
+   it.
+2. Check both: run the data checks, and compare each manifest's session count with
    the experimenters' records. Store them where the IRB protocol says study data
    lives.
-4. In another pull request, set its status back to `retired` and remove the
-   `token_hash`.
+3. Set its status to `retired` and remove its `token_hash`. Until then the
+   downloads stay up behind the token, which costs nothing but the token's
+   secrecy.
 
 Where there is shell access, the command line does the same without a deploy:
 

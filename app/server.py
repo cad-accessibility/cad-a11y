@@ -489,8 +489,9 @@ studies_engine.set_repo_root_provider(lambda: REPO_ROOT)
 # exist. /studies and everything under it return 404.
 #
 # Elsewhere which studies are served is decided once, here, from each study's
-# definition (app/studies/definitions). The comparison study that ran at /study
-# is retired, so nothing answers there any more.
+# definition (app/studies/definitions). Nothing answers at /study any more: the
+# comparison study that ran there is closed, which leaves only its data
+# downloads, behind its own token, at /studies/comparison-2026/control.
 DEMO_ONLY = recording.demo_only_process()
 STUDY_LOAD_MESSAGES: list[str] = []
 if not DEMO_ONLY:
@@ -1452,7 +1453,7 @@ def _bind_recorder_for_request():
 
 # The models the demo chooser offers: the six the comparison study compared, each
 # pair's original then its edited version. Listed here rather than read from the
-# study, which is retired: the demo goes on offering them, and a future study's
+# study, which has finished: the demo goes on offering them, and a future study's
 # choice of models is not a reason for the demo's to change.
 DEMO_MODEL_STEMS: tuple[str, ...] = (
     "pencil_holder_2x2",

@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 from . import export, registry, tokens
-from .definition import Study
+from .definition import Status, Study
 from .definitions import ALL
 
 
@@ -30,11 +30,13 @@ def _list(_: argparse.Namespace) -> int:
     opened = registry.opened_by_environment()
     for study in ALL:
         storage = study.resolve_storage()
-        served = registry.serving_status(study, opened)
         state = study.status.value
-        if served is not None:
+        if registry.serving_status(study, opened) is not None:
             refused = registry.refusal(study)
-            state += f", not served: {refused}" if refused else f", served {served.value}"
+            if refused:
+                state += f", not served: {refused}"
+            elif study.status is Status.DRAFT:
+                state += f", served open here by {registry.OPEN_STUDIES_ENV}"
         print(f"{study.slug}  ({state})")
         print(f"    {study.title}, version {study.version}")
         print(f"    database {storage.db_path}{'' if storage.db_path.is_file() else ' (none yet)'}")

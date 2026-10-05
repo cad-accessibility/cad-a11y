@@ -1,4 +1,4 @@
-"""The comparison study, retired.
+"""The comparison study, closed.
 
 Each participant explored a printed and a virtual mug to learn the system, then
 two of three model pairs -- a Lego brick, a pencil holder and a cane tip -- each
@@ -6,12 +6,16 @@ as an original and an edited version, describing what changed. It ran in 2026
 at ``/study``, and the last code that served it is tagged
 ``study-instrument-2026``.
 
-Retired means the server serves nothing for it: no participant page, no panel,
-no export address. The definition stays because it is the record of what every
-session in its data was asked to do, step by step, and because the command line
-still exports that data (``python -m app.studies export comparison-2026``). Its
-data stays where it was written, in ``data/db/study.db`` and ``data/logs/study/``,
-from before studies had directories of their own.
+Closed means the only thing served for it is its control panel's data
+downloads, behind its own token, so its data can come off both servers without
+shell access. No session can start and there is no participant page. Once the
+data is exported, checked and stored, set it to ``Status.RETIRED`` and remove
+``token_hash``; then nothing is served for it at all.
+
+The definition stays either way, because it is the record of what every session
+in its data was asked to do, step by step. Its data stays where it was written,
+in ``data/db/study.db`` and ``data/logs/study/``, from before studies had
+directories of their own.
 
 Nothing below has been edited since it ran beyond what moving it here needed.
 What a step may carry and how the references resolve is in ``protocol.py``.
@@ -925,7 +929,7 @@ def _legacy_storage() -> Storage:
 STUDY = Study(
     slug="comparison-2026",
     title="Model comparison study (2026)",
-    status=Status.RETIRED,
+    status=Status.CLOSED,
     version=PROTOCOL_VERSION,
     summary=(
         "Each participant explores a mug, then "
@@ -941,4 +945,6 @@ STUDY = Study(
     strategy_prompts=STRATEGY_PROMPTS,
     storage=_legacy_storage,
     instrument_tag="study-instrument-2026",
+    # Only while it is closed. Retiring it takes this out with it.
+    token_hash="scrypt$32768$8$1$qqcD8wlD-ipWeaR4Yf_uVw$Sw4uHZoIXwgX8apWkCT_Lwnrx4L8uyyCfzKOsOGjf-c",
 )

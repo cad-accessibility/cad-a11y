@@ -64,20 +64,23 @@ def test_slugs_are_unique():
     assert len(slugs) == len(set(slugs))
 
 
-def test_nothing_is_open_by_accident():
-    """Opening a study is a reviewed change. This lists what is open so that
-    change shows up here too."""
+def test_nothing_is_served_by_accident():
+    """Opening or closing a study is a reviewed change. This lists what servers
+    serve, so that change shows up here too."""
     assert {study.slug for study in ALL if study.status is Status.OPEN} == set()
+    assert {study.slug for study in ALL if study.status is Status.CLOSED} == {"comparison-2026"}
 
 
 # ---------------------------------------------------------------------------
-# The retired comparison study
+# The comparison study: closed until its data is stored
 # ---------------------------------------------------------------------------
 
 
-class TestTheComparisonStudyIsRetired:
+class TestTheComparisonStudyIsClosed:
     def test_its_status(self):
-        assert comparison_2026.STUDY.status is Status.RETIRED
+        """Its data downloads, and nothing else. Retire it once the data is
+        exported, checked and stored."""
+        assert comparison_2026.STUDY.status is Status.CLOSED
 
     def test_it_names_the_tag_of_the_code_that_ran_it(self):
         assert comparison_2026.STUDY.instrument_tag == "study-instrument-2026"
@@ -89,11 +92,17 @@ class TestTheComparisonStudyIsRetired:
         assert storage.db_path == ROOT / "data" / "db" / "study.db"
         assert storage.log_dir == ROOT / "data" / "logs" / "study"
 
-    def test_it_has_no_token_so_it_could_not_be_served_by_mistake(self):
-        """Retired is what keeps it unserved; having no token means a status
-        change alone would not open it either."""
-        assert comparison_2026.STUDY.token_hash is None
-        assert registry.refusal(dataclasses.replace(comparison_2026.STUDY, status=Status.OPEN))
+    def test_its_token_is_its_own(self):
+        """Not the example's published one, which the registry refuses."""
+        assert tokens.is_well_formed(comparison_2026.STUDY.token_hash)
+        assert not tokens.verify(example.TOKEN, comparison_2026.STUDY.token_hash)
+        assert registry.refusal(comparison_2026.STUDY) is None
+
+    def test_retiring_it_takes_the_token_out_too(self):
+        """A retired study serves nothing, so a hash left behind would only be
+        a thing to wonder about later."""
+        retired = dataclasses.replace(comparison_2026.STUDY, status=Status.RETIRED)
+        assert registry.serving_status(retired, set()) is None
 
 
 # ---------------------------------------------------------------------------

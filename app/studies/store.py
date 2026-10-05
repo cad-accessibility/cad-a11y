@@ -52,6 +52,7 @@ it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import secrets
@@ -486,7 +487,7 @@ def _event_payload(raw: str | None) -> dict[str, Any]:
         return {}
     try:
         payload = json.loads(raw)
-    except Exception:
+    except (TypeError, ValueError):
         return {}
     return payload if isinstance(payload, dict) else {}
 
@@ -523,7 +524,7 @@ def _orientation_angles(
         return (None, None, None)
     try:
         basis = json.loads(raw)
-    except Exception:
+    except (TypeError, ValueError):
         return (None, None, None)
     if not isinstance(basis, dict):
         return (None, None, None)
@@ -651,7 +652,7 @@ class StudyStore:
         try:
             row = self._get_conn().execute("SELECT COALESCE(MAX(id), 0) AS n FROM participants").fetchone()
             return code_for(int(row["n"]) + 1)
-        except Exception:
+        except Exception:  # noqa: BLE001 - advisory; an unreadable database suggests P01
             return code_for(1)
 
     def next_sequence_preview(self) -> int:
@@ -664,7 +665,7 @@ class StudyStore:
         try:
             row = self._get_conn().execute("SELECT COALESCE(MAX(id), 0) AS n FROM participants").fetchone()
             return int(row["n"]) + 1
-        except Exception:
+        except Exception:  # noqa: BLE001 - advisory, like preview_next_code
             return 1
 
     def get_participant(self, participant_id: int) -> dict[str, Any] | None:
@@ -979,7 +980,7 @@ class StudyStore:
                 status="abandoned",
                 source="server",
                 event_data={
-                    "reason": "no activity for %d seconds" % session["idle_seconds"],
+                    "reason": f"no activity for {int(session['idle_seconds'])} seconds",
                     "closed_automatically": True,
                 },
                 step_index=int(session.get("step_index") or 0),
@@ -1377,7 +1378,7 @@ class StudyStore:
                 "SELECT COUNT(*) AS n FROM study_renders WHERE study_session_id = ?",
                 (study_session_id,),
             ).fetchone()["n"]
-        except Exception:
+        except Exception:  # noqa: BLE001 - a count for the panel, never fatal
             return {"events": 0, "renders": 0}
         return {"events": int(events), "renders": int(renders)}
 
@@ -1399,10 +1400,10 @@ class StudyStore:
             )
         ]
         for event in events:
-            try:
+            # A payload that does not parse is left as the text it was stored as,
+            # rather than replaced with something nobody recorded.
+            with contextlib.suppress(TypeError, ValueError):
                 event["event_data"] = json.loads(event.get("event_data") or "{}")
-            except Exception:
-                pass
         renders = [
             dict(row)
             for row in conn.execute(

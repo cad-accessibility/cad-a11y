@@ -50,11 +50,11 @@ def client():
 
 
 # ---------------------------------------------------------------------------
-# The retired study, and /study
+# The comparison study, and /study
 # ---------------------------------------------------------------------------
 
 
-RETIRED = "/studies/comparison-2026"
+COMPARISON = "/studies/comparison-2026"
 
 
 @pytest.mark.parametrize(
@@ -68,37 +68,73 @@ RETIRED = "/studies/comparison-2026"
         ("get", "/study/sessions/1/export"),
         ("post", "/study/session/start"),
         ("post", "/study/event"),
-        ("get", RETIRED),
-        ("get", f"{RETIRED}/state"),
-        ("post", f"{RETIRED}/event"),
-        ("get", f"{RETIRED}/control"),
-        ("get", f"{RETIRED}/control/config"),
-        ("get", f"{RETIRED}/control/export/long.csv"),
-        ("get", f"{RETIRED}/control/export/archive.zip"),
-        ("post", f"{RETIRED}/control/sign-in"),
-        ("post", f"{RETIRED}/control/session/start"),
     ],
 )
-def test_the_comparison_study_answers_nowhere(client, method, path):
-    """Under its old address and its new one, with or without a token."""
+def test_nothing_answers_at_study(client, method, path):
     registry.load()
     call = getattr(client, method)
-    response = call(path, json={"token": TOKEN}, headers=AUTH) if method == "post" else call(path, headers=AUTH)
-    assert response.status_code == 404, f"{path} answered {response.status_code}"
+    assert call(path).status_code == 404, f"{path} still answers"
 
 
-def test_a_retired_study_looks_the_same_as_one_that_never_existed(client):
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("get", COMPARISON),
+        ("get", f"{COMPARISON}/state"),
+        ("get", f"{COMPARISON}/stream"),
+        ("post", f"{COMPARISON}/event"),
+        ("post", f"{COMPARISON}/step/ready"),
+    ],
+)
+def test_the_comparison_study_has_no_participant_page(client, method, path):
     registry.load()
-    retired = client.get(f"{RETIRED}/control")
+    call = getattr(client, method)
+    assert call(path).status_code == 404
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("get", f"{COMPARISON}/control/config"),
+        ("get", f"{COMPARISON}/control/state"),
+        ("get", f"{COMPARISON}/control/export/long.csv"),
+        ("get", f"{COMPARISON}/control/export/archive.zip"),
+        ("get", f"{COMPARISON}/control/export/sessions/1.json"),
+        ("post", f"{COMPARISON}/control/session/start"),
+    ],
+)
+def test_the_comparison_studys_data_needs_its_own_token(client, method, path):
+    """Closed: its panel's downloads are there, and only for its token. Another
+    study's token is not it."""
+    registry.load()
+    call = getattr(client, method)
+    for headers in ({}, AUTH, {"X-Study-Token": example.TOKEN}):
+        response = call(path, json={}, headers=headers) if method == "post" else call(path, headers=headers)
+        assert response.status_code == 401, f"{path} answered {response.status_code}"
+
+
+def test_the_comparison_study_signs_in_with_its_token_only(client):
+    registry.load()
+    assert client.get(f"{COMPARISON}/control").status_code == 200
+    refused = client.post(f"{COMPARISON}/control/sign-in", json={"token": TOKEN})
+    assert refused.status_code == 403
+    assert "Set-Cookie" not in refused.headers
+
+
+def test_a_retired_study_looks_the_same_as_one_that_never_existed(tmp_path, client):
+    registry.load([_definition(tmp_path, "gone", Status.RETIRED)], environ={})
+    retired = client.get("/studies/gone/control")
     unknown = client.get("/studies/no-such-study/control")
     assert retired.status_code == unknown.status_code == 404
     assert retired.get_data() == unknown.get_data()
 
 
-def test_by_default_this_codebase_serves_nothing():
-    """The example is a draft and the comparison study is retired."""
+def test_by_default_only_the_comparison_studys_data_is_served():
+    """The example is a draft. The comparison study is closed until its data is
+    stored, and then retired."""
     registry.load(environ={})
-    assert registry.runtimes() == []
+    served = {runtime.slug: runtime.served_as for runtime in registry.runtimes()}
+    assert served == {"comparison-2026": Status.CLOSED}
 
 
 # ---------------------------------------------------------------------------

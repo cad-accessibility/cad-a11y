@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 2026-10-05
 
 #### Removed
-*   The comparison study is retired, and `/study` and everything under it are gone (#207). Its control panel was open on both servers, so anyone who found the address could advance a live session, read the answer key and download a participant's interaction log, and its spreadsheet needed no token at all. Its protocol is kept as the record of what its sessions did, and the last code that served it is tagged `study-instrument-2026`. Its data stays where it was written; `docs/STUDIES.md` says how to export it.
+*   `/study` and everything under it are gone (#207). The comparison study's control panel was open on both servers, so anyone who found the address could advance a live session, read the answer key and download a participant's interaction log, and its spreadsheet needed no token at all. The study is closed: its protocol is kept as the record of what its sessions did, the last code that served it is tagged `study-instrument-2026`, and the only thing served for it is its data, behind a token of its own, at `/studies/comparison-2026/control`, until that data is stored and the study is retired. `docs/STUDIES.md` says how.
 *   `STUDY_CONTROL_TOKEN` no longer does anything.
 
 #### Added
@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 *   Closing idle sessions could end a session an experimenter had just ended, adding a second end to its record and changing it from completed to abandoned. A session now ends once, and ending it again says so (#183).
 *   A refused request to start a session could still issue a participant number, leaving a number with no session and moving everyone after it one place along the rotation. It now issues nothing (#183).
 *   A render could be recorded against any running session by naming its number, which counts up from 1. Renders are now matched to a session by its join code.
+*   On a Mac, the server aborted as it stopped ("Python quit unexpectedly"), and so did anything else that loaded the renderer, because of the order two mesh libraries load in. It exits cleanly now, and the test of what a demo station serves passes there.
 
 #### Security
 *   Spreadsheet downloads put a quote in front of any cell a spreadsheet would run as a formula.

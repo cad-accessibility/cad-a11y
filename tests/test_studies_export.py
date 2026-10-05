@@ -354,7 +354,7 @@ def test_data_written_by_the_comparison_studys_code_exports_without_being_change
 def test_list_names_every_study(capsys):
     assert cli(["list"]) == 0
     out = capsys.readouterr().out
-    assert "comparison-2026  (retired)" in out
+    assert "comparison-2026  (closed)" in out
     assert "example  (draft)" in out
 
 

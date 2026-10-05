@@ -54,8 +54,8 @@ WHERE_THE_APP_WRITES = {
     "usage database": lambda: analytics_db.DB_PATH,
     "study databases": study_definition.studies_db_dir,
     "study logs": study_definition.studies_log_dir,
-    "retired study's database": lambda: comparison_2026.STUDY.resolve_storage().db_path,
-    "retired study's logs": lambda: comparison_2026.STUDY.resolve_storage().log_dir,
+    "comparison study's database": lambda: comparison_2026.STUDY.resolve_storage().db_path,
+    "comparison study's logs": lambda: comparison_2026.STUDY.resolve_storage().log_dir,
 }
 
 

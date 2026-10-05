@@ -214,7 +214,7 @@ All persistent data is in Docker-managed named volumes, not on the host filesyst
 | --- | --- |
 | `models` | The models that ship with the app, seeded from the image on every start |
 | `uploads` | Models uploaded by visitors |
-| `db` | The usage database, each study's database under `studies/`, and the retired comparison study's (`study.db`) |
+| `db` | The usage database, each study's database under `studies/`, and the comparison study's (`study.db`) |
 | `renders` | Render output |
 | `logs` | Braille send logs, each study's session logs under `studies/<slug>/`, and the comparison study's under `study/` |
 
@@ -224,7 +224,7 @@ Two consequences that have caught us out before.
 
 **`docker compose down -v` destroys it.** That includes every uploaded model and the entire usage database. Use plain `docker compose down` to stop the app. There is no undo and no copy elsewhere.
 
-**Study data is in there too, and it cannot be regenerated.** A study session is a person's hour; unlike the usage database, losing it means running someone again. Each study keeps a database under `db/studies/` and its session logs under `logs/studies/<slug>/`, both covered by the backup command below. Back them up after every session rather than only before risky operations. The retired comparison study's data is still at `db/study.db` and `logs/study/`, and nothing removes it.
+**Study data is in there too, and it cannot be regenerated.** A study session is a person's hour; unlike the usage database, losing it means running someone again. Each study keeps a database under `db/studies/` and its session logs under `logs/studies/<slug>/`, both covered by the backup command below. Back them up after every session rather than only before risky operations. The comparison study's data is still at `db/study.db` and `logs/study/`, and nothing removes it.
 
 ### Studies
 

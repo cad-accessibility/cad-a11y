@@ -323,8 +323,9 @@ and the two stay in step over Server-Sent Events.
    loads the next model; N on the last step ends the session.
 
 Each study is a definition in `app/studies/definitions/` with a status that
-decides what the servers serve. The comparison study that ran at `/study` is
-retired, so nothing answers there. [docs/STUDIES.md](docs/STUDIES.md) covers
+decides what the servers serve. Nothing answers at `/study` any more: the
+comparison study that ran there is closed, which leaves only its data downloads,
+behind its own token. [docs/STUDIES.md](docs/STUDIES.md) covers
 writing a new study from the example, tokens, running one on a single computer,
 where the data is kept, getting it out without shell access, and retiring a
 study.
