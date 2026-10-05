@@ -216,11 +216,11 @@ class RenderResult:
     in the request; nothing about an individual window is kept here, or on the
     renderer, which is shared by every window looking at the same model.
 
-    Of these fields, `camera_center`, `object_out_of_frame` and
-    `pan_guidance_directions` travel back to the client: a pan resolves to a
-    new centre and the window sends it again next time, which is what keeps
-    panning inside the window that did it, and the out-of-frame guidance
-    is per-window for the same reason the centre is — the renderer is
+    Of these fields, `camera_center`, `object_out_of_frame`,
+    `pan_guidance_directions` and `origin_display` travel back to the client: a
+    pan resolves to a new centre and the window sends it again next time, which
+    is what keeps panning inside the window that did it, and the out-of-frame
+    guidance is per-window for the same reason the centre is — the renderer is
     shared by every window on a model, so neither can live on it as instance
     state. The remaining fields are what the render settled on for its
     inputs and are read only on the server.
@@ -228,14 +228,19 @@ class RenderResult:
 
     __slots__ = ("image", "camera_center", "framing_bounds", "view_axis",
                  "cut_depth", "render_mode", "zoom_level", "screen_size",
-                 "object_out_of_frame", "pan_guidance_directions")
+                 "object_out_of_frame", "pan_guidance_directions", "origin_display")
 
     def __init__(self, image, *, camera_center, framing_bounds, view_axis,
                  cut_depth, render_mode, zoom_level, screen_size,
-                 object_out_of_frame, pan_guidance_directions):
+                 object_out_of_frame, pan_guidance_directions, origin_display=None):
         self.image = image
         # Echoed to the client, which stores it per view + orientation.
         self.camera_center = camera_center
+        # Echoed to the client, for "," and "." (#235 review): where the model's
+        # origin landed on this frame, as (across, up), fractions of the drawn
+        # area from its left and bottom edges, outside 0..1 when it is off the
+        # display. None when the frame has no single view to place it in.
+        self.origin_display = origin_display
         # Echoed to the client: whether the object is fully outside the
         # viewport this render settled on, and if so which direction(s) (in
         # "move object" terms) would bring it back. Up to two
@@ -1183,6 +1188,23 @@ class CADComparisonRenderer:
         self._clear_box(img_array, x0, y0, box_w, box_h)
         self._draw_axis_label(img_array, vertical, x0 + 1, y0 + 1)
 
+    def origin_display_fraction(self, right_axis, up_axis, limits):
+        """Where the model's origin lands on the display, as (across, up): the
+        fraction of the drawn width from the left edge and of its height from the
+        bottom edge. Between 0 and 1 on the display, and outside that range when
+        the origin is off it, which is what lets "," say how far off. None when
+        the window has no width or height, or there is no model to place: the
+        framing tests build a renderer without one."""
+        if not hasattr(self, "model_scale"):
+            return None
+        origin = self.to_render_space([0.0, 0.0, 0.0])
+        x = float(np.dot(origin, right_axis))
+        y = float(np.dot(origin, up_axis))
+        (x_lo, x_hi), (y_lo, y_hi) = limits
+        if x_hi == x_lo or y_hi == y_lo:
+            return None
+        return (x - x_lo) / (x_hi - x_lo), (y - y_lo) / (y_hi - y_lo)
+
     def origin_on_display(self, right_axis, up_axis, limits, drawable_size):
         """Where the model's origin lands on the display, as (column, row), or
         None when it is off it. The origin is (0, 0, 0) in the model's own
@@ -1726,10 +1748,14 @@ class CADComparisonRenderer:
         # display's two axes run. The viewer asks for them only in XYZ mode. In
         # the single view only, and not over a slice graph, which owns the bottom
         # rows; side by side has two frames and neither mark would say which.
+        # Where the origin lands is worked out for that view in either mode,
+        # marked or not, since "," and "." read it out (#235 review).
         show_origin_marker = bool(params.get("show_origin_marker", False))
         show_axis_letters = bool(params.get("show_axis_letters", False))
-        if (show_origin_marker or show_axis_letters) and comparison_mode == "single" and not compose_slice_graph:
+        origin_display = None
+        if comparison_mode == "single" and not compose_slice_graph:
             right_axis, up_axis, _ = _get_view_basis(view_name, orientation_basis=params.get("orientation"))
+            origin_display = self.origin_display_fraction(right_axis, up_axis, imposed_zoom_ax_limits)
             if show_origin_marker:
                 self._overlay_origin_marker(img_array, right_axis, up_axis,
                                             imposed_zoom_ax_limits, render_screen_size)
@@ -1747,6 +1773,7 @@ class CADComparisonRenderer:
             screen_size=list(screen_size),
             object_out_of_frame=object_out_of_frame,
             pan_guidance_directions=list(pan_guidance_directions),
+            origin_display=origin_display,
         )
 
 # Convenience function for simple usage

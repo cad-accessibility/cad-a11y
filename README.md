@@ -72,25 +72,30 @@ cad-a11y/
 Settings → Axis Mode chooses how the model is oriented. The two never share a
 key: a key from the other mode only says which mode it belongs to.
 
-- **Turn** (the default): U/O roll, I/K pitch and J/L yaw the model a quarter
-  turn at a time. Left, right, up and down are as they are on the display,
-  whichever way the model faces.
-- **XYZ**: X, Y and Z cut along that axis, and the same letter again looks from
-  the other side. Every view is one of OpenSCAD's standard views: Z is Top
-  (X to the right, Y toward the top edge) and Z again Bottom, Y is Front and Y
-  again Back, X is Right and X again Left. A third press comes back, so the
-  other side is always two presses of one key, and each press says the axis,
-  the side and how the other two run ("Y from the front, X right, Z up"). The
-  depth keys work as in Turn mode: Arrow Up/Down go 1% deeper or shallower,
-  Page Up/Down 10%, Home to the surface nearest you and End to the far side. The
-  cut is read out as its position along the axis, so seen from above, the right
-  or the back, going deeper lowers the number. "," says where the
-  origin is. On the display, the axis letters sit at the edges they increase
-  toward and a small hollow square marks the origin; both can be turned off in
-  Settings.
+- **XYZ** (the default): X, Y and Z cut along that axis, and the same letter
+  again looks from the other side. Every view is one of OpenSCAD's standard
+  views, named by the side you look from: Z is Top, from Z plus, and Z again
+  Bottom, from Z minus; Y is Front, from Y minus, and Y again Back; X is Right,
+  from X plus, and X again Left. A third press comes back, so the other side is
+  always two presses of one key, and each press says the axis, the side and
+  where the other two increase ("X from plus, Y right, Z up"). The buttons X plus
+  to Z minus do the same with a pointer. The depth keys work as in Turn mode:
+  Arrow Up/Down go 1% deeper or shallower, Page Up/Down 10%, Home to the surface
+  nearest you and End to the far side. The cut is read out as its position along
+  the axis, in percent of the object's size with 0% at the model's origin, so a
+  cube centred on the origin is cut through its middle at 0%, and from X plus,
+  Y plus or Z plus going deeper lowers the number. On the display, the axis
+  letters sit at the edges they increase toward and a small hollow square marks
+  the origin; both can be turned off in Settings.
+- **Turn**: U/O roll, I/K pitch and J/L yaw the model a quarter turn at a time.
+  Left, right, up and down are as they are on the display, whichever way the
+  model faces. The study ran in Turn mode, and /study still does.
 
-"." says where you are in either mode, and 0 resets the view (it was Z, which
-XYZ mode needs).
+In either mode, "." says where you are ("View from X plus, Y right, Z up. Cut
+plane: X=0%. Origin: H: 42% V: 42%. Render: Outline. Zoom: 0.0. Model: mug."),
+"," says where the model's origin is on the display, across from the left edge
+and up from the bottom ("Horizontal: 42%, Vertical: 42%", or past 0 and 100 when
+it is off the display), and 0 resets the view (it was Z, which XYZ mode needs).
 
 ## Hardware setup
 
@@ -109,7 +114,7 @@ The Monarch supports cursor controls and depth changes with the following inputs
 
 - dot 1: change depth shallower by 10%.
 - dot 4: change depth deeper by 10%.
-- dots 1-3-4-6, 1-3-4-5-6 and 1-3-5-6 (the letters x, y and z): cut along that axis in XYZ mode; add dot 7 (the capital letter) to see it from the other side. Not yet confirmed on a Monarch: the reports are inferred from how dots 1 and 4 arrive, so check the "[Monarch HID] Input report" line in the browser console before relying on them.
+- dots 1-3-4-6, 1-3-4-5-6 and 1-3-5-6 (the letters x, y and z): cut along that axis in XYZ mode; the same letter again looks from the other side, as on the keyboard. Not yet confirmed on a Monarch: the reports are inferred from how dots 1 and 4 arrive, so check the "[Monarch HID] Input report" line in the browser console before relying on them.
 - spacebar: cycles through these cursor modes
     - `none`: hides the cursor and disables cursor movement.
     - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.

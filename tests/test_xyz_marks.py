@@ -166,6 +166,37 @@ def test_every_render_tells_the_viewer_where_the_origin_is():
     assert all(value is None or isinstance(value, float) for value in body["origin_fraction"])
 
 
+def test_the_origin_s_place_on_the_display_is_where_the_marker_goes(plate, far_plate):
+    """What "," and "." read (#235 review): across from the left edge and up from
+    the bottom, as fractions of the display, so the pin the marker is drawn on
+    and the numbers said agree. Off the display they run past 0 and 1: the far
+    plate's origin lies beyond its low corner on X and Y, off the bottom left."""
+    right, up, _ = cad_lib._get_view_basis("top")
+    limits = _limits(plate, "z+")
+    across, rise = plate.origin_display_fraction(right, up, limits)
+    col, row = plate.origin_on_display(right, up, limits, GRID)
+    assert col == int(np.floor(across * GRID[0]))
+    assert row == int(np.floor((1.0 - rise) * GRID[1]))
+    far_across, far_rise = far_plate.origin_display_fraction(right, up, _limits(far_plate, "z+"))
+    assert far_across < 0 and far_rise < 0
+
+
+def test_a_single_view_render_says_where_the_origin_lands_on_the_display():
+    """In either mode, marked or not. Side by side has two frames, so it says
+    nothing rather than pick one."""
+    flask_app.config["TESTING"] = True
+    request = {
+        "view": "z+", "renderMode": "Cut", "depth": 50, "zoom": 0,
+        "current_model": 0, "target_pixel_width": 96, "target_pixel_height": 40,
+    }
+    with flask_app.test_client() as client:
+        single = client.post("/render", json={**request, "mode": "single"}).get_json()
+        side_by_side = client.post("/render", json={**request, "mode": "side-by-side"}).get_json()
+    assert len(single["origin_display"]) == 2
+    assert all(isinstance(value, float) for value in single["origin_display"])
+    assert "origin_display" not in side_by_side
+
+
 def test_no_marks_unless_asked(plate):
     assert np.array_equal(
         _raised(plate), _raised(plate, show_origin_marker=False, show_axis_letters=False)
