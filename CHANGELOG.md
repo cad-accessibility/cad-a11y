@@ -10,11 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 2026-09-28
 
 #### Fixed
-*   The site's address opens the viewer. It used to show a raw list of the server's internal addresses, which a screen reader read out one line at a time, and which named parts of the app that are not meant to be public.
+*   The site's address is the viewer. It used to show a raw list of the server's internal addresses, which a screen reader read out one line at a time, and which named parts of the app that are not meant to be public. `/viewer` still works, with or without a trailing slash. On a demo station the address opens the demo page, which records nothing.
 
 #### Added
-*   The viewer says, before you connect a display, that a screen reader should be in focus mode (NVDA) or forms mode (JAWS) for the viewer's keys to reach the page. In a browser that cannot connect a braille display at all, it also says to open the page in Chrome or Edge.
-*   The integration API has an address, `/api/v1`, and a public description at `/api/v1/openapi.json`. There is nothing in it yet; it is where tools that send models in will connect. Every error under it is answered in the same JSON shape.
+*   The viewer says, before you connect a display, to use a screen reader in focus mode (NVDA) or forms mode (JAWS). It is read with the Connect button until Connect has had focus once, and stays on the page after that. Where a braille display cannot be connected at all, it says why: an address that is not https or localhost, or a browser without Web HID or Web Bluetooth, which Chrome and Edge have.
+*   The integration API has an address, `/api/v1`, and a public description at `/api/v1/openapi.json`. There is nothing in it yet; it is where tools that send models in will connect. Every error under it is answered in the same JSON shape. A demo station does not offer it.
 
 ### 2026-08-19
 

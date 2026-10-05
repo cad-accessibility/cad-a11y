@@ -1522,7 +1522,17 @@ function updateGenericDeviceConnectUI() {
 function noteWhenThisBrowserCannotConnect() {
     const note = document.getElementById('browser-support-note');
     if (!note || !deviceConnectBtn) return;
-    if ('hid' in navigator || 'bluetooth' in navigator) return;
+    // Web HID and Web Bluetooth exist only on a secure address, https or
+    // localhost, so over plain http they are missing in every browser, and
+    // "open this page in Chrome or Edge" would send someone to the wrong fix
+    // (#244 review). The DotPad connects only over Bluetooth here, so Web
+    // Serial is not asked about.
+    if (!window.isSecureContext) {
+        note.textContent = "This page can't connect to a braille display at this address. "
+            + 'Open it over https, or at localhost on this computer.';
+    } else if ('hid' in navigator || 'bluetooth' in navigator) {
+        return;
+    }
     note.hidden = false;
     const describedBy = (deviceConnectBtn.getAttribute('aria-describedby') || '').split(/\s+/);
     if (!describedBy.includes(note.id)) {
@@ -1530,6 +1540,36 @@ function noteWhenThisBrowserCannotConnect() {
     }
 }
 noteWhenThisBrowserCannotConnect();
+
+// The focus-mode note is read as part of Connect's description until Connect
+// has had focus once in this browser. After that it stays on the page as text
+// but is not read on every focus, in every mode (#244 review).
+const FOCUS_NOTE_HEARD_KEY = 'focusModeNoteHeard';
+
+function describeConnectWithFocusNoteOnce() {
+    if (!deviceConnectBtn) return;
+    let heard = false;
+    try {
+        heard = window.localStorage.getItem(FOCUS_NOTE_HEARD_KEY) === '1';
+    } catch (_) {
+        heard = false;
+    }
+    if (heard) {
+        const others = (deviceConnectBtn.getAttribute('aria-describedby') || '').split(/\s+/)
+            .filter(id => id && id !== 'focus-mode-note');
+        if (others.length) deviceConnectBtn.setAttribute('aria-describedby', others.join(' '));
+        else deviceConnectBtn.removeAttribute('aria-describedby');
+        return;
+    }
+    deviceConnectBtn.addEventListener('focus', () => {
+        try {
+            window.localStorage.setItem(FOCUS_NOTE_HEARD_KEY, '1');
+        } catch (_) {
+            // Private browsing or blocked storage: the note is simply read again.
+        }
+    }, { once: true });
+}
+describeConnectWithFocusNoteOnce();
 
 if (deviceConnectBtn) {
     deviceConnectBtn.addEventListener('click', () => {

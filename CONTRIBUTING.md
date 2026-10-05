@@ -15,7 +15,7 @@ Thanks for your interest in improving CAD A11y.
    ```bash
    docker compose up --build
    ```
-3. Open `http://localhost:8635/viewer` in a browser.
+3. Open `http://localhost:8635/` in a browser (`/viewer` works too).
 
 Code changes in `app/`, `src/`, and `static/` require a rebuild (`docker compose up --build`).
 

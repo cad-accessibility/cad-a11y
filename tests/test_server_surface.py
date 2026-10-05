@@ -40,23 +40,66 @@ def _registered_rules() -> set[str]:
 # The site's address (#232)
 # ---------------------------------------------------------------------------
 
-def test_the_root_opens_the_viewer(client):
+def _viewer_page() -> bytes:
+    return (ROOT / "accessible-3d-viewer.html").read_bytes()
+
+
+def test_the_root_is_the_viewer(client):
     """It used to answer with a hand-written JSON list of endpoints, which is what
-    anyone following a link to the site saw first."""
+    anyone following a link to the site saw first. It now serves the viewer
+    itself rather than redirecting to /viewer (#244 review)."""
+    response = client.get("/")
+    assert response.status_code == 200
+    assert response.mimetype == "text/html"
+    assert response.get_data() == _viewer_page()
+
+
+def test_the_root_keeps_the_query_for_the_page(client):
+    """?ui=simple and ?tutorial=start are read by the page, so they must reach it."""
+    response = client.get("/?ui=simple")
+    assert response.status_code == 200
+    assert response.get_data() == _viewer_page()
+
+
+@pytest.mark.parametrize("path", ["/viewer", "/viewer/"])
+def test_the_viewer_is_still_at_viewer(client, path):
+    """Old links, bookmarks and the CI steps that name /viewer keep working, with
+    or without a trailing slash."""
+    response = client.get(path)
+    assert response.status_code == 200
+    assert response.get_data() == _viewer_page()
+
+
+def test_head_and_options_at_the_root(client):
+    head = client.head("/")
+    assert head.status_code == 200 and head.get_data() == b""
+    options = client.options("/")
+    assert options.status_code == 200
+    assert {"GET", "HEAD", "OPTIONS"} <= set(options.headers["Allow"].split(", "))
+
+
+def test_a_demo_station_opens_the_demo_at_its_address(client, monkeypatch):
+    """Never the recording viewer: someone who types a demo station's address
+    gets the page that records nothing and says so, as the station's own
+    shortcut opens (#244 review)."""
+    from app import server
+
+    monkeypatch.setattr(server, "DEMO_ONLY", True)
     response = client.get("/")
     assert response.status_code == 302
-    assert response.headers["Location"] == "/viewer"
+    assert response.headers["Location"] == "/demo"
+    assert client.get("/?tutorial=start").headers["Location"] == "/demo?tutorial=start"
+    assert '"/demo" if DEMO_ONLY else "/"' in SERVER_SOURCE, "the station's shortcut opens somewhere else"
 
 
-def test_the_root_keeps_the_query_when_it_opens_the_viewer(client):
-    response = client.get("/?ui=simple")
-    assert response.headers["Location"] == "/viewer?ui=simple"
+def test_the_api_is_closed_to_demo_clients(client):
+    """A demo station takes nothing in, and the routes coming to /api take models
+    in from other tools (#244 review)."""
+    from app import recording
 
-
-def test_the_root_names_no_endpoints(client):
-    body = client.get("/").get_data(as_text=True)
-    for route in ("/ingest", "/workshop", "/study", "/models", "/render"):
-        assert route not in body
+    response = client.get("/api/v1/openapi.json", headers={recording.DEMO_HEADER: "1"})
+    assert response.status_code == 404
+    assert client.get("/api/v1/openapi.json").status_code == 200
 
 
 # ---------------------------------------------------------------------------

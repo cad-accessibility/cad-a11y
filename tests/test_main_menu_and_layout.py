@@ -351,8 +351,23 @@ def test_the_browser_note_starts_hidden_and_the_focus_mode_note_does_not():
     assert not by_id["focus-mode-note"]["hidden"]
 
 
-def test_connect_is_described_by_the_focus_mode_note():
+def test_connect_is_described_by_the_focus_mode_note_until_it_has_had_focus():
+    """In Jen's words (#244 review), and read with Connect only until Connect has
+    had focus once in this browser: it was long, and read on every focus in
+    every mode."""
     assert 'aria-describedby="focus-mode-note"' in _start_tag("device-connect-btn")
+    html = VIEWER_HTML.read_text(encoding="utf-8")
+    note = html[html.index('id="focus-mode-note"'):]
+    assert " ".join(note[note.index(">") + 1:note.index("</p>")].split()) == (
+        "Use with focus mode (NVDA) or forms mode (JAWS)."
+    )
+    js = VIEWER_JS.read_text(encoding="utf-8")
+    once = re.search(r"function describeConnectWithFocusNoteOnce\(\) \{.*?\n\}", js, re.DOTALL)
+    assert once, "describeConnectWithFocusNoteOnce not found"
+    assert "window.localStorage.getItem(FOCUS_NOTE_HEARD_KEY) === '1'" in once.group(0)
+    assert "id !== 'focus-mode-note'" in once.group(0)
+    assert "addEventListener('focus'" in once.group(0) and "{ once: true }" in once.group(0)
+    assert "\ndescribeConnectWithFocusNoteOnce();" in js
 
 
 def test_the_browser_is_judged_by_the_apis_that_connect_a_display():
@@ -364,5 +379,10 @@ def test_the_browser_is_judged_by_the_apis_that_connect_a_display():
     assert "'hid' in navigator" in body.group(0)
     assert "'bluetooth' in navigator" in body.group(0)
     assert "userAgent" not in body.group(0)
+    # Over plain http neither API exists in any browser, so the address is
+    # checked first and the note says what to do about it (#244 review).
+    secure = body.group(0).index("if (!window.isSecureContext) {")
+    assert secure < body.group(0).index("'hid' in navigator")
+    assert "Open it over https, or at localhost on this computer." in body.group(0)
     assert "aria-describedby" in body.group(0), "Connect is not described by the note"
     assert "\nnoteWhenThisBrowserCannotConnect();" in js
