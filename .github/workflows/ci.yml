@@ -62,8 +62,10 @@ jobs:
 
       - name: Wait for app to be ready
         run: |
+          # The site's address serves the viewer, so its title in the reply
+          # shows the page itself is served, not just that the process answers.
           for i in {1..30}; do
-            if curl -fsS http://localhost:8635/ >/dev/null; then
+            if curl -fsS http://localhost:8635/ | grep -q "<title>Accessible 3D Model Viewer</title>"; then
               echo "App is up"
               exit 0
             fi

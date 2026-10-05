@@ -22,7 +22,7 @@ Run the default Docker image configuration:
 docker compose up --build
 ```
 
-Then open `http://localhost:8635/viewer` in a browser.
+Then open `http://localhost:8635/` in a browser. The viewer is the site's address; `/viewer` still works.
 
 Model files placed in `data/models/` are available immediately without rebuilding the image.
 

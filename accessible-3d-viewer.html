@@ -41,9 +41,24 @@
 
         <header role="banner">
             <h1 id="page-title" tabindex="-1">Accessible 3D Model Viewer</h1>
+            <!--
+                Said before the Connect button, and read as its description (#232):
+                the focus-mode note until Connect has had focus once in this
+                browser, the browser note whenever it shows (#244 review). The
+                browser note appears only where a display cannot be connected at
+                all; viewer.js decides that by asking whether the address is secure,
+                then for Web HID (the Monarch) and Web Bluetooth (the DotPad), not
+                by the browser's name.
+            -->
+            <p id="browser-support-note" class="browser-warning" hidden>
+                This browser can't connect to a braille display. Open this page in Chrome or Edge on a computer.
+            </p>
+            <p id="focus-mode-note" class="help-text">
+                Use with focus mode (NVDA) or forms mode (JAWS).
+            </p>
             <nav aria-label="Main menu" class="site-nav">
               <div class="button-group">
-		<button type="button" id="device-connect-btn">Connect</button>
+		<button type="button" id="device-connect-btn" aria-describedby="focus-mode-note">Connect</button>
 	        <button type="button" id="device-disconnect-btn" hidden>Disconnect</button>
                 <button type="button" id="nav-about-btn">About</button>
                 <button type="button" id="nav-help-btn">Help</button>

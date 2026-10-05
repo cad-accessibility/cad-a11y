@@ -43,7 +43,7 @@ from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
 
-from . import db, recording, study, study_db, study_protocol
+from . import api, db, recording, study, study_db, study_protocol
 from .braille_display import (
     _pixels_to_braille_cells,
     _pixels_to_braille_cells_dotpad,
@@ -62,6 +62,8 @@ CORS(app)
 # Cap request bodies (uploads and /ingest); default 100 MB. Oversized requests
 # are rejected with 413 before the handler runs.
 app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_UPLOAD_MB", "100") or "100") * 1024 * 1024
+# /api/v1, where tools will send models (#236), and its one error shape.
+api.install(app)
 
 
 if getattr(sys, "frozen", False):
@@ -1342,8 +1344,9 @@ def initialize_default_braille_render() -> None:
 
 def open_viewer_in_browser(port: int = 6969) -> None:
     # A demo station opens on /demo, so nobody has to remember to type it and
-    # nobody can land on the recording viewer by opening the shortcut.
-    path = "/demo" if DEMO_ONLY else "/viewer"
+    # nobody can land on the recording viewer by opening the shortcut. Anywhere
+    # else the viewer is the site's own address (#232).
+    path = "/demo" if DEMO_ONLY else "/"
     url = f"http://localhost:{port}{path}"
     try:
         webbrowser.open(url, new=1)
@@ -1390,7 +1393,11 @@ else:
 # On a station launched with CAD_A11Y_DEMO=1 the study routes do not exist at
 # all, which is the stronger guarantee. This closes the same door on a server
 # that is serving both, where a demo page shares an origin with a study session.
-_CLOSED_TO_DEMO = ("/study", "/ingest")
+#
+# /api is closed too. It only describes itself today, but the routes coming to
+# it take models in from other tools, and a demo station takes nothing in (#244
+# review).
+_CLOSED_TO_DEMO = ("/study", "/ingest", "/api")
 
 
 @app.before_request
@@ -1494,9 +1501,11 @@ def demo_status():
     ), 200
 
 
-@app.route("/viewer", methods=["GET"])
+@app.route("/viewer", methods=["GET"], strict_slashes=False)
 def serve_viewer():
-    """Serve the main HTML viewer.
+    """Serve the main HTML viewer. The site's address serves it too (home); this
+    stays for the links, bookmarks and CI steps that name /viewer, with or
+    without a trailing slash.
 
     No session cookie or DB row is created here. Under GDPR/ePrivacy even an
     anonymous persistent identifier requires prior consent, so the session is
@@ -1565,32 +1574,25 @@ def ingest_test():
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify(
-        {
-            "status": "running",
-            "message": "Accessible 3D Viewer server",
-            "endpoints": {
-                "/render": "POST - Render CAD view with parameters",
-                "/render/fit-view": "POST - Render with the model framed to fit the display",
-                "/models": "GET - List available models",
-                "/upload": "POST - Upload an STL or STEP model file",
-                "/ingest": "POST - Ingest an STL from an external tool; optional first_name, returns a workshop_url + user_id",
-                "/workshop": "GET - Simplified viewer; ?model= pre-loads, ?name= resolves a participant's first name",
-                "/ingest-test": "GET - Static harness to send the sample STL to /ingest from a browser",
-                "/get_data": "GET - Optional cube/slider state",
-                "/render/dotpad-hex": "POST - Get render as DotPad hex string for Web SDK",
-                "/viewer": "GET - Serve the HTML viewer (required for DotPad Web SDK)",
-                "/study": "GET - Participant view for a study session; models load per protocol step",
-                "/study/control": "GET - Experimenter control panel (requires ?token=)",
-                "/session/me": "GET - Return current session metadata",
-                "/session/identify": "POST - Store email/consent for current session",
-                "/session/models": "GET - List uploaded models for current session",
-                "/models/<filename>": "DELETE - Delete an uploaded model",
-                "/events/track": "POST - Record a client-side interaction event",
-                "/health": "GET - Deployment self-check: storage layout, writability, database",
-            },
-        }
-    )
+    """The site's address is the viewer (#232).
+
+    It used to answer with a hand-written list of endpoints, so the first thing
+    anyone following a link saw, and heard read out a line at a time, was raw
+    JSON naming routes the release keeps out of sight. The list had also drifted
+    from the routes that exist. Maintainers can list every route with
+    `flask --app app.server routes`; the API tools integrate with is described
+    at /api/v1/openapi.json.
+
+    Served here rather than redirected to /viewer, so there is no extra hop and
+    no second entry in the history (#244 review). Nothing in the page depends on
+    being at /viewer: the scripts compare the path only with /study, /demo and
+    /workshop. A demo station sends its address to /demo instead, the page that
+    records nothing and says so, as open_viewer_in_browser does.
+    """
+    if DEMO_ONLY:
+        query = request.query_string.decode("utf-8", "replace")
+        return redirect("/demo" + (f"?{query}" if query else ""), code=302)
+    return serve_viewer()
 
 
 @app.route("/health", methods=["GET"])
