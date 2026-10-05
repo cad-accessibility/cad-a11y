@@ -978,7 +978,7 @@ const mainContent = document.getElementById('main-content');
 // reads it like any other link, and anyone whose mail is on the web, where a
 // mailto: link does nothing, can still read and copy it.
 function fillInContactAddress() {
-    const address = ['ctejada', ['cs', 'washington', 'edu'].join('.')].join('@');
+    const address = ['cada11y', ['uw', 'edu'].join('.')].join('@');
     document.querySelectorAll('a.contact-email').forEach(link => {
         link.href = `mailto:${address}?subject=${encodeURIComponent('CAD A11y feedback')}`;
         link.textContent = link.dataset.label ? `${link.dataset.label} ${address}` : address;

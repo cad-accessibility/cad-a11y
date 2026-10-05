@@ -9,8 +9,8 @@ to everyone before it can be fixed. Use one of these private routes instead:
   https://github.com/cad-accessibility/cad-a11y/security/advisories/new. Only you and the project's
   maintainers can see the report.
 - **By email**, if you don't have a GitHub account or would rather write: send it to
-  ctejada at cs dot washington dot edu, typing "@" for "at" and "." for "dot", with a subject that
-  starts with "Security". Carlos Tejada reads it. The address is written out so that spam crawlers
+  cada11y at uw dot edu, typing "@" for "at" and "." for "dot", with a subject that
+  starts with "Security". The project team reads it. The address is written out so that spam crawlers
   can't collect it.
 
 ## What to include
