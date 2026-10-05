@@ -33,13 +33,16 @@
 //   offered    the Tutorial button and the shortcuts dialog's section show
 //   resume     Resume is offered (not on /demo, where nothing survives the tab)
 //
-// /demo is facilitated and its storage lasts one tab (demo-bootstrap.js), so
+// The viewer is the site's address, /, with /viewer kept as another way in
+// (#244), so both open it by itself; an unlisted path would not. /demo is
+// facilitated and its storage lasts one tab (demo-bootstrap.js), so
 // "first visit" would be every visit. /workshop and ?ui=simple hide most of
 // what the lessons teach. /study has its own onboarding and its own log.
 // ?tutorial=start opens it on any offered route, for a facilitator, and
 // ?tutorial=off keeps it closed for one load.
 // ---------------------------------------------------------------------------
 const TUTORIAL_ROUTES = [
+    { route: '/', autostart: true, offered: true, resume: true },
     { route: '/viewer', autostart: true, offered: true, resume: true },
     { route: '/demo', autostart: false, offered: true, resume: false },
     { route: '/workshop', autostart: false, offered: false, resume: false },

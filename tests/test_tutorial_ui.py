@@ -298,6 +298,8 @@ class TestEntryPoints:
         ):
             rows[route] = (autostart == "true", offered == "true", resume == "true")
         assert rows == {
+            # The viewer is served at the site's address too (#244).
+            "/": (True, True, True),
             "/viewer": (True, True, True),
             "/demo": (False, True, False),
             "/workshop": (False, False, False),
