@@ -40,10 +40,12 @@ They appear only in a step's ``text``.
 
 What the lessons must not promise
 ---------------------------------
-- A direction in percent. ``cut_percent`` is 0 at the axis minimum and 100 at
-  its maximum in both axis modes, but deeper means away from the reader, and
-  from above, the right or the back that lowers the number. Lessons say deeper
-  and shallower, and name a direction only for a view the lesson has set.
+- A direction in percent. ``cut_percent``, what the checks and the bands use,
+  is 0 at the axis minimum and 100 at its maximum. What XYZ mode says is the
+  same position measured from the model's origin, which on the mug is the
+  middle of its base (#235). Either way deeper means away from the reader, and
+  from X plus, Y plus or Z plus that lowers the number. Lessons say deeper and
+  shallower, and name a direction only for a view the lesson has set.
 - Anything visual. The people this is for are blind, so the words are find,
   feel, press and choose.
 """
@@ -58,7 +60,10 @@ TUTORIAL_VERSION: int = 1
 
 DISPLAYS = ("monarch", "dotpad", "none")
 
-PARTS = ("setup", "core", "optional", "wrapup")
+# Every lesson can be skipped, so none is called optional; the slice graph, the
+# cube and the slider come last, as extras, after the end of the tutorial
+# itself (#245 review).
+PARTS = ("setup", "core", "wrapup", "extras")
 
 # What a lesson or a step can need before it can run. The runner decides what
 # each means on the page (a connected display, a browser that can reach the
@@ -126,11 +131,11 @@ KEYS: dict[str, dict[str, Any]] = {
     "depth_near": _k("Home", "home", "moves the cut to the surface nearest you"),
     "depth_far": _k("End", "end", "moves the cut to the far side"),
     # XYZ mode's axes. On the DotPad they are the braille letters x, y and z.
-    "axis_x": _k("X", "x", "cuts along X from the right, and pressed again from the left. XYZ mode only",
+    "axis_x": _k("X", "x", "cuts along X from plus, and pressed again from minus. XYZ mode only",
                  monarch="dots 1 3 4 6", dotpad="dots 1 3 4 6"),
-    "axis_y": _k("Y", "y", "cuts along Y from the front, and pressed again from the back. XYZ mode only",
+    "axis_y": _k("Y", "y", "cuts along Y from minus, and pressed again from plus. XYZ mode only",
                  monarch="dots 1 3 4 5 6", dotpad="dots 1 3 4 5 6"),
-    "axis_z": _k("Z", "z", "cuts along Z from above, and pressed again from below. XYZ mode only",
+    "axis_z": _k("Z", "z", "cuts along Z from plus, and pressed again from minus. XYZ mode only",
                  monarch="dots 1 3 5 6", dotpad="dots 1 3 5 6"),
     # Turn mode's quarter turns.
     "turn_pitch_up": _k("I", "i", "pitches the model up a quarter turn. Turn mode only"),
@@ -140,9 +145,9 @@ KEYS: dict[str, dict[str, Any]] = {
     "turn_roll_ccw": _k("U", "u", "rolls the model counterclockwise a quarter turn. Turn mode only"),
     "turn_roll_cw": _k("O", "o", "rolls the model clockwise a quarter turn. Turn mode only"),
     # Where am I.
-    "where_am_i": _k("Period", ".", "says where you are, from the side you face and the cut to "
-                     "the render mode, zoom, layout and model"),
-    "origin": _k("Comma", ",", "says where the model's origin is, against the cut and the outline"),
+    "where_am_i": _k("Period", ".", "says where you are: the side you are on, the cut, the "
+                     "origin, the render mode, zoom and model"),
+    "origin": _k("Comma", ",", "says where the model's origin is on the display"),
     "reset": _k("0", "0", "resets the view to square, the cut to the middle, the zoom to 0 and "
                 "the model to the centre"),
     "fit": _k("F", "f", "fits the current slice to the display"),
@@ -170,7 +175,8 @@ KEYS: dict[str, dict[str, Any]] = {
     "print": _k("P", "p", "saves a copy of the render on the server; nothing prints or downloads"),
     # The cursor lives only on the displays. The DotPad moves it with two
     # function keys and the two panning keys; one tap moves 1 pin, two quick taps
-    # 5 and three 12.
+    # 5 and three 12. No lesson teaches it while it has nothing to do (#245
+    # review); key help still names its buttons.
     "cursor_mode": _k(None, None, "changes the cursor: crosshair, guidelines, horizontal line, "
                       "vertical line, then off", monarch="Space", dotpad="dots 1 2 3 6"),
     "cursor_move": _k(None, None, "moves the cursor", monarch="the D-pad",
@@ -189,7 +195,7 @@ KEYS: dict[str, dict[str, Any]] = {
                         dotpad="dot 4"),
     # The tutorial's own keys. tutorial.js handles them, not the viewer, and only
     # while the tutorial is running.
-    "tutorial_continue": _k("N", "n", "continues to the next step or lesson. Tutorial only"),
+    "tutorial_continue": _k("N", "n", "goes on to the next step or lesson. Tutorial only"),
     "tutorial_back": _k("B", "b", "goes back one step. Tutorial only"),
     "tutorial_repeat": _k("C", "c", "repeats the current step. Tutorial only"),
 }
@@ -338,13 +344,12 @@ def _step(step_id: str, text: str, *, braille: str, check: dict[str, Any], done:
 
 
 def _lesson(lesson_id: str, part: str, title: str, *, minutes: int, steps: list[dict[str, Any]],
-            optional: bool = False, requires: tuple[str, ...] = (),
+            requires: tuple[str, ...] = (),
             pose: dict[str, Any] | None = None, lock: bool = True) -> dict[str, Any]:
     return {
         "id": lesson_id,
         "part": part,
         "title": title,
-        "optional": optional,
         "minutes": minutes,
         "requires": list(requires),
         "pose": copy.deepcopy(pose),
@@ -380,17 +385,18 @@ _HANDLE_ANSWERS = _answers(
 
 # The hints for "where is the handle now?" after a turn. The third reads the
 # answer off what the period key says in Turn mode, which names how Y runs on
-# the display, or the side you face when Y points at you.
+# the display, or the side you are on when Y points at you. The handle
+# points toward minus Y.
 _TURN_HINTS = (
     "Feel around the mug for the handle loop, or a small separate piece of it.",
     "If there is no handle on the display at all, it points toward you or away from you.",
-    ("Press {key:where_am_i}. If it says Y to the right, choose Left; Y to the left, choose Right; "
-     "Y toward the top edge, choose Bottom; Y toward the bottom edge, choose Top. If it says seen "
-     "from the front, choose Toward you; seen from the back, choose Away from you."),
+    ("Press {key:where_am_i}. If it says Y right, choose Left; Y left, choose Right; Y up, choose "
+     "Bottom; Y down, choose Top. If it says View from the front, choose Toward you; View from the "
+     "back, choose Away from you."),
 )
 
 # ---------------------------------------------------------------------------
-# The lessons, in order. "Lesson N of 16" comes from this order.
+# The lessons, in order. "Lesson N of 15" comes from this order.
 # ---------------------------------------------------------------------------
 
 LESSONS: list[dict[str, Any]] = [
@@ -405,7 +411,12 @@ LESSONS: list[dict[str, Any]] = [
                 "pauses it, and the Tutorial button in the main menu picks it back up where you "
                 "stopped. The tutorial adds no recording of its own: if you allowed analytics, "
                 "it notes only which lessons you finish or skip, and the viewer keeps its usual "
-                "logs while you practise. To start, which display are you using today?",
+                "logs while you practise. Under each step, Last thing said keeps the last thing the "
+                "viewer or the tutorial said, in case you missed it. To start, which display are you "
+                "using today?",
+                sr="Exit tutorial pauses the tutorial at any time, and the Tutorial button picks it "
+                   "back up. Under each step, Last thing said keeps the last thing said. Which "
+                   "display are you using today?",
                 braille="Tutorial: display?",
                 check=_answer(None),
                 answers=_answers(("Monarch", "monarch"), ("DotPad", "dotpad"), ("No display", "none")),
@@ -446,7 +457,7 @@ LESSONS: list[dict[str, Any]] = [
                 check=_key("."),
                 key_only=True,
                 done="The viewer heard you, so single keys reach it. From now on "
-                     "{key:tutorial_continue} is the same as Continue, {key:tutorial_back} is Back "
+                     "{key:tutorial_continue} is the same as Next, {key:tutorial_back} is Back "
                      "and {key:tutorial_repeat} is Repeat.",
                 on_fail="Keys are reaching the viewer, but that was a different one. "
                         "Press {key:where_am_i}.",
@@ -475,6 +486,8 @@ LESSONS: list[dict[str, Any]] = [
                 "DotPad in the tutorial area. The browser opens a list of devices: choose yours "
                 "and press Enter. Later, Connect and Disconnect in the main menu do the same for "
                 "the display chosen under Output Device in Settings.",
+                sr="Turn your display on, choose Connect Monarch or Connect DotPad in the tutorial "
+                   "area, and choose it in the browser's list.",
                 braille="Connect display",
                 check=_device("any"),
                 done="Your display is connected.",
@@ -531,9 +544,9 @@ LESSONS: list[dict[str, Any]] = [
                 "it is scaled so the whole mug fits in the middle of the display. Right now the "
                 "cut runs from the rim down to "
                 "the base, through the middle of the mug. If you have the printed mug, hold it "
-                "upright with the handle to your left. Press Continue when you are ready.",
+                "upright with the handle to your left. Press Next when you are ready.",
                 sr="The display shows one slice through the mug, as if you cut it and felt the cut "
-                   "face. It is scaled to fit the display. Press Continue when ready.",
+                   "face. It is scaled to fit the display. Press Next when ready.",
                 braille="A slice of the mug",
                 check=_manual(),
                 done="Next, find the handle.",
@@ -542,7 +555,7 @@ LESSONS: list[dict[str, Any]] = [
                      "the raised area in the middle."),
                     ("The cut goes through the middle of the mug, so you feel two walls, the base "
                      "joining them, and the handle on one side."),
-                    "Press Continue, or {key:tutorial_continue}, to go on.",
+                    "Press Next, or {key:tutorial_continue}, to go on.",
                 ),
             ),
             _step(
@@ -571,8 +584,8 @@ LESSONS: list[dict[str, Any]] = [
                 braille="Press period",
                 check=_key("."),
                 key_only=True,
-                done="That is where you are: the side of the mug you face, where the cut is, then "
-                     "the render mode, zoom, layout and model.",
+                done="That is where you are: the side you are on, where the cut is, where the "
+                     "origin is on the display, then the render mode, zoom and model.",
                 on_fail="That was a different key. Press {key:where_am_i}.",
                 hints=(
                     ("The answer is spoken. On the DotPad a short form also appears on the "
@@ -587,6 +600,8 @@ LESSONS: list[dict[str, Any]] = [
                 "centres the mug. Use it whenever you get lost. It does not undo a turn to "
                 "another side; Return to lesson start, in the tutorial area, puts the whole "
                 "lesson back as it began. Press {key:reset} now.",
+                sr="Reset squares the view up, brings the cut to the middle, zooms out and centres "
+                   "the mug. Press {key:reset} now.",
                 braille="Press 0 to reset",
                 check=_key("0"),
                 key_only=True,
@@ -606,15 +621,19 @@ LESSONS: list[dict[str, Any]] = [
         steps=[
             _step(
                 "worked_example",
-                "First, a worked example. Each time you press Continue, the tutorial moves the "
+                "First, a worked example. Each time you press Next, the tutorial moves the "
                 "cut for you, from near the far side of the mug to near the side closest to you. "
                 "Feel each slice and listen to what it is.",
                 braille="Worked example",
                 check=_manual(),
                 demo={"frames": [
+                    # The slice at 5% and at 95% spans only the top two thirds of the
+                    # mug: the wall flares out toward the rim, so near its edge the
+                    # cut misses the base (#245 review).
                     {"cut_percent": 5,
-                     "say": "Near the far side the cut only grazes the wall, so you feel one solid "
-                            "piece, wider at the rim than at the bottom."},
+                     "say": "Near the far side the cut only grazes the wall, where the mug is "
+                            "widest. You feel one solid piece, widest at the rim and narrowing as "
+                            "it goes down, and it stops about a third of the way above the base."},
                     {"cut_percent": 25,
                      "say": "A quarter of the way in, the cut passes through the hollow: two walls "
                             "and the base, a U shape."},
@@ -625,15 +644,15 @@ LESSONS: list[dict[str, Any]] = [
                      "say": "Past the handle, the U again. The mug is the same on both sides of "
                             "its middle."},
                     {"cut_percent": 95,
-                     "say": "Near the side closest to you, one solid piece again: the wall, "
-                            "grazed from this side."},
+                     "say": "Near the side closest to you, the same shape again: the wall, grazed "
+                            "from this side, one piece from the rim that stops above the base."},
                 ]},
                 done="That was the whole mug, one slice at a time.",
                 hints=(
-                    "Press Continue for the next slice. There are five.",
+                    "Press Next for the next slice. There are five.",
                     ("Feel how the shape changes from slice to slice: solid, a U, a U with the "
                      "handle."),
-                    "Press Continue, or {key:tutorial_continue}, until the example ends.",
+                    "Press Next, or {key:tutorial_continue}, until the example ends.",
                 ),
             ),
             _step(
@@ -641,7 +660,10 @@ LESSONS: list[dict[str, Any]] = [
                 "Now you move the cut. Press {key:depth_deeper_10} to move it 10% deeper, away "
                 "from you, and {key:depth_shallower_10} to move it 10% back toward you. Press "
                 "{key:depth_deeper_10} until the cut reaches the far side of the mug and a press "
-                "changes nothing.",
+                "changes nothing. On a step like this, if you get stuck, Show me does it for you "
+                "and says what is there.",
+                sr="Press {key:depth_deeper_10} until the cut reaches the far side of the mug and a "
+                   "press changes nothing.",
                 braille="Go to the far side",
                 check=_edge(),
                 done="You are at the edge of the mug. Past here there is nothing to cut.",
@@ -657,7 +679,7 @@ LESSONS: list[dict[str, Any]] = [
             _step(
                 "mark_handle",
                 "Now bring the cut back to the handle. Press {key:depth_shallower_10} until you "
-                "feel the handle loop on the left, then press Continue while you are in it.",
+                "feel the handle loop on the left, then press Next while you are in it.",
                 braille="Find the handle loop",
                 check=_mark_band("x", "handle_loop"),
                 done="That is the handle loop. It is only there in the middle part of the mug.",
@@ -667,7 +689,7 @@ LESSONS: list[dict[str, Any]] = [
                      "about halfway."),
                     "Feel for the loop on the left of the mug after each press. When it is there, stop.",
                     ("Press {key:reset} to bring the cut to the middle, which is inside the handle, "
-                     "then press Continue."),
+                     "then press Next."),
                 ),
             ),
             _step(
@@ -677,6 +699,8 @@ LESSONS: list[dict[str, Any]] = [
                 "{key:depth_deeper_1} and {key:depth_shallower_1} move the cut 1% at a time. The "
                 "Depth section has a slider and Deeper and Shallower buttons that do the same. "
                 "Press {key:depth_near}, then {key:depth_far}.",
+                sr="Press {key:depth_near} for the surface nearest you, then {key:depth_far} for the "
+                   "far side.",
                 braille="Home, then End",
                 check=_keys("home", "end"),
                 done="Those are all the depth keys.",
@@ -698,6 +722,8 @@ LESSONS: list[dict[str, Any]] = [
                 "and Outline. Press {key:render_mode} four times, stopping to feel each one, to "
                 "go through all four and come back to Cut. The Rendering Mode section has the "
                 "same four as radio buttons.",
+                sr="Press {key:render_mode} four times, feeling each one, to go through Cut, X-Ray, "
+                   "Filled and Outline and back to Cut.",
                 braille="R through the modes",
                 check=_cycle("render_mode", ["cut", "xray", "filled", "outline"], "cut"),
                 narrate={
@@ -714,43 +740,6 @@ LESSONS: list[dict[str, Any]] = [
                     "Each press moves to the next mode, and the viewer says its name.",
                     "From Cut the order is X-Ray, Filled, Outline, then Cut again.",
                     "Press {key:render_mode} until you hear Cut again: four presses from Cut.",
-                ),
-            ),
-        ],
-    ),
-    _lesson(
-        "cursor", "core", "The cursor", minutes=5, requires=("display",), pose=DEFAULT_POSE,
-        steps=[
-            _step(
-                "cursor_on",
-                "The cursor is a small mark you move over the slice to point at an exact place. "
-                "Press {key:cursor_mode} to turn it on. Each press changes it: crosshair, "
-                "guidelines, horizontal line, vertical line, then off again.",
-                braille="Turn the cursor on",
-                check=_changed("cursor_state"),
-                done="The cursor is on, and the viewer says which one.",
-                hints=(
-                    "The cursor comes only from display buttons; the keyboard has no cursor key.",
-                    ("The first press gives the crosshair, a small plus sign 5 pins across, which "
-                     "is the easiest to feel."),
-                    "Press {key:cursor_mode} once.",
-                ),
-            ),
-            _step(
-                "cursor_to_handle",
-                "Now move the cursor into the handle loop with {key:cursor_move}. The viewer "
-                "says the column and row after each move. The cursor starts near the top left "
-                "corner, and the handle is to the left of the mug's walls, about halfway down.",
-                braille="Cursor to the handle",
-                check=_cursor_in("handle"),
-                done="The cursor is inside the handle loop.",
-                hints=(
-                    ("Each press moves one pin. On the DotPad, two quick presses move 5 pins and "
-                     "three move 12."),
-                    ("If one direction does nothing, you have a line cursor: press "
-                     "{key:cursor_mode} until you hear crosshair."),
-                    ("Press {key:cursor_down} until the cursor is level with the middle of the "
-                     "handle, then {key:cursor_right} until it is inside the loop."),
                 ),
             ),
         ],
@@ -779,6 +768,8 @@ LESSONS: list[dict[str, Any]] = [
                 "The handle is on the {handle_side} side of the mug. To bring it toward the middle, press "
                 "{pan_toward_handle}. After each move the tutorial says where the handle is. Stop "
                 "when it is in the middle.",
+                sr="Move the mug with {key:pan_up}, {key:pan_left}, {key:pan_down} and "
+                   "{key:pan_right} until the tutorial says the handle is in the middle.",
                 braille="Handle to the middle",
                 check=_centred("handle"),
                 key_only=True,
@@ -798,6 +789,7 @@ LESSONS: list[dict[str, Any]] = [
                 "{key:reset}, which also puts the mug back in the middle. For fine steps, "
                 "{key:zoom_in_1} and {key:zoom_out_1} zoom by 1%. The Zoom section also has a "
                 "Zoom level field and Zoom In and Zoom Out buttons.",
+                sr="Press {key:zoom_out_10} until the zoom is back at 0, or press {key:reset}.",
                 braille="Zoom back out to 0",
                 check=_state("zoom", lte=0.001),
                 done="The zoom is back at 0.",
@@ -815,18 +807,19 @@ LESSONS: list[dict[str, Any]] = [
             _step(
                 "about_axes",
                 "This lesson uses XYZ mode, which works like OpenSCAD: you choose the axis to cut "
-                "along. The tutorial has turned it on for now, and at the end of the lesson you "
-                "choose which mode to keep. The mug stands on its base on the table, with Z "
-                "pointing up from the table. X and Y run across the table. The axis keys are "
-                "{key:axis_x} for X, {key:axis_y} for Y and {key:axis_z} for Z, and the same key "
-                "again gives the cut from the other side. The cut's number runs from 0 at the low "
-                "end of the axis to 100 at the high end, whichever side you are on. Deeper still "
-                "means away from you, so from above, from the right or from the back, going deeper "
-                "lowers the number.",
-                sr="This lesson uses XYZ mode, which works like OpenSCAD: you choose the axis to "
-                   "cut along, and the same key again gives the other side. The cut's number runs "
-                   "from 0 at the low end of the axis to 100 at the high end. Press Continue when "
-                   "ready.",
+                "along. It is the viewer's own mode unless you chose Turn, and at the end of the "
+                "lesson you choose which mode to keep. The mug stands on its base on the table, "
+                "with Z pointing up from the table. X and Y run across the table. The axis keys "
+                "are {key:axis_x} for X, {key:axis_y} for Y and {key:axis_z} for Z, and the same key "
+                "again gives the cut from the other side. The viewer names the side you cut from as "
+                "plus or minus: X from plus means you are on the plus side of X. The cut's number "
+                "is its place along the axis, in percent of the mug's size, with 0 at the model's "
+                "origin, the middle of the base. Deeper still means away from you, so from X plus, "
+                "Y plus or Z plus, going deeper lowers the number. If a step is hard, Show me does "
+                "it for you.",
+                sr="This lesson uses XYZ mode: you choose the axis to cut along, and the same key "
+                   "again gives the other side. The cut's number counts from the model's origin, "
+                   "the middle of the base. Press Next when ready.",
                 braille="XYZ mode: the axes",
                 check=_manual(),
                 done="Next, cut along Z.",
@@ -834,30 +827,34 @@ LESSONS: list[dict[str, Any]] = [
                     ("Z is up. The base of the mug is at the low end of Z, and the rim at the "
                      "high end."),
                     "X and Y lie flat, like the edges of a sheet of paper on the table.",
-                    "Press Continue, or {key:tutorial_continue}, to try the axis keys.",
+                    "Press Next, or {key:tutorial_continue}, to try the axis keys.",
                 ),
             ),
             _step(
                 "cut_z",
                 "Press {key:axis_z}. The cut now runs across the mug, parallel to the table, and "
-                "the viewer says Z from above: X runs to the right and Y up the display. The "
-                "Orientation section also has Cut along X, Y and Z buttons, and Other side.",
+                "the viewer says Z from plus, X right, Y up: you are above the mug, with X running "
+                "to the right and Y up the display. The Orientation section also has a button for "
+                "each axis and side, X plus to Z minus.",
+                sr="Press {key:axis_z} to cut along Z, across the mug, parallel to the table.",
                 braille="Cut along Z",
                 check=_state("cut_axis", equals="z"),
                 done="You are cutting along Z. The cut is a ring, the wall of the mug, with a small "
                      "separate piece beside it, the handle.",
                 hints=(
                     "Z is the axis that points up from the table.",
-                    "The viewer says Z from above when you are there.",
+                    "The viewer says Z from plus when you are there.",
                     "Press {key:axis_z} once.",
                 ),
             ),
             _step(
                 "sweep_z",
-                "Move the cut down to the floor of the mug and back up to the rim. From above, "
-                "{key:depth_deeper_10} goes deeper, down the mug, and {key:depth_shallower_10} "
+                "Move the cut down to the floor of the mug and back up to the rim. From above, Z "
+                "plus, {key:depth_deeper_10} goes deeper, down the mug, and {key:depth_shallower_10} "
                 "comes back up. On the way you pass the ring of the wall with the handle beside "
                 "it, and near the bottom the solid floor.",
+                sr="Move the cut down to the floor of the mug with {key:depth_deeper_10}, and back up "
+                   "to the rim with {key:depth_shallower_10}.",
                 braille="Floor to rim",
                 check=_sweep("z", 10, 90),
                 narrate={
@@ -879,9 +876,9 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "cut_x_handle",
-                "Press {key:axis_x}. The viewer says X from the right, and the cut runs from the "
-                "rim to the base again, as in the first lessons. Each axis keeps its own cut, so "
-                "X is still in the middle, through the handle loop.",
+                "Press {key:axis_x}. The viewer says X from plus, and the cut runs from the rim to "
+                "the base again, as in the first lessons. Each axis keeps its own cut, so X is "
+                "still at 0, the middle, through the handle loop.",
                 braille="Cut along X",
                 check=_all(_state("cut_axis", equals="x"), _in_band("x", "handle_loop")),
                 done="That is the handle loop, cut along X.",
@@ -895,17 +892,19 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "cut_y_arms",
-                "Press {key:axis_y}. The viewer says Y from the front: you face the mug with the "
-                "handle pointing at you. Press {key:depth_shallower_10} to move the cut toward you "
-                "until you feel two small separate pieces. Those are the two arms of the handle, "
-                "cut across.",
+                "Press {key:axis_y}. The viewer says Y from minus: you face the mug from the front, "
+                "with the handle pointing at you. Press {key:depth_shallower_10} to move the cut "
+                "toward you until you feel two small separate pieces. Those are the two arms of the "
+                "handle, cut across.",
+                sr="Press {key:axis_y}, then {key:depth_shallower_10} until you feel two small "
+                   "separate pieces, the arms of the handle.",
                 braille="Find the handle arms",
                 check=_all(_state("cut_axis", equals="y"), _in_band("y", "handle_arms")),
                 done="Those two pieces are the handle's arms, cut across.",
                 hints=(
                     "From the front the handle points at you, so it is on the near side of the mug.",
                     "The arms are near the end of the handle, most of the way toward you.",
-                    ("Press {key:axis_y} until you hear Y from the front, then press "
+                    ("Press {key:axis_y} until you hear Y from minus, then press "
                      "{key:depth_shallower_10} three times."),
                 ),
             ),
@@ -933,17 +932,16 @@ LESSONS: list[dict[str, Any]] = [
                 done="Yes. The handle points toward negative Y, the low end of the Y numbers.",
                 on_fail="Not that way. Think of where the handle's arms were on the Y numbers.",
                 hints=(
-                    ("Cutting along X, the viewer said Y runs to the right, and the handle was on "
-                     "the left."),
-                    "Cutting along Y, you found the handle's arms at a low number, near 0.",
+                    "Cutting along X, the viewer said Y right, and the handle was on the left.",
+                    "Cutting along Y, you found the handle's arms below 0, around minus 45.",
                     "Choose Negative Y.",
                 ),
             ),
             _step(
                 "origin",
                 "Every model has an origin, the point where X, Y and Z are all 0. Press "
-                "{key:origin} to hear where it is, compared with your cut and the outline of the "
-                "mug.",
+                "{key:origin} to hear where it is on the display: how far across from the left "
+                "edge, and how far up from the bottom.",
                 braille="Where is the origin?",
                 check=_key(","),
                 key_only=True,
@@ -957,21 +955,23 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "keep_mode",
-                "You can keep XYZ mode, or go back to Turn mode, which turns the model a quarter "
-                "turn at a time with pitch, roll and yaw. In XYZ mode the display also marks the "
-                "origin with a small hollow square and puts the axis letters at its edges; "
-                "Settings can turn either off. You can change the mode any time in Settings, "
-                "under Axis Mode. Which do you want?",
+                "You can keep XYZ mode, or use Turn mode, which turns the model a quarter turn at "
+                "a time with pitch, roll and yaw. In XYZ mode the display also marks the origin "
+                "with a small hollow square and puts the axis letters at its edges; Settings can "
+                "turn either off. You can change the mode any time in Settings, under Axis Mode. "
+                "Which do you want?",
+                sr="Keep XYZ mode, or use Turn mode, which turns the model with pitch, roll and "
+                   "yaw? Settings can change it any time.",
                 braille="Keep XYZ mode?",
                 check=_answer(None),
-                answers=_answers(("Keep XYZ mode", "xyz"), ("Go back to Turn mode", "turn")),
+                answers=_answers(("Keep XYZ mode", "xyz"), ("Use Turn mode", "turn")),
                 store="axis_choice",
                 done="Done. You can change it any time in Settings.",
                 hints=(
                     ("XYZ mode suits people who think in coordinates, as in OpenSCAD. Turn mode "
                      "suits people who like to turn the object in their hands."),
                     "Nothing is lost either way; Settings switches between them.",
-                    "Choose Keep XYZ mode or Go back to Turn mode.",
+                    "Choose Keep XYZ mode or Use Turn mode.",
                 ),
             ),
             _step(
@@ -1014,192 +1014,6 @@ LESSONS: list[dict[str, Any]] = [
                      "display.",
                 on_fail="Not there. Feel the edges for the handle, or press {key:where_am_i}.",
                 hints=_TURN_HINTS,
-            ),
-        ],
-    ),
-    # -- Optional ------------------------------------------------------------
-    # Layout radios are what lesson 10 teaches, so it does not lock them.
-    _lesson(
-        "layout_and_graph", "optional", "Layouts and the slice graph", minutes=6, optional=True,
-        lock=False,
-        steps=[
-            _step(
-                "layouts",
-                "This lesson is optional. Layouts change how the display is laid out: Single, "
-                "Side-by-Side and Slice Graph. Press {key:layout} until you reach Slice Graph, "
-                "feeling each layout on the way. The same three are radio buttons after the "
-                "render modes.",
-                braille="T to Slice Graph",
-                check=_cycle("layout_mode", ["single", "side-by-side", "slice-graph"], "slice-graph"),
-                narrate={
-                    "single": "Single: one slice, with scrollbars along the bottom and right edges "
-                              "when you are zoomed in.",
-                    "side-by-side": "Side-by-Side: your cut on the right, and on the left the whole "
-                                    "mug from another side, with a line where the cut passes.",
-                    "slice-graph": "Slice Graph: your cut, with a graph along the bottom rows.",
-                },
-                done="This is the Slice Graph layout.",
-                hints=(
-                    "Each press moves to the next layout, and the viewer says its name.",
-                    "From Single the order is Side-by-Side, then Slice Graph.",
-                    "Press {key:layout} until you hear Slice Graph: two presses from Single.",
-                ),
-            ),
-            _step(
-                "graph_ready",
-                "The first slice graph for a model can take 20 to 40 seconds to work out, and the "
-                "tutorial tells you when it is ready. The graph runs along the bottom rows of the "
-                "display, one point for each depth through the mug. It compares every slice with "
-                "an anchor slice, the one where you entered Slice Graph: where the line is high, "
-                "that slice is very different from the anchor, and where it is low, the two are "
-                "much the same. A single upright line marks where your cut is.",
-                sr="The first slice graph can take 20 to 40 seconds. The tutorial tells you when "
-                   "it is ready.",
-                braille="Wait for the graph",
-                check=_slicegraph_ready(),
-                done="The slice graph is ready.",
-                hints=(
-                    "There is nothing to press; the graph arrives by itself.",
-                    ("The graph is only worked out in the Slice Graph layout. If you left it, "
-                     "come back to it."),
-                    ("Stay in Slice Graph and wait. If you left it, press {key:layout} until you "
-                     "hear Slice Graph."),
-                ),
-            ),
-            _step(
-                "graph_keys",
-                "Two keys work only in the Slice Graph layout. Press {key:graph_refresh} to move "
-                "the anchor to where your cut is now, and {key:graph_lock} to turn the lock off "
-                "and on: locked, the graph stays put while you move the cut; unlocked, it follows "
-                "the cut. Press {key:graph_refresh}, then {key:graph_lock}. Settings has the same "
-                "lock, as Lock slice graph, and Graph Mode, which chooses whether the graph shows "
-                "the difference from the anchor or the area of each slice.",
-                braille="G, then V",
-                check=_keys("g", "v"),
-                key_only=True,
-                done="The viewer said on or off: that is the graph lock now.",
-                on_fail="That was a different key. Press {key:graph_refresh}, then "
-                        "{key:graph_lock}.",
-                hints=(
-                    ("Stay in the Slice Graph layout; anywhere else these keys say not in "
-                     "slice-graph mode."),
-                    ("The first says the view and depth of the new anchor. The second says on or "
-                     "off."),
-                    "Press {key:graph_refresh}, then press {key:graph_lock}.",
-                ),
-            ),
-            _step(
-                "overlays",
-                "Press {key:layout} once more to come back to Single. In Single, two overlays turn "
-                "on and off: press {key:scrollbar_overlay} for the scrollbars, which appear only "
-                "when you are zoomed in, and {key:graph_overlay} for the slice graph along the "
-                "bottom. Press each one once.",
-                braille="Single, then [ and ]",
-                check=_all(_state("layout_mode", equals="single"), _keys("[", "]")),
-                key_only=True,
-                done="Those are the overlays. Changing the layout sets them back.",
-                hints=(
-                    "The overlays only work in the Single layout.",
-                    "Each one says on or off.",
-                    ("Press {key:layout} until you hear Single, then press {key:scrollbar_overlay} "
-                     "and {key:graph_overlay}."),
-                ),
-            ),
-        ],
-    ),
-    _lesson(
-        "cube", "optional", "The cube", minutes=4, optional=True, requires=("cube",),
-        pose=DEFAULT_POSE,
-        steps=[
-            _step(
-                "connect_cube",
-                "This lesson is optional and needs the WitMotion cube. The tutorial has turned on "
-                "the WitMotion IMU section for it; Cube, under Hardware Controls in Settings, "
-                "shows or hides that section. Lay the cube flat and still on the table first: it "
-                "takes its starting position from its first reading at least 20 seconds after "
-                "this page loaded. Then choose Connect BLE in that section and choose the cube in "
-                "the browser's list.",
-                sr="Lay the cube flat and still, then choose Connect BLE in the WitMotion IMU "
-                   "section and choose the cube in the browser's list.",
-                braille="Cube flat, connect",
-                check=_device("cube"),
-                done="The cube is connected. Disconnect, next to Connect BLE, lets it go.",
-                hints=(
-                    "Connect BLE is a button in the WitMotion IMU section, after the Model section.",
-                    ("Turn the cube on and turn Bluetooth on. Its name in the list starts with "
-                     "WT9, BWT or WITMOTION."),
-                    ("Lay the cube flat, choose Connect BLE, pick the cube in the list and press "
-                     "Enter. If it will not connect, choose Skip step."),
-                ),
-            ),
-            _step(
-                "cube_axis",
-                "Now turn the cube so its Y face points up. It starts with Z up, because you "
-                "laid it flat. Once a face has been up for a moment, the viewer names the new "
-                "view. Stop when you hear Y from the front or from the back, or Front or Back "
-                "view in Turn mode.",
-                braille="Turn Y face up",
-                check=_state("cut_axis", equals="y"),
-                done="The cube chose Y: you are cutting across the handle end of the mug.",
-                hints=(
-                    "Turn the cube a quarter turn at a time and hold it still after each turn.",
-                    "A face has to point clearly up, not tilted toward a corner.",
-                    ("Tip the cube a quarter turn onto one side, and turn it until the viewer says "
-                     "Y from the front, Y from the back, Front view or Back view."),
-                ),
-            ),
-        ],
-    ),
-    _lesson(
-        "slider", "optional", "The slider", minutes=3, optional=True, requires=("slider",),
-        pose=DEFAULT_POSE,
-        steps=[
-            _step(
-                "connect_slider",
-                "This lesson is optional and needs the Trinkey slider. The tutorial has turned on "
-                "the Trinkey Slider section for it; Slider, under Hardware Controls in Settings, "
-                "shows or hides that section. Plug the slider in, choose Connect USB in that "
-                "section, and choose it in the browser's list of serial ports.",
-                braille="Connect the slider",
-                check=_device("slider"),
-                done="The slider is connected. Disconnect, next to Connect USB, lets it go.",
-                hints=(
-                    ("Connect USB is a button in the Trinkey Slider section, after the Model "
-                     "section."),
-                    ("If the slider is not in the first list, the browser opens a second list with "
-                     "every serial port; choose the one that appeared when you plugged it in."),
-                    ("Plug the slider in, choose Connect USB, pick it in the list and press Enter. "
-                     "If it will not connect, choose Skip step."),
-                ),
-            ),
-            _step(
-                "slide_sweep",
-                "The slider sets where the cut is directly: one end of the slider is one side of "
-                "the mug and the other end is the other side. Slide it slowly from one end to the "
-                "other. The viewer says where the cut is when you stop.",
-                braille="Slide end to end",
-                check=_sweep("x", 10, 90),
-                narrate={"handle_loop": "The handle loop, in the middle."},
-                done="That was the whole mug, from one side to the other.",
-                on_fail="The cut is no longer along X. Press {key:reset}, then slide from one end "
-                        "to the other.",
-                hints=(
-                    "Move the slider slowly; the display follows it.",
-                    "The cut has to reach near both sides of the mug.",
-                    "Push the slider all the way to one end, then all the way to the other.",
-                ),
-            ),
-            _step(
-                "slide_handle",
-                "Now stop the slider in the middle, where you feel the handle loop.",
-                braille="Stop at the handle",
-                check=_in_band("x", "handle_loop"),
-                done="Stopped in the handle loop.",
-                hints=(
-                    "The handle is in the middle part of the mug.",
-                    "Move the slider slowly toward its middle and feel for the loop on the left.",
-                    "Put the slider at its middle.",
-                ),
             ),
         ],
     ),
@@ -1249,6 +1063,8 @@ LESSONS: list[dict[str, Any]] = [
                 "{key:shortcuts}. Help, in the main menu, opens the same list. Press "
                 "{key:shortcuts} now, read as much as you like, then press {key:escape} or choose "
                 "Close to come back.",
+                sr="Press {key:shortcuts} to open the list of keyboard shortcuts, then {key:escape} "
+                   "or Close to come back.",
                 braille="Open and close help",
                 check=_ui("shortcuts-dialog", "close"),
                 done="You are back from the shortcuts list.",
@@ -1260,37 +1076,43 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "key_help",
-                "Key help describes what a key or display button does, without doing it. Choose "
-                "Key help in the tutorial area to turn it on. Press any two viewer keys or display "
-                "buttons and listen. Then choose Key help again to turn it off. Key help is in the "
+                "Key help tells you what a key or a display button does, without doing it. Choose "
+                "Key help in the tutorial area to turn it on. Then press {key:render_mode}, and then "
+                "{key:depth_deeper_10}: each time, the tutorial says what that key does, and the mug "
+                "does not change. Choose Key help again to turn it off. Key help is in the "
                 "shortcuts list too.",
+                sr="Choose Key help, press {key:render_mode} and then {key:depth_deeper_10} to hear what "
+                   "they do, then choose Key help again.",
                 braille="Try key help",
                 check=_key_help(2),
                 done="That is Key help. Use it whenever you are not sure what a key does.",
                 hints=(
                     "While Key help is on, nothing you press changes the mug.",
-                    "Try {key:render_mode}, then {key:depth_deeper_10}.",
+                    "Key help is a button in the tutorial area, after Return to lesson start.",
                     ("Choose Key help, press {key:render_mode}, press {key:depth_deeper_10}, then "
                      "choose Key help again."),
                 ),
             ),
             _step(
                 "settings_tour",
-                "Open Settings from the main menu and move through it without changing anything, "
-                "then close it with {key:escape} or its Close button. Settings has Axis Mode, "
-                "Turn or XYZ, with the origin mark and the axis letters for XYZ mode; Keyboard, "
-                "where Single-key shortcuts can be turned off if your screen reader or speech "
-                "input sends letters by mistake; Output Device, DotPad or Monarch, which Connect "
-                "in the main menu uses; Hardware Controls, which show the Slider and Cube "
-                "sections; Debugging, with the Debug Panel and Bounding Box; and Display, with "
-                "View info box on display, Lock slice graph and Graph Mode.",
+                # Jen found the long list of sections confusing in the step itself
+                # (#245 review), so the step says what to do and the first hint
+                # says what is there.
+                "Settings, in the main menu, holds what you set once and rarely change. Open "
+                "Settings from the main menu, move through it without changing anything, then "
+                "close it with {key:escape} or its Close button. The first hint says what is in it.",
                 sr="Open Settings from the main menu, move through it without changing anything, "
-                   "then close it. What each part does stays written in the tutorial area.",
+                   "then close it.",
                 braille="Tour Settings",
                 check=_settings_unchanged(),
                 done="Nothing changed. Settings is there whenever you need it.",
                 hints=(
-                    "Settings is a button in the main menu.",
+                    ("Settings has Axis Mode, Turn or XYZ, with the origin mark and the axis letters "
+                     "for XYZ mode; Keyboard, where Single-key shortcuts can be turned off if your "
+                     "screen reader or speech input sends letters by mistake; Output Device, DotPad "
+                     "or Monarch, which Connect in the main menu uses; Hardware Controls, which show "
+                     "the Slider and Cube sections; Debugging, with the Debug Panel and Bounding Box; "
+                     "and Display, with View info box on display, Lock slice graph and Graph Mode."),
                     ("Tab moves from control to control. Leave every checkbox and radio button as "
                      "it is this time."),
                     "Choose Settings in the main menu, then press {key:escape} to close it.",
@@ -1302,14 +1124,16 @@ LESSONS: list[dict[str, Any]] = [
                 "menu. It offers Resume, Start over and the list of lessons, where any lesson can "
                 "be done again. The top of the keyboard shortcuts list has Resume, Start over and "
                 "Choose a lesson too. About, also in the main menu, says who makes the viewer. "
-                "Press Continue.",
+                "Press Next.",
+                sr="To come back to the tutorial, choose the Tutorial button in the main menu. "
+                   "Press Next.",
                 braille="Tutorial button",
                 check=_manual(),
                 done="Next, the mug detective.",
                 hints=(
                     "The main menu is a navigation landmark at the top of the page.",
                     "Your screen reader's list of landmarks goes straight to it.",
-                    "Press Continue, or {key:tutorial_continue}.",
+                    "Press Next, or {key:tutorial_continue}.",
                 ),
             ),
         ],
@@ -1341,8 +1165,11 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "back_to_handle",
-                "Now get back to the handle loop, cutting along X, and press Continue when you "
-                "are in it.",
+                # The setup never leaves the cut inside the loop, so there is always
+                # something to find (#245 review).
+                "Now find the handle loop: the loop with a hole for your finger, from the first "
+                "lessons. Cut along X through the middle of the mug, and press Next when you are "
+                "in it.",
                 braille="Back to the loop",
                 check=_mark_band("x", "handle_loop"),
                 done="Found it.",
@@ -1350,17 +1177,17 @@ LESSONS: list[dict[str, Any]] = [
                 hints=(
                     "The handle loop is there only when you cut along X through the middle.",
                     ("In XYZ mode, {key:axis_x} cuts along X. In Turn mode, a yaw turns the mug "
-                     "until {key:where_am_i} says seen from the right or the left, which is a cut "
+                     "until {key:where_am_i} says View from the right or the left, which is a cut "
                      "along X."),
-                    ("In XYZ mode, press {key:axis_x}, then {key:reset}, then Continue. In Turn "
-                     "mode, press {key:turn_yaw_left} until {key:where_am_i} says seen from the "
-                     "right or the left, then {key:reset}, then Continue."),
+                    ("In XYZ mode, press {key:axis_x}, then {key:reset}, then Next. In Turn mode, "
+                     "press {key:turn_yaw_left} until {key:where_am_i} says View from the right or "
+                     "the left, then {key:reset}, then Next."),
                 ),
             ),
             _step(
                 "floor_top",
                 "Now cut along Z and find the ring just above the floor: going down the mug, it is "
-                "the last ring before the cut turns solid. Press Continue there.",
+                "the last ring before the cut turns solid. Press Next there.",
                 braille="Ring above the floor",
                 check=_mark_band("z", "above_floor"),
                 requires=("display",),
@@ -1369,11 +1196,11 @@ LESSONS: list[dict[str, Any]] = [
                 hints=(
                     ("Near the bottom of the mug the cut is a solid disc: the floor. Just above "
                      "it, the middle is hollow and you feel a ring."),
-                    ("In XYZ mode, press {key:axis_z} until you hear Z from above. In Turn mode, "
-                     "press {key:turn_pitch_down} until {key:where_am_i} says seen from above."),
+                    ("In XYZ mode, press {key:axis_z} until you hear Z from plus. In Turn mode, "
+                     "press {key:turn_pitch_down} until {key:where_am_i} says View from above."),
                     ("From above, press {key:depth_deeper_10} until the cut turns solid, then "
                      "{key:depth_shallower_1} one step at a time until it is a ring again, and "
-                     "press Continue."),
+                     "press Next."),
                 ),
             ),
             _step(
@@ -1382,6 +1209,8 @@ LESSONS: list[dict[str, Any]] = [
                 "is a small separate piece beside the ring. Measure both in the direction from the "
                 "middle of the mug toward the handle. Which is thicker: the wall of the ring on "
                 "the handle side, or the handle bar?",
+                sr="Press {key:reset}, then measure toward the handle: which is thicker, the wall of "
+                   "the ring on the handle side, or the handle bar?",
                 braille="Wall or bar thicker?",
                 check=_answer("wall"),
                 answers=_answers(("The wall", "wall"), ("The handle bar", "bar"),
@@ -1399,22 +1228,24 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "handle_joins",
-                "Last one. Where does the handle join the mug? Move the cut up and down along Z "
-                "and feel where the separate piece meets the ring, or cut along X through the "
-                "handle loop.",
-                braille="Where does it join?",
-                check=_answer("top_and_bottom"),
-                answers=_answers(("At the top and the bottom", "top_and_bottom"),
-                                 ("Only at the top", "top"), ("Only in the middle", "middle")),
+                # Asked the way Jen put it (#245 review): where it joins was harder to
+                # answer than how many places.
+                "Last one. Does the handle connect to the mug in one place or two? Move the cut up "
+                "and down along Z and feel where the separate piece meets the ring, or cut along X "
+                "through the handle loop.",
+                sr="Does the handle connect to the mug in one place or two?",
+                braille="One place or two?",
+                check=_answer("two"),
+                answers=_answers(("One place", "one"), ("Two places", "two")),
                 requires=("display",),
-                done="Yes, at the top and the bottom. That is what makes the loop.",
+                done="Yes, two: at the top and at the bottom. That is what makes the loop.",
                 on_fail="Not quite. Follow the handle from one end to the other.",
                 hints=(
                     ("Along Z, the handle is a separate piece in the middle of the mug. Notice "
                      "where it stops being separate."),
                     ("Cut along X through the middle, as in the depth lesson: the loop meets the "
                      "wall of the U in two places."),
-                    "It joins at the top and at the bottom. Choose At the top and the bottom.",
+                    "It joins at the top and at the bottom. Choose Two places.",
                 ),
             ),
         ],
@@ -1454,25 +1285,270 @@ LESSONS: list[dict[str, Any]] = [
                     "Choose the Export Current View as Image button.",
                 ),
             ),
+            # The print key is not taught: it does not work as it says, and it is to
+            # come out of the help (#245 review).
             _step(
-                "print_and_props",
-                "Two last things. Pressing {key:print} saves a copy of the current render on the "
-                "server for the project team; nothing prints and nothing downloads. And if you "
-                "want the printed mug and ten slice plaques to hold, the tutorial area has a link "
-                "to the files for a 3D printer. That is the end of the tutorial. To redo any "
-                "lesson, choose the Tutorial button in the main menu and pick it from the list of "
-                "lessons, or use Choose a lesson in the keyboard shortcuts list; Start over runs "
-                "the whole tutorial again. Press Continue to finish.",
-                sr="That is the end of the tutorial. To redo any lesson, choose the Tutorial "
-                   "button in the main menu and pick it from the list. Press Continue to finish.",
+                "props_and_end",
+                "One last thing: if you want the printed mug and ten slice plaques to hold, the "
+                "tutorial area has a link to the files for a 3D printer. That is the end of the "
+                "tutorial. Three extra lessons follow, for the slice graph, the cube and the "
+                "slider; Next starts them, and Exit tutorial leaves them for another time. To redo "
+                "any lesson, choose the Tutorial button in the main menu and pick it from the list "
+                "of lessons, or use Choose a lesson in the keyboard shortcuts list; Start over runs "
+                "the whole tutorial again.",
+                sr="That is the end of the tutorial. Three extra lessons follow: Next starts them, "
+                   "and Exit tutorial leaves them. To redo any lesson, choose the Tutorial button in "
+                   "the main menu.",
                 braille="Tutorial complete",
                 check=_manual(),
                 done="That was the last step.",
                 hints=(
-                    "You do not need {key:print}; it is there for the research team.",
                     ("The files are a zip with the mug, ten flat plaques, each one slice across the "
                      "mug's height, and a short text file that says what each one is."),
-                    "Press Continue, or {key:tutorial_continue}, to finish.",
+                    "The extras need the slice graph layout, the WitMotion cube or the Trinkey slider.",
+                    "Press Next, or {key:tutorial_continue}, for the extras, or choose Exit tutorial.",
+                ),
+            ),
+        ],
+    ),
+    # -- Extras ----------------------------------------------------------------
+    # After the end of the tutorial itself, for anyone who wants them (#245
+    # review). Layout radios are what the first teaches, so it does not lock them.
+    # It walks through the slice graph before asking for G and V: re-anchoring
+    # means nothing until the graph does.
+    _lesson(
+        "layout_and_graph", "extras", "Layouts and the slice graph", minutes=8, lock=False,
+        steps=[
+            _step(
+                "layouts",
+                "Layouts change how the display is laid out: Single, Side-by-Side and Slice Graph. "
+                "Press {key:layout} until you reach Slice Graph, feeling each layout on the way. "
+                "The same three are radio buttons after the render modes.",
+                sr="Press {key:layout} until you reach Slice Graph, feeling each layout on the way.",
+                braille="T to Slice Graph",
+                check=_cycle("layout_mode", ["single", "side-by-side", "slice-graph"], "slice-graph"),
+                narrate={
+                    "single": "Single: one slice, with scrollbars along the bottom and right edges "
+                              "when you are zoomed in.",
+                    "side-by-side": "Side-by-Side: your cut on the right, and on the left the whole "
+                                    "mug from another side, with a line where the cut passes.",
+                    "slice-graph": "Slice Graph: your cut, with a graph along the bottom rows.",
+                },
+                done="This is the Slice Graph layout.",
+                hints=(
+                    "Each press moves to the next layout, and the viewer says its name.",
+                    "From Single the order is Side-by-Side, then Slice Graph.",
+                    "Press {key:layout} until you hear Slice Graph: two presses from Single.",
+                ),
+            ),
+            _step(
+                "graph_ready",
+                "The first slice graph for a model can take 20 to 40 seconds to work out. There is "
+                "nothing to press: the tutorial tells you when it is ready.",
+                sr="The graph can take 20 to 40 seconds. The tutorial says when it is ready.",
+                braille="Wait for the graph",
+                check=_slicegraph_ready(),
+                done="The slice graph is ready.",
+                hints=(
+                    "The graph arrives by itself.",
+                    ("The graph is only worked out in the Slice Graph layout. If you left it, "
+                     "come back to it."),
+                    ("Stay in Slice Graph and wait. If you left it, press {key:layout} until you "
+                     "hear Slice Graph."),
+                ),
+            ),
+            _step(
+                "graph_read",
+                "Feel along the bottom rows of the display, under the raised line across it: that "
+                "is the graph. From left to right it runs through the mug, from the side nearest "
+                "you to the far side, one point for each depth. It compares every slice with one "
+                "anchor slice, the cut you had when you came into Slice Graph: where the line is "
+                "high, the slice at that depth is very different from the anchor, and where it is "
+                "low, much the same. The single upright line across the graph is where your cut is "
+                "now. Find it, then press Next.",
+                sr="The bottom rows are the graph: left is the side nearest you, right the far side, "
+                   "and the upright line is your cut. Press Next when you have found it.",
+                braille="Feel the graph",
+                check=_manual(),
+                done="That upright line is your cut.",
+                hints=(
+                    "The graph is in the bottom rows, under a raised line that runs across the display.",
+                    "The upright line crosses every row of the graph; nothing else in it does.",
+                    "Find the upright line in the bottom rows, then press Next.",
+                ),
+            ),
+            _step(
+                "graph_move",
+                "Press {key:depth_deeper_10} two or three times and feel the upright line move to "
+                "the right, deeper into the mug. The graph itself stays as it is: it is locked to "
+                "the anchor.",
+                braille="Move the cut",
+                check=_changed("depth"),
+                done="The line follows your cut, and the graph stays put.",
+                hints=(
+                    "Deeper moves the upright line to the right.",
+                    "Each press moves the cut a tenth of the way through the mug.",
+                    "Press {key:depth_deeper_10}, then feel where the upright line is now.",
+                ),
+            ),
+            _step(
+                "graph_anchor",
+                "Press {key:graph_refresh} to make the cut you are on now the anchor. The graph is "
+                "worked out again against it: low around your cut, where the slices are much like "
+                "it, and higher where they differ.",
+                braille="G: new anchor",
+                check=_key("g"),
+                key_only=True,
+                done="The viewer said the view and the depth of the new anchor.",
+                on_fail="That was a different key. Press {key:graph_refresh}.",
+                hints=(
+                    "Only in the Slice Graph layout does this key do anything.",
+                    "Afterwards the graph is at its lowest around your cut.",
+                    "Press {key:graph_refresh}.",
+                ),
+            ),
+            _step(
+                "graph_lock",
+                "The graph is locked, so it stays put while you move the cut. Press "
+                "{key:graph_lock} to unlock it: then it follows your cut, worked out again against "
+                "each new slice. Press {key:graph_lock} again to lock it. Settings has the same "
+                "lock, as Lock slice graph, and Graph Mode, which shows the area of each slice "
+                "instead of the difference from the anchor.",
+                sr="Press {key:graph_lock} to unlock the graph, so it follows your cut, and again to "
+                   "lock it.",
+                braille="V: unlock, lock",
+                # Off and back on, so the graph is left locked as the lesson found
+                # it. Settings' Lock slice graph counts too.
+                check=_cycle("slicegraph_locked", [True, False], True),
+                done="The graph is locked again, and stays put while you move the cut.",
+                hints=(
+                    ("Stay in the Slice Graph layout; anywhere else this key says not in "
+                     "slice-graph mode."),
+                    "Unlocked, each move of the cut works the graph out again against the new slice.",
+                    "Press {key:graph_lock} once to unlock, and once more to lock.",
+                ),
+            ),
+            _step(
+                "overlays",
+                "Press {key:layout} once more to come back to Single. In Single, two overlays turn "
+                "on and off: press {key:scrollbar_overlay} for the scrollbars, which appear only "
+                "when you are zoomed in, and {key:graph_overlay} for the slice graph along the "
+                "bottom. Press each one once.",
+                sr="Press {key:layout} to come back to Single, then {key:scrollbar_overlay} and "
+                   "{key:graph_overlay} once each.",
+                braille="Single, then [ and ]",
+                check=_all(_state("layout_mode", equals="single"), _keys("[", "]")),
+                key_only=True,
+                done="Those are the overlays. Changing the layout sets them back.",
+                hints=(
+                    "The overlays only work in the Single layout.",
+                    "Each one says on or off.",
+                    ("Press {key:layout} until you hear Single, then press {key:scrollbar_overlay} "
+                     "and {key:graph_overlay}."),
+                ),
+            ),
+        ],
+    ),
+    _lesson(
+        "cube", "extras", "The cube", minutes=4, requires=("cube",),
+        pose=DEFAULT_POSE,
+        steps=[
+            _step(
+                "connect_cube",
+                "This lesson needs the WitMotion cube; if you do not have one, Skip lesson moves on. "
+                "The tutorial has turned on the WitMotion IMU section for it; Cube, under Hardware Controls in Settings, "
+                "shows or hides that section. Lay the cube flat and still on the table first: it "
+                "takes its starting position from its first reading at least 20 seconds after "
+                "this page loaded. Then choose Connect BLE in that section and choose the cube in "
+                "the browser's list.",
+                sr="Lay the cube flat and still, then choose Connect BLE in the WitMotion IMU "
+                   "section and choose the cube in the browser's list.",
+                braille="Cube flat, connect",
+                check=_device("cube"),
+                done="The cube is connected. Disconnect, next to Connect BLE, lets it go.",
+                hints=(
+                    "Connect BLE is a button in the WitMotion IMU section, after the Model section.",
+                    ("Turn the cube on and turn Bluetooth on. Its name in the list starts with "
+                     "WT9, BWT or WITMOTION."),
+                    ("Lay the cube flat, choose Connect BLE, pick the cube in the list and press "
+                     "Enter. If it will not connect, choose Skip step."),
+                ),
+            ),
+            _step(
+                "cube_axis",
+                "Now turn the cube so its Y face points up. It starts with Z up, because you "
+                "laid it flat. Once a face has been up for a moment, the viewer names the new "
+                "view. Stop when you hear Y from minus or Y from plus, or Front view or Back view "
+                "in Turn mode.",
+                sr="Turn the cube so its Y face points up, and hold it still until the viewer names "
+                   "the new view.",
+                braille="Turn Y face up",
+                check=_state("cut_axis", equals="y"),
+                # The cut stays where the lesson put it, the middle, which along Y is
+                # the walls and the base: the handle is further toward minus Y (#245
+                # review).
+                done="The cube chose Y: the cut runs from the rim to the base through both walls of "
+                     "the mug. The handle is further toward minus Y, so it is not in this cut.",
+                hints=(
+                    "Turn the cube a quarter turn at a time and hold it still after each turn.",
+                    "A face has to point clearly up, not tilted toward a corner.",
+                    ("Tip the cube a quarter turn onto one side, and turn it until the viewer says "
+                     "Y from minus, Y from plus, Front view or Back view."),
+                ),
+            ),
+        ],
+    ),
+    _lesson(
+        "slider", "extras", "The slider", minutes=3, requires=("slider",),
+        pose=DEFAULT_POSE,
+        steps=[
+            _step(
+                "connect_slider",
+                "This lesson needs the Trinkey slider; if you do not have one, Skip lesson moves on. "
+                "The tutorial has turned on the Trinkey Slider section for it; Slider, under Hardware Controls in Settings, "
+                "shows or hides that section. Plug the slider in, choose Connect USB in that "
+                "section, and choose it in the browser's list of serial ports.",
+                sr="Plug the slider in, choose Connect USB in the Trinkey Slider section, and choose "
+                   "it in the browser's list.",
+                braille="Connect the slider",
+                check=_device("slider"),
+                done="The slider is connected. Disconnect, next to Connect USB, lets it go.",
+                hints=(
+                    ("Connect USB is a button in the Trinkey Slider section, after the Model "
+                     "section."),
+                    ("If the slider is not in the first list, the browser opens a second list with "
+                     "every serial port; choose the one that appeared when you plugged it in."),
+                    ("Plug the slider in, choose Connect USB, pick it in the list and press Enter. "
+                     "If it will not connect, choose Skip step."),
+                ),
+            ),
+            _step(
+                "slide_sweep",
+                "The slider sets where the cut is directly: one end of the slider is one side of "
+                "the mug and the other end is the other side. Slide it slowly from one end to the "
+                "other. The viewer says where the cut is when you stop.",
+                braille="Slide end to end",
+                check=_sweep("x", 10, 90),
+                narrate={"handle_loop": "The handle loop, in the middle."},
+                done="That was the whole mug, from one side to the other.",
+                on_fail="The cut is no longer along X. Press {key:reset}, then slide from one end "
+                        "to the other.",
+                hints=(
+                    "Move the slider slowly; the display follows it.",
+                    "The cut has to reach near both sides of the mug.",
+                    "Push the slider all the way to one end, then all the way to the other.",
+                ),
+            ),
+            _step(
+                "slide_handle",
+                "Now stop the slider in the middle, where you feel the handle loop.",
+                braille="Stop at the handle",
+                check=_in_band("x", "handle_loop"),
+                done="Stopped in the handle loop.",
+                hints=(
+                    "The handle is in the middle part of the mug.",
+                    "Move the slider slowly toward its middle and feel for the loop on the left.",
+                    "Put the slider at its middle.",
                 ),
             ),
         ],

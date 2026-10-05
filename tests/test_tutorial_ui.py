@@ -152,7 +152,8 @@ class TestRegion:
     def test_the_last_action_line_is_plain_text(self):
         last = _by_id(_region_markup())["tutorial-last"]
         assert "role" not in last["attrs"] and "aria-live" not in last["attrs"]
-        assert _text("tutorial-last").startswith("Last:")
+        # Named for what it is: Jen could not tell what "Last:" meant (#245 review).
+        assert _text("tutorial-last").startswith("Last thing said:")
 
     def test_every_control_is_a_real_button(self):
         """Buttons rather than radios for answers too: the viewer takes Arrow Up
@@ -168,12 +169,15 @@ class TestRegion:
         region = _region_markup()
         order = [
             "tutorial-continue-btn", "tutorial-back-btn", "tutorial-repeat-btn", "tutorial-hint-btn",
-            "tutorial-restart-lesson-btn", "tutorial-keyhelp-btn", "tutorial-lessons-btn", "tutorial-exit-btn",
+            "tutorial-show-me-btn", "tutorial-restart-lesson-btn", "tutorial-keyhelp-btn",
+            "tutorial-lessons-btn", "tutorial-exit-btn",
         ]
         positions = [region.index(f'id="{element_id}"') for element_id in order]
         assert positions == sorted(positions)
         labels = {
-            "tutorial-continue-btn": "Continue (N)",
+            # "Next (N)": Continue was not obvious for N (#245 review).
+            "tutorial-continue-btn": "Next (N)",
+            "tutorial-show-me-btn": "Show me",
             "tutorial-back-btn": "Back (B)",
             "tutorial-repeat-btn": "Repeat (C)",
             "tutorial-hint-btn": "Hint 1 of 3",
@@ -350,20 +354,29 @@ class TestRunner:
         js = _js()
         assert "setInterval" not in js
         timers = re.findall(r"setTimeout\((.*?)\);", js)
-        assert timers == ["() => { viewerPoliteThisTick = null; }, 0"]
+        assert timers == ["() => { viewerAlertThisTick = null; }, 0"]
+        # The lessons request gives up by itself rather than on a timer here.
+        assert "AbortSignal.timeout(LESSONS_TIMEOUT_MS)" in js
 
-    def test_it_speaks_through_the_shared_polite_window_only(self):
+    def test_it_speaks_through_the_viewers_alert_window(self):
+        """The same window as the viewer's answers to keys, so a key pressed while
+        the tutorial is reading replaces it (#245 review: Jen pressed "." and the
+        step went on being read). A viewer answer in the same tick is kept at the
+        front of the tutorial's words, not overwritten."""
         js = _js()
-        assert "study.announce(message" in js
-        assert "announceAlert" not in js
+        assert "study.announceAlert === 'function' ? study.announceAlert : study.announce" in js
+        assert "data.politeness !== 'assertive'" in _function(js, "function noteViewerMessage(")
+        assert "if (viewerAlertThisTick) message = `${sentence(viewerAlertThisTick)} ${message}`;" in js
         assert "aria-live" not in js
+        bridge = _js(VIEWER_JS).split("window.cadStudy = {")[1].split("\n};")[0]
+        assert "announceAlert: announceAlert," in bridge
 
     def test_n_b_c_share_the_viewers_guards_and_never_run_on_study(self):
         js = _js()
         handler = js[js.index("document.addEventListener('keydown', function (e) {"):]
         for guard in (
             "if (runner.view !== 'lesson') return;",
-            "if (textEntry) return;",
+            "if (formControl) return;",
             "if (document.querySelector('dialog[open]')) return;",
             "if (e.metaKey || e.ctrlKey || e.altKey) return;",
             "if (getState().single_key_shortcuts === false) return;",
@@ -485,12 +498,19 @@ class TestViewerHooks:
         assert "if (typeof window._dotpadOnRender === 'function')" not in js
         assert "if (typeof window._monarchHidOnRender === 'function'" not in js
 
-    def test_key_help_returns_after_the_guards_and_before_the_report(self):
+    def test_key_help_comes_before_the_guards_and_the_report(self):
+        """Before the single-key guard, so a letter is described with single-key
+        shortcuts off, saying it does nothing now, and a held key is described
+        once (#245 review)."""
         handler = _keydown_handler()
         key_help = handler.index("window.cadTutorial.keyHelpActive")
-        assert handler.index("!viewerState.singleKeyShortcuts && normalizedKey.length === 1") < key_help
-        assert handler.index("if (e.repeat && !repeatableShortcuts.has(normalizedKey))") < key_help
+        assert handler.index("if (!supportedShortcuts.has(normalizedKey))") < key_help
+        assert key_help < handler.index("!viewerState.singleKeyShortcuts && normalizedKey.length === 1")
+        assert key_help < handler.index("if (e.repeat && !repeatableShortcuts.has(normalizedKey))")
         assert key_help < handler.index("reportStudyInteraction('keyboard', {")
+        block = handler[key_help:handler.index("reportStudyInteraction('keyboard', {")]
+        assert "if (e.repeat) return;" in block
+        assert "inactive: !viewerState.singleKeyShortcuts && normalizedKey.length === 1" in block
 
     def test_focus_goes_to_the_tutorial_and_pageshow_only_refocuses_from_the_cache(self):
         js = _js(VIEWER_JS)
@@ -597,7 +617,9 @@ class TestReviewRegressions:
         source = _js()
         where = source[source.index("function whereAgainstBand("):]
         where = where[:where.index("\n    }\n")]
-        assert "Math.ceil(Number(target.from))" in where and "Math.floor(Number(target.to))" in where
+        assert "Math.ceil(Number(target.from) - offset)" in where and "Math.floor(Number(target.to) - offset)" in where
+        # In XYZ mode the numbers are the viewer's, from the model's origin (#235).
+        assert "state.cut_origin_percent" in where
         # In Turn mode it speaks the depth the viewer just announced.
         assert "state.axis_mode !== 'xyz'" in where and "reader_depth" in where
 
@@ -644,3 +666,95 @@ class TestReviewRegressions:
     def test_a_blocked_lesson_starts_when_a_display_connects(self):
         source = _js()
         assert "runner.phase === 'blocked' && ev.type === 'device' && ev.data.connected" in source
+
+
+class TestSecondReview:
+    """The #245 review's findings, each pinned where it was fixed. As above, the
+    runner has no JavaScript harness here; each was also checked in a browser."""
+
+    def test_the_mug_is_the_first_render_at_once(self):
+        # Rendered as the viewer becomes ready, while ownsFirstRender still holds
+        # the viewer's own render back, and not announced, so the consent
+        # dialog's confirmation is not talked over.
+        js = _js()
+        ready = js[js.index("document.addEventListener('cad:viewer-ready', function () {"):]
+        ready = ready[:ready.index("\n    });")]
+        assert "if (cadTutorial.ownsFirstRender) renderMugFirst();" in ready
+        mug = _function(js, "function renderMugFirst(")
+        assert "applyPose(DEFAULT_POSE, { force: true });" in mug
+        assert "announceNextMugRender = false;" in mug
+        assert "if (mugRenderedFirst) return;" in _function(js, "function releaseFirstRender(")
+        assert "cadTutorial.ownsFirstRender = false;" not in _function(js, "function applyPose(")
+        assert "applyPose(DEFAULT_POSE);" not in _function(js, "async function startAtLoad(")
+
+    def test_only_a_first_run_reopens_by_itself(self):
+        assert "(record.status === 'in-progress' && record.origin === 'first-run')" in _js()
+
+    def test_the_lesson_list_unlocks_the_controls(self):
+        assert "setLocked(false);" in _function(_js(), "async function openMenu(")
+
+    def test_a_test_pattern_that_cannot_be_drawn_lets_the_dots_go(self):
+        body = _function(_js(), "async function nextTestPatternRound(")
+        assert body.count("testPattern.active = false;") == 2
+
+    def test_a_late_locate_answer_is_dropped_when_the_step_changes(self):
+        assert "locateSeq += 1;" in _function(_js(), "function leaveStep(")
+
+    def test_the_end_of_the_tutorial_is_saved_as_finished(self):
+        body = _function(_js(), "function passStep(")
+        assert "if (!next || (next.part === 'extras' && lesson.part !== 'extras')) {" in body
+        assert "record.status = 'completed';" in body
+
+    def test_next_goes_straight_on_from_a_step_already_done(self):
+        js = _js()
+        body = _function(js, "function continueAction(")
+        assert body.index("if (stepWasPassed()) {") < body.index("showDemoFrame(frames, step);")
+        assert "runner.passed.add(stepKey());" in _function(js, "function passStep(")
+        assert "runner.passed.clear();" in _function(js, "function startOver(")
+
+    def test_not_quite_is_in_jens_words(self):
+        assert "'Not quite. Try Hint to find out how to complete this, or Skip step to move on.'" in _js()
+        assert "This step finishes when you do it" not in _js()
+
+    def test_show_me_is_only_for_steps_that_wait_for_the_cut(self):
+        by_id = _by_id(_region_markup())
+        assert by_id["tutorial-show-me-btn"]["attrs"].get("type") == "button"
+        assert "hidden" in by_id["tutorial-show-me-btn"]["attrs"]
+        moves = _function(_js(), "function showMeMoves(")
+        assert "need === 'cube' || need === 'slider'" in moves
+        for kind in ("'in_band'", "'mark_band'", "'edge'", "'sweep'", "check.field === 'cut_axis'"):
+            assert kind in moves
+        for kind in ("'key'", "'keys'", "'answer'"):
+            assert kind not in moves
+
+    def test_n_b_and_c_leave_a_focused_list_alone(self):
+        js = _js()
+        handler = js[js.index("document.addEventListener('keydown', function (e) {"):]
+        assert "tagName === 'select'" in handler
+        assert handler.index("if (formControl) return;") < handler.index("if (key === 'n') continueAction();")
+
+    def test_the_viewers_letters_leave_a_focused_list_alone(self):
+        handler = _keydown_handler()
+        guard = handler.index("const ownsTypeAhead")
+        assert "target.closest('select, [role=\"listbox\"]')" in handler[guard:guard + 300]
+        assert guard < handler.index("switch(normalizedKey)")
+
+    def test_unset_axis_mode_is_xyz_now(self):
+        assert "return stored === 'turn' ? 'turn' : 'xyz';" in _function(_js(), "function storedAxisMode(")
+
+    def test_exit_gives_back_the_whole_view(self):
+        js = _js()
+        assert "view_state: typeof study.captureView === 'function' ? study.captureView() : null," in js
+        assert "restore: saved.view_state || undefined," in _function(js, "function restoreAfterRun(")
+        viewer = _js(VIEWER_JS)
+        assert "if (wanted.restore) restoreViewState(wanted.restore);" in viewer
+        assert "viewerState.currentMoveCamera = defaults && defaults.restore ? 'none' : 'reset';" in viewer
+        restore = _function(viewer, "function restoreViewState(")
+        for part in ("orientationRight", "slicePlanes", "cameraCenterByViewOrientation", "currentWorldCameraCenter"):
+            assert part in restore
+
+    def test_the_study_log_keeps_to_its_own_events(self):
+        study = _js(ROOT / "static" / "js" / "study.js")
+        assert ("const STUDY_EVENT_TYPES = new Set(['keyboard', 'announcement', 'model_loaded', "
+                "'page_load', 'page_unload', 'error']);") in study
+        assert "if (!sessionActive || !STUDY_EVENT_TYPES.has(eventType)) return;" in study

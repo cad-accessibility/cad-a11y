@@ -304,6 +304,15 @@ def test_a_test_pattern_for_no_real_display_is_refused(client, body):
     assert client.post("/tutorial/test-pattern", json=body).status_code == 400
 
 
+@pytest.mark.parametrize("body", [[1], "x", 5, None])
+def test_a_test_pattern_body_that_is_not_an_object_is_refused(client, body):
+    """These came back as a 500 (#245 review): a truthy non-object got past
+    `or {}` to data.get(). Refused like /tutorial/locate refuses them."""
+    response = client.post("/tutorial/test-pattern", json=body)
+    assert response.status_code == 400
+    assert response.get_json()["status"] == "error"
+
+
 # ---------------------------------------------------------------------------
 # /tutorial/locate
 # ---------------------------------------------------------------------------
@@ -539,6 +548,10 @@ def test_a_tutorial_event_is_accepted_and_cut_down(client, counting):
     [
         {"action": "pressed_key", "lesson": "depth"},
         {"action": "loaded", "lesson": "Lesson <b>4</b>"},
+        # Both used to be stored (#245 review): $ matched before a final
+        # newline, and any id of the right characters was taken.
+        {"action": "loaded", "lesson": "depth\n"},
+        {"action": "loaded", "lesson": "not_a_lesson"},
         None,
     ],
 )
@@ -616,6 +629,9 @@ def test_seeding_replaces_a_stale_tutorial_mug_and_nothing_else():
         assert mug.read_bytes() == (BUILTIN_SOURCE_DIR / "tutorial_mug.stl").read_bytes()
         assert other.read_bytes() == b"solid edited\nendsolid edited\n"
         assert _seed_builtin_models() == 0
+        # Copied beside it and moved into place (#245 review), so nothing is left
+        # behind and nothing ever reads a half-written mug.
+        assert not list(MODEL_DIR.glob(".*.tmp"))
     finally:
         mug.write_bytes(mug_bytes)
         other.write_bytes(other_bytes)

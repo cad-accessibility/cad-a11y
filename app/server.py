@@ -250,10 +250,16 @@ def _seed_builtin_models() -> int:
             # compare against a different mesh. So it is replaced when it differs.
             if source.name not in _REFRESHED_BUILTINS or filecmp.cmp(source, target, shallow=False):
                 continue
+        # Copied beside the target and moved into place, so a worker booting at
+        # the same moment, or a render reading the mug, never sees a half-written
+        # file (#245 review). os.replace is atomic within one directory.
+        temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
         try:
-            shutil.copy2(source, target)
+            shutil.copy2(source, temporary)
+            os.replace(temporary, target)
             copied += 1
         except Exception as error:
+            temporary.unlink(missing_ok=True)
             _log(f"Could not seed built-in model {source.name}: {error}", force=True)
     if copied:
         _log(f"Seeded {copied} built-in model(s) into {MODEL_DIR}", force=True)

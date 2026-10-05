@@ -71,7 +71,7 @@ LANDMARKS_PATH = Path(__file__).resolve().with_name("tutorial_mug.landmarks.json
 EVENT_ACTIONS = frozenset(
     {"loaded", "lesson_completed", "lesson_skipped", "exited", "completed", "redo", "resumed"}
 )
-_LESSON_ID_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+_LESSON_ID_RE = re.compile(r"[a-z0-9_]{1,64}")
 
 DISPLAYS = ("monarch", "dotpad", "none")
 
@@ -151,17 +151,33 @@ def is_tutorial_request(req: Any) -> bool:
     return str(headers.get(TUTORIAL_HEADER, "")).strip() == "1"
 
 
+def _lesson_ids() -> frozenset[str]:
+    """The ids of the lessons there are, looked up when needed for the same
+    reason tutorial_lessons() looks the module up: the blueprint still loads
+    without it. With no lessons there is no id to accept."""
+    if importlib.util.find_spec(f"{__package__}.tutorial_lessons") is None:
+        return frozenset()
+    from . import tutorial_lessons as lessons_module
+
+    return frozenset(lesson["id"] for lesson in lessons_module.LESSONS)
+
+
 def clean_event_data(event_data: Any) -> dict[str, Any] | None:
     """The part of a "tutorial" analytics event that may be stored, or None if
     it is not one. Only the action and the lesson id survive, so a client that
-    sends more cannot widen what is recorded."""
+    sends more cannot widen what is recorded. The id has to be one of the
+    lessons, whole: re.match let "depth\n" through, since $ matches before a
+    final newline, and any 64 characters of the right kind were stored (#245
+    review)."""
     if not isinstance(event_data, dict):
         return None
     action = event_data.get("action")
     if action not in EVENT_ACTIONS:
         return None
     lesson = event_data.get("lesson")
-    if lesson is not None and not (isinstance(lesson, str) and _LESSON_ID_RE.match(lesson)):
+    if lesson is not None and not (
+        isinstance(lesson, str) and _LESSON_ID_RE.fullmatch(lesson) and lesson in _lesson_ids()
+    ):
         return None
     return {"action": action, "lesson": lesson}
 
@@ -278,7 +294,12 @@ def pattern_pixels(corner: str, width: int, height: int) -> np.ndarray:
 
 @tutorial_bp.route("/tutorial/test-pattern", methods=["POST"])
 def tutorial_test_pattern():
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    # Anything but a JSON object is refused here, as /tutorial/locate does: a
+    # list or a number used to reach data.get() and come back as a 500 (#245
+    # review).
+    if not isinstance(data, dict):
+        return jsonify({"status": "error", "message": "send the corner, width and height as a JSON object"}), 400
     corner = str(data.get("corner", "")).strip().lower()
     if corner not in PATTERN_CORNERS:
         return jsonify({"status": "error", "message": "corner must be one of tl, tr, bl, br"}), 400

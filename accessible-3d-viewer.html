@@ -215,9 +215,10 @@
                 Nothing in here is a live region. A step change is said once,
                 through the shared polite announcement window, and the text here
                 stays put to be read on demand, like the study region above. The
-                "Last" line is plain text for the same reason. Every answer is a
-                button, never a radio: the viewer takes Arrow Up and Down for depth
-                on anything that is not a text field.
+                "Last thing said" line is plain text for the same reason: it keeps
+                the last thing the viewer or the tutorial said, for anyone who
+                missed it, and lesson 1 says so. Every answer is a button, never a
+                radio, so one press answers.
             -->
             <section id="tutorial-region" class="study-region tutorial-region" aria-labelledby="tutorial-heading" hidden>
                 <h2 id="tutorial-heading" tabindex="-1">Tutorial</h2>
@@ -226,7 +227,7 @@
                     <p id="tutorial-progress" class="tutorial-progress">Step 1 of 1</p>
                     <p id="tutorial-step-text" class="tutorial-step-text"></p>
                     <p id="tutorial-note" class="tutorial-note" hidden></p>
-                    <p id="tutorial-last" class="tutorial-last">Last: <span id="tutorial-last-text">nothing yet.</span></p>
+                    <p id="tutorial-last" class="tutorial-last">Last thing said: <span id="tutorial-last-text">nothing yet.</span></p>
                     <div id="tutorial-answers" role="group" aria-labelledby="tutorial-answers-label" hidden>
                         <p id="tutorial-answers-label" class="tutorial-answers-label">Answers</p>
                         <div id="tutorial-answer-buttons" class="button-group"></div>
@@ -238,10 +239,11 @@
                         Escape cannot be the only way out, since NVDA takes it.
                     -->
                     <div class="button-group tutorial-controls">
-                        <button type="button" id="tutorial-continue-btn">Continue (N)</button>
+                        <button type="button" id="tutorial-continue-btn">Next (N)</button>
                         <button type="button" id="tutorial-back-btn">Back (B)</button>
                         <button type="button" id="tutorial-repeat-btn">Repeat (C)</button>
                         <button type="button" id="tutorial-hint-btn">Hint 1 of 3</button>
+                        <button type="button" id="tutorial-show-me-btn" hidden>Show me</button>
                         <button type="button" id="tutorial-restart-lesson-btn">Return to lesson start</button>
                         <button type="button" id="tutorial-keyhelp-btn" aria-pressed="false">Key help</button>
                         <button type="button" id="tutorial-lessons-btn">Lessons</button>
@@ -635,7 +637,7 @@
                 <button type="button" id="tutorial-dialog-keyhelp-btn" aria-pressed="false" hidden>Key help</button>
             </div>
             <ul class="shortcuts-list">
-                <li><kbd>N</kbd> Continue, while the tutorial is running</li>
+                <li><kbd>N</kbd> Next, while the tutorial is running</li>
                 <li><kbd>B</kbd> Back a step</li>
                 <li><kbd>C</kbd> Repeat the step</li>
             </ul>

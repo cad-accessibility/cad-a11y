@@ -3605,6 +3605,8 @@ function applyStudyDefaults(defaults) {
         viewerState.composeScrollbar = wanted.compose_scrollbar;
     }
 
+    if (wanted.restore) restoreViewState(wanted.restore);
+
     refreshDepthControls();
     if (zoomInput) zoomInput.value = viewerState.currentZoom;
     if (zoomLevelValue) zoomLevelValue.textContent = Number(viewerState.currentZoom).toFixed(1);
@@ -3614,6 +3616,48 @@ function applyStudyDefaults(defaults) {
     updateButtonLabels();
     refreshViewInfoSummary();
     refreshStatusBar();
+}
+
+/** What a model's defaults do not hold: the orientation, the cut on every axis
+ * and where each view is panned to. The tutorial takes this when a lesson is
+ * opened from the menu and gives it back on exit, so the person returns to the
+ * view they left and not just the same model and side (#245 review). A plain
+ * copy, so nothing the caller does to it reaches the viewer. */
+function captureViewState() {
+    return JSON.parse(JSON.stringify({
+        orientation: currentBasis(),
+        slice_planes: viewerState.slicePlanes,
+        camera_centers: [...viewerState.cameraCenterByViewOrientation.entries()],
+        world_camera_center: viewerState.currentWorldCameraCenter || null,
+    }));
+}
+
+/** Put back what captureViewState took. Each part is checked and skipped if
+ * it is not what was taken, so a stored record from an older page cannot
+ * leave the viewer half turned. */
+function restoreViewState(saved) {
+    const isAxis = (v) => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite)
+        && v.reduce((sum, c) => sum + Math.abs(c), 0) === 1;
+    const o = saved && saved.orientation;
+    if (o && isAxis(o.right) && isAxis(o.up) && isAxis(o.depth)) {
+        viewerState.orientationRight = [...o.right];
+        viewerState.orientationUp = [...o.up];
+        viewerState.orientationDepth = [...o.depth];
+        viewerState.currentView = orientationViewFromDepth(viewerState.orientationDepth);
+    }
+    const planes = saved && saved.slice_planes;
+    if (planes && ['x', 'y', 'z'].every(a => Number.isFinite(planes[a]) && planes[a] >= 0 && planes[a] <= 1)) {
+        viewerState.slicePlanes = { x: planes.x, y: planes.y, z: planes.z };
+        syncSliceDepthFromPlanes();
+    }
+    if (saved && Array.isArray(saved.camera_centers)) {
+        viewerState.cameraCenterByViewOrientation = new Map(
+            saved.camera_centers.filter(entry => Array.isArray(entry) && entry.length === 2),
+        );
+    }
+    if (saved && Array.isArray(saved.world_camera_center)) {
+        viewerState.currentWorldCameraCenter = [...saved.world_camera_center];
+    }
 }
 
 /** Load the model for the current protocol step.
@@ -3638,9 +3682,10 @@ function loadStudyModel(stem, label, defaults, source) {
     beginModelLoadAnnouncement(studyModelLabel, 'study');
     // "reset" centres the object, the last of the study defaults. It is a render
     // parameter rather than viewer state, so it is set for this one request and
-    // reset inside sendStateToServer itself once actually consumed 
+    // reset inside sendStateToServer itself once actually consumed. A view being
+    // put back keeps the pan it had.
     pendingInputSource = source ? String(source) : 'study';
-    viewerState.currentMoveCamera = 'reset';
+    viewerState.currentMoveCamera = defaults && defaults.restore ? 'none' : 'reset';
     sendStateToServer();
     return true;
 }
@@ -3703,6 +3748,11 @@ function tutorialStateSnapshot() {
         // the right, the back or above going deeper lowers it, so a lesson
         // that asks for "the far side" cannot tell from cut_percent alone.
         reader_depth: Math.round(depthFromPlanePosition(viewerState.slicePlanes[axis], sign) * 100) / 100,
+        // Where the model's origin is along the cut axis, in the same percent
+        // as cut_percent, or null until a render has said. XYZ mode reads the
+        // cut out from the origin (cutPercent), so the tutorial subtracts this
+        // to speak the numbers the viewer just said.
+        cut_origin_percent: originFraction(axis) === null ? null : originFraction(axis) * 100,
         model: viewerState.currentModel,
         cursor_col: viewerState.currentCursorCol,
         cursor_row: viewerState.currentCursorRow,
@@ -3739,6 +3789,10 @@ window.cadStudy = {
     // by either, and both must reach the same function.
     announce: announce,
     announcePolite: announce,
+    // The tutorial writes through the same window as the viewer's answers to
+    // keys, so the next key's answer replaces what it was reading (#245 review).
+    announceAlert: announceAlert,
+    captureView: captureViewState,
 };
 
 /** Report an interaction to every listener on window.cadStudy.onInteraction, on
@@ -4065,6 +4119,17 @@ document.addEventListener('keydown', function(e) {
         return;
     }
 
+    // A list keeps its letters and digits too: typing jumps to the option that
+    // starts with them, which is how screen reader users get through a long
+    // model list, and the tutorial's last lesson asks for exactly that (#245
+    // review).
+    const ownsTypeAhead = Boolean(
+        target && typeof target.closest === 'function' && target.closest('select, [role="listbox"]')
+    );
+    if (ownsTypeAhead && String(e.key || '').length === 1) {
+        return;
+    }
+
     // A modal dialog (shortcuts help, session consent) makes the rest of the page
     // inert — Escape and Tab must stay scoped to it, not also fire a background
     // shortcut underneath.
@@ -4102,6 +4167,22 @@ document.addEventListener('keydown', function(e) {
         return;
     }
 
+    // The tutorial's Key help mode, like VoiceOver's VO-K or NVDA's input help:
+    // the key is described and does nothing else, so it is not reported as
+    // having acted either. Before the guards below (#245 review): a letter is
+    // described even with single-key shortcuts off, saying it does nothing now,
+    // and a held key is described once rather than on every repeat.
+    if (window.cadTutorial && window.cadTutorial.keyHelpActive) {
+        e.preventDefault();
+        if (e.repeat) return;
+        if (typeof window.cadTutorial.describeKey === 'function') {
+            window.cadTutorial.describeKey(normalizedKey, {
+                inactive: !viewerState.singleKeyShortcuts && normalizedKey.length === 1,
+            });
+        }
+        return;
+    }
+
     // WCAG 2.1.4: single-character shortcuts can be switched off in Settings,
     // for anyone whose screen reader or speech input sends letters the viewer
     // would otherwise act on. The named keys (arrows, Page Up/Down, Home/End,
@@ -4129,18 +4210,6 @@ document.addEventListener('keydown', function(e) {
     }
     if (e.repeat && !repeatableShortcuts.has(normalizedKey)) {
         e.preventDefault();
-        return;
-    }
-
-    // The tutorial's Key help mode, like VoiceOver's VO-K or NVDA's input help:
-    // the key is described and does nothing else, so it is not reported as
-    // having acted either. After the guards above, so a key that would not act
-    // is not described as if it would.
-    if (window.cadTutorial && window.cadTutorial.keyHelpActive) {
-        e.preventDefault();
-        if (typeof window.cadTutorial.describeKey === 'function') {
-            window.cadTutorial.describeKey(normalizedKey);
-        }
         return;
     }
 

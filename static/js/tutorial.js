@@ -1,5 +1,6 @@
 /**
- * The first-run tutorial: sixteen short lessons on one practice mug.
+ * The first-run tutorial: fifteen short lessons on one practice mug, the last
+ * three of them extras.
  *
  * It opens by itself on a first visit to /viewer and is otherwise one press of
  * the Tutorial button away, in the main menu and at the top of the Keyboard
@@ -14,8 +15,10 @@
  * the viewer's state afterwards through window.cadStudy (viewer.js), the same
  * bridge the study driver uses.
  *
- * What it says goes through the viewer's one polite announcement window, one
- * utterance at a time; the step text itself stays on the page to be read on
+ * What it says goes through the viewer's alert window, the one its answers to
+ * keys use, one utterance at a time, so the next key's answer replaces what the
+ * tutorial was reading rather than waiting behind it (#245 review). It speaks a
+ * short form of each step; the full text stays on the page to be read on
  * demand. Nothing here speaks or advances on a timer (WCAG 2.2.1): hints come
  * only when asked for, and a step waits as long as it takes.
  *
@@ -191,7 +194,7 @@ const CHECKS = {
             >= Number(check.min_increase) - 1e-9,
     },
     model_changed: {
-        // Changed since the step opened, not just "not the mug": lesson 16 can
+        // Changed since the step opened, not just "not the mug": lesson 12 can
         // open on the person's own model, and must still wait for a choice.
         start: (check, ctx) => ({ was: ctx.entry.model }),
         event: (check, s, ctx) => {
@@ -292,6 +295,7 @@ const CHECKS = {
         backBtn: $('tutorial-back-btn'),
         repeatBtn: $('tutorial-repeat-btn'),
         hintBtn: $('tutorial-hint-btn'),
+        showMeBtn: $('tutorial-show-me-btn'),
         restartBtn: $('tutorial-restart-lesson-btn'),
         keyHelpBtn: $('tutorial-keyhelp-btn'),
         lessonsBtn: $('tutorial-lessons-btn'),
@@ -328,8 +332,8 @@ const CHECKS = {
     const PRACTICE_LABEL = 'Tutorial mug';
 
     // The lessons' default starting view, the one app/tutorial_lessons.py gives
-    // its default-pose lessons: the mug upright from X ("X from the right" in
-    // XYZ mode, with the handle on the display's left edge), cut at 50%, Cut,
+    // its default-pose lessons: the mug upright from X ("X from plus" in XYZ
+    // mode, with the handle on the display's left edge), cut at 50%, Cut,
     // single layout, zoomed out and centred. Used when a run begins on a lesson
     // that sets no view of its own, so the mug is on the display whichever
     // lesson it is.
@@ -338,11 +342,14 @@ const CHECKS = {
         representation_mode: 'single', compose_scrollbar: true, zoom: 0.0, reset_pan: true,
     };
 
+    // Every lesson can be skipped, so none is called optional; the three for
+    // the slice graph, the cube and the slider come last, as extras (#245
+    // review).
     const PARTS = [
         { key: 'setup', label: 'Setup' },
         { key: 'core', label: 'Core' },
-        { key: 'optional', label: 'Optional' },
         { key: 'wrapup', label: 'Wrap-up' },
+        { key: 'extras', label: 'Extras' },
     ];
 
     // -----------------------------------------------------------------------
@@ -413,8 +420,12 @@ const CHECKS = {
     const tutorialParam = params.get('tutorial');
     const forcedStart = tutorialParam === 'start' && route.offered;
     const suppressed = tutorialParam === 'off';
+    // A run that began as the first-run tutorial comes back by itself after a
+    // closed tab; one opened from the menu does not, since it was someone looking
+    // at a lesson, not taking the tutorial (#245 review).
     const mayAutostart = !suppressed && (forcedStart
-        || (route.autostart && (record.status === 'pending' || record.status === 'in-progress')));
+        || (route.autostart && (record.status === 'pending'
+            || (record.status === 'in-progress' && record.origin === 'first-run'))));
     // Set now, before viewer.js reaches its first render. Always handed back,
     // by starting (the mug is the first render) or by releaseFirstRender().
     cadTutorial.ownsFirstRender = mayAutostart;
@@ -443,19 +454,21 @@ const CHECKS = {
     }
 
     // -----------------------------------------------------------------------
-    // Speaking. One polite field, shared with the viewer, and two writes to it
-    // in one tick lose the first (viewer.js, updateMessageWindow). So everything
-    // said in one tick goes out as one utterance, and a viewer message written
-    // in the same tick is kept at its front rather than overwritten. A modal
-    // dialog makes the field inert, so anything said while one is open waits
-    // for its close. The same words twice in a row are varied slightly, or a
-    // screen reader may not read them again.
+    // Speaking. The viewer's alert field, the one its answers to keys use, so a
+    // key pressed while the tutorial is talking replaces what it was saying
+    // (#245 review: Jen pressed "." and the step kept being read). Two writes to
+    // it in one tick lose the first (viewer.js, updateMessageWindow), so
+    // everything said in one tick goes out as one utterance, and a viewer
+    // answer written in the same tick is kept at its front rather than
+    // overwritten. A modal dialog makes the field inert, so anything said while
+    // one is open waits for its close. The same words twice in a row are varied
+    // slightly, or a screen reader may not read them again.
     // -----------------------------------------------------------------------
     const speech = { parts: [], braille: null, scheduled: false, last: '', again: false };
     // Viewer events waiting for their microtask (see queueEvent below).
     let eventBatch = [];
     let speakingNow = false;
-    let viewerPoliteThisTick = null;
+    let viewerAlertThisTick = null;
 
     function say(text, braille) {
         const line = sentence(text);
@@ -480,7 +493,7 @@ const CHECKS = {
         if (!speech.parts.length) return;
         if (document.querySelector('dialog[open]')) return;
         let message = speech.parts.join(' ');
-        if (viewerPoliteThisTick) message = `${sentence(viewerPoliteThisTick)} ${message}`;
+        if (viewerAlertThisTick) message = `${sentence(viewerAlertThisTick)} ${message}`;
         if (message === speech.last) {
             message = `${speech.again ? 'Once more' : 'Again'}: ${message}`;
             speech.again = !speech.again;
@@ -493,18 +506,20 @@ const CHECKS = {
         speech.braille = null;
         speakingNow = true;
         try {
-            study.announce(message, braille ? { braille } : {});
+            const speak = typeof study.announceAlert === 'function' ? study.announceAlert : study.announce;
+            speak(message, braille ? { braille } : {});
         } finally {
             speakingNow = false;
         }
     }
 
-    // A polite viewer message in this tick. Cleared on the next task: this timer
-    // forgets a message, it never says or advances anything.
+    // A viewer answer written to the alert field in this tick. Cleared on the
+    // next task: this timer forgets a message, it never says or advances
+    // anything.
     function noteViewerMessage(data) {
-        if (!data || data.politeness !== 'polite') return;
-        viewerPoliteThisTick = String(data.message || '');
-        setTimeout(() => { viewerPoliteThisTick = null; }, 0);
+        if (!data || data.politeness !== 'assertive') return;
+        viewerAlertThisTick = String(data.message || '');
+        setTimeout(() => { viewerAlertThisTick = null; }, 0);
     }
 
     function setLast(text) {
@@ -530,6 +545,7 @@ const CHECKS = {
     let payload = null;
     let payloadDisplay = null;
     let payloadRequest = null;
+    const LESSONS_TIMEOUT_MS = 15000;
 
     function displayForLessons() {
         const answer = norm(record.answers.display);
@@ -547,7 +563,12 @@ const CHECKS = {
         if (payload && payloadDisplay === display) return payload;
         if (payloadRequest && payloadRequest.display === display) return payloadRequest.promise;
         const promise = (async () => {
-            const res = await fetch(`/tutorial/lessons?display=${encodeURIComponent(display)}`);
+            // Given up on after LESSONS_TIMEOUT_MS: the viewer never waits for
+            // it (the mug is the first render either way), but a hung request
+            // would otherwise leave the tutorial silently not starting.
+            const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+                ? AbortSignal.timeout(LESSONS_TIMEOUT_MS) : undefined;
+            const res = await fetch(`/tutorial/lessons?display=${encodeURIComponent(display)}`, { signal });
             if (!res.ok) throw new Error(`the lessons did not load (HTTP ${res.status})`);
             const data = await res.json();
             if (!data || !Array.isArray(data.lessons) || data.lessons.length === 0) {
@@ -691,6 +712,11 @@ const CHECKS = {
         lastNarrated: null,
         blockedReason: null,
         pendingNotes: [],      // said with the next lesson: lessons skipped on the way
+        // Steps already passed or skipped in this run, as "lesson:step". Back
+        // into one of them, Next goes straight on rather than asking for it
+        // again (#245 review).
+        passed: new Set(),
+        showMeFrame: 0,        // which band Show me is on, in a sweep
         // Bumped whenever a step opens or closes. An event counts only for the
         // step that was open when it happened, so the tail of the action that
         // passed one step cannot pass the next.
@@ -729,8 +755,8 @@ const CHECKS = {
     }
 
     // The heading names the region too (aria-labelledby), so it says what the
-    // region is: "Tutorial, lesson 4 of 16: Meet the mug". A landmark list or
-    // a first focus that said only "Lesson 4 of 16" never said "tutorial".
+    // region is: "Tutorial, lesson 4 of 15: Meet the mug". A landmark list or
+    // a first focus that said only "Lesson 4 of 15" never said "tutorial".
     function headingText(lesson) {
         return `Tutorial, lesson ${runner.lessonIndex + 1} of ${lessons().length}: ${lesson.title}`;
     }
@@ -910,10 +936,16 @@ const CHECKS = {
             return `You are at depth ${Math.round(depth)} percent; the ${bandLabel(target)} is from depth `
                 + `${Math.ceil(low)} to ${Math.floor(high)} percent.`;
         }
-        // Whole percents inside the band only: 40.5 to 59.5 is "41 to 59", so a
-        // position the check refuses is never spoken as inside the range.
-        return `You are at ${letter} ${Math.round(percent)} percent; the ${bandLabel(target)} runs from ${letter} `
-            + `${Math.ceil(Number(target.from))} to ${Math.floor(Number(target.to))} percent.`;
+        // XYZ mode reads the cut out from the model's origin (#235), so the
+        // numbers here are too: the band's are along the object, from its lowest
+        // coordinate, like cut_percent. Whole percents inside the band only:
+        // 40.5 to 59.5 is "41 to 59", so a position the check refuses is never
+        // spoken as inside the range.
+        const origin = Number(state.cut_origin_percent);
+        const offset = state.cut_origin_percent !== null && Number.isFinite(origin) ? origin : 0;
+        const said = (value) => (value < 0 ? `minus ${-value}` : String(value));
+        return `You are at ${letter} ${said(Math.round(percent - offset))} percent; the ${bandLabel(target)} runs from `
+            + `${letter} ${said(Math.ceil(Number(target.from) - offset))} to ${said(Math.floor(Number(target.to) - offset))} percent.`;
     }
 
     /** Say the step's on_fail once when the cut moves away from where it needs
@@ -958,7 +990,7 @@ const CHECKS = {
         'settings-enable-slider', 'settings-enable-cube', 'settings-enable-debug-panel', 'settings-enable-bbox',
     ];
 
-    /** The settings lesson 14's tour must leave as they were. */
+    /** The settings lesson 10's tour must leave as they were. */
     function settingsFingerprint() {
         const now = getState();
         return JSON.stringify({
@@ -969,10 +1001,14 @@ const CHECKS = {
         });
     }
 
+    // Jen's words (#245 review): "This lesson continues when you do it" left
+    // people unsure what to do, or whether they had done it.
+    const NOT_YET = 'Not quite. Try Hint to find out how to complete this, or Skip step to move on.';
+
     function sayFailure(extra) {
         const step = currentStep();
         const parts = [step && step.on_fail ? resolveText(step.on_fail) : '', extra || ''].filter(Boolean);
-        if (!parts.length) parts.push('Not yet. Hint gives a clue.');
+        if (!parts.length) parts.push(NOT_YET);
         say(parts.map(sentence).join(' '));
     }
 
@@ -1077,8 +1113,6 @@ const CHECKS = {
         if (before.model !== model) announceNextMugRender = model === practiceModel();
         study.loadModel(model, PRACTICE_LABEL, defaults, 'tutorial');
         panMoved = false;
-        // The tutorial's load is the page's first render, if it was holding.
-        cadTutorial.ownsFirstRender = false;
         return true;
     }
 
@@ -1091,7 +1125,13 @@ const CHECKS = {
             const views = { x: 'x-', y: 'y-', z: 'z+' };
             const axes = Object.keys(views);
             const axis = axes[Math.floor(Math.random() * axes.length)];
-            const depth = 30 + Math.floor(Math.random() * 41);
+            // Along X, never inside the handle loop: the next step asks the
+            // person to find it, and starting there left nothing to do (#245
+            // review). From the right, depth d is 100 - d along X, and the loop
+            // is about 40 to 60, so the cut goes to 25 to 35 or 65 to 75.
+            const depth = axis === 'x'
+                ? (Math.random() < 0.5 ? 25 : 65) + Math.floor(Math.random() * 11)
+                : 30 + Math.floor(Math.random() * 41);
             applyPose(lesson.pose, { force: true, overrides: { view: views[axis], depth } });
             return 'The tutorial has picked an axis and a cut for you, without saying which.';
         },
@@ -1132,8 +1172,9 @@ const CHECKS = {
 
     function storedAxisMode() {
         try {
+            // Unset is XYZ, the viewer's default since #235.
             const stored = window.localStorage.getItem('settingsAxisMode');
-            return stored === 'xyz' ? 'xyz' : 'turn';
+            return stored === 'turn' ? 'turn' : 'xyz';
         } catch (_) {
             return null;
         }
@@ -1186,12 +1227,12 @@ const CHECKS = {
 
             if (runner.phase === 'blocked') {
                 el.progress.textContent = 'Cannot start yet';
-                el.stepText.textContent = `This lesson cannot start yet: ${runner.blockedReason}. Continue skips it.`;
+                el.stepText.textContent = `This lesson cannot start yet: ${runner.blockedReason}. Next skips it.`;
             } else if (runner.phase === 'done') {
                 el.progress.textContent = 'Lesson done';
                 el.stepText.textContent = lessonDoneText();
             } else {
-                el.progress.textContent = stepNumberText() + (lesson.optional ? ', optional lesson' : '');
+                el.progress.textContent = stepNumberText();
                 el.stepText.textContent = step ? resolveText(step.text) : '';
             }
 
@@ -1222,7 +1263,10 @@ const CHECKS = {
             el.connectMonarchBtn.hidden = !(connecting && display !== 'dotpad');
             el.connectDotpadBtn.hidden = !(connecting && display !== 'monarch');
 
-            el.skipLessonBtn.hidden = !(runner.phase === 'blocked' || (lesson.optional && runner.phase === 'step'));
+            // Any lesson can be skipped, not only the ones that used to be
+            // called optional (#245 review).
+            el.skipLessonBtn.hidden = !(runner.phase === 'blocked' || runner.phase === 'step');
+            el.showMeBtn.hidden = !(runner.phase === 'step' && showMeMoves(step, lesson));
             el.prints.hidden = lesson.id !== 'your_own_model';
             updateHintButton(step);
         });
@@ -1231,6 +1275,7 @@ const CHECKS = {
     function stepNote(step) {
         if (!step) return '';
         const notes = [];
+        if (stepWasPassed()) notes.push('You have done this step. Next moves on, or do it again.');
         if (step.key_only && getState().single_key_shortcuts === false) {
             notes.push('Single-key shortcuts are off in Settings, so this step cannot be done from the keyboard. Skip step moves on.');
         }
@@ -1239,7 +1284,7 @@ const CHECKS = {
             const frame = frames[runner.demoFrame - 1];
             notes.push(`Example ${runner.demoFrame} of ${frames.length}: ${resolveText(frame.say)}`);
         } else if (frames.length) {
-            notes.push(`Continue shows the example, one cut at a time (${frames.length} in all).`);
+            notes.push(`Next shows the example, one cut at a time (${frames.length} in all).`);
         }
         return notes.map(sentence).join(' ');
     }
@@ -1324,6 +1369,18 @@ const CHECKS = {
         return resolveText(step.sr || step.text);
     }
 
+    function stepKey(lesson = currentLesson(), index = runner.stepIndex) {
+        return lesson ? `${lesson.id}:${index}` : '';
+    }
+
+    /** Whether the current step was passed or skipped already: earlier in this
+     * run, or as part of a lesson finished before. */
+    function stepWasPassed() {
+        const lesson = currentLesson();
+        if (!lesson) return false;
+        return runner.passed.has(stepKey(lesson)) || record.lessons[lesson.id] === 'done';
+    }
+
     function saveProgress() {
         const lesson = currentLesson();
         if (!lesson) return;
@@ -1337,6 +1394,10 @@ const CHECKS = {
         endTestPattern();
         runner.checkState = null;
         runner.stepSerial += 1;
+        runner.showMeFrame = 0;
+        // A /tutorial/locate answer still on its way is for the step being left:
+        // it used to be spoken in whatever lesson came next (#245 review).
+        locateSeq += 1;
     }
 
     /** Open step `index` of the current lesson. `lead` is said first (what the
@@ -1368,15 +1429,21 @@ const CHECKS = {
     }
 
     function lessonDoneText() {
+        const lesson = currentLesson();
         const next = lessons()[runner.lessonIndex + 1];
-        return next
-            ? `${lessonNumberText()} is done. Continue (N) goes on to lesson ${runner.lessonIndex + 2}, ${next.title}.`
-            : 'That was the last lesson. Continue (N) finishes the tutorial.';
+        if (!next) return 'That was the last lesson. Next (N) finishes the tutorial.';
+        if (next.part === 'extras' && lesson && lesson.part !== 'extras') {
+            const extras = lessons().filter(l => l.part === 'extras').map(l => l.title).join(', ');
+            return `${lessonNumberText()} is done, and that is the end of the tutorial. Next (N) goes on to `
+                + `the extras: ${extras}. Exit tutorial leaves them for another time; they are in the list of lessons.`;
+        }
+        return `${lessonNumberText()} is done. Next (N) goes on to lesson ${runner.lessonIndex + 2}, ${next.title}.`;
     }
 
     function passStep(lead = null) {
         const step = currentStep();
         const done = lead !== null ? lead : (step && step.done ? resolveText(step.done) : 'Done.');
+        runner.passed.add(stepKey());
         leaveStep();
         const steps = applicableSteps();
         const position = steps.indexOf(runner.stepIndex);
@@ -1395,8 +1462,16 @@ const CHECKS = {
         if (next) {
             record.lesson = next.id;
             record.step = 0;
-            writeRecord();
         }
+        // The tutorial is finished when its last lesson is, and so is the main
+        // tutorial when the extras are all that is left: a reload or a closed
+        // tab must not reopen it at its end. The record used to stay on the
+        // final step (#245 review).
+        if (!next || (next.part === 'extras' && lesson.part !== 'extras')) {
+            record.status = 'completed';
+            if (payload && typeof payload.version === 'number') record.version = payload.version;
+        }
+        writeRecord();
         track('lesson_completed', lesson.id);
         renderLesson();
         say(`${sentence(done)} ${lessonDoneText()}`, `Lesson ${runner.lessonIndex + 1} done`);
@@ -1453,7 +1528,7 @@ const CHECKS = {
             return;
         }
 
-        const intro = `${lessonNumberText(index)}: ${lesson.title}${lesson.optional ? ', optional' : ''}.`;
+        const intro = `${lessonNumberText(index)}: ${lesson.title}.`;
         const notes = runner.pendingNotes.splice(0);
         const reason = unmetRequirement(lesson.requires);
         setLocked(Boolean(lesson.lock));
@@ -1470,7 +1545,7 @@ const CHECKS = {
             if (focus) heading.focus();
             if (!silent) {
                 say([...lead, ...notes, focus ? '' : intro,
-                    `It cannot start yet: ${reason}. Continue skips it; Lessons lists every lesson.`]
+                    `It cannot start yet: ${reason}. Next skips it; Lessons lists every lesson.`]
                     .filter(Boolean).join(' '), 'Cannot start yet');
             }
             return;
@@ -1515,6 +1590,117 @@ const CHECKS = {
     }
 
     // -----------------------------------------------------------------------
+    // Show me (#245 review: every step of the X, Y and Z lesson was hard). On a
+    // step that waits for the cut to reach a place, the tutorial puts it there,
+    // the viewer says where it is as it would for a key, the step's own words
+    // say what is there, and the step counts as done. Not on a step that
+    // teaches a key, asks a question or needs the cube or the slider: there the
+    // doing is the lesson.
+    // -----------------------------------------------------------------------
+
+    /** The moves Show me makes for a step, in order, or null when it has none. */
+    function showMeMoves(step, lesson = currentLesson()) {
+        if (!step || !lesson) return null;
+        if ((lesson.requires || []).some(need => need === 'cube' || need === 'slider')) return null;
+        const moves = [];
+        const add = (check) => {
+            if (!check) return false;
+            if (check.type === 'all') return (check.checks || []).every(add);
+            if (check.type === 'state' && check.field === 'cut_axis') {
+                moves.push({ axis: check.equals });
+                return true;
+            }
+            if (check.type === 'in_band' || check.type === 'mark_band') {
+                moves.push({ axis: check.axis, band: check.band });
+                return true;
+            }
+            if (check.type === 'edge') {
+                moves.push({ edge: true });
+                return true;
+            }
+            if (check.type === 'sweep') {
+                moves.push({ axis: check.axis, frames: sweepFrames(step, check) });
+                return true;
+            }
+            return false;
+        };
+        return add(step.check) && moves.length ? moves : null;
+    }
+
+    /** Where Show me stops on a sweep, one press each: the bands the step
+     * narrates, from the low end of the axis, then the far end of the sweep if
+     * the bands stop short of it. */
+    function sweepFrames(step, check) {
+        const frames = Object.entries(step.narrate || {})
+            .map(([name, line]) => ({ target: band(check.axis, name), line }))
+            .filter(frame => frame.target)
+            .sort((a, b) => Number(a.target.from) - Number(b.target.from))
+            .map(frame => ({ percent: (Number(frame.target.from) + Number(frame.target.to)) / 2, line: frame.line }));
+        if (!frames.length || frames[0].percent > Number(check.from)) frames.unshift({ percent: Number(check.from), line: '' });
+        if (frames[frames.length - 1].percent < Number(check.to)) frames.push({ percent: Number(check.to), line: '' });
+        return frames;
+    }
+
+    /** Cut along `axis`, as its key would in XYZ mode, or by turning to its
+     * view in Turn mode, which has no axis keys. Nothing if already there. */
+    function showMeAxis(axis) {
+        if (getState().cut_axis === axis || typeof XYZ_AXES !== 'object' || !XYZ_AXES[axis]) return;
+        const home = XYZ_AXES[axis].views[0];
+        window.setPendingInputSource?.('tutorial');
+        if (getState().axis_mode === 'xyz') showXyzView(home, window.announceAlert);
+        else updateView(home);
+    }
+
+    /** Put the cut at `percent` along `axis`, from the object's low end, and
+     * let the viewer say it in the mode's own terms. */
+    function showMeCut(axis, percent) {
+        const before = getState();
+        window.setPendingInputSource?.('tutorial');
+        const xyz = before.axis_mode === 'xyz';
+        window.setCutPosition(axis, percent / 100, window.announceAlert, { announce: xyz });
+        if (!xyz && typeof window.announceDepthValue === 'function') {
+            window.announceDepthValue(getState().depth, before.depth, window.announceAlert);
+        }
+    }
+
+    function showMe() {
+        if (runner.view !== 'lesson' || runner.phase !== 'step') return;
+        const step = currentStep();
+        const moves = showMeMoves(step);
+        if (!moves) {
+            say('Show me has nothing to show on this step.');
+            return;
+        }
+        for (const move of moves) {
+            if (move.axis) showMeAxis(move.axis);
+            if (move.edge && typeof window.goToSliceEnd === 'function') {
+                window.setPendingInputSource?.('tutorial');
+                window.goToSliceEnd(true, window.announceAlert);
+            }
+            if (move.band) {
+                const target = band(move.axis, move.band);
+                if (target) showMeCut(move.axis, (Number(target.from) + Number(target.to)) / 2);
+            }
+            if (move.frames) {
+                // One stop per press, so each slice can be felt before the next.
+                const frame = move.frames[runner.showMeFrame];
+                runner.showMeFrame += 1;
+                showMeCut(move.axis, frame.percent);
+                // Said here, with its place in the sweep, so the check's own
+                // narration does not say it a second time.
+                runner.lastNarrated = narrationKey(step, currentCheck(), getState());
+                if (runner.showMeFrame < move.frames.length) {
+                    say(`${frame.line ? sentence(resolveText(frame.line)) : ''} Show me ${runner.showMeFrame} of `
+                        + `${move.frames.length}; press it again for the next.`);
+                    return;
+                }
+                if (frame.line) say(resolveText(frame.line));
+            }
+        }
+        passStep();
+    }
+
+    // -----------------------------------------------------------------------
     // The buttons and N, B, C
     // -----------------------------------------------------------------------
     function continueAction() {
@@ -1530,6 +1716,12 @@ const CHECKS = {
         }
         const step = currentStep();
         const check = currentCheck();
+        // Back to a step already done, and Next again: straight on, without
+        // doing it a second time (#245 review).
+        if (stepWasPassed()) {
+            passStep('');
+            return;
+        }
         const frames = step && step.demo && Array.isArray(step.demo.frames) ? step.demo.frames : [];
         if (runner.demoFrame < frames.length) {
             showDemoFrame(frames, step);
@@ -1550,7 +1742,7 @@ const CHECKS = {
             say('Answer with dot 1 for left or dot 4 for right, or the Left and Right buttons.');
             return;
         }
-        say('This step finishes when you do it. Hint gives a clue, and Skip step moves on.');
+        say(NOT_YET);
     }
 
     function showDemoFrame(frames, step) {
@@ -1563,12 +1755,13 @@ const CHECKS = {
             window.setCutPosition(axis, percent / 100, window.announce, { announce: false });
         }
         renderLesson();
-        const more = runner.demoFrame < frames.length ? '' : ' That was the last one; Continue goes on.';
+        const more = runner.demoFrame < frames.length ? '' : ' That was the last one; Next goes on.';
         // The braille line uses the viewer's own numbers: depth in Turn mode,
-        // the axis position in XYZ mode.
+        // and in XYZ mode the position along the axis, from the origin (#235).
         const now = getState();
+        const origin = now.cut_origin_percent === null ? 0 : Number(now.cut_origin_percent) || 0;
         const brailleLine = now.axis_mode === 'xyz'
-            ? `${String(axis || '').toUpperCase()} ${Math.round(percent)}%`
+            ? `${String(axis || '').toUpperCase()} ${Math.round(percent - origin)}%`
             : `Depth ${Math.round(Number(now.reader_depth))}%`;
         say(`Example ${runner.demoFrame} of ${frames.length}. ${resolveText(frame.say)}${more}`, brailleLine);
     }
@@ -1599,7 +1792,7 @@ const CHECKS = {
         if (!lesson) return;
         const intro = `${lessonNumberText()}: ${lesson.title}.`;
         if (runner.phase === 'blocked') {
-            say(`${intro} It cannot start yet: ${runner.blockedReason}. Continue skips it.`);
+            say(`${intro} It cannot start yet: ${runner.blockedReason}. Next skips it.`);
         } else if (runner.phase === 'done') {
             say(`${intro} ${lessonDoneText()}`);
         } else {
@@ -1613,7 +1806,7 @@ const CHECKS = {
         const step = currentStep();
         const hints = runner.phase === 'step' && step && Array.isArray(step.hints) ? step.hints : [];
         if (!hints.length) {
-            say(runner.phase === 'blocked' ? 'No hints here. Continue skips this lesson.' : 'No hints here. Continue goes on.');
+            say(runner.phase === 'blocked' ? 'No hints here. Next skips this lesson.' : 'No hints here. Next goes on.');
             return;
         }
         if (runner.hintsShown < hints.length) runner.hintsShown += 1;
@@ -1716,7 +1909,13 @@ const CHECKS = {
         testPattern.awaiting = false;
         testPattern.corner = CORNERS[Math.floor(Math.random() * CORNERS.length)];
         const grid = typeof window.activeTactileGrid === 'function' ? window.activeTactileGrid() : null;
-        if (!grid) return;
+        if (!grid) {
+            // Nothing to draw it on, so nothing to answer: dots 1 and 4 go back
+            // to moving the cut instead of waiting for an answer (#245 review).
+            testPattern.active = false;
+            say(`${lead} The test pattern could not be drawn. Skip step moves on.`);
+            return;
+        }
         cadTutorial.holdDisplay = true;
         let data = null;
         try {
@@ -1732,6 +1931,8 @@ const CHECKS = {
         if (seq !== testPattern.seq || !testPattern.active) return;
         if (!data || data.status !== 'success') {
             releaseDisplay();
+            // As above: with no pattern up, the dots move the cut again.
+            testPattern.active = false;
             say(`${lead} The test pattern could not be drawn. Skip step moves on.`);
             return;
         }
@@ -1780,8 +1981,8 @@ const CHECKS = {
     }
 
     // -----------------------------------------------------------------------
-    // Where the handle is on the pins, for lessons that need it (7 and 8): the
-    // server works it out for the render on the display (/tutorial/locate).
+    // Where the handle is on the pins, for lesson 7, Zoom and move: the server
+    // works it out for the render on the display (/tutorial/locate).
     // After each render whose view changed it is said, since people lose their
     // place on a pan or zoom.
     // -----------------------------------------------------------------------
@@ -1970,9 +2171,12 @@ const CHECKS = {
         queueEvent({ type: 'key_help', data: { action: 'described' } });
     }
 
-    cadTutorial.describeKey = function (code) {
+    cadTutorial.describeKey = function (code, { inactive = false } = {}) {
         if (!cadTutorial.keyHelpActive) return;
-        described(describeCode(String(code)));
+        // Described like any other key, saying it does nothing just now (#245
+        // review: with single-key shortcuts off, letters were never described).
+        const note = inactive ? ' Single-key shortcuts are off in Settings, so it does nothing now.' : '';
+        described(`${sentence(describeCode(String(code)))}${note}`);
     };
 
     function setKeyHelp(on, { silent = false } = {}) {
@@ -2012,7 +2216,10 @@ const CHECKS = {
     // -----------------------------------------------------------------------
 
     /** The person's model and view, when a run starts from the menu, so exit
-     * can put them back. A first run keeps the mug instead. */
+     * can put them back. A first run keeps the mug instead. The orientation, the
+     * cut on every axis and the pan come too: without them exit brought back the
+     * model and the side but reset the other cuts and moved the view (#245
+     * review). */
     function captureSaved() {
         const now = getState();
         record.saved = now.model ? {
@@ -2024,6 +2231,7 @@ const CHECKS = {
             compose_scrollbar: now.compose_scrollbar,
             zoom: now.zoom,
             axis_mode: now.axis_mode,
+            view_state: typeof study.captureView === 'function' ? study.captureView() : null,
         } : null;
     }
 
@@ -2055,6 +2263,9 @@ const CHECKS = {
         }
         leaveStep();
         setKeyHelp(false, { silent: true });
+        // No lesson is on, so nothing is locked: the model chooser, the upload
+        // and the layout radios stayed disabled on the list (#245 review).
+        setLocked(false);
         runner.view = 'menu';
         showRegion();
         renderMenu();
@@ -2100,7 +2311,7 @@ const CHECKS = {
                     const item = document.createElement('li');
                     const name = document.createElement('span');
                     name.className = 'tutorial-lesson-name';
-                    name.textContent = `${i + 1}. ${lesson.title}${lesson.optional ? ' (optional)' : ''}`;
+                    name.textContent = `${i + 1}. ${lesson.title}`;
                     const state = document.createElement('span');
                     state.className = 'tutorial-lesson-status';
                     state.textContent = status.text;
@@ -2125,6 +2336,7 @@ const CHECKS = {
     function startOver() {
         record.lessons = {};
         record.answers = {};
+        runner.passed.clear();
         record.lesson = null;
         record.step = 0;
         if (record.status === 'completed') record.status = 'in-progress';
@@ -2158,11 +2370,12 @@ const CHECKS = {
                 representation_mode: saved.representation_mode,
                 compose_scrollbar: saved.compose_scrollbar,
                 zoom: saved.zoom,
-                reset_pan: true,
+                reset_pan: !saved.view_state,
                 // With nothing of the tutorial's own to undo, the mode now is
-                // the person's: the one they had, or the one lesson 9 asked
+                // the person's: the one they had, or the one lesson 8 asked
                 // them to choose and saved.
                 axis_mode: axisMode || getState().axis_mode,
+                restore: saved.view_state || undefined,
             }, 'tutorial');
             return true;
         }
@@ -2225,11 +2438,14 @@ const CHECKS = {
     // -----------------------------------------------------------------------
     let viewerReady = false;
     let inViewerReady = false;
+    let mugRenderedFirst = false;
     const whenViewerReady = [];
 
     function releaseFirstRender() {
         if (!cadTutorial.ownsFirstRender) return;
         cadTutorial.ownsFirstRender = false;
+        // The mug already went out as the first render: nothing to hand back.
+        if (mugRenderedFirst) return;
         // During the viewer's own dispatch its next line renders; before it, it
         // renders when it gets there. Only after it is the render ours to send.
         if (viewerReady && !inViewerReady) {
@@ -2238,10 +2454,25 @@ const CHECKS = {
         }
     }
 
+    /** On a visit the tutorial may open on, the practice mug is the page's first
+     * render, straight away (#245 review). It used to wait for the consent dialog
+     * and the lessons, so until someone answered the dialog the display stayed
+     * blank and the status bar named a model that was not on it. Nothing is said
+     * about it, so the consent dialog's own confirmation is not talked over: the
+     * mug is simply what is there, whether or not the tutorial then starts. */
+    function renderMugFirst() {
+        applyPose(DEFAULT_POSE, { force: true });
+        announceNextMugRender = false;
+        mugRenderedFirst = true;
+    }
+
     document.addEventListener('cad:viewer-ready', function () {
         viewerReady = true;
         inViewerReady = true;
         try {
+            // ownsFirstRender stays set through the dispatch, so the viewer's
+            // next line skips its own render of the default model.
+            if (cadTutorial.ownsFirstRender) renderMugFirst();
             whenViewerReady.splice(0).forEach(run => run());
         } finally {
             inViewerReady = false;
@@ -2332,13 +2563,11 @@ const CHECKS = {
             // lesson that cannot start says so, since Continue would skip it.
             say(runner.phase === 'blocked'
                 ? `Welcome back to the tutorial. This lesson cannot start yet: ${runner.blockedReason}. `
-                    + 'Continue skips it, and Back goes to the lesson before.'
-                : 'Welcome back to the tutorial. Continue where you stopped, or exit the tutorial.', 'Welcome back');
+                    + 'Next skips it, and Back goes to the lesson before.'
+                : 'Welcome back to the tutorial. Next carries on where you stopped, or exit the tutorial.', 'Welcome back');
         } else {
             enterLesson(index, { silent: true });
         }
-        // Whatever the lesson set up, the mug is on the display first.
-        if (cadTutorial.ownsFirstRender) applyPose(DEFAULT_POSE);
         releaseFirstRender();
         heading.focus();
     }
@@ -2350,6 +2579,7 @@ const CHECKS = {
     el.backBtn.addEventListener('click', back);
     el.repeatBtn.addEventListener('click', repeat);
     el.hintBtn.addEventListener('click', hint);
+    el.showMeBtn.addEventListener('click', showMe);
     el.restartBtn.addEventListener('click', restartLesson);
     el.skipBtn.addEventListener('click', skipStep);
     el.skipLessonBtn.addEventListener('click', () => skipLesson({ focus: true }));
@@ -2432,29 +2662,37 @@ const CHECKS = {
     }
     syncDialogSection();
 
-    // N, B and C while a lesson is showing. The same guards as the viewer's own
-    // keys (viewer.js): not in a text field, not under a dialog, not with Ctrl,
-    // Alt or Cmd, and not when single-key shortcuts are off. The buttons always
-    // work, and there is no Escape binding: screen readers take Escape.
+    // N, B and C while a lesson is showing. Not in any form control but a
+    // button: a focused list takes letters to jump to an option, and the last lesson
+    // asks for the model list, where N, B and C used to go to the tutorial
+    // instead (#245 review). Not under a dialog, not with Ctrl, Alt or Cmd, and
+    // not when single-key shortcuts are off, as for the viewer's own keys
+    // (viewer.js). The buttons always work, and there is no Escape binding:
+    // screen readers take Escape.
     document.addEventListener('keydown', function (e) {
         if (runner.view !== 'lesson') return;
         const target = e.target;
         const tagName = target && target.tagName ? target.tagName.toLowerCase() : '';
         const inputType = tagName === 'input' ? String(target.type || '').toLowerCase() : '';
-        const textEntry = Boolean(target && (target.isContentEditable || tagName === 'textarea'
-            || (tagName === 'input' && ['text', 'search', 'email', 'url', 'password', 'number', 'tel'].includes(inputType))));
-        if (textEntry) return;
+        const formControl = Boolean(target && (target.isContentEditable
+            || tagName === 'textarea' || tagName === 'select'
+            || (tagName === 'input' && !['button', 'submit', 'reset'].includes(inputType))
+            || (typeof target.closest === 'function' && target.closest('[role="listbox"], [role="combobox"]'))));
+        if (formControl) return;
         if (document.querySelector('dialog[open]')) return;
         if (e.metaKey || e.ctrlKey || e.altKey) return;
         const key = String(e.key || '').toLowerCase();
         if (key !== 'n' && key !== 'b' && key !== 'c') return;
+        // Key help describes them even with single-key shortcuts off, as the
+        // viewer does its own keys (#245 review), once per press.
+        if (cadTutorial.keyHelpActive) {
+            e.preventDefault();
+            if (!e.repeat) cadTutorial.describeKey(key, { inactive: getState().single_key_shortcuts === false });
+            return;
+        }
         if (getState().single_key_shortcuts === false) return;
         e.preventDefault();
         if (e.repeat) return;
-        if (cadTutorial.keyHelpActive) {
-            cadTutorial.describeKey(key);
-            return;
-        }
         if (key === 'n') continueAction();
         else if (key === 'b') back();
         else repeat();

@@ -41,11 +41,13 @@ DOTPAD_JS = ROOT / "static" / "js" / "dotpad-integration.js"
 TUTORIAL_JS = ROOT / "static" / "js" / "tutorial.js"
 LESSONS_PY = ROOT / "app" / "tutorial_lessons.py"
 
-# The contract's lesson list, in order (tutorial contract, section 8).
+# The lesson list, in order (tutorial contract, section 8, as changed by the
+# #245 review): no cursor lesson while the cursor has no use, and the slice
+# graph, the cube and the slider last, as extras after the end of the tutorial.
 LESSON_IDS = [
     "before_you_start", "connect", "test_pattern", "meet_the_mug", "depth", "render_modes",
-    "cursor", "zoom_and_move", "axes", "layout_and_graph", "cube", "slider", "reset_and_fit",
-    "help_and_settings", "mug_detective", "your_own_model",
+    "zoom_and_move", "axes", "reset_and_fit", "help_and_settings", "mug_detective",
+    "your_own_model", "layout_and_graph", "cube", "slider",
 ]
 
 # The contract's check types (section 4), and the parameters each takes.
@@ -90,7 +92,7 @@ STEP_FIELDS = {
     "id", "text", "sr", "braille", "check", "done", "hints", "on_fail", "answers", "narrate",
     "demo", "key_only", "when", "store", "requires",
 }
-LESSON_FIELDS = {"id", "part", "title", "optional", "minutes", "requires", "pose", "lock", "steps"}
+LESSON_FIELDS = {"id", "part", "title", "minutes", "requires", "pose", "lock", "steps"}
 POSE_FIELDS = {
     "model", "view", "axis_mode", "depth", "render_mode", "representation_mode",
     "compose_scrollbar", "zoom", "reset_pan",
@@ -453,8 +455,11 @@ def test_version_is_a_positive_integer():
     assert isinstance(tl.TUTORIAL_VERSION, int) and tl.TUTORIAL_VERSION >= 1
 
 
-def test_sixteen_lessons_in_the_contract_order():
+def test_fifteen_lessons_in_order_with_the_extras_last():
     assert [lesson["id"] for lesson in tl.LESSONS] == LESSON_IDS
+    parts = [lesson["part"] for lesson in tl.LESSONS]
+    assert parts == sorted(parts, key=tl.PARTS.index), "a lesson is out of its part's place"
+    assert parts[-3:] == ["extras"] * 3
 
 
 def test_the_module_lists_exactly_the_contract_check_types():
@@ -466,8 +471,6 @@ def test_lesson_fields(lesson):
     assert set(lesson) == LESSON_FIELDS
     assert lesson["part"] in tl.PARTS
     assert isinstance(lesson["title"], str) and lesson["title"].strip()
-    assert isinstance(lesson["optional"], bool)
-    assert lesson["optional"] == (lesson["part"] == "optional")
     assert isinstance(lesson["minutes"], int) and lesson["minutes"] > 0
     assert isinstance(lesson["requires"], list)
     assert set(lesson["requires"]) <= set(tl.REQUIREMENTS)
@@ -563,7 +566,8 @@ def test_state_checks_read_fields_the_runner_exposes():
             if check["type"] == "state" and check["field"] == "layout_mode":
                 assert check["equals"] in layouts, where
             if check["type"] == "cycle":
-                known = {"render_mode": render_modes, "layout_mode": layouts}[check["field"]]
+                known = {"render_mode": render_modes, "layout_mode": layouts,
+                         "slicegraph_locked": {True, False}}[check["field"]]
                 # A cycle has to go all the way round, or a mode is never met.
                 assert set(check["values"]) == known, f"{where} cycle misses a mode"
                 assert check["end"] in check["values"], where
@@ -729,11 +733,10 @@ def test_the_worked_example_is_the_only_demo_and_covers_the_mug():
 def test_requirements():
     requires = {lesson["id"]: lesson["requires"] for lesson in tl.LESSONS}
     assert requires["test_pattern"] == ["display"]
-    assert requires["cursor"] == ["display"]
     assert requires["cube"] == ["cube"]
     assert requires["slider"] == ["slider"]
-    optional = [lesson["id"] for lesson in tl.LESSONS if lesson["optional"]]
-    assert optional == ["layout_and_graph", "cube", "slider"]
+    extras = [lesson["id"] for lesson in tl.LESSONS if lesson["part"] == "extras"]
+    assert extras == ["layout_and_graph", "cube", "slider"]
     detective = {step["id"]: step["requires"] for step in _lesson("mug_detective")["steps"]}
     # The first two work by speech alone; the rest need something to feel.
     assert detective == {
@@ -761,15 +764,15 @@ def test_default_pose_is_the_study_defaults_on_the_tutorial_mug():
 
 
 def test_locked_lessons():
-    """Lesson 10 teaches the layout radios and lesson 16 the model chooser, so
+    """Lesson 12 teaches the model chooser and lesson 13 the layout radios, so
     those two leave them unlocked."""
     unlocked = [lesson["id"] for lesson in tl.LESSONS if not lesson["lock"]]
-    assert unlocked == ["layout_and_graph", "your_own_model"]
+    assert unlocked == ["your_own_model", "layout_and_graph"]
 
 
 def test_the_whole_tutorial_is_about_an_hour():
-    """The welcome says about an hour; the core path has to be that."""
-    core = sum(lesson["minutes"] for lesson in tl.LESSONS if not lesson["optional"])
+    """The welcome says about an hour; the path without the extras has to be that."""
+    core = sum(lesson["minutes"] for lesson in tl.LESSONS if lesson["part"] != "extras")
     assert 45 <= core <= 75, core
 
 
@@ -792,9 +795,13 @@ def test_first_step_names_exit_first_and_says_what_the_tutorial_is():
     assert "Nothing you do here is recorded" not in text
 
 
-def test_last_lesson_says_how_to_redo_it():
-    words = " ".join(text for _, text in _lesson_strings(tl.LESSONS[-1]))
+def test_the_end_of_the_tutorial_says_how_to_redo_it_and_what_follows():
+    """The last lesson before the extras is where the tutorial ends; it says so,
+    how to come back to any lesson, and that the extras follow."""
+    main = [lesson for lesson in tl.LESSONS if lesson["part"] != "extras"]
+    words = " ".join(text for _, text in _lesson_strings(main[-1]))
     assert "Tutorial button" in words and "Choose a lesson" in words and "Start over" in words
+    assert "end of the tutorial" in words and "extra lessons follow" in words
 
 
 def test_no_dashes_and_no_words_that_assume_sight():
@@ -882,8 +889,8 @@ def test_payload_resolves_the_same_step_differently_per_display():
     assert "Press Page Up to move it" in texts["none"]
     assert "Press dot 4 or Page Up to move it" in texts["monarch"]
     assert texts["none"] != texts["monarch"]
-    cursor = next(l for l in tl.lessons_payload("dotpad")["lessons"] if l["id"] == "cursor")
-    assert "Press dots 1 2 3 6 to turn it on" in cursor["steps"][0]["text"]
+    pattern = next(l for l in tl.lessons_payload("dotpad")["lessons"] if l["id"] == "test_pattern")
+    assert "If it is on the left half, press dot 1;" in pattern["steps"][0]["text"]
 
 
 def test_payload_leaves_runtime_tokens_and_data_alone():
@@ -1150,9 +1157,12 @@ KEY_COVERAGE = {
     "[": "layout_and_graph", "]": "layout_and_graph",
     "f": "reset_and_fit",
     "h": "help_and_settings", "?": "help_and_settings", "escape": "help_and_settings",
-    "p": "your_own_model",
 }
 KEYS_THAT_DO_NOTHING = {"q", "e"}
+# Shortcuts the viewer has and no lesson teaches, each with the reason. P is not
+# taught because it does not do what it says; the #245 review asked for it to
+# come out of the help instead.
+KEYS_NOT_TAUGHT = {"p": "does not work as the help says; to come out of the help"}
 
 # Every main-menu button, dialog, Settings control and page control, the lesson
 # that teaches it, and words that lesson has to contain about it.
@@ -1192,10 +1202,12 @@ CONTROL_COVERAGE = {
     "yaw-right-btn": ("axes", "The Orientation section has a button for each"),
     "roll-ccw-btn": ("axes", "The Orientation section has a button for each"),
     "roll-cw-btn": ("axes", "The Orientation section has a button for each"),
-    "axis-x-btn": ("axes", "Cut along X, Y and Z buttons"),
-    "axis-y-btn": ("axes", "Cut along X, Y and Z buttons"),
-    "axis-z-btn": ("axes", "Cut along X, Y and Z buttons"),
-    "axis-flip-btn": ("axes", "Other side"),
+    "view-x-plus-btn": ("axes", "X plus to Z minus"),
+    "view-x-minus-btn": ("axes", "X plus to Z minus"),
+    "view-y-plus-btn": ("axes", "X plus to Z minus"),
+    "view-y-minus-btn": ("axes", "X plus to Z minus"),
+    "view-z-plus-btn": ("axes", "X plus to Z minus"),
+    "view-z-minus-btn": ("axes", "X plus to Z minus"),
     "slice-depth-slider": ("depth", "The Depth section has a slider"),
     "deeper-btn": ("depth", "Deeper and Shallower buttons"),
     "shallower-btn": ("depth", "Deeper and Shallower buttons"),
@@ -1226,27 +1238,27 @@ CONTROL_COVERAGE = {
 TUTORIAL_BUTTON = ("help_and_settings", "choose the Tutorial button in the main menu")
 
 # Display buttons, by the name the runner's capture hook reports, and the lesson
-# that teaches them. The four cursor moves are taught together.
+# that teaches them.
 DEVICE_COVERAGE = {
     "dot1": ("depth", "depth_shallower_10"),
     "dot4": ("depth", "depth_deeper_10"),
-    "cursor": ("cursor", "cursor_mode"),
     "axis-x": ("axes", "axis_x"),
     "axis-y": ("axes", "axis_y"),
     "axis-z": ("axes", "axis_z"),
-    "move-left": ("cursor", "cursor_move"),
-    "move-right": ("cursor", "cursor_move"),
-    "move-up": ("cursor", "cursor_move"),
-    "move-down": ("cursor", "cursor_move"),
 }
+# Display buttons no lesson teaches. The cursor has nothing to do yet, so its
+# lesson came out (#245 review); key help still names these buttons.
+DEVICE_BUTTONS_NOT_TAUGHT = {"cursor", "move-left", "move-right", "move-up", "move-down"}
 
 
 def test_every_viewer_shortcut_is_taught():
     supported = _supported_shortcuts()
-    assert set(KEY_COVERAGE) == supported - KEYS_THAT_DO_NOTHING, (
+    expected = supported - KEYS_THAT_DO_NOTHING - set(KEYS_NOT_TAUGHT)
+    assert set(KEY_COVERAGE) == expected, (
         "a viewer shortcut has no lesson, or a lesson teaches one that is gone: "
-        f"{sorted(set(KEY_COVERAGE) ^ (supported - KEYS_THAT_DO_NOTHING))}"
+        f"{sorted(set(KEY_COVERAGE) ^ expected)}"
     )
+    assert set(KEYS_NOT_TAUGHT) <= supported, "a key left untaught is no longer in the viewer"
     by_code: dict[str, set[str]] = {}
     for name, entry in tl.KEYS.items():
         if entry["code"]:
@@ -1281,7 +1293,7 @@ def test_every_control_is_taught():
 
 
 def test_every_display_button_is_taught():
-    assert set(DEVICE_COVERAGE) == CAPTURE_NAMES - {"other"}
+    assert set(DEVICE_COVERAGE) == CAPTURE_NAMES - {"other"} - DEVICE_BUTTONS_NOT_TAUGHT
     for command, (lesson_id, name) in DEVICE_COVERAGE.items():
         assert tl.DEVICE_COMMANDS[command] == name or name == "cursor_move", command
         assert name in _key_names_used(_lesson(lesson_id)), f"{lesson_id} does not teach {command}"
