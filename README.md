@@ -96,6 +96,9 @@ plane: X=0%. Origin: H: 42% V: 42%. Render: Outline. Zoom: 0.0. Model: mug."),
 "," says where the model's origin is on the display, across from the left edge
 and up from the bottom ("Horizontal: 42%, Vertical: 42%", or past 0 and 100 when
 it is off the display), and 0 resets the view (it was Z, which XYZ mode needs).
+Reset puts the slice plane at 50% in Turn mode, and at the model's origin in XYZ
+mode, which is also where a model starts there, so every axis reads 0%. An origin
+beyond the object is reached only as far as its nearest face.
 
 ## Hardware setup
 
