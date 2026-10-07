@@ -781,17 +781,11 @@ def test_the_whole_tutorial_is_about_an_hour():
 # ---------------------------------------------------------------------------
 
 
-def test_first_step_names_exit_first_and_says_what_the_tutorial_is():
+def test_first_step_says_what_the_tutorial_is_and_how_to_leave():
     welcome = tl.LESSONS[0]["steps"][0]
-    first_sentence = re.split(r"(?<=[.?!])\s", welcome["text"], maxsplit=1)[0]
-    assert "Exit tutorial" in first_sentence
     text = welcome["text"]
     assert "about an hour" in text and "in parts" in text
-    assert "pauses" in text and "Tutorial button" in text and "picks it back up" in text
-    # What it says about recording has to be true on /viewer: the viewer keeps
-    # its own logs while you practise, so the tutorial may only claim that it
-    # adds no recording of its own beyond consented lesson progress.
-    assert "adds no recording of its own" in text and "analytics" in text
+    assert "Exit tutorial" in text and "start where you left off" in text
     assert "Nothing you do here is recorded" not in text
 
 
@@ -934,7 +928,7 @@ def test_key_help_describes_every_key_and_every_device_button():
     for device in ("monarch", "dotpad"):
         for command in CAPTURE_NAMES:
             assert help_text[f"{device}:{command}"].strip(), f"{device}:{command}"
-    assert help_text["dotpad:dot4"] == "dot 4: moves the cut 10% deeper, away from you"
+    assert help_text["dotpad:dot4"] == "dot 4: moves the slice plane 10% deeper, away from you"
     assert help_text["monarch:cursor"].startswith("Space: ")
     assert help_text["dotpad:other"] == tl.UNMAPPED_DEVICE_BUTTON
 
@@ -1055,6 +1049,12 @@ MONARCH_EFFECTS = {
 
 def _monarch_reports(name: str, commands: dict[str, dict]) -> list[str]:
     """The Monarch report keys a control name stands for."""
+    letter = re.fullmatch(r"braille ([xyz])", name)
+    if letter:
+        # The axis letters are the braille letters x, y and z: dots 1 3 4 6,
+        # 1 3 4 5 6 and 1 3 5 6.
+        dots = {"x": "1 3 4 6", "y": "1 3 4 5 6", "z": "1 3 5 6"}[letter.group(1)]
+        return [f"32:{_dot_bits(dots)},0,0"]
     dots = re.fullmatch(r"dots? ([1-8](?: [1-8])*)", name)
     if dots:
         # The dot keys arrive as a bitfield in the first byte: dot 1 is 1 and
@@ -1117,6 +1117,9 @@ def test_dotpad_names_are_what_dotpad_integration_maps():
             assert branch[1].startswith("{" + call), f"{name}: byte 0x{byte:02x} does not {call}"
     # The chords are read as whole braille letters.
     for name, letter in (("axis_x", "x"), ("axis_y", "y"), ("axis_z", "z"), ("cursor_mode", "v")):
+        if letter in "xyz":
+            assert tl.KEYS[name]["dotpad"] == f"braille {letter}", name
+            continue
         dots = re.fullmatch(r"dots ([1-6](?: [1-6])*)", tl.KEYS[name]["dotpad"])
         assert dots, name
         assert letters.get(_dot_bits(dots.group(1))) == letter, f"{name} is not the letter {letter}"
@@ -1159,67 +1162,74 @@ KEY_COVERAGE = {
 }
 KEYS_THAT_DO_NOTHING = {"q", "e"}
 
+# Controls no lesson names one by one (#245 review). About only says who makes
+# the viewer. The first lesson says the page below the tutorial has a section
+# for each capability, and Settings comes up throughout, so the buttons,
+# sliders and Settings controls are not listed in the lessons.
+CONTROLS_NOT_TAUGHT = {
+    "nav-about-btn",
+    "about-dialog",
+    "nav-settings-btn",
+    "settings-dialog",
+    "session-consent-dialog",
+    "settings-axis-letters",
+    "output-device-dotpad",
+    "output-device-monarch",
+    "settings-enable-debug-panel",
+    "settings-enable-bbox",
+    "show-view-info-box",
+    "settings-close-btn",
+    "pitch-up-btn",
+    "pitch-down-btn",
+    "yaw-left-btn",
+    "yaw-right-btn",
+    "roll-ccw-btn",
+    "roll-cw-btn",
+    "view-x-plus-btn",
+    "view-x-minus-btn",
+    "view-y-plus-btn",
+    "view-y-minus-btn",
+    "view-z-plus-btn",
+    "view-z-minus-btn",
+    "slice-depth-slider",
+    "deeper-btn",
+    "shallower-btn",
+    "render-mode-filled",
+    "render-mode-outline",
+    "render-mode-cut",
+    "render-mode-xray",
+    "zoom-input",
+    "zoom-out-btn",
+    "zoom-in-btn",
+    "delete-model-btn",
+    "upload-model-input",
+}
+
 # Every main-menu button, dialog, Settings control and page control, the lesson
 # that teaches it, and words that lesson has to contain about it.
 CONTROL_COVERAGE = {
     # Main menu.
     "device-connect-btn": ("connect", "Connect and Disconnect in the main menu"),
     "device-disconnect-btn": ("connect", "Disconnect in the main menu"),
-    "nav-about-btn": ("help_and_settings", "About, also in the main menu"),
     "nav-help-btn": ("help_and_settings", "Help, in the main menu"),
-    "nav-settings-btn": ("help_and_settings", "Open Settings from the main menu"),
     # Dialogs.
     "shortcuts-dialog": ("help_and_settings", "list of every keyboard shortcut"),
-    "about-dialog": ("help_and_settings", "says who makes the viewer"),
-    "settings-dialog": ("help_and_settings", "Settings has"),
-    "session-consent-dialog": ("before_you_start", "if you allowed analytics"),
     # Settings.
     "axis-mode-turn": ("axes", "Turn mode"),
     "axis-mode-xyz": ("axes", "XYZ mode"),
     "settings-origin-marker": ("axes", "marks the origin"),
-    "settings-axis-letters": ("axes", "axis letters"),
     "settings-single-key-shortcuts": ("before_you_start", "Single-key shortcuts"),
-    "output-device-dotpad": ("connect", "Output Device"),
-    "output-device-monarch": ("connect", "Output Device"),
     "settings-enable-slider": ("slider", "Slider, under Hardware Controls"),
     "settings-enable-cube": ("cube", "Cube, under Hardware Controls"),
-    "settings-enable-debug-panel": ("help_and_settings", "Debug Panel"),
-    "settings-enable-bbox": ("help_and_settings", "Bounding Box"),
-    "show-view-info-box": ("help_and_settings", "View info box on display"),
     "slice-graph-lock-checkbox": ("layout_and_graph", "Lock slice graph"),
     "slice-graph-mode-difference": ("layout_and_graph", "difference from the anchor"),
     "slice-graph-mode-column-count": ("layout_and_graph", "area of each slice"),
-    "settings-close-btn": ("help_and_settings", "its Close button"),
     # The page.
-    "pitch-up-btn": ("axes", "The Orientation section has a button for each"),
-    "pitch-down-btn": ("axes", "The Orientation section has a button for each"),
-    "yaw-left-btn": ("axes", "The Orientation section has a button for each"),
-    "yaw-right-btn": ("axes", "The Orientation section has a button for each"),
-    "roll-ccw-btn": ("axes", "The Orientation section has a button for each"),
-    "roll-cw-btn": ("axes", "The Orientation section has a button for each"),
-    "view-x-plus-btn": ("axes", "X plus to Z minus"),
-    "view-x-minus-btn": ("axes", "X plus to Z minus"),
-    "view-y-plus-btn": ("axes", "X plus to Z minus"),
-    "view-y-minus-btn": ("axes", "X plus to Z minus"),
-    "view-z-plus-btn": ("axes", "X plus to Z minus"),
-    "view-z-minus-btn": ("axes", "X plus to Z minus"),
-    "slice-depth-slider": ("depth", "The Depth section has a slider"),
-    "deeper-btn": ("depth", "Deeper and Shallower buttons"),
-    "shallower-btn": ("depth", "Deeper and Shallower buttons"),
-    "render-mode-filled": ("render_modes", "same four as radio buttons"),
-    "render-mode-outline": ("render_modes", "same four as radio buttons"),
-    "render-mode-cut": ("render_modes", "same four as radio buttons"),
-    "render-mode-xray": ("render_modes", "same four as radio buttons"),
     "view-mode-single": ("layout_and_graph", "same three are radio buttons"),
     "view-mode-side-by-side": ("layout_and_graph", "same three are radio buttons"),
     "view-mode-slice-graph": ("layout_and_graph", "same three are radio buttons"),
-    "zoom-input": ("zoom_and_move", "Zoom level field"),
-    "zoom-out-btn": ("zoom_and_move", "Zoom In and Zoom Out buttons"),
-    "zoom-in-btn": ("zoom_and_move", "Zoom In and Zoom Out buttons"),
     "reset-position-btn": ("reset_and_fit", "Reset Position button"),
     "model-list-dropdown": ("your_own_model", "Model list"),
-    "delete-model-btn": ("your_own_model", "Remove uploaded model"),
-    "upload-model-input": ("your_own_model", "Upload model"),
     "export-slice-svg-btn": ("your_own_model", "Export Current View as Image"),
     # The device sections.
     "trinkey-connect-btn": ("slider", "choose Connect USB"),
@@ -1230,7 +1240,7 @@ CONTROL_COVERAGE = {
 
 # The Tutorial button the runner adds to the main menu is taught where the
 # tutorial says how to come back to it.
-TUTORIAL_BUTTON = ("help_and_settings", "choose the Tutorial button in the main menu")
+TUTORIAL_BUTTON = ("your_own_model", "choose the Tutorial button in the main menu")
 
 # Display buttons, by the name the runner's capture hook reports, and the lesson
 # that teaches them.
@@ -1274,7 +1284,7 @@ def test_every_control_is_taught():
     found = set().union(*kinds.values())
     covered = set(CONTROL_COVERAGE)
     tutorial_buttons = {i for i in kinds["menu"] if "tutorial" in i}
-    missing = found - covered - tutorial_buttons
+    missing = found - covered - tutorial_buttons - CONTROLS_NOT_TAUGHT
     assert not missing, f"controls with no lesson: {sorted(missing)}"
     gone = covered - found
     assert not gone, f"coverage rows for controls no longer on the page: {sorted(gone)}"

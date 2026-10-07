@@ -408,8 +408,8 @@ LESSONS: list[dict[str, Any]] = [
                 "The tutorial takes about an hour, and you can do it in parts. "
                 "Choose Exit tutorial at any time to leave. "
                 "If you return, the tutorial will start where you left off. "
-                "Below the tutorial is an accessible webpage made up of sections"
-                "corresponding to each of the capabalities introduced here."
+                "Below the tutorial is an accessible webpage made up of sections "
+                "corresponding to each of the capabilities introduced here. "
                 "To start, which display are you using today?",
                 sr="Exit tutorial pauses the tutorial. If you return, the tutorial will start where you "
                    "left off. To start, which display are you using today?",
@@ -479,10 +479,10 @@ LESSONS: list[dict[str, Any]] = [
         steps=[
             _step(
                 "connect",
-                "Now connect your display. Turn it on, then choose Connect Monarch or Connect "
-                "DotPad in the tutorial area. The browser shows a list of devices in a popup. "
-                "Choose yours and press Enter.",
-                sr="Turn your display on, choose Connect Monarch or Connect DotPad, "
+                "Now connect your display. Turn it on, then choose Connect and Disconnect in the main "
+                "menu, which shows Connect while nothing is connected. The browser shows a list of "
+                "devices in a popup. Choose yours and press Enter.",
+                sr="Turn your display on, choose Connect in the main menu, "
                    "and choose your display in the browser's popup.",
                 braille="Connect display",
                 check=_device("any"),
@@ -495,8 +495,8 @@ LESSONS: list[dict[str, Any]] = [
                      "Braille Terminal. The DotPad shows its own name on its braille line when it "
                      "turns on, and the same name is in the list."),
                     ("For the DotPad, turn Bluetooth on in your computer's settings, then choose "
-                     "Connect DotPad again. For the Monarch, plug it in and turn it on, then choose "
-                     "Connect Monarch again. If it still fails, choose Skip step and connect later "
+                     "Connect again. For the Monarch, plug it in and turn it on, then choose "
+                     "Connect again. If it still fails, choose Skip step and connect later "
                      "from Connect in the main menu."),
                 ),
             ),
@@ -586,8 +586,8 @@ LESSONS: list[dict[str, Any]] = [
                 hints=(
                     ("The answer is spoken. On the DotPad a short form also appears on the "
                      "braille line."),
-                    "Press {key:where_am_i}.",
-                    "Press {key:where_am_i}.",
+                    "The Period key is near the bottom right of the main keyboard.",
+                    "Press {key:where_am_i} now.",
                 ),
             ),
             _step(
@@ -653,7 +653,7 @@ LESSONS: list[dict[str, Any]] = [
                 "to_the_far_side",
                 "Now try it yourself. Press {key:depth_deeper_10} to move it 10% deeper, away "
                 "from you, and {key:depth_shallower_10} to move it 10% toward you. Press "
-                "{key:depth_deeper_10} until the slice plane reaches the far side of the mug."
+                "{key:depth_deeper_10} until the slice plane reaches the far side of the mug. "
                 "Remember: if you get stuck, Show me demonstrates and says what is there.",
                 sr="Press {key:depth_deeper_10} until the slice plane reaches the far side of the mug.",
                 braille="In dot 4, Out dot 1",
@@ -662,9 +662,9 @@ LESSONS: list[dict[str, Any]] = [
                 on_fail="That went back toward you. Keep going one way until the number stops "
                         "changing.",
                 hints=(
-                    "Deeper means away from you, into the mug.",
-                    "If you go too far, press {key:depth_shallower_10}.",
-                    ("Each press is a tenth of the mug, so it takes at most ten presses."),
+                    ("Deeper means away from you, into the mug. If you go too far, press "
+                     "{key:depth_shallower_10}."),
+                    "Each press is a tenth of the mug, so it takes at most ten presses.",
                     "Press {key:depth_deeper_10} again and again until the number stops changing.",
                 ),
             ),
@@ -739,7 +739,7 @@ LESSONS: list[dict[str, Any]] = [
         steps=[
             _step(
                 "zoom_in",
-                "Zoom in 10% with {key:zoom_in_10} and out 10% with {key:zoom_out_10}. Press "
+                "Zoom in 10% with {key:zoom_in_10} or 1% with {key:zoom_in_1}, and out 10% with {key:zoom_out_10}. Press "
                 "{key:zoom_in_10} twice.",
                 braille="Zoom twice",
                 check=_zoom_by(0.2),
@@ -772,13 +772,13 @@ LESSONS: list[dict[str, Any]] = [
             _step(
                 "zoom_out",
                 "Now zoom out. Press {key:zoom_out_10} (10%) or  {key:zoom_out_1} (1%) repeatedly or press {key:reset}.",
-                sr="Press {key:zoom_out_10} rpeatedly or {key:reset} until the zoom is 0.",
+                sr="Press {key:zoom_out_10} repeatedly or {key:reset} until the zoom is 0.",
                 braille="Zoom out to 0",
                 check=_state("zoom", lte=0.001),
                 done="Zoom is 0.",
                 hints=(
                     "Zoom cannot go below 0, so extra presses do no harm.",
-                    "You zoomed in twice, so  presses {key:zoom_out_10} twice.",
+                    "You zoomed in twice, so  press {key:zoom_out_10} twice.",
                     "Press {key:zoom_out_10} twice, or press {key:reset} once.",
                 ),
             ),
@@ -789,15 +789,15 @@ LESSONS: list[dict[str, Any]] = [
         steps=[
             _step(
                 "about_axes",
-                "This lesson uses XYZ mode, where you choose an axis instead of a face "
-                "For example, if the mug stands on the table, the Z axis points up from the table" 
-                "are {key:axis_x} for X, {key:axis_y} for Y and {key:axis_z}."
-                "On a display, X Y or Z (in braille) to do the same thing." 
-                "For some views (like fill, outline and x-ray), direction matters."
-                "If you look down on the mug from above, fill will show everything below the slice plane."
-                "If you look up from below, fill will show everything above the slice plane. To switch, just"
-                "press Z twice. Slice depth is always calculated as a percentage from 0 on any axis"
-                "regardless of the direction you are looking.",
+                "This lesson uses XYZ mode, where you choose an axis instead of a face. "
+                "For example, if the mug stands on the table, the Z axis points up from the table. "
+                "The keys are {key:axis_x} for X, {key:axis_y} for Y and {key:axis_z} for Z. "
+                "On a display, enter the braille letter X, Y or Z to do the same thing. "
+                "For some views (like fill, outline and x-ray), direction matters. "
+                "If you view the mug from above, fill shows everything below the slice plane. "
+                "If you view it from below, fill shows everything above the slice plane. To switch, "
+                "press the same axis key twice. Slice depth is always a percentage from 0 on any "
+                "axis, regardless of the direction you are viewing from.",
                 sr="This lesson uses XYZ mode: you choose the axis to cut along, and the same key "
                    "again gives the other side. The slice plane's number counts from the model's origin, "
                    "the middle of the base. Press Next (N) when ready.",
@@ -814,9 +814,9 @@ LESSONS: list[dict[str, Any]] = [
             _step(
                 "cut_z",
                 "Press {key:axis_z}. The slice plane is now parallel to the table, and "
-                "the viewer says Z from plus, X right, Y up: you are above the mug looking down."
-                "On your display, X increases to the right and Y increases up the display."
-                "This in indicated with a braille X on display right, and braille Y at display top",
+                "the viewer says Z from plus, X right, Y up: you are above the mug, facing down. "
+                "On your display, X increases to the right and Y increases up the display. "
+                "This is indicated with a braille X at the display's right and a braille Y at its top.",
                 sr="Press {key:axis_z} to cut along Z, across the mug, parallel to the table.",
                 braille="Cut along Z",
                 check=_state("cut_axis", equals="z"),
@@ -881,8 +881,8 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "which_axis_loop",
-                "Which axis showed the handle from the side, so you can see its whole curve at once?",
-                braille="handle from side axis?",
+                "Which axis showed the handle from the side, so you can feel its whole curve at once?",
+                braille="Axis: handle side?",
                 check=_answer("x"),
                 answers=_answers(("X", "x"), ("Y", "y"), ("Z", "z")),
                 done="Yes, X. Viewed from the X axis, the slice plane cuts through the handle from the side.",
@@ -902,7 +902,7 @@ LESSONS: list[dict[str, Any]] = [
                 done="Yes. The handle points toward negative Y, the low end of the Y numbers.",
                 on_fail="Think of where the handle's arms were on the Y numbers.",
                 hints=(
-                    "{key:where_am_i} may help."
+                    "The {key:where_am_i} key may help.",
                     "Viewing from X plus, the viewer said Y right, and the handle was on the left.",
                     "Choose Negative Y.",
                 ),
@@ -1012,8 +1012,8 @@ LESSONS: list[dict[str, Any]] = [
         steps=[
             _step(
                 "shortcuts",
-                "{key:shortcuts} opens a list of every keyboard shortcut, grouped by heading "
-                "Help, in the main menu, opens the same list. Press "
+                "The shortcuts key, {key:shortcuts}, opens a list of every keyboard shortcut, grouped by "
+                "heading. Help, in the main menu, opens the same list. Press "
                 "{key:shortcuts} now. When you are ready, press {key:escape} or choose "
                 "Close to come back.",
                 sr="Press {key:shortcuts} to open the list of keyboard shortcuts, then {key:escape} "
@@ -1065,7 +1065,7 @@ LESSONS: list[dict[str, Any]] = [
                 on_fail="Not there yet. You need a cut along X, through the middle of the mug.",
                 hints=(
                     "The handle loop is there only when you slice along X through the middle.",
-                    ("In XYZ mode, {key:axis_x} looks down X. In Turn mode, a yaw turns the mug "
+                    ("In XYZ mode, {key:axis_x} views along X. In Turn mode, a yaw turns the mug "
                      "until {key:where_am_i} says View from the right or the left, which is a view "
                      "along X."),
                     ("In XYZ mode, press {key:axis_x}, then {key:reset}, then Next. In Turn mode, "
@@ -1118,7 +1118,6 @@ LESSONS: list[dict[str, Any]] = [
                 # Asked the way Jen put it (#245 review): where it joins was harder to
                 # answer than how many places.
                 "Does the handle connect to the mug in one place or two?",
-                sr="Does the handle connect to the mug in one place or two?",
                 braille="One place or two?",
                 check=_answer("two"),
                 answers=_answers(("One place", "one"), ("Two places", "two")),
@@ -1170,13 +1169,13 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "props_and_end",
-                "One last thing: if you want the printed mug, the tutorial area has a link to the files"
-                "for a 3D printer. That is the end of the main tutorial. If you keep going, you will"
-                "learn about a  physical axis control and depth control that you have to print out"
-                "buy parts for and assemble. Exit tutorial if you prefer to use the interface. To return"
-                "or redo any lesson, choose the Tutorial button in the main menu and pick it from the list "
-                "of lessons, or use Choose a lesson in the keyboard shortcuts list; Start over runs"
-                "the whole tutorial again.",
+                "One last thing: if you want the printed mug, the tutorial area has a link to the files "
+                "for a 3D printer. That is the end of the main tutorial. If you keep going, you will "
+                "learn about a physical axis control and depth control that you have to print and "
+                "buy parts for, then assemble. Exit tutorial if you prefer to use the interface. "
+                "To return or redo any lesson, choose the Tutorial button in the main menu and pick "
+                "it from the list of lessons, or use Choose a lesson in the keyboard shortcuts list; "
+                "Start over runs the whole tutorial again.",
                 sr="That is the end of the tutorial. Three extra lessons follow: Next starts them, "
                    "and Exit tutorial leaves them. To redo any lesson, choose the Tutorial button in "
                    "the main menu.",
