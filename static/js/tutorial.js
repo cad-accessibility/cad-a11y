@@ -1278,7 +1278,7 @@ const CHECKS = {
     function stepNote(step) {
         if (!step) return '';
         const notes = [];
-        if (stepWasPassed()) notes.push('You have done this step. Next moves on, or do it again.');
+        if (stepWasPassed()) notes.push('Step Complete. N (Next) or C (Repeat).');
         if (step.key_only && getState().single_key_shortcuts === false) {
             notes.push('Single-key shortcuts are off in Settings, so this step cannot be done from the keyboard. Skip step moves on.');
         }
