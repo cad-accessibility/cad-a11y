@@ -45,6 +45,7 @@ class SinkCounters:
         self.counts: dict[str, int] = {
             "usage_db_execute": 0,
             "study_db_execute": 0,
+            "contacts_db_execute": 0,
             "braille_log_write": 0,
             "study_jsonl_write": 0,
             "print_export": 0,
@@ -92,6 +93,7 @@ def sinks(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "BRAILLE_LOG_PATH", data_root / "logs" / "braille_send_events.jsonl")
     monkeypatch.setattr(server, "RENDERS_DIR", data_root / "renders")
     db._local.__dict__.clear()
+    db._contacts_local.__dict__.clear()
     study_db._local.__dict__.clear()
     # Created before the counters go on, so schema setup is not mistaken for a
     # recording -- and so the control case below has real tables to write into.
@@ -107,8 +109,15 @@ def sinks(tmp_path, monkeypatch):
         server.preview_payload_cache.clear()
 
     # -- database writes ----------------------------------------------------
-    for module, key in ((db, "usage_db_execute"), (study_db, "study_db_execute")):
-        real_get_conn = module._get_conn
+    for module, attribute, key in (
+        (db, "_get_conn", "usage_db_execute"),
+        # The contact list is a file of its own, with a connection of its own, so
+        # it is counted on its own: a demo client giving an address must write
+        # nothing there either.
+        (db, "_get_contacts_conn", "contacts_db_execute"),
+        (study_db, "_get_conn", "study_db_execute"),
+    ):
+        real_get_conn = getattr(module, attribute)
 
         def counting_get_conn(_real=real_get_conn, _key=key):
             conn = _real()
@@ -133,7 +142,7 @@ def sinks(tmp_path, monkeypatch):
 
             return _CountingConn(conn)
 
-        monkeypatch.setattr(module, "_get_conn", counting_get_conn)
+        monkeypatch.setattr(module, attribute, counting_get_conn)
 
     # -- file writes --------------------------------------------------------
     monkeypatch.setattr(
@@ -193,6 +202,7 @@ def sinks(tmp_path, monkeypatch):
     counters.data_root = data_root
     yield counters
     db._local.__dict__.clear()
+    db._contacts_local.__dict__.clear()
     study_db._local.__dict__.clear()
 
 
@@ -443,6 +453,7 @@ STUDY_SOURCE = (ROOT / "app" / "study.py").read_text(encoding="utf-8")
         "db.add_contact(",
         "db.register_model(",
         "db.mark_model_deleted(",
+        "db.mark_file_deleted(",
     ],
 )
 def test_no_handler_reaches_a_sink_without_going_through_the_recorder(forbidden):

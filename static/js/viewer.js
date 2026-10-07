@@ -2343,9 +2343,13 @@ document.getElementById('delete-model-btn').addEventListener('click', async func
         } else {
             const errData = await resp.json().catch(() => ({}));
             statusEl.textContent = `Delete failed: ${errData.message || resp.status}`;
+            // Said as well as shown: the status line is not a live region, so a
+            // refused delete was silent to a screen reader (#243 review).
+            announceAlert(statusEl.textContent);
         }
     } catch (err) {
         statusEl.textContent = `Delete error: ${err.message}`;
+        announceAlert(statusEl.textContent);
     } finally {
         this.disabled = false;
     }
@@ -2452,10 +2456,11 @@ function applyServerState(data) {
 // SSE: server pushes hardware state changes (WitMotion IMU, Slider) immediately
 // instead of the client polling every second — reduces latency from ~1000 ms to ~10 ms.
 (function connectSSE() {
-    // EventSource cannot set headers, so the tab id goes in the address.
-    const evtSource = new EventSource(
-        `${SERVER_URL}/events?upload_session_id=${encodeURIComponent(getUploadSessionId())}`
-    );
+    // No tab id: EventSource cannot set a header, and the id grants access to this
+    // tab's uploads, so it must not sit in an address that ends up in access logs
+    // (#243 review). The stream carries nothing that depends on who is asking; the
+    // model list comes from /get_data and /render, which send the id in a header.
+    const evtSource = new EventSource(`${SERVER_URL}/events`);
     evtSource.onmessage = function(event) {
         try {
             const data = JSON.parse(event.data);
@@ -2488,8 +2493,9 @@ const POLL_FAIL_THRESHOLD = 2;
 
 // Slow fallback poll: the sole authority for serverConnected state changes.
 // Keeps model list and bbox in sync for state that isn't pushed over SSE
-// (e.g. model uploads). Runs every 5 s.
-setInterval(() => {
+// (e.g. model uploads). Runs once at load, since the event stream no longer
+// sends the list, and every 5 s after that.
+function pollServerState() {
     fetch(`${SERVER_URL}/get_data`, { headers: uploadSessionHeaders() })
         .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
         .then(data => {
@@ -2510,7 +2516,9 @@ setInterval(() => {
                 announceAlert('Server unavailable — rendering paused.');
             }
         });
-}, 5000);
+}
+pollServerState();
+setInterval(pollServerState, 5000);
 
 // Update zoom information
 function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {

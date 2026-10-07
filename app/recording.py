@@ -144,6 +144,10 @@ class NullRecorder:
         self._seen()
         return False
 
+    def forget_file(self, *_args: Any, **_kwargs: Any) -> int:
+        self._seen()
+        return 0
+
     def attach_session_cookie(self, response: Response, _session_id: str) -> Response:
         """Returns the response untouched: no cookie, so nothing survives the tab."""
         self._seen()
@@ -220,6 +224,9 @@ class PersistentRecorder:
 
     def forget_model(self, session_id: str, filename: str) -> bool:
         return bool(self._analytics.mark_model_deleted(session_id, filename))
+
+    def forget_file(self, filename: str) -> int:
+        return int(self._analytics.mark_file_deleted(filename))
 
     def attach_session_cookie(self, response: Response, session_id: str) -> Response:
         return self._cookie_writer(response, session_id)

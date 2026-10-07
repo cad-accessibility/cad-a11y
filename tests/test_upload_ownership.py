@@ -43,9 +43,11 @@ def tmp_db(tmp_path, monkeypatch):
     db_path = tmp_path / "test_usage.db"
     monkeypatch.setattr(db_module, "DB_PATH", db_path)
     db_module._local.__dict__.clear()
+    db_module._contacts_local.__dict__.clear()
     db_module.init_db()
     yield db_path
     db_module._local.__dict__.clear()
+    db_module._contacts_local.__dict__.clear()
 
 
 def _reset_shared_state() -> None:
@@ -160,9 +162,8 @@ def _post(client, path, model, tab=None, **overrides):
     return response.get_json()
 
 
-def _first_event(client, tab=None):
-    """The event stream's first message, which carries the model list."""
-    path = "/events" + (f"?upload_session_id={tab}" if tab else "")
+def _first_event(client, path="/events"):
+    """The event stream's first message."""
     response = client.get(path, buffered=False)
     try:
         chunk = next(iter(response.response))
@@ -179,7 +180,6 @@ def _every_model_list(client, tab=None):
         "/models": client.get("/models", headers=headers).get_json()["model_list"],
         "/get_data": client.get("/get_data", headers=headers).get_json()["model_list"],
         "/render": _post(client, "/render", None, tab)["model_list"],
-        "/events": _first_event(client, tab)["model_list"],
     }
 
 
@@ -318,3 +318,142 @@ def test_the_workshop_still_finds_a_participant_by_first_name(stranger):
     response = stranger.get("/workshop?name=zoe")
     assert response.status_code == 302
     assert f"model={ingest['model_stem']}" in response.headers["Location"]
+
+
+
+# ---------------------------------------------------------------------------
+# A name freed by cleanup or delete keeps no owner (#243 review)
+# ---------------------------------------------------------------------------
+
+def _cleanup(client, tab):
+    response = client.post("/uploads/cleanup", json={"upload_session_id": tab})
+    assert response.status_code == 200
+    return response.get_json()
+
+
+def _listing(client, tab):
+    return client.get("/models", headers=_headers(tab)).get_json()["model_list"]
+
+
+def test_a_name_freed_by_cleanup_does_not_carry_its_old_owner(owner, stranger, isolated_models):
+    """Jen's reproduction, step for step. A reload sends the cleanup; the name is
+    then free on disk; a stranger's upload of the same name takes it; and the old
+    row used to hand that upload to the first browser."""
+    _, upload_dir = isolated_models
+    _identify(owner, email="a@example.com")
+    first = _upload(owner, name="bracket.stl", tab=TAB_A)
+    assert first["filename"] == "bracket.stl"
+
+    assert _cleanup(owner, TAB_A)["deleted_count"] == 1
+    assert owner.get("/session/models").get_json()["models"] == [], "the row outlived its file"
+
+    _identify(stranger)
+    second = _upload(stranger, name="bracket.stl", source=DEFAULT_SOURCE, tab=TAB_B)
+    assert second["filename"] == "bracket.stl"
+
+    assert owner.get("/session/models").get_json()["models"] == []
+    assert "bracket" not in _listing(owner, TAB_A), "the old owner can list the new upload"
+    default = _post(owner, "/render", None, TAB_A)["image_base64"]
+    assert _post(owner, "/render", "bracket", TAB_A)["image_base64"] == default
+
+    assert owner.delete("/models/bracket.stl").status_code == 404
+    assert (upload_dir / "bracket.stl").exists(), "the old owner deleted the new upload"
+    assert "bracket" in _listing(stranger, TAB_B)
+
+
+def test_a_name_freed_by_delete_does_not_carry_its_old_owner(owner, stranger, isolated_models):
+    """The mirror case: a delete left the path in the tab's own set, so the next
+    upload of that name was visible to the tab, and its cleanup deleted it."""
+    _, upload_dir = isolated_models
+    _identify(owner, email="a@example.com")
+    _upload(owner, name="bracket.stl", tab=TAB_A)
+    assert owner.delete("/models/bracket.stl").status_code == 200
+
+    _identify(stranger)
+    assert _upload(stranger, name="bracket.stl", source=DEFAULT_SOURCE, tab=TAB_B)["filename"] == "bracket.stl"
+
+    assert "bracket" not in _listing(owner, TAB_A)
+    assert _cleanup(owner, TAB_A)["deleted_count"] == 0
+    assert (upload_dir / "bracket.stl").exists(), "the old tab's cleanup deleted the new upload"
+
+
+def test_a_row_left_by_an_older_build_does_not_claim_a_new_upload(owner, stranger, isolated_models):
+    """The deployed databases have live rows for files an older cleanup removed.
+    The name stays taken while such a row exists, and the start-up pass marks the
+    row deleted."""
+    _identify(owner, email="a@example.com")
+    owner_session = owner.get("/session/me").get_json()["session_id"]
+    db_module.register_model(owner_session, "bracket.stl", "bracket.stl", 1, "x")
+
+    _identify(stranger)
+    taken = _upload(stranger, name="bracket.stl", source=DEFAULT_SOURCE, tab=TAB_B)
+    assert taken["filename"] != "bracket.stl", "a name with a live owner was reused"
+
+    assert server._reconcile_uploads()["stale_rows"] == 1
+    assert not db_module.filename_has_live_owner("bracket.stl")
+
+
+def test_start_up_removes_uploads_nobody_owns_and_keeps_the_rest(owner, isolated_models):
+    """An upload made without a cookie belongs to its tab's entry in memory, which
+    a restart forgets; the file stayed where nobody could see or delete it."""
+    model_dir, upload_dir = isolated_models
+    _identify(owner, email="a@example.com")
+    kept = _upload(owner, name="kept.stl", tab=TAB_A)["filename"]
+    orphan = upload_dir / "orphan.stl"
+    orphan.write_bytes(PRIVATE_SOURCE.read_bytes())
+    with server.uploaded_models_lock:
+        server.uploaded_models_by_session.clear()  # what a restart does
+
+    result = server._reconcile_uploads()
+    assert result["orphan_files"] == 1
+    assert not orphan.exists()
+    assert (upload_dir / kept).exists()
+    assert (model_dir / "aaa_default.stl").exists()
+
+
+def test_cleanup_from_another_tab_removes_nothing_of_yours(owner, stranger, isolated_models):
+    _, upload_dir = isolated_models
+    filename = _upload(owner, tab=TAB_A)["filename"]
+    assert _cleanup(stranger, TAB_B)["deleted_count"] == 0
+    assert (upload_dir / filename).exists()
+
+
+def test_session_models_lists_only_your_own(owner, stranger):
+    _identify(owner)
+    _upload(owner, tab=TAB_A)
+    _identify(stranger)
+    assert stranger.get("/session/models").get_json()["models"] == []
+    assert len(owner.get("/session/models").get_json()["models"]) == 1
+
+
+@pytest.mark.parametrize("cookie", ["00000000-0000-4000-8000-000000000000", "not-a-session", ""])
+def test_a_forged_or_malformed_cookie_owns_nothing(owner, stranger, isolated_models, cookie):
+    _, upload_dir = isolated_models
+    _identify(owner)
+    filename = _upload(owner, tab=TAB_A)["filename"]
+    stranger.set_cookie("cad_session", cookie)
+    assert stranger.get("/session/models").get_json()["models"] == []
+    assert stranger.delete(f"/models/{filename}").status_code in (400, 404)
+    assert (upload_dir / filename).exists()
+
+
+@pytest.mark.parametrize("weak", ["1", "tab-a", "tab-" + "a" * 31, "tab-" + "g" * 32, "1696500000000-k3j2h1"])
+def test_only_a_tab_id_the_viewer_could_have_made_is_accepted(owner, weak):
+    """The id grants a tab its uploads, so a short or guessable one is refused,
+    including the clock-and-Math.random form a viewer from before #237 made."""
+    stem = _upload(owner, tab=weak)["model_stem"]
+    assert stem not in _listing(owner, weak)
+
+
+def test_a_tab_id_in_the_address_is_ignored(owner):
+    """It would end up in access logs. Only the header counts."""
+    stem = _upload(owner, tab=TAB_A)["model_stem"]
+    assert stem not in owner.get(f"/models?upload_session_id={TAB_A}").get_json()["model_list"]
+    assert stem in _listing(owner, TAB_A)
+
+
+def test_the_event_stream_says_nothing_about_who_is_asking(owner):
+    """So it needs no tab id, which it could only have carried in its address."""
+    _upload(owner, tab=TAB_A)
+    assert _first_event(owner) == {}
+    assert _first_event(owner, f"/events?upload_session_id={TAB_A}") == {}

@@ -214,7 +214,7 @@ All persistent data is in Docker-managed named volumes, not on the host filesyst
 | --- | --- |
 | `models` | The models that ship with the app, seeded from the image on every start |
 | `uploads` | Models uploaded by visitors |
-| `db` | The usage database, and the study database (`study.db`) |
+| `db` | The usage database (`usage.db`), the email addresses from the welcome dialog (`contacts.db`), and the study database (`study.db`) |
 | `renders` | Render output |
 | `logs` | Braille send logs, and per-session study logs under `study/` |
 

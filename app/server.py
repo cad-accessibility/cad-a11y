@@ -43,7 +43,7 @@ from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
 
-from . import db, recording, study, study_db, study_protocol
+from . import db, email_address, recording, study, study_db, study_protocol
 from .braille_display import (
     _pixels_to_braille_cells,
     _pixels_to_braille_cells_dotpad,
@@ -276,7 +276,6 @@ _SESSION_MAX_AGE = 365 * 24 * 3600  # 1 year
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
 )
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # Allowlist for event_type values accepted by POST /events/track.
 _ALLOWED_EVENT_TYPES = frozenset(
     {
@@ -551,11 +550,14 @@ def _refresh_model_list_if_stale() -> None:
 # asked the server directly could list, render and export every upload.
 # ---------------------------------------------------------------------------
 def _request_upload_session_id() -> str | None:
-    """The tab's upload id: a header on fetches, a query parameter on the event
-    stream, which cannot set headers."""
-    return _sanitize_upload_session_id(
-        request.headers.get("X-Upload-Session") or request.args.get("upload_session_id")
-    )
+    """The tab's upload id, from its header and nowhere else.
+
+    Never from the address. The id grants access to the tab's uploads, and an
+    address ends up in access logs and browser history; the event stream used to
+    carry it there, since EventSource cannot set a header, so the stream no
+    longer says anything that depends on who is asking (#243 review).
+    """
+    return _sanitize_upload_session_id(request.headers.get("X-Upload-Session"))
 
 
 def _caller_upload_names(tab_id: str | None = None) -> set[str]:
@@ -1865,7 +1867,11 @@ def models_endpoint():
 
 
 _ALLOWED_EXTENSIONS = {".stl", ".step"}
-_MAX_UPLOAD_SESSION_ID_LEN = 128
+# The form viewer.js generates: "tab-" and 128 random bits in hex. Nothing else is
+# accepted, because the id is what grants a tab its uploads (#237): the server
+# used to take any 1 to 128 characters, which let a guessable id in, and a viewer
+# from before #237 made its ids from the clock and Math.random (#243 review).
+_UPLOAD_SESSION_ID_RE = re.compile(r"^tab-[0-9a-f]{32}$")
 
 # Tracks uploaded model paths by browser-tab session id so they can be cleaned up
 # when the page closes. Values are absolute path strings under UPLOAD_DIR.
@@ -1874,17 +1880,11 @@ uploaded_models_lock = threading.Lock()
 
 
 def _sanitize_upload_session_id(raw_value: Any) -> str | None:
-    if raw_value is None:
+    """The tab id if it is one the viewer could have made, else None."""
+    if not isinstance(raw_value, str):
         return None
-    value = str(raw_value).strip()
-    if not value:
-        return None
-    if len(value) > _MAX_UPLOAD_SESSION_ID_LEN:
-        value = value[:_MAX_UPLOAD_SESSION_ID_LEN]
-    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
-    if any(ch not in allowed for ch in value):
-        return None
-    return value
+    value = raw_value.strip()
+    return value if _UPLOAD_SESSION_ID_RE.match(value) else None
 
 
 def _register_uploaded_model(session_id: str | None, model_path: Path) -> None:
@@ -1925,6 +1925,12 @@ def _cleanup_uploaded_models_for_session(session_id: str | None) -> dict[str, An
         except Exception as exc:
             errors.append(f"{model_path}: {exc}")
 
+    # The rows go with the files. Left behind, a row went on saying its session
+    # owned the name, so whoever uploaded a file of that name next had it listed,
+    # rendered and deletable by the first session (#243 review).
+    for removed in deleted:
+        recording.current().forget_file(Path(removed).name)
+
     # Refresh in-memory model list and invalidate caches after cleanup.
     global AVAILABLE_MODELS, MODEL_NAME_LIST
     with models_lock:
@@ -1942,6 +1948,54 @@ def _cleanup_uploaded_models_for_session(session_id: str | None) -> dict[str, An
         preview_payload_cache.clear()
 
     return {"deleted": deleted, "errors": errors}
+
+
+def _reconcile_uploads() -> dict[str, int]:
+    """Make the upload directory and the ownership rows agree, at start-up.
+
+    They drift two ways, both found in #243's review:
+
+    * A row whose file is gone. Cleanup used to delete files and leave their rows,
+      so the deployed databases hold live rows for names no file has. Marked
+      deleted here; the name check in _save_and_index_stl covers any that appear
+      later.
+    * A file no row owns. An upload made without a cookie belongs only to its
+      tab's entry in memory, which a restart forgets, so the file stayed on disk
+      where nobody could see or delete it. Removed here.
+
+    Only the upload directory, and never a built-in: if the two directories were
+    ever the same, nothing is removed.
+    """
+    result = {"stale_rows": 0, "orphan_files": 0}
+    if not recording.current().records or not UPLOAD_DIR.is_dir():
+        return result
+
+    on_disk = {
+        path.name: path
+        for path in UPLOAD_DIR.iterdir()
+        if path.is_file() and path.suffix.lower() in MODEL_SUFFIXES
+    }
+    live = db.live_upload_filenames()
+    for name in live - set(on_disk):
+        result["stale_rows"] += recording.current().forget_file(name)
+
+    if UPLOAD_DIR.resolve() == _MODEL_DIR_RESOLVED:
+        return result
+    for name in set(on_disk) - live:
+        path = on_disk[name]
+        if _is_builtin(path):
+            continue
+        try:
+            path.unlink()
+            result["orphan_files"] += 1
+        except OSError as error:
+            _log(f"Could not remove orphaned upload {name}: {error}")
+    if result["orphan_files"]:
+        global AVAILABLE_MODELS, MODEL_NAME_LIST
+        with models_lock:
+            AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
+            MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
+    return result
 
 
 def _save_and_index_stl(
@@ -1990,7 +2044,15 @@ def _save_and_index_stl(
     target_dir.mkdir(parents=True, exist_ok=True)
     with models_lock:
         dest = target_dir / filename
-        if dest.exists() or _stem_is_taken(Path(filename).stem):
+        # A name some session still holds a live row for is taken too, file or no
+        # file. A stale row would otherwise hand the new upload to its old owner;
+        # the deployed servers have such rows, since cleanup used to delete files
+        # without their rows (#243 review).
+        if (
+            dest.exists()
+            or _stem_is_taken(Path(filename).stem)
+            or (recording.current().records and db.filename_has_live_owner(filename))
+        ):
             stem = Path(filename).stem
             filename = f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
             dest = target_dir / filename
@@ -2228,11 +2290,17 @@ def session_identify():
     email = data.get("email")
     consent = data.get("consent", False)
 
-    if email is not None:
-        email = str(email).strip()
-        if email and not _EMAIL_RE.match(email):
-            return jsonify({"status": "error", "message": "Invalid email address"}), 400
-        email = email or None
+    # One check, the one db.add_contact applies too (app/email_address.py). An
+    # empty field is no address rather than a wrong one.
+    if email is not None and not (isinstance(email, str) and not email.strip()):
+        try:
+            email = email_address.normalise(email)
+        except email_address.InvalidEmail as error:
+            return jsonify(
+                {"status": "error", "reason": error.reason, "message": email_address.message_for(error)}
+            ), 400
+    else:
+        email = None
 
     session_id = _get_or_create_session_id()  # reuse a valid cookie or mint a new UUID
     recorder = recording.current()
@@ -2282,7 +2350,14 @@ def delete_model(filename: str):
     except Exception as err:
         return jsonify({"status": "error", "message": f"Could not remove file: {err}"}), 500
 
-    recording.current().forget_model(session_id, safe_name)
+    # Every row for the file, not only this session's, and every tab still
+    # holding its path: either one left behind would claim the next upload of
+    # the same name, and a tab's cleanup on closing would delete it (#243 review).
+    recording.current().forget_file(safe_name)
+    resolved = str(dest.resolve())
+    with uploaded_models_lock:
+        for paths in uploaded_models_by_session.values():
+            paths.discard(resolved)
 
     global AVAILABLE_MODELS, MODEL_NAME_LIST
     with models_lock:
@@ -2315,10 +2390,11 @@ def track_event():
 @app.route("/uploads/cleanup", methods=["POST"])
 def cleanup_uploaded_models():
     payload = request.get_json(silent=True) or {}
+    # From the body or the header, never the address, for the reason in
+    # _request_upload_session_id.
     upload_session_id = _sanitize_upload_session_id(
         payload.get("upload_session_id")
         or request.form.get("upload_session_id")
-        or request.args.get("upload_session_id")
         or request.headers.get("X-Upload-Session")
     )
     if not upload_session_id:
@@ -2341,8 +2417,11 @@ def sse_events():
     Replaces 1-second polling for hardware input — events are pushed immediately
     when device state changes, reducing perceived latency from ~1000 ms to ~10 ms.
     """
-    # Read while the request is still the one asking, before the stream starts.
-    initial = {"model_list": _visible_model_names()}
+    # Nothing that depends on who is asking. The first message used to be the
+    # caller's model list, which meant the tab id rode in the stream's address,
+    # into access logs (#243 review). The list comes from /get_data and /render,
+    # which send the id in a header.
+    initial: dict[str, Any] = {}
 
     def generate():
         client_queue = _queue_module.Queue(maxsize=20)
@@ -2566,6 +2645,14 @@ def main() -> int:
         _log("Output mode: quiet (set SERVER_VERBOSE=1 for debug logs)", force=True)
 
     db.init_db()
+    if not DEMO_ONLY:
+        reconciled = _reconcile_uploads()
+        if any(reconciled.values()):
+            _log(
+                f"Uploads reconciled: {reconciled['stale_rows']} row(s) for missing files "
+                f"marked deleted, {reconciled['orphan_files']} unowned file(s) removed",
+                force=True,
+            )
     # A separate database from the analytics one, so a study session that cannot
     # be re-run is never at the mercy of a change to product telemetry.
     study_db.init_db()

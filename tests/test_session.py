@@ -24,9 +24,11 @@ def tmp_db(tmp_path, monkeypatch):
     monkeypatch.setattr(db_module, "DB_PATH", db_path)
     # Reset any cached thread-local connections so they reopen against the new path.
     db_module._local.__dict__.clear()
+    db_module._contacts_local.__dict__.clear()
     db_module.init_db()
     yield db_path
     db_module._local.__dict__.clear()
+    db_module._contacts_local.__dict__.clear()
 
 
 @pytest.fixture()
@@ -37,13 +39,45 @@ def client(tmp_db):
 
 
 def _contacts(db_path) -> list[str]:
-    """Every address in the contact list."""
+    """Every address in the contact list, which is a file of its own beside the
+    usage database, in the order it is stored."""
     import sqlite3
-    conn = sqlite3.connect(str(db_path))
+    from pathlib import Path
+    conn = sqlite3.connect(str(Path(db_path).with_name("contacts.db")))
     try:
         return [row[0] for row in conn.execute("SELECT email FROM contacts")]
     finally:
         conn.close()
+
+
+def _old_database(db_path, rows, *, wal=True) -> None:
+    """A usage database as master left it: addresses in sessions.identifier,
+    indexed, and still in the write-ahead log."""
+    import sqlite3
+    conn = sqlite3.connect(str(db_path))
+    if wal:
+        conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, identifier TEXT, consent_given INTEGER,"
+        " is_workshop INTEGER DEFAULT 0, created_at DATETIME, last_seen_at DATETIME)"
+    )
+    conn.execute("CREATE INDEX idx_sessions_identifier ON sessions(identifier) WHERE identifier IS NOT NULL")
+    conn.executemany(
+        "INSERT INTO sessions (id, identifier, consent_given, is_workshop) VALUES (?, ?, 1, ?)", rows
+    )
+    conn.commit()
+    conn.close()
+
+
+def _init(db_path, monkeypatch) -> None:
+    monkeypatch.setattr(db_module, "DB_PATH", db_path)
+    db_module._local.__dict__.clear()
+    db_module._contacts_local.__dict__.clear()
+    try:
+        db_module.init_db()
+    finally:
+        db_module._local.__dict__.clear()
+        db_module._contacts_local.__dict__.clear()
 
 
 def _identify(client, email=None, consent=True):
@@ -123,10 +157,35 @@ class TestDbSession:
         """No session, no time, no order of arrival: nothing to match an address
         to the usage data recorded under a session."""
         import sqlite3
-        conn = sqlite3.connect(str(tmp_db))
+        conn = sqlite3.connect(str(tmp_db.with_name("contacts.db")))
         columns = [row[1] for row in conn.execute("PRAGMA table_info(contacts)")]
         conn.close()
         assert columns == ["email"]
+
+    def test_the_contact_list_is_a_file_of_its_own(self, tmp_db):
+        """A table shares its file's pages, log and backups, so a copy of usage.db
+        made to look at analytics carried the addresses with it (#243 review)."""
+        import sqlite3
+        db_module.add_contact("user@example.com")
+        conn = sqlite3.connect(str(tmp_db))
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        conn.close()
+        assert "contacts" not in tables
+        assert b"user@example.com" not in tmp_db.read_bytes()
+        assert _contacts(tmp_db) == ["user@example.com"]
+
+    def test_addresses_are_stored_in_address_order(self, tmp_db):
+        """Not in the order they arrived, which would line up with the sessions'
+        creation times."""
+        for address in ("zoe@example.com", "ann@example.com", "max@example.com"):
+            db_module.add_contact(address)
+        assert _contacts(tmp_db) == ["ann@example.com", "max@example.com", "zoe@example.com"]
+
+    def test_add_contact_applies_the_same_check_as_the_dialog(self, tmp_db):
+        from app.email_address import InvalidEmail
+        with pytest.raises(InvalidEmail):
+            db_module.add_contact("<script>alert(1)</script>@x.y")
+        assert _contacts(tmp_db) == []
 
     def test_an_address_is_kept_once_whatever_its_case(self, tmp_db):
         db_module.add_contact("User@Example.com")
@@ -187,6 +246,69 @@ class TestDbSession:
         conn.close()
         assert "x@y.org" not in row.values()
         assert _contacts(db_path) == ["x@y.org"]
+
+    def test_an_identifier_that_is_not_an_address_stays_where_it_is(self, tmp_path, monkeypatch):
+        """A local database had a non-workshop row whose identifier was "abc123".
+        Moving it would put a non-address on the contact list and could not be
+        undone (#243 review)."""
+        db_path = tmp_path / "old.db"
+        _old_database(db_path, [("odd", "abc123", 0), ("viewer", "old@example.com", 0)])
+        _init(db_path, monkeypatch)
+
+        import sqlite3
+        conn = sqlite3.connect(str(db_path))
+        identifiers = dict(conn.execute("SELECT id, identifier FROM sessions"))
+        conn.close()
+        assert identifiers == {"odd": "abc123", "viewer": None}
+        assert _contacts(db_path) == ["old@example.com"]
+
+    def test_no_copy_of_a_moved_address_is_left_in_the_usage_database(self, tmp_path, monkeypatch):
+        """Setting the column to NULL left the address in the freed cell, in the
+        index, and in the log's copies of the old pages (#243 review)."""
+        db_path = tmp_path / "old.db"
+        addresses = ["first@example.com", "second@example.org", "third@example.net"]
+        _old_database(db_path, [(f"s{i}", a, 0) for i, a in enumerate(addresses)] + [("w", "zoe", 1)])
+        _init(db_path, monkeypatch)
+
+        leftovers = b""
+        for suffix in ("", "-wal"):
+            path = db_path.with_name(db_path.name + suffix)
+            if path.exists():
+                leftovers += path.read_bytes()
+        for address in addresses:
+            assert address.encode() not in leftovers, f"{address} is still in usage.db"
+        assert b"zoe" in leftovers, "the workshop name should still be there"
+        assert _contacts(db_path) == sorted(addresses)
+
+    def test_an_interrupted_move_finishes_on_the_next_start(self, tmp_path, monkeypatch):
+        """Addresses are committed to their own file first, so a start that dies
+        before clearing them from usage.db repeats rather than loses them."""
+        db_path = tmp_path / "old.db"
+        _old_database(db_path, [("viewer", "old@example.com", 0)])
+
+        def interrupted(conn):
+            raise RuntimeError("the server stopped here")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(db_module, "_scrub_after_moving_addresses", interrupted)
+            with pytest.raises(RuntimeError):
+                _init(db_path, monkeypatch)
+
+        import sqlite3
+        conn = sqlite3.connect(str(db_path))
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module._SCRUB_PENDING, (
+            "the stopped start left nothing to tell the next one the scrub is owed"
+        )
+        conn.close()
+
+        _init(db_path, monkeypatch)
+
+        conn = sqlite3.connect(str(db_path))
+        assert conn.execute("SELECT identifier FROM sessions").fetchone()[0] is None
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+        conn.close()
+        assert _contacts(db_path) == ["old@example.com"]
+        assert b"old@example.com" not in db_path.read_bytes()
 
     def test_get_session_none_for_unknown(self, tmp_db):
         assert db_module.get_session("does-not-exist") is None
@@ -365,6 +487,30 @@ class TestSessionIdentify:
                 assert "hello@example.com" not in [str(value) for value in row], f"{table} holds the address"
         conn.close()
         assert _contacts(tmp_db) == ["hello@example.com"]
+
+    @pytest.mark.parametrize(
+        "email, reason",
+        [
+            ("x" * 300 + "@example.com", "too_long"),
+            ("a" * 65 + "@example.com", "too_long"),
+            ("a..b@c.de", "invalid"),
+            ("<script>alert(1)</script>@x.y", "invalid"),
+            (["a@b.cd"], "invalid"),
+        ],
+    )
+    def test_identify_says_why_an_address_was_refused(self, client, tmp_db, email, reason):
+        resp = client.post("/session/identify", json={"email": email, "consent": True})
+        assert resp.status_code == 400
+        body = resp.get_json()
+        assert body["reason"] == reason
+        assert ("too long" in body["message"]) == (reason == "too_long")
+        assert _contacts(tmp_db) == []
+
+    def test_an_address_in_any_script_is_kept(self, client, tmp_db):
+        """Refusing these would turn away people whose names are not ASCII."""
+        for email in ("josé@example.es", "ana@münchen.de"):
+            assert client.post("/session/identify", json={"email": email, "consent": True}).status_code == 200
+        assert _contacts(tmp_db) == ["ana@münchen.de", "josé@example.es"]
 
     def test_decline_stores_no_email(self, client, tmp_db):
         client.post("/session/identify", json={"email": None, "consent": False})
