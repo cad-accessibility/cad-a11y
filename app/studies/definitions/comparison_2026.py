@@ -1,54 +1,59 @@
-"""The study protocol, as data.
+"""The comparison study, closed.
 
-This module is the single source of truth for what a study session consists of:
-which model pairs exist, which two a given participant gets and in which order,
-what the experimenter reads aloud at each step, which STL loads when, and which
-questions are asked. The server, the experimenter panel and the participant view
-all read the protocol from here (via ``GET /study/config`` and the session state
-payload) so none of them can drift from the others.
+Each participant explored a printed and a virtual mug to learn the system, then
+two of three model pairs -- a Lego brick, a pencil holder and a cane tip -- each
+as an original and an edited version, describing what changed. It ran in 2026
+at ``/study``, and the last code that served it is tagged
+``study-instrument-2026``.
 
-Why a Python module rather than a config file
----------------------------------------------
-An operator can still override the whole thing at runtime: if
-``data/study/protocol.json`` exists (or ``STUDY_PROTOCOL_PATH`` points at a file),
-it is loaded instead of the built-in definition. ``data`` is Docker-volume backed,
-so that override survives a redeploy and can be edited without one. The built-in
-definition stays in code because it ships with the image, needs no new dependency,
-and is covered by the test suite -- a protocol that fails to parse mid-session is
-a ruined session.
+Closed means the only thing served for it is its control panel's data
+downloads, behind its own token, so its data can come off both servers without
+shell access. No session can start and there is no participant page. Once the
+data is exported, checked and stored, set it to ``Status.RETIRED`` and remove
+``token_hash``; then nothing is served for it at all.
+
+The definition stays either way, because it is the record of what every session
+in its data was asked to do, step by step. Its data stays where it was written,
+in ``data/db/study.db`` and ``data/logs/study/``, from before studies had
+directories of their own.
+
+Nothing below has been edited since it ran beyond what moving it here needed,
+with one addition: ``VIEWER_DEFAULTS`` names Turn as the axis mode, the only
+mode there was when it ran. Two things this file cannot settle. The code that
+served it read ``data/study/protocol.json`` instead of its built-in protocol
+when that file existed, and whether either server had one is not known. And
+its sessions carry no ``protocol_hash``, which came later, so the data cannot
+say which protocol they ran. What a step may carry and how the references
+resolve is in ``protocol.py``.
 
 Counterbalancing
 ----------------
-The protocol has three model pairs -- the Lego brick, the pencil holder and the
-cane tip -- and each participant gets **two** of the three. Taking three objects
-two at a time in order gives six sets, and running all six once is one balanced
-round: every object appears twice first and twice second, so "found more in the
-second task" cannot be confounded with "the second task was always the cane tip".
+Each participant got **two** of the three pairs. Taking three objects two at a
+time in order gives six sets, and running all six once is one balanced round:
+every object appears twice first and twice second, so "found more in the second
+task" cannot be confounded with "the second task was always the cane tip".
 Randomising a sample this small routinely produces an unbalanced set, which is
 exactly what counterbalancing is for.
-
-Which set a participant gets is the experimenter's choice, made in the control
-panel from a list of the six with the ones already run struck through (see
-``task_sets``, and ``task_set_status`` in ``study.py`` for the used/unused
-bookkeeping). ``assign_task_order`` remains as the fallback for a session started
-without a set named -- the API still accepts one, and a session has to get some
-assignment.
 """
 
 from __future__ import annotations
 
-import copy
-import json
 import os
 from pathlib import Path
 from typing import Any
+
+from ..definition import Status, Storage, Study, repo_root
+from ..protocol import ask as _ask
+from ..protocol import do as _do
+from ..protocol import note as _note
+from ..protocol import say as _say
 
 PROTOCOL_VERSION = "2026-08-04"
 
 # How many of the three model pairs one participant sees. Two is what fits a
 # 60-90 minute session: the 2026-08-04 pilot spent most of an hour reaching the
 # end of the first pair. Three taken two at a time is also what makes a round
-# six sets long -- see ``task_sets``.
+# six sets long -- see ``protocol.task_sets``.
 TASKS_PER_SESSION = 2
 
 
@@ -152,64 +157,6 @@ _LATIN_SQUARE_ROWS: tuple[tuple[str, ...], ...] = (
     ("lego", "cane_tip", "pencil_holder"),
 )
 
-
-def set_id(task_order: list[str] | tuple[str, ...]) -> str:
-    """The stable name for one model set.
-
-    Order matters -- "pencil holder then cane tip" is a different cell of the
-    design from "cane tip then pencil holder" -- so the id is the order joined,
-    not a sorted key. It is also what the used/unused bookkeeping counts by, so a
-    session's stored ``task_order`` maps onto a set without a lookup table.
-    """
-    return "+".join(str(key) for key in task_order)
-
-
-def task_sets() -> list[dict[str, Any]]:
-    """The six model sets, in Latin-square order, for the experimenter to pick from.
-
-    One round of the study is these six run once each. The panel lists them all
-    and strikes through the ones already recorded, so choosing is reading a list
-    rather than working out where a counter has got to -- and an experimenter can
-    deviate deliberately (a print is missing, a participant has seen one of these
-    in a pilot) without that silently unbalancing the design, because the list
-    still shows what it cost.
-    """
-    return [
-        {
-            "id": set_id(row[:TASKS_PER_SESSION]),
-            "position": index + 1,
-            "task_order": list(row[:TASKS_PER_SESSION]),
-            "labels": [
-                (MODEL_PAIRS.get(key) or {}).get("label", key)
-                for key in row[:TASKS_PER_SESSION]
-            ],
-        }
-        for index, row in enumerate(_LATIN_SQUARE_ROWS)
-    ]
-
-
-def assign_task_order(sequence_number: int) -> list[str]:
-    """The set the ``sequence_number``-th participant would get by rotation.
-
-    The experimenter picks the set in the panel, so this is not the ordinary
-    path any more. It stays because a session must always end up with some
-    assignment: ``POST /study/session/start`` accepts a request that names no
-    set, and answering that with an empty task order would produce a session
-    whose task steps load nothing.
-    """
-    if sequence_number < 1:
-        sequence_number = 1
-    row = _LATIN_SQUARE_ROWS[(sequence_number - 1) % len(_LATIN_SQUARE_ROWS)]
-    return list(row[:TASKS_PER_SESSION])
-
-
-def latin_square_preview() -> list[dict[str, Any]]:
-    """The full assignment table -- the "cheat sheet for which two models to show
-    people" the protocol asks for. Same six sets as ``task_sets``, keyed by the
-    rotation position ``assign_task_order`` uses."""
-    return [
-        {"sequence_number": entry["position"], **entry} for entry in task_sets()
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -397,25 +344,6 @@ _EXPLORATION_PROMPTS = {
 }
 
 
-def _do(text: str) -> dict[str, Any]:
-    return {"kind": "do", "text": text}
-
-
-def _say(text: str) -> dict[str, Any]:
-    return {"kind": "say", "text": text}
-
-
-def _note(text: str) -> dict[str, Any]:
-    return {"kind": "note", "text": text}
-
-
-def _ask(text: str, questions: list[dict[str, Any]] | None = None, note: str | None = None) -> dict[str, Any]:
-    block: dict[str, Any] = {"kind": "ask", "text": text}
-    if questions:
-        block["questions"] = questions
-    if note:
-        block["note"] = note
-    return block
 
 
 def _pair_steps(
@@ -991,262 +919,38 @@ def _build_steps() -> list[dict[str, Any]]:
 STEPS: list[dict[str, Any]] = _build_steps()
 
 
-# ---------------------------------------------------------------------------
-# Resolution
-# ---------------------------------------------------------------------------
-
-def _resolve_pair_key(ref: dict[str, Any], task_order: list[str]) -> str | None:
-    kind = ref.get("kind")
-    # A {"kind": "practice"} reference resolves to nothing, which is deliberate:
-    # the rehearsal round was removed, and a protocol override still carrying one
-    # should leave the display alone rather than load something arbitrary.
-    if kind == "task":
-        slot = int(ref.get("slot") or 0)
-        if 1 <= slot <= len(task_order):
-            return task_order[slot - 1]
-    return None
-
-
-def _resolve_model(ref: dict[str, Any] | None, task_order: list[str]) -> dict[str, Any] | None:
-    """Turn a step's model reference into a concrete model stem plus its labels."""
-    if not ref:
-        return None
-    if ref.get("kind") == "fixed":
-        stem = str(ref.get("model") or "")
-        return {"model": stem, "label": stem, "pair_key": None, "version": None} if stem else None
-
-    pair_key = _resolve_pair_key(ref, task_order)
-    if not pair_key:
-        return None
-    pair = MODEL_PAIRS.get(pair_key)
-    if not pair:
-        return None
-    version = str(ref.get("version") or "a")
-    entry = pair.get(version) or {}
-    return {
-        "model": entry.get("model"),
-        "label": entry.get("label"),
-        "pair_key": pair_key,
-        "pair_label": pair.get("label"),
-        "version": version,
-    }
-
-
-def _resolve_physical(ref: dict[str, Any] | None, task_order: list[str]) -> str | None:
-    if not ref:
-        return None
-    if ref.get("kind") == "literal":
-        return ref.get("label")
-    pair_key = _resolve_pair_key(ref, task_order)
-    if not pair_key:
-        return None
-    pair = MODEL_PAIRS.get(pair_key) or {}
-    entry = pair.get(str(ref.get("version") or "a")) or {}
-    return entry.get("physical")
-
-
-def resolve_steps(task_order: list[str] | None) -> list[dict[str, Any]]:
-    """Return the protocol's steps with this participant's models substituted in.
-
-    Everything the two front-ends need is baked in here -- resolved model stem,
-    resolved physical-model reminder, the answer key for the pair -- so neither has
-    to re-derive it and they cannot disagree about which model belongs to step 12.
-    """
-    order = list(task_order or [])
-    protocol = load_protocol()
-
-    resolved: list[dict[str, Any]] = []
-    for index, raw in enumerate(protocol["steps"]):
-        step = copy.deepcopy(raw)
-        step["index"] = index
-
-        model = _resolve_model(step.get("model"), order)
-        step["model"] = model
-        step["physical_model"] = _resolve_physical(step.get("physical_model"), order)
-
-        # The pair this step belongs to, for the answer key and for tagging
-        # observations with the model they were made about.
-        pair_key = None
-        if model and model.get("pair_key"):
-            pair_key = model["pair_key"]
-        elif step.get("task_slot"):
-            slot = int(step["task_slot"])
-            if 1 <= slot <= len(order):
-                pair_key = order[slot - 1]
-        step["pair_key"] = pair_key
-        pair = protocol["model_pairs"].get(pair_key) if pair_key else None
-        step["pair"] = (
-            {
-                "key": pair_key,
-                "label": pair.get("label"),
-                "description": pair.get("description"),
-                "differences": pair.get("differences", []),
-                "unchanged": pair.get("unchanged", []),
-            }
-            if pair
-            else None
-        )
-
-        step["script"] = _resolve_script(step.get("script"), pair)
-
-        resolved.append(step)
-    return resolved
-
-
-def _substitute(text: str, pair: dict[str, Any] | None) -> str:
-    """Fill {description} and {label} with the pair this participant actually got.
-
-    Done here rather than in the panel so the substitution lives in one place and
-    an unresolved placeholder can never be read aloud to a participant.
-    """
-    if not pair:
-        return text
-    return (
-        text.replace("{description}", str(pair.get("description") or ""))
-        .replace("{label}", str(pair.get("label") or ""))
+def _legacy_storage() -> Storage:
+    """Where this study's data was written. ``STUDY_DB_PATH`` and
+    ``STUDY_LOG_DIR`` are the variables the old code read, kept so a copy of
+    the data restored somewhere else can be pointed at."""
+    root = repo_root() / "data"
+    db_path = os.environ.get("STUDY_DB_PATH", "").strip()
+    log_dir = os.environ.get("STUDY_LOG_DIR", "").strip()
+    return Storage(
+        db_path=Path(db_path) if db_path else root / "db" / "study.db",
+        log_dir=Path(log_dir) if log_dir else root / "logs" / "study",
     )
 
 
-def _resolve_script(script: Any, pair: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """Normalise a step's script to a list of blocks with placeholders filled.
-
-    A plain string is accepted and becomes a single note, so a protocol override
-    written before the block format existed still loads rather than rendering an
-    empty step in the middle of a session.
-    """
-    if not script:
-        return []
-    if isinstance(script, str):
-        return [{"kind": "note", "text": _substitute(script, pair)}]
-
-    blocks: list[dict[str, Any]] = []
-    for raw in script:
-        if isinstance(raw, str):
-            blocks.append({"kind": "note", "text": _substitute(raw, pair)})
-            continue
-        block = dict(raw)
-        kind = str(block.get("kind") or "note")
-        block["kind"] = kind if kind in ("do", "say", "ask", "note") else "note"
-        block["text"] = _substitute(str(block.get("text") or ""), pair)
-        if block.get("note"):
-            block["note"] = _substitute(str(block["note"]), pair)
-        if block.get("questions"):
-            block["questions"] = [
-                {**question, "text": _substitute(str(question.get("text") or ""), pair)}
-                for question in block["questions"]
-            ]
-        blocks.append(block)
-    return blocks
-
-
-def step_count(task_order: list[str] | None = None) -> int:
-    return len(resolve_steps(task_order))
-
-
-# ---------------------------------------------------------------------------
-# Optional runtime override
-# ---------------------------------------------------------------------------
-
-def _override_path() -> Path | None:
-    """Where an operator-supplied protocol would live, if there is one."""
-    env_path = os.getenv("STUDY_PROTOCOL_PATH", "").strip()
-    if env_path:
-        return Path(env_path)
-    root = Path(__file__).resolve().parent.parent
-    return root / "data" / "study" / "protocol.json"
-
-
-_BUILTIN_PROTOCOL: dict[str, Any] = {
-    "version": PROTOCOL_VERSION,
-    "source": "builtin",
-    "tasks_per_session": TASKS_PER_SESSION,
-    "main_pairs": list(MAIN_PAIRS),
-    "onboarding_model": ONBOARDING_MODEL,
-    "model_pairs": MODEL_PAIRS,
-    "steps": STEPS,
-    "facilitator_prompts": FACILITATOR_PROMPTS,
-    "strategy_prompts": STRATEGY_PROMPTS,
-    "viewer_defaults": VIEWER_DEFAULTS,
-}
-
-_cached_override: dict[str, Any] | None = None
-# Path as well as mtime: keying on mtime alone would serve a stale protocol if
-# STUDY_PROTOCOL_PATH were repointed at a different file with the same timestamp.
-_cached_override_key: tuple[str, float] | None = None
-_override_error: str | None = None
-
-
-def load_protocol() -> dict[str, Any]:
-    """Return the active protocol, preferring a valid runtime override.
-
-    A malformed or unreadable override is ignored rather than raised: a session in
-    progress must not be taken down by a typo in an edited file. The reason is kept
-    in ``override_error()`` and reported by ``GET /study/config`` so the mistake is
-    visible in the control panel instead of failing silently.
-    """
-    global _cached_override, _cached_override_key, _override_error
-
-    path = _override_path()
-    if not path or not path.is_file():
-        _cached_override = None
-        _cached_override_key = None
-        _override_error = None
-        return _BUILTIN_PROTOCOL
-
-    try:
-        key = (str(path), path.stat().st_mtime)
-        if _cached_override is not None and _cached_override_key == key:
-            return _cached_override
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("protocol override must be a JSON object")
-        merged = {**_BUILTIN_PROTOCOL, **data, "source": str(path)}
-        if not isinstance(merged.get("steps"), list) or not merged["steps"]:
-            raise ValueError("protocol override has no steps")
-        _cached_override = merged
-        _cached_override_key = key
-        _override_error = None
-        return merged
-    except Exception as error:  # noqa: BLE001 - reported, never fatal
-        _cached_override = None
-        _cached_override_key = None
-        _override_error = f"{path}: {error}"
-        return _BUILTIN_PROTOCOL
-
-
-def override_error() -> str | None:
-    return _override_error
-
-
-def config_payload() -> dict[str, Any]:
-    """Everything the control panel needs before a session exists."""
-    protocol = load_protocol()
-    return {
-        "version": protocol.get("version"),
-        "source": protocol.get("source"),
-        "override_error": override_error(),
-        "tasks_per_session": protocol.get("tasks_per_session"),
-        "main_pairs": protocol.get("main_pairs"),
-        "model_pairs": protocol.get("model_pairs"),
-        "facilitator_prompts": protocol.get("facilitator_prompts"),
-        "strategy_prompts": protocol.get("strategy_prompts"),
-        "viewer_defaults": protocol.get("viewer_defaults"),
-        "latin_square": latin_square_preview(),
-    }
-
-
-def required_models() -> list[str]:
-    """Every model stem the protocol will ask the viewer to load.
-
-    The control panel checks these against the server's model list at enrollment,
-    so a missing STL is found before the participant is sitting down rather than
-    when the step that needs it fails to load.
-    """
-    protocol = load_protocol()
-    stems = {protocol.get("onboarding_model") or ONBOARDING_MODEL}
-    for pair in protocol.get("model_pairs", {}).values():
-        for version in ("a", "b"):
-            entry = pair.get(version) or {}
-            if entry.get("model"):
-                stems.add(entry["model"])
-    return sorted(stems)
+STUDY = Study(
+    slug="comparison-2026",
+    title="Model comparison study (2026)",
+    status=Status.CLOSED,
+    version=PROTOCOL_VERSION,
+    summary=(
+        "Each participant explores a mug, then "
+        f"{TASKS_PER_SESSION} of the three model pairs."
+    ),
+    steps=STEPS,
+    tasks=MODEL_PAIRS,
+    design=_LATIN_SQUARE_ROWS,
+    tasks_per_session=TASKS_PER_SESSION,
+    viewer_defaults=VIEWER_DEFAULTS,
+    model_labels={"a": "First object", "b": "Second object"},
+    facilitator_prompts=FACILITATOR_PROMPTS,
+    strategy_prompts=STRATEGY_PROMPTS,
+    storage=_legacy_storage,
+    instrument_tag="study-instrument-2026",
+    # Only while it is closed. Retiring it takes this out with it.
+    token_hash="scrypt$32768$8$1$qqcD8wlD-ipWeaR4Yf_uVw$Sw4uHZoIXwgX8apWkCT_Lwnrx4L8uyyCfzKOsOGjf-c",
+)

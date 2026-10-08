@@ -3,7 +3,7 @@ const SERVER_URL = window.location.origin;
 const UPLOAD_SESSION_STORAGE_KEY = 'cadA11yUploadSessionId';
 
 // ---------------------------------------------------------------------------
-// Study mode (/study).
+// Study mode (/studies/<slug>).
 //
 // The participant uses the ordinary viewer -- the interface they were onboarded
 // on is the interface they do the tasks with -- with two differences. The model
@@ -12,11 +12,17 @@ const UPLOAD_SESSION_STORAGE_KEY = 'cadA11yUploadSessionId';
 // question the participant is being asked to work out by touch. studyModelLabel
 // holds the neutral label ("Second object") that is shown in its place.
 //
-// studySessionId tags every render request, which is how the server attributes a
-// render to the right session when several are running at once.
+// studySlug and studySessionKey tag every render request, which is how the
+// server attributes a render to the right study and session when several are
+// running at once. The key is the session's join code rather than its id: ids
+// are small sequential numbers, and a guessed one used to be enough to write
+// renders into someone else's session.
 // ---------------------------------------------------------------------------
-const studyMode = location.pathname.replace(/\/+$/, '') === '/study';
-let studySessionId = null;
+const STUDY_PATH = /^\/studies\/([a-z0-9]+(?:-[a-z0-9]+)*)\/?$/;
+const studyPathMatch = location.pathname.match(STUDY_PATH);
+const studyMode = Boolean(studyPathMatch);
+const studySlug = studyPathMatch ? studyPathMatch[1] : null;
+let studySessionKey = null;
 let studyModelLabel = null;
 
 // ---------------------------------------------------------------------------
@@ -379,11 +385,14 @@ async function sendStateToServer() {
 
         // Send to server and process response
         renderRequestInFlight = true;
-        // The study session is sent as a header rather than in the body so the
+        // The study session is sent as headers rather than in the body so the
         // render parameters -- and with them the render cache key -- are byte for
         // byte what the ordinary viewer sends.
         const renderHeaders = { 'Content-Type': 'application/json' };
-        if (studySessionId) renderHeaders['X-Study-Session'] = String(studySessionId);
+        if (studySlug && studySessionKey) {
+            renderHeaders['X-Study'] = studySlug;
+            renderHeaders['X-Study-Key'] = studySessionKey;
+        }
 
         fetch(`${SERVER_URL}/render`, {
             method: 'POST',
@@ -779,7 +788,7 @@ function viewName(viewToken = viewerState.currentView) {
 //         one of OpenSCAD's standard views, so there are only two things to
 //         name, the axis and the side, and nothing to roll.
 //   turn  pitch, roll and yaw (U/O, I/K, J/L), a quarter turn at a time, centred
-//         on the reader. What the study ran on, and what /study still uses.
+//         on the reader. What the comparison study ran on (#185).
 // People who model in OpenSCAD already think in axes -- cube([20,10,5]),
 // translate([0,0,12]) -- and a study participant asked for exactly this (#203).
 //
@@ -3457,8 +3466,10 @@ function viewerStateSnapshot() {
 
 window.cadStudy = {
     isStudyMode: () => studyMode,
-    setSessionId: (id) => { studySessionId = id ? Number(id) : null; },
-    getSessionId: () => studySessionId,
+    // Where this study's participant API lives: /studies/<slug>.
+    basePath: () => (studySlug ? `/studies/${studySlug}` : null),
+    setSessionKey: (key) => { studySessionKey = key ? String(key).toUpperCase() : null; },
+    getSessionKey: () => studySessionKey,
     applyDefaults: applyStudyDefaults,
     loadModel: loadStudyModel,
     snapshot: viewerStateSnapshot,

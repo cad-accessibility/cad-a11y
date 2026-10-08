@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from app import study_protocol
+from app.studies.definitions import comparison_2026
 
 ROOT = Path(__file__).resolve().parents[1]
 VIEWER_JS = ROOT / "static" / "js" / "viewer.js"
@@ -268,12 +268,12 @@ def test_the_help_names_both_sides():
 
 def test_xyz_is_the_default_and_turn_is_kept_when_chosen():
     """Jen's review of #235: XYZ, not pitch, roll and yaw, is the default. A stored
-    choice of Turn is kept, and the study protocol still runs in Turn."""
+    choice of Turn is kept, and the comparison study ran in Turn."""
     init = _function("initializeAxisSettings")
     assert "(studyMode || read(SETTINGS_AXIS_MODE_KEY) === 'turn') ? 'turn' : 'xyz'" in init
     assert re.search(r'id="axis-mode-xyz" value="xyz" checked', _html())
     assert not re.search(r'id="axis-mode-turn" value="turn" checked', _html())
-    assert study_protocol.VIEWER_DEFAULTS["axis_mode"] == "turn"
+    assert comparison_2026.VIEWER_DEFAULTS["axis_mode"] == "turn"
 
 
 def test_xyz_mode_marks_the_edges_and_the_origin_unless_turned_off():
@@ -302,8 +302,9 @@ def test_there_is_no_millimetre_mode_left():
 
 
 def test_the_study_never_starts_in_xyz_mode():
-    """Settings is not gated on /study, but the protocol's mode wins at start-up
-    and at every model load, and is not written back to the browser."""
+    """Settings is not gated on a study's page, but the browser's stored choice
+    is ignored there at start-up, the protocol's mode is applied at every model
+    load, and neither is written back to the browser."""
     js = _js()
     init = js[js.index("function initializeAxisSettings()"):]
     init = init[:init.index("\n}\n")]

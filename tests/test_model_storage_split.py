@@ -252,7 +252,7 @@ def test_health_reports_the_real_log_dir_not_the_braille_fallback(client, monkey
 
     The fallback is not equivalent to the real directory. /tmp/cad-a11y/logs
     lives inside the container and is discarded on every redeploy, and
-    study_db writes participant session logs to data/logs/study with no
+    studies write participant session logs under data/logs/studies with no
     fallback at all, so those fail outright. Reporting the resolved path here
     would turn /health green on a deployment that is quietly losing study
     data, which is the one thing the endpoint exists to catch. The entrypoint

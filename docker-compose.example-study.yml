@@ -1,0 +1,11 @@
+# Runs the example study, whose panel token is published in the repository: for
+# a development machine and CI, never a server. docker-compose.yml on its own
+# does not pass CAD_A11Y_ALLOW_EXAMPLE_STUDY, so a server cannot serve the
+# example even with CAD_A11Y_OPEN_STUDIES=example set (#258 review).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.example-study.yml up --build
+services:
+  app:
+    environment:
+      CAD_A11Y_OPEN_STUDIES: example
+      CAD_A11Y_ALLOW_EXAMPLE_STUDY: "1"

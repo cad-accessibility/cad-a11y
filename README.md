@@ -8,6 +8,8 @@ A tool for making 3D CAD models accessible to blind and low-vision (BLV) users. 
 - [ACCESSIBILITY.md](ACCESSIBILITY.md) — project accessibility goals, scope, and how to report accessibility issues
 - [CHANGELOG.md](CHANGELOG.md) — version history
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — deployment architecture and Docker details
+- [docs/STUDIES.md](docs/STUDIES.md): defining, running, exporting and retiring a study
+- [docs/STUDY_DATA_EXPORT.md](docs/STUDY_DATA_EXPORT.md): what a study's exported data means
 - [docs/MAINTAINER_GUIDE.md](docs/MAINTAINER_GUIDE.md) — release process, branch strategy, triage
 
 ## Prerequisites
@@ -40,6 +42,8 @@ cad-a11y/
 ├── app/
 │   ├── server.py                 # Flask server (entry point inside the container)
 │   ├── recording.py              # The one place interaction data leaves the process
+│   ├── studies/                  # Studies at /studies/<slug>: engine, storage, export
+│   │   └── definitions/          # One file per study, with its status
 │   ├── braille_display.py        # Braille display I/O (Monarch, DotPad)
 │   └── cad_comparison_lib.py     # CAD rendering and comparison library
 ├── src/
@@ -87,7 +91,8 @@ key: a key from the other mode only says which mode it belongs to.
   Settings.
 - **Turn**: U/O roll, I/K pitch and J/L yaw the model a quarter turn at a time.
   Left, right, up and down are as they are on the display, whichever way the
-  model faces. The study ran in Turn mode, and /study still does.
+  model faces. The comparison study ran in Turn mode; a study's own settings
+  choose the mode its models load in.
 
 In either mode, "." says where you are ("View from X plus, Y right, Z up.
 Depth: 50%. Origin: H: 42% V: 42%. Render: Outline. Zoom: 0.0. Model: mug."),
@@ -287,8 +292,8 @@ missing, the viewer does not start rather than starting without it.
   itself. Press `H` for the full list.
 
 There is no consent flow, no onboarding script, no task sequence, no rating
-scales and no control panel. Those belong to `/study`, which a demo station does
-not serve.
+scales and no control panel. Those belong to `/studies`, which a demo station
+does not serve.
 
 ### Afterwards
 
@@ -298,120 +303,32 @@ lines appended, no participant numbers issued, and no cookies set.
 
 ## Running a study session
 
-`/study` runs the study protocol end to end. It is the ordinary viewer, with the
-model chooser removed and a study region added at the top carrying the current
-step and an "I am ready to move on" button. Models load themselves at each step,
-so the experimenter never has to find one in a list mid-session.
-
-There are two pages, and they stay in sync over Server-Sent Events, so the
-experimenter can drive the session from their own machine while the participant
-works on theirs.
+A study runs on the ordinary viewer at `/studies/<slug>`, with the model chooser
+removed and a study region at the top carrying the current step and an "I am
+ready to move on" button. Models load themselves at each step. The experimenter
+drives the session from `/studies/<slug>/control`, usually on a second machine,
+and the two stay in step over Server-Sent Events.
 
 | Page | Who uses it | What they need |
 | --- | --- | --- |
-| `/study/control` | The experimenter | Nothing — opening it starts a session |
-| `/study` | The participant | The four-character code from the panel |
+| `/studies/<slug>/control` | The experimenter | The study's panel token, once a day |
+| `/studies/<slug>` | The participant | The four-character code from the panel |
 
-### Running one
-
-1. Open **`/study/control`**. That starts a session — there is nothing to fill in
-   first, because the participant id, the model pairs and the session number are
-   all decided by the protocol.
-2. The panel shows two things to read out: the address `/study`, and a
-   four-character code.
-3. The participant opens `/study` in Chrome — Chrome specifically, because the
-   braille display connects over Bluetooth — and enters the code.
+1. Open the panel and sign in with the study's token.
+2. Choose the task set. The panel shows the participant's code and a join code.
+3. The participant opens the study's address in Chrome, which is what connects
+   their braille display, and enters the join code.
 4. Work through the steps. Each shows what to do, what to say and what to ask,
-   which printed model to hand over, and, for the exploration steps, the answer
-   key for that pair. "Next step" advances both views and loads the next model.
-5. End the session when you reach the last step. That closes the record.
+   what to hand over, and the answer key where the task has one. N moves on and
+   loads the next model; N on the last step ends the session.
 
-The participant sees a practice round with the Lego brick, then two of the three
-model pairs, assigned by a Latin square so they stay balanced across
-participants. The panel shows the assignment.
-
-### If you only have one computer
-
-On the panel, **Run the study on this device**. That window becomes the
-participant's view — exactly `/study`, nothing added — and the session moves to
-the next step when they press "I am ready to move on" rather than waiting for a
-Next button you can no longer reach.
-
-Have the protocol to hand: the script is not shown there. Putting it on that page
-would put it where the participant's screen reader can read it, along with the
-answer key.
-
-Everything else is the same. The same events are recorded in the same order; the
-only difference in the log is that the step advances are attributed to the
-participant, because they are the one who pressed the button.
-
-### One panel, one session
-
-A tab of `/study/control` owns exactly one session. Reloading stays on the same
-session; opening the panel in a **new tab or window starts another**. That is how
-two people run participants at the same time — two panels, two codes — and it is
-also why you should not open the panel "just to look" while a session is running.
-
-The code is what ties a participant's browser to a session, and it is asked for
-every time, whether one session is running or five. One instruction to give, and
-it never changes.
-
-### Access
-
-There is none by default: whoever has the address can open the panel. That is
-deliberate — it keeps the thing you actually do down to opening the app and
-starting.
-
-On a public deployment it also means a stranger with the URL can advance a live
-session, see the answer key and download a participant's interaction log. Setting
-`STUDY_CONTROL_TOKEN` in `.env` turns a gate back on, and the panel then needs
-`/study/control?token=…`. It is off unless that variable is set.
-
-### What each step shows you
-
-Steps are written as labelled blocks rather than one run of prose, because most
-mix things to do with things to say:
-
-| Label | Means |
-| --- | --- |
-| **Say** | Read this to the participant. Shown in quotes. |
-| **Do** | An action you perform. Not spoken. |
-| **Ask** | Questions to ask verbally, sometimes with the response options. |
-| **Note** | Context or a reminder. Never spoken. |
-
-### Questionnaires
-
-The background questions, the rating scale after each object, and the closing
-discussion questions are all in the panel, so there is no second document to keep
-open. They are there **to read from**: ask them out loud and write the answers on
-your own sheet. The panel gives you nowhere to type them and stores none of them.
-
-Consent is not part of the session. It is given before the participant is sent
-the link, so step 1 is settling them in and step 2 is setting up the machine and
-the display.
-
-### Where the data goes
-
-Two records, written independently, both keyed to the participant ID:
-
-- `data/db/study.db` — a SQLite database, separate from the usage database.
-  Interactions and their timings: keypresses, renders, step advances, model
-  loads, readiness signals, announcements.
-- `data/logs/study/<participant>_S<n>_<date>.jsonl` — append-only, one event per
-  line, each line carrying the full viewer state at that moment. This is the
-  record a session is reconstructed from, and it is written even when the
-  database write is the thing that failed.
-
-Nothing else is stored. What the participant said and what the experimenter
-observed stay on the experimenter's own sheet.
-
-Ending a session checkpoints the database, so `study.db` is complete on its own.
-Copy it mid-session and you get only what SQLite has folded in so far — take the
-`-wal` file too, or use the per-session JSON download in the panel.
-
-The control panel reports whether logging is working while the session is
-running, so a storage problem is visible at the time rather than discovered
-during analysis.
+Each study is a definition in `app/studies/definitions/` with a status that
+decides what the servers serve. Nothing answers at `/study` any more: the
+comparison study that ran there is closed, which leaves only its data downloads,
+behind its own token. [docs/STUDIES.md](docs/STUDIES.md) covers
+writing a new study from the example, tokens, running one on a single computer,
+where the data is kept, getting it out without shell access, and retiring a
+study.
 
 ## Where models are stored
 

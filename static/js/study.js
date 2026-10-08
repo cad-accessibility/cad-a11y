@@ -1,7 +1,7 @@
 /**
- * Study session driver for the participant's view (/study).
+ * Study session driver for the participant's view (/studies/<slug>).
  *
- * Inert on every other page. On /study it does three things:
+ * Inert on every other page. On a study's page it does three things:
  *
  *   1. Keeps the study region in sync with the experimenter, over the
  *      Server-Sent Events channel, and loads the model each protocol step calls
@@ -14,12 +14,18 @@
  * It never learns the name of the model on the display. The server sends an
  * index into its model list plus a neutral label, so there is nothing here for a
  * screen reader to read out that would answer the question the participant is
- * being asked. See app/study.py.
+ * being asked. See app/studies/engine.py.
  */
 (function () {
     'use strict';
 
     if (!window.cadStudy || !window.cadStudy.isStudyMode()) return;
+
+    // Every request goes to this study's own address: /studies/<slug>/state and
+    // so on. Two studies open on one server have separate sessions, codes and
+    // logs, and the page only ever talks to the one in its URL.
+    const BASE = window.cadStudy.basePath();
+    const api = (path) => `${BASE}/${path}`;
 
     const region = document.getElementById('study-region');
     const heading = document.getElementById('study-step-heading');
@@ -39,9 +45,9 @@
     if (studyShortcuts) studyShortcuts.hidden = false;
 
     // Identifies this browser in the log. Sessions on a public deployment can in
-    // principle pick up a stray visitor at /study; tagging every event means
-    // their activity is separable in analysis rather than silently mixed in, and
-    // the experimenter panel shows how many views are attached.
+    // principle pick up a stray visitor at a study's address; tagging every event
+    // means their activity is separable in analysis rather than silently mixed
+    // in, and the experimenter panel shows how many views are attached.
     const CLIENT_ID_KEY = 'cadA11yStudyClientId';
     let clientId = null;
     try {
@@ -60,34 +66,6 @@
     // The last state applied, so the repeat command (C) can re-announce the
     // current step without keeping its own separate copy of the same fields.
     let lastState = null;
-
-    // Whether the step change about to arrive over SSE is a consequence of a
-    // request this browser just made (N or B), as opposed to the experimenter
-    // changing it from the panel. There is no id to correlate a broadcast with
-    // the request that caused it, so this is a short-lived guess instead: set
-    // just before sending the request, and it expires on its own if nothing
-    // moved (the paired-mode ready signal is advisory and never does).
-    let expectingOwnStepChange = false;
-    let expectingOwnStepChangeTimer = null;
-
-    function expectOwnStepChange() {
-        expectingOwnStepChange = true;
-        if (expectingOwnStepChangeTimer) clearTimeout(expectingOwnStepChangeTimer);
-        expectingOwnStepChangeTimer = setTimeout(function () {
-            expectingOwnStepChange = false;
-        }, 4000);
-    }
-
-    /** Consume the flag: true at most once per request that set it. */
-    function consumeExpectingOwnStepChange() {
-        const value = expectingOwnStepChange;
-        expectingOwnStepChange = false;
-        if (expectingOwnStepChangeTimer) {
-            clearTimeout(expectingOwnStepChangeTimer);
-            expectingOwnStepChangeTimer = null;
-        }
-        return value;
-    }
 
     // How this session is being run, remembered across reloads. In 'solo' the
     // experimenter and the participant share this laptop, so there is no second
@@ -110,8 +88,8 @@
     let participantCode = '';
 
     // Which session this browser belongs to. Several can run at once on one
-    // deployment, so a plain /study is only unambiguous while exactly one is
-    // active; the key in the link is what makes it certain. Kept in
+    // deployment, so the study's address alone is only unambiguous while exactly
+    // one is active; the key in the link is what makes it certain. Kept in
     // sessionStorage so a reload, or the participant's screen reader restarting
     // the page, does not lose it.
     const KEY_STORAGE = 'cadA11yStudyKey';
@@ -159,7 +137,7 @@
             if (!typed) return;
             if (joinError) { joinError.hidden = true; joinError.textContent = ''; }
             rememberKey(typed);
-            fetch(withKey('/study/state'))
+            fetch(withKey(api('state')))
                 .then(function (res) { return res.ok ? res.json() : null; })
                 .then(function (state) {
                     if (state && state.active) {
@@ -203,7 +181,7 @@
     function report(eventType, eventData, viewerState) {
         if (!sessionActive) return;
         try {
-            fetch(withKey('/study/event'), {
+            fetch(withKey(api('event')), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -230,10 +208,21 @@
      * is what made the announcement inconsistent: the heading, the step
      * counter and the step text used to update independently, and the step
      * text was not a live region at all, so it was never read out). */
+    // A step whose object the server does not have (#258 review). The last
+    // object stays on the display, so the step's own text, which tells the
+    // participant to explore what is there, would be wrong.
+    const MODEL_UNAVAILABLE_TEXT =
+        'The object for this step is not available, so the display still shows the last one. '
+        + 'Please tell your experimenter.';
+
+    function stepTextFor(state) {
+        return state.model_unavailable ? MODEL_UNAVAILABLE_TEXT : (state.text || '');
+    }
+
     function stepAnnouncement(state) {
         const stepNumber = `Step ${(state.step_index || 0) + 1} of ${state.step_count || 1}`;
         const title = state.title || 'Study step';
-        const text = state.text || '';
+        const text = stepTextFor(state);
         return text ? `${stepNumber}: ${text}` : `${stepNumber}: ${title}.`;
     }
 
@@ -247,7 +236,7 @@
 
         const wasActive = sessionActive;
         sessionActive = Boolean(state.active);
-        window.cadStudy.setSessionId(sessionActive ? state.study_session_id : null);
+        window.cadStudy.setSessionKey(sessionActive ? state.participant_key : null);
 
         if (!sessionActive) {
             currentStepId = null;
@@ -306,7 +295,7 @@
             progressText.textContent =
                 `Step ${(state.step_index || 0) + 1} of ${state.step_count || 1}`;
         }
-        if (stepText) stepText.textContent = state.text || '';
+        if (stepText) stepText.textContent = stepTextFor(state);
         if (readyBtn) readyBtn.disabled = false;
         if (readyStatus && stepChanged) readyStatus.textContent = '';
 
@@ -342,15 +331,11 @@
             // used to each be their own live region, which read the title,
             // then the step count, then this announcement repeating both plus
             // the instructions -- the same content three times over. This is
-            // the one thing actually read out, as a single utterance. Full
-            // title-and-content on first joining a session or when this
-            // browser just asked to move on (N/B) -- both are the
-            // participant's own action, and they need the content
-            // immediately. Step-and-title only when the experimenter changed
-            // it: that was not asked for, so the full instructions would be
-            // unwelcome on top of whatever the participant was doing. Press C
-            // for the full announcement either way.
-            const ownStepChange = consumeExpectingOwnStepChange();
+            // the one thing actually read out, as a single utterance: the
+            // step and its instructions, whoever moved it. C reads it again.
+            // (This comment used to promise a shorter announcement when the
+            // experimenter moved the step; the code never made one, and the
+            // comparison study ran with the full one throughout.)
             if (window.cadStudy.announce) {
                 window.cadStudy.announce(stepAnnouncement(state));
             }
@@ -379,10 +364,7 @@
     function signalReady() {
         if (!sessionActive || (readyBtn && readyBtn.disabled)) return;
         if (readyBtn) readyBtn.disabled = true;
-        // Only actually moves the step in a solo session; in a paired one this
-        // is advisory and the flag simply expires unused a few seconds from now.
-        expectOwnStepChange();
-        fetch(withKey('/study/step/ready'), {
+        fetch(withKey(api('step/ready')), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -390,6 +372,10 @@
                 client_time: new Date().toISOString(),
                 viewer_state: window.cadStudy.snapshot(),
                 participant_key: participantKey || undefined,
+                // The step this page is on. In a one-device session, where this
+                // moves the session on, a press for a step already left does
+                // nothing rather than moving it on twice (#258 review).
+                from_index: lastState ? lastState.step_index : undefined,
             }),
         }).then(function (res) {
             return res.ok ? res.json().catch(function () { return {}; }) : null;
@@ -407,9 +393,11 @@
                 readyStatus.textContent = participantCode
                     ? `Session ${participantCode} is complete and has been recorded.`
                     : 'The session is complete and has been recorded.';
-            } else if (body.advanced) {
+            } else if (body.advanced || isSolo()) {
                 // The new step is already announced by applyState (stepAnnouncement);
-                // a second message here would be read out on top of it.
+                // a second message here would be read out on top of it. In a
+                // one-device session nothing else is possible: a press that did
+                // not move was one for a step already left.
                 readyStatus.textContent = '';
             } else {
                 readyStatus.textContent =
@@ -438,15 +426,25 @@
             window.cadStudy.announce('Only your experimenter can move back a step.');
             return;
         }
-        expectOwnStepChange();
-        fetch(withKey('/study/step/back'), {
+        fetch(withKey(api('step/back')), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 client_id: clientId,
                 client_time: new Date().toISOString(),
                 participant_key: participantKey || undefined,
+                from_index: lastState ? lastState.step_index : undefined,
             }),
+        }).then(function (res) {
+            return res.json().catch(function () { return {}; }).then(function (body) {
+                // B used to say nothing when it did nothing (#258 review). A
+                // move is announced by the step change itself.
+                if (!res.ok) {
+                    window.cadStudy.announce('Could not go back. Please try again.');
+                } else if (body.moved === false && body.reason === 'first_step') {
+                    window.cadStudy.announce('This is the first step. There is nothing to go back to.');
+                }
+            });
         }).catch(function () {
             window.cadStudy.announce('Could not go back. Please try again.');
         });
@@ -479,10 +477,11 @@
         const key = String(e.key || '').toLowerCase();
         if (key === 'n') {
             e.preventDefault();
-            signalReady();
+            // A held key repeats; one press is one signal (#258 review).
+            if (!e.repeat) signalReady();
         } else if (key === 'b') {
             e.preventDefault();
-            goBack();
+            if (!e.repeat) goBack();
         } else if (key === 'c') {
             e.preventDefault();
             repeatStep();
@@ -498,7 +497,7 @@
 
     function connect() {
         try {
-            eventSource = new EventSource(withKey('/study/stream'));
+            eventSource = new EventSource(withKey(api('stream')));
         } catch (_) {
             scheduleReconnect();
             return;
@@ -533,7 +532,7 @@
     /** One-shot state fetch. Covers the gap before the stream is up, and the
      * case where a proxy refuses to hold an SSE connection at all. */
     function refreshOnce() {
-        fetch(withKey('/study/state'))
+        fetch(withKey(api('state')))
             .then(function (res) { return res.ok ? res.json() : null; })
             .then(applyState)
             .catch(function () {});

@@ -1,31 +1,50 @@
 # Study Data Export
 
-How to get the study interaction data out as a spreadsheet. Written for whoever
-is doing the analysis.
+How to get a study's interaction data out as a spreadsheet, and what its columns
+mean. Written for whoever is doing the analysis. [STUDIES.md](STUDIES.md) covers
+the rest of running a study.
 
 ## Getting the file
 
-Either open the address in a browser, which downloads the CSV:
-
-```
-https://cada11y-test.cs.washington.edu/study/export/long.csv
-```
+From the study's control panel, `/studies/<slug>/control`: sign in, and use the
+**Data** section. **Everything, as one zip** holds the database, every session
+log, this spreadsheet with its codebook, a table of sessions and the data checks.
+**Long CSV** is the spreadsheet on its own.
 
 Or run the script, which is the same request with the checks that stop a bad
 download being saved as if it were data:
 
 ```bash
-./scripts/download_study_csv.sh
+STUDY_TOKEN=... scripts/download_study_data.sh <slug>
 ```
 
 | | |
 |---|---|
 | `HOST=prod` | production instead of staging |
-| `SESSION=7` | one session instead of all of them |
-| first argument | where to write the file |
+| `CSV=1` | the long CSV instead of the zip |
+| `SESSION=7` | with `CSV=1`, one session instead of all of them |
+| second argument | where to write the file |
 
-No token is needed. Production only has the endpoint after a `v*` release tag;
-staging updates on every merge to `master`.
+Both need the study's panel token; the script asks for it when `STUDY_TOKEN` is
+not set. A server serves a study's data while the study is open or closed.
+Staging updates on every merge to `master`, production on a `v*` release tag.
+
+The comparison study is closed, so both work for it with its own token:
+`scripts/download_study_data.sh comparison-2026`. [STUDIES.md](STUDIES.md) has
+the rest of getting its data out.
+
+`long.json`, beside `long.csv` in the zip, describes every column below in a
+form a script can read: its description, its levels where it has a fixed set,
+and its units, with the study's own phases and steps filled in.
+
+## Cells that start with a quote
+
+A spreadsheet runs any cell that starts with `=`, `+`, `-` or `@` as a formula,
+and some of these columns hold text a participant's browser sent. So any text
+cell starting with one of those, or with a tab or a carriage return, has a `'`
+added in front. Plain numbers are left alone: `-12.5` is a number, not a formula.
+Remove the leading `'` to get the value that was recorded, which matters most for
+`key`, where `'-` is the minus key.
 
 ## What is in it
 
@@ -67,8 +86,9 @@ pick the axis and the side directly, the letter alone for the view from the
 right, the front or above, and the same letter again for the other side. `key`
 reads the same for both presses, and `key_shift` does not tell them apart, so
 read the side off the row itself: `cut_side` says which side the cut was seen
-from. The study runs in Turn mode, so a study session will only contain
-XYZ rows if someone changed the setting mid-session.
+from. The comparison study ran in Turn mode, so its sessions only contain XYZ
+rows if someone changed the setting mid-session. A study's `viewer_defaults` set
+the mode each of its models loads in.
 
 | Key | Command |
 |---|---|
@@ -115,19 +135,30 @@ therefore has to either report four modes or say plainly that x-ray rows were se
 aside and how many there were. Mapping it onto one of the other three would put
 time in a mode the participant was not in.
 
-## Completed sessions only
+## Completed sessions only, and the rest kept apart
 
-Sessions that are still active or were abandoned are not in the file, and that
-is not something the caller can turn off. An active session is being written to
-while it is read, and an abandoned one stopped partway with nothing recording
-why.
+`long.csv` holds completed sessions only, and that is not something the caller can
+turn off. A session is completed when it reached the last step and was ended
+there. Ended earlier, by the experimenter or after a long time with no activity,
+it is abandoned.
+
+The zip also holds `long_incomplete.csv`, in the same columns, for the sessions
+`long.csv` leaves out that nothing is still writing to: every abandoned session,
+and, once a study is closed, the sessions it left active. A closed study runs no
+idle sweep, so nothing will end those; they are usually finished sessions whose
+panel was closed without pressing End. An open study's active sessions are still
+being written to, so they are in neither file. `sessions.csv` gives each
+session's status and `step_index`, the last step it reached, so using any of them
+is a decision made per participant, and worth saying in the write-up.
 
 This is a filter on status, which is not the same as a filter on usable. A
-session that stopped at step 19 of 21 is excluded; a session marked completed
-after 21 seconds is included. Pull a specific one deliberately with
-`?session=<id>` or `SESSION=<id>`, and say so in the write-up. Asking for a
-session that is not completed returns 409 with its status rather than an empty
-file, so a participant cannot go quietly missing from the analysis.
+session that stopped at step 19 of 21 is in `long_incomplete.csv`; a session
+completed after 21 seconds is in `long.csv`. Sessions recorded before 2026-10
+could be ended as completed from any step, so for those, check `step_index`.
+Asking for one session with `?session=<id>` or `SESSION=<id>` returns 409 with its
+status when it is not completed, rather than an empty file, so a participant
+cannot go quietly missing from the analysis; its rows are in
+`long_incomplete.csv`, or in its JSON export at any time.
 
 ## Axis mode and the cut
 
@@ -189,7 +220,11 @@ sessions from either side of it without accounting for this.
 * **Telling them apart.** It shows in the data. On a row whose `view` is `y-`,
   `y+` or `z-`, the `forward` vector in `orientation_basis` points the other way
   after the fix: a `y-` row recorded before it has `forward` `[0, 1, 0]`, and one
-  recorded after has `[0, -1, 0]`.
+  recorded after has `[0, -1, 0]`. The export reads this for you: the
+  `view_convention` column of `sessions.csv` says `before #185` or `after #185`
+  for every session that used those views, `checks.json` lists the ones from
+  before, and when there are any, the codebook's depth and angle entries and the
+  zip's README say so too.
 * **Depth.** Front (`y-`), back (`y+`) and bottom (`z-`) used to measure depth in
   from the far side. They now measure it from the surface nearest the reader, as
   the other three always did, so the same plane reads as `100 - depth`: 30%
@@ -206,11 +241,14 @@ sessions from either side of it without accounting for this.
 ## If something looks wrong
 
 * Nothing but a header row: no session has been completed yet.
-* A participant missing: their session is probably active or abandoned. Check
-  the control panel's session list.
+* A participant missing: their session is probably active or abandoned. Look in
+  `long_incomplete.csv` and `sessions.csv`.
 * `key` blank on a `keyboard` row: the event was recorded without a payload.
   Rare, and the row is otherwise intact.
-* HTTP 404 on production: the release carrying this endpoint has not gone out.
-* The per-session JSON at `/study/sessions/<id>/export` is still there, still
-  needs a token, and still works mid-session. It is the right thing to use when
-  the question is about one session rather than the analysis set.
+* HTTP 401: the token is wrong, or the panel's sign-in has lapsed.
+* HTTP 404: that server does not serve the study, because it is a draft or
+  retired, or because the release that opened it has not gone out; or the study
+  has no data on that server.
+* The per-session JSON at `/studies/<slug>/control/export/sessions/<id>.json`
+  works for a session in any state, mid-session included. It is the right thing
+  to use when the question is about one session rather than the analysis set.

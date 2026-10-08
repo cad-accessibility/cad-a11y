@@ -214,9 +214,9 @@ All persistent data is in Docker-managed named volumes, not on the host filesyst
 | --- | --- |
 | `models` | The models that ship with the app, seeded from the image on every start |
 | `uploads` | Models uploaded by visitors |
-| `db` | The usage database, and the study database (`study.db`) |
+| `db` | The usage database, each study's database under `studies/`, and the comparison study's (`study.db`) |
 | `renders` | Render output |
-| `logs` | Braille send logs, and per-session study logs under `study/` |
+| `logs` | Braille send logs, each study's session logs under `studies/<slug>/`, and the comparison study's under `study/` |
 
 Two consequences that have caught us out before.
 
@@ -224,21 +224,20 @@ Two consequences that have caught us out before.
 
 **`docker compose down -v` destroys it.** That includes every uploaded model and the entire usage database. Use plain `docker compose down` to stop the app. There is no undo and no copy elsewhere.
 
-**Study data is in there too, and it cannot be regenerated.** A study session is a person's hour; unlike the usage database, losing it means running someone again. It lives in two places, both under volumes covered by the backup command below: `db` holds `study.db`, and `logs/study/` holds the per-session JSONL files. Back both up after every session rather than only before risky operations.
+**Study data is in there too, and it cannot be regenerated.** A study session is a person's hour; unlike the usage database, losing it means running someone again. Each study keeps a database under `db/studies/` and its session logs under `logs/studies/<slug>/`, both covered by the backup command below. Back them up after every session rather than only before risky operations. The comparison study's data is still at `db/study.db` and `logs/study/`, and nothing removes it.
 
-### The study control panel
+### Studies
 
-`/study/control` is open. Opening it starts a session, which is the whole flow: no secret to find, nothing to paste into a URL. A tab owns one session, so a reload continues it and a new tab starts another.
+Which studies a server runs is decided by each study's status in `app/studies/definitions/`, not by anything on the server except the one variable below that servers leave unset. [STUDIES.md](STUDIES.md) has the details. In short:
 
-That does mean anyone who reaches the address can advance a live session, read the answer key, and download a participant's interaction log. To gate it, set a token in `.env` on the server:
+* An open study serves its participant page at `/studies/<slug>` and its control panel at `/studies/<slug>/control`. A closed one serves the panel's data downloads and nothing else. Drafts and retired studies serve nothing, and `/study` is gone.
+* Every panel needs its study's token, entered once in a sign-in form. The token is never in a URL, so it is in no proxy log. A study without a token is refused at start-up, and the start-up log says why.
+* The server never sets a study's token in `.env`; the hash is in the study's definition. `STUDY_CONTROL_TOKEN` no longer does anything and can be removed from a server's `.env`.
+* `CAD_A11Y_OPEN_STUDIES` serves a draft study, for piloting it on a development machine. Leave it unset on the servers. The example study, whose panel token is published, also needs `CAD_A11Y_ALLOW_EXAMPLE_STUDY=1`, which `docker-compose.yml` never passes. Never set it on a server, in the environment or in `.env`: anyone could then sign in to the example's panel and write sessions into the server's volume.
+* A closed study's database is only read. A server that does not have it says so on every download, and creates nothing.
+* `CAD_A11Y_VERSION` is set by `scripts/docker_compose_build.sh` from the pipeline's tag or commit, and every study session records it.
 
-```bash
-STUDY_CONTROL_TOKEN=$(openssl rand -base64 24)
-```
-
-The panel then needs `/study/control?token=…`. It is off unless that variable is set, and setting it changes nothing else about how a session runs.
-
-The participant page at `/study` is always open. It carries a four-character code, shown in the panel, that says which session the browser belongs to — several run at once on one server, and that code is what keeps one participant's interactions out of another's record.
+Getting a study's data off a server needs no shell access: close the study, and download the zip from its panel or with `scripts/download_study_data.sh`.
 
 ### Backing up
 
@@ -268,6 +267,8 @@ docker compose up -d
 ```
 
 Restoring overwrites whatever is in the volume. Take a fresh backup first if the current contents might matter.
+
+To put back one study's database rather than the whole volume, stop the app first, and delete the `-wal` and `-shm` files beside the one being replaced before copying the restored file in. They belong to the old file, and SQLite would read them against the new one.
 
 ## If the site returns 503
 

@@ -1,0 +1,1703 @@
+"""Storage for one study's sessions: a SQLite database and a JSONL log per
+session.
+
+Every study gets a ``StudyStore`` of its own, at the paths its definition
+resolves to, so two studies running on one server cannot share a participant
+number, a session id or a log file.
+
+What it stores
+--------------
+Interactions with the system, and their timings, linked to a participant code.
+That is the whole scope. Every row is something the participant or the
+experimenter *did to the application* -- a keypress, a render, a step advance, a
+model load, a readiness signal -- stamped with when it happened.
+
+What it deliberately does not store: anything the participant *said*, the
+experimenter's notes, questionnaire answers, or any free text about a person.
+Those are handled verbally and recorded on the experimenter's own sheet. Keeping
+half of that here would produce two partial records of the same session with no
+way to tell which one was complete, and would put personal detail in a file whose
+reason to exist is machine-readable interaction data. A study that needs to keep
+answers needs that written into its consent first, and a column here second.
+
+Why not ``app/db.py``
+---------------------
+``data/db/usage.db`` is product analytics: anonymous, consent-gated, disposable.
+This is research data, and a study session cannot be re-run. The two have opposite
+requirements almost everywhere:
+
+* **Consent.** Analytics writes are gated on the cookie consent dialog and are
+  discarded when it was declined. Study participants consent before the session
+  starts and are deliberately not shown that dialog, so gating study logging on
+  the same flag would silently record nothing at all.
+* **Blast radius.** Clearing or migrating the analytics database must never be
+  able to touch a session that has already been run.
+* **Failure reporting.** Analytics failures are swallowed on purpose -- telemetry
+  must not break a render. Study logging failures are also swallowed (a dropped
+  write must not interrupt a participant mid-exploration) but they are *counted*
+  and surfaced, so the experimenter finds out during the session rather than
+  during analysis. See ``logging_health``.
+
+Every write also lands in an append-only JSONL file in the study's log
+directory, carrying the full viewer state at that moment. That file, not this
+database, is the authoritative record for reconstructing a session: it survives
+a schema change, it is readable without SQLite, and it is written even when the
+database write is the thing that failed.
+
+Journal mode is WAL, for the same reason as the analytics database: readers never
+block the writer. Ordering within a session comes from ``seq``, a per-session
+counter assigned under the store's write lock so two threads cannot interleave
+it.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import math
+import os
+import secrets
+import sqlite3
+import threading
+from collections.abc import Callable, Iterable, Iterator
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+_DDL = """
+-- One row per participant, ever.
+--
+-- ``id`` is the identity, and it is allocated by SQLite. ``code`` -- P01, P02 --
+-- is a label derived from it, for the experimenter to say out loud and for
+-- filenames; nothing keys on it. It used to be the primary key, and the next one
+-- was found by reading every existing code and picking the first gap. Two
+-- experimenters enrolling at the same instant both read the same gap: five of
+-- six simultaneous enrolments failed outright, on UNIQUE constraint violations
+-- and a locked database. An id the database hands out cannot be raced for.
+--
+-- ``id`` doubles as enrollment order, which is what the Latin square indexes, so
+-- re-enrolling an existing participant keeps their original model assignment.
+CREATE TABLE IF NOT EXISTS participants (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    code             TEXT UNIQUE,
+    first_session_at DATETIME,
+    created_at       DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- One row per run of the protocol. task_order is stored because without it an
+-- event naming "task 1" cannot be resolved to a model; it is a property of the
+-- run, not of the person.
+-- participant_key is how a participant's browser says which session it belongs
+-- to. Several sessions can be active at once -- two experimenters in different
+-- cities, one server -- and without a key per session a participant page can
+-- only attach to "the" active one, which means the newest. That is how one
+-- participant's keypresses end up logged against another participant, and how a
+-- model loads onto the wrong braille display mid-task.
+CREATE TABLE IF NOT EXISTS study_sessions (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    participant_id    INTEGER NOT NULL REFERENCES participants(id),
+    -- Denormalised label, carried so an exported row reads without a join. The
+    -- foreign key is participant_id; this is never matched on.
+    participant_code  TEXT NOT NULL,
+    session_number    INTEGER NOT NULL DEFAULT 1,
+    participant_key   TEXT,
+    -- 'paired': experimenter on their own machine, driving the steps from the
+    -- control panel. 'solo': one laptop between them, so the session moves on
+    -- when the participant says they are ready rather than waiting for a panel
+    -- nobody can reach without taking the screen reader off the participant.
+    --
+    -- A property of the session rather than of the URL, so a reload keeps it and
+    -- the log says which way the session was run.
+    mode              TEXT NOT NULL DEFAULT 'paired',
+    task_order        TEXT NOT NULL,
+    protocol_version  TEXT,
+    -- What ran, beside the version number someone remembered to bump: a
+    -- fingerprint of the protocol, and the release or commit of the viewer.
+    -- The orientation fix in #185 changed what three views store, and telling
+    -- sessions from either side of it apart took reading vectors out of the
+    -- data. Recorded per session, it is a column to filter on.
+    protocol_hash     TEXT,
+    app_version       TEXT,
+    step_index        INTEGER NOT NULL DEFAULT 0,
+    status            TEXT NOT NULL DEFAULT 'active',
+    log_path          TEXT,
+    started_at        DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    step_started_at   DATETIME,
+    completed_at      DATETIME,
+    UNIQUE(participant_id, session_number)
+);
+CREATE INDEX IF NOT EXISTS idx_study_sessions_status
+    ON study_sessions(status, started_at);
+-- The index on participant_key is created in _migrate, not here. CREATE TABLE
+-- IF NOT EXISTS does nothing to a table that already exists, so on a database
+-- written before that column existed this script would try to index a column
+-- that is not there yet -- and take init_db down with it, on a database holding
+-- sessions that cannot be re-run.
+
+-- The interaction stream. event_data is JSON because every event type carries a
+-- different payload; the columns beside it are what analysis groups by, so
+-- "every keypress during task 1 part B" is plain SQL with no JSON extraction.
+--
+-- elapsed_ms and step_elapsed_ms are stored rather than derived. Both are
+-- answerable from created_at with date arithmetic, but they are the two things
+-- every timing question starts from, and having them as plain integers keeps
+-- those queries readable and immune to how SQLite parses a timestamp string.
+CREATE TABLE IF NOT EXISTS study_events (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    study_session_id INTEGER NOT NULL REFERENCES study_sessions(id),
+    participant_id   INTEGER NOT NULL REFERENCES participants(id),
+    -- Readable label beside the identity, so an exported row or a log line says
+    -- who it belongs to without a join.
+    participant_code TEXT NOT NULL,
+    seq              INTEGER NOT NULL,
+    part_id          TEXT,
+    step_id          TEXT,
+    step_index       INTEGER,
+    event_type       TEXT NOT NULL,
+    source           TEXT NOT NULL,
+    client_id        TEXT,
+    event_data       TEXT,
+    client_time      TEXT,
+    created_at       DATETIME,
+    elapsed_ms       INTEGER,
+    step_elapsed_ms  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_study_events_session ON study_events(study_session_id, seq);
+CREATE INDEX IF NOT EXISTS idx_study_events_type ON study_events(study_session_id, event_type);
+CREATE INDEX IF NOT EXISTS idx_study_events_step ON study_events(study_session_id, step_id);
+
+-- Renders get structured columns rather than living in event_data, because
+-- "which slice was under their fingers at that moment" is the single most queried
+-- thing in the analysis and it should not need JSON extraction. Recorded for
+-- cache hits too: the participant felt a display update either way, so leaving
+-- them out would silently drop most of a fast arrow-key traversal.
+CREATE TABLE IF NOT EXISTS study_renders (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    study_session_id INTEGER NOT NULL REFERENCES study_sessions(id),
+    participant_id   INTEGER NOT NULL REFERENCES participants(id),
+    -- Readable label beside the identity, so an exported row or a log line says
+    -- who it belongs to without a join.
+    participant_code TEXT NOT NULL,
+    seq              INTEGER NOT NULL,
+    part_id          TEXT,
+    step_id          TEXT,
+    step_index       INTEGER,
+    model            TEXT,
+    view             TEXT,
+    render_mode      TEXT,
+    layout_mode      TEXT,
+    depth            REAL,
+    zoom             REAL,
+    input_source     TEXT,
+    cache_hit        INTEGER,
+    orientation      TEXT,
+    created_at       DATETIME,
+    elapsed_ms       INTEGER,
+    step_elapsed_ms  INTEGER,
+    -- Which axis mode, and where the cut was along its axis (#185): the axis it
+    -- cut along, the side it was seen from, and how far along the object from its
+    -- lowest coordinate. Blank for renders recorded before these existed.
+    axis_mode        TEXT,
+    cut_axis         TEXT,
+    cut_side         TEXT,
+    cut_percent      REAL
+);
+CREATE INDEX IF NOT EXISTS idx_study_renders_session ON study_renders(study_session_id, seq);
+
+-- There is deliberately no table for observations, experimenter notes or
+-- questionnaire answers. Those are what the participant said and what the
+-- experimenter thought, not interactions with the system, and they are recorded
+-- verbally on the experimenter's own sheet.
+"""
+
+
+# Added to study_renders after its first CREATE, so _migrate adds them to a
+# database that predates them.
+AXIS_RENDER_COLUMNS = (
+    ("axis_mode", "TEXT"),
+    ("cut_axis", "TEXT"),
+    ("cut_side", "TEXT"),
+    ("cut_percent", "REAL"),
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after a table's first CREATE.
+
+    CREATE TABLE IF NOT EXISTS never alters an existing table, so a database
+    holding sessions recorded before a column existed needs an explicit ALTER.
+    Sessions already run keep their data; they simply have no participant key,
+    which is right -- they were run when only one session could be active.
+    """
+    # --- participants: text primary key -> database-assigned id ---------------
+    participant_columns = {row["name"] for row in conn.execute("PRAGMA table_info(participants)")}
+    if participant_columns and "id" not in participant_columns:
+        # SQLite cannot add a primary key in place, so the table is rebuilt. The
+        # old sequence_number becomes the id, which keeps every existing
+        # participant's Latin-square assignment exactly where it was.
+        #
+        # This follows SQLite's own procedure for altering a table other tables
+        # reference: foreign keys off for the duration, the swap in one
+        # transaction, then a check before they go back on. Dropping the old
+        # table with them on fails outright -- study_sessions still points at it.
+        # foreign_keys cannot be changed inside a transaction, hence the commit.
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            conn.execute("BEGIN")
+            # A previous attempt that died between the create and the swap would
+            # otherwise leave this behind and wedge every start after it.
+            conn.execute("DROP TABLE IF EXISTS participants_rebuilt")
+            conn.execute(
+                """CREATE TABLE participants_rebuilt (
+                       id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                       code             TEXT UNIQUE,
+                       first_session_at DATETIME,
+                       created_at       DATETIME
+                   )"""
+            )
+            conn.execute(
+                """INSERT INTO participants_rebuilt (id, code, first_session_at, created_at)
+                   SELECT sequence_number, code, first_session_at, created_at FROM participants"""
+            )
+            conn.execute("DROP TABLE participants")
+            conn.execute("ALTER TABLE participants_rebuilt RENAME TO participants")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            conn.execute("PRAGMA foreign_keys=ON")
+            if violations:
+                raise RuntimeError(f"participants rebuild left dangling references: {violations}")
+
+    # --- sessions and the two event tables: carry the numeric identity --------
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(study_sessions)")}
+    if columns and "mode" not in columns:
+        conn.execute("ALTER TABLE study_sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'paired'")
+    if "participant_id" not in columns:
+        conn.execute("ALTER TABLE study_sessions ADD COLUMN participant_id INTEGER")
+        conn.execute(
+            """UPDATE study_sessions SET participant_id =
+                   (SELECT p.id FROM participants p WHERE p.code = study_sessions.participant_code)"""
+        )
+        # The old UNIQUE(participant_code, session_number) came with the table and
+        # cannot be dropped without another rebuild; this adds the same guarantee
+        # on the new key, which is what the code now inserts against.
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_study_sessions_participant_session "
+            "ON study_sessions(participant_id, session_number)"
+        )
+    for table in ("study_events", "study_renders"):
+        table_columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if table_columns and "participant_id" not in table_columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN participant_id INTEGER")
+            conn.execute(
+                f"""UPDATE {table} SET participant_id =
+                        (SELECT s.participant_id FROM study_sessions s
+                         WHERE s.id = {table}.study_session_id)"""
+            )
+        # Created here rather than in the schema script, for the same reason the
+        # participant_key index is: the script runs first, and on an existing
+        # database the column does not exist until the ALTER above.
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table}_participant "
+            f"ON {table}(participant_id, created_at)"
+        )
+
+    if "participant_key" not in columns:
+        conn.execute("ALTER TABLE study_sessions ADD COLUMN participant_key TEXT")
+    # Unconditional and idempotent, so it lands on a freshly created database as
+    # well as a migrated one. Partial index: sessions recorded before keys
+    # existed have NULL there, and several NULLs must not collide.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_study_sessions_key "
+        "ON study_sessions(participant_key) WHERE participant_key IS NOT NULL"
+    )
+
+    # --- study_sessions: what ran ----------------------------------------------
+    for name in ("protocol_hash", "app_version"):
+        if columns and name not in columns:
+            conn.execute(f"ALTER TABLE study_sessions ADD COLUMN {name} TEXT")
+
+    # --- study_renders: the axis mode and the cut (#185) ----------------------
+    render_columns = {row["name"] for row in conn.execute("PRAGMA table_info(study_renders)")}
+    for name, kind in AXIS_RENDER_COLUMNS:
+        if render_columns and name not in render_columns:
+            conn.execute(f"ALTER TABLE study_renders ADD COLUMN {name} {kind}")
+
+
+_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+
+
+def now() -> str:
+    """Millisecond-precision UTC, the timestamp format used everywhere here.
+
+    Second precision is not enough: a participant holding an arrow key produces
+    several renders inside one second, and the order of those renders is the
+    behavioural signal the analysis reads.
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _parse(timestamp: str | None) -> datetime | None:
+    if not timestamp:
+        return None
+    try:
+        return datetime.strptime(timestamp, _TIMESTAMP_FORMAT).replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+def _elapsed_ms(since: str | None, until: str) -> int | None:
+    start, end = _parse(since), _parse(until)
+    if start is None or end is None:
+        return None
+    # Whole numbers throughout. total_seconds() * 1000 is a float, and truncating
+    # it turned 1001 ms into 1000 about once in every 150 values (#258 review).
+    delta = end - start
+    return (delta.days * 86_400 + delta.seconds) * 1000 + delta.microseconds // 1000
+
+
+# Twelve hours. A session is an hour or two and produces events throughout, so
+# this is far beyond any real gap; the point is to catch the abandoned ones by
+# the next working day, not to reclaim them promptly.
+DEFAULT_IDLE_HOURS = 12.0
+IDLE_HOURS_ENV = "STUDY_SESSION_IDLE_HOURS"
+
+
+def idle_timeout_seconds() -> int:
+    """How long an active session in an open study may go quiet before it is
+    closed as abandoned. Here rather than in the engine so the export can say
+    what the server actually does."""
+    raw = os.getenv(IDLE_HOURS_ENV, "").strip()
+    try:
+        hours = float(raw) if raw else DEFAULT_IDLE_HOURS
+    except ValueError:
+        hours = DEFAULT_IDLE_HOURS
+    # Zero or negative would close sessions the moment they were created.
+    if hours <= 0:
+        hours = DEFAULT_IDLE_HOURS
+    return int(hours * 3600)
+
+
+CODE_PREFIX = "P"
+
+
+def code_for(participant_id: int) -> str:
+    """The label for a participant id. P01, P02, ... and P100 onward without
+    truncating."""
+    return f"{CODE_PREFIX}{int(participant_id):02d}"
+
+
+def new_participant_key() -> str:
+    """A short, unambiguous key identifying one session's participant view.
+
+    Four characters, because the experimenter reads it out loud to someone who
+    may not be able to see their screen, and every extra character is another
+    chance to mishear. The alphabet drops the characters that sound or look
+    alike -- 0/O, 1/I/L, 5/S, 2/Z -- so "was that B or D" is the only confusion
+    left to have. 531,441 combinations against a handful of live sessions, and
+    create_session retries on the collision it will never see.
+    """
+    alphabet = "ABCDEFGHJKMNPQRTUVWXY346789"
+    return "".join(secrets.choice(alphabet) for _ in range(4))
+
+
+def _hydrate(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    session = dict(row)
+    session["task_order"] = json.loads(session.get("task_order") or "[]")
+    return session
+
+
+def _next_seq(conn: sqlite3.Connection, study_session_id: int) -> int:
+    """Next ordering number for this session, across events and renders together.
+
+    One counter over both tables, so a keypress and the render it caused are
+    ordered relative to each other rather than only within their own table.
+    Called under ``_write_lock``.
+    """
+    row = conn.execute(
+        """SELECT MAX(seq) AS m FROM (
+               SELECT COALESCE(MAX(seq), 0) AS seq FROM study_events WHERE study_session_id = ?
+               UNION ALL
+               SELECT COALESCE(MAX(seq), 0) AS seq FROM study_renders WHERE study_session_id = ?
+           )""",
+        (study_session_id, study_session_id),
+    ).fetchone()
+    return int(row["m"] or 0) + 1
+
+
+# The long-format export. One row per recorded interaction, with the state of the
+# viewer at that moment beside it, so "what fraction of task 1 was spent in cut
+# mode" is a pivot table rather than a program.
+LONG_EXPORT_COLUMNS: tuple[str, ...] = (
+    "participant_code",
+    "session_number",
+    "study_session_id",
+    "seq",
+    "timestamp",
+    "elapsed_ms",
+    "step_elapsed_ms",
+    "phase",
+    "step_id",
+    "step_index",
+    "event_type",
+    "source",
+    "key",
+    "key_repeat",
+    "input_source",
+    "model",
+    "view",
+    "render_mode",
+    "layout_mode",
+    "depth",
+    "zoom",
+    "cache_hit",
+    "orientation_x",
+    "orientation_y",
+    "orientation_z",
+    "orientation_basis",
+    # Appended rather than placed beside `view`, so a script reading columns by
+    # position keeps working. Blank for sessions recorded before #185.
+    "axis_mode",
+    "cut_axis",
+    "cut_side",
+    "cut_percent",
+    # Whether Shift was held: Shift+Z is Z seen from the other side, and `key`
+    # reads "z" for both. Blank on anything that is not a key, and on keys
+    # recorded before it was.
+    "key_shift",
+)
+
+
+# 'Filled', 'Outline' and 'Cut' go over the wire capitalised and 'x-ray' does not.
+# That is a detail of the wire format, and a column that splits on casing is how a
+# figure ends up counting one mode twice.
+#
+# X-Ray is not folded into anything. It is a fourth render mode the viewer really
+# has, R cycles through all four, and a row recording it is a participant who was
+# in it. The protocol teaches three, so an analysis may want to report x-ray
+# separately or set it aside, but that is a decision to take in the open rather
+# than one to bury in an export.
+_RENDER_MODE_ALIASES = {
+    # Earlier wire names, still present in sessions already run.
+    "shaded": "filled",
+    "slice": "cut",
+}
+
+
+def _canonical_render_mode(value: str | None) -> str | None:
+    """The render mode in one spelling: filled, outline, cut, x-ray.
+
+    An unrecognised value is lowercased and passed through rather than mapped to
+    a default. The renderer's own mapping falls back to outline, which is right
+    when something has to be drawn and wrong here: an export that turns a mode it
+    does not recognise into 'outline' puts a value in the spreadsheet that nothing
+    recorded.
+    """
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    return _RENDER_MODE_ALIASES.get(text, text)
+
+
+def _event_payload(raw: str | None) -> dict[str, Any]:
+    """The stored event_data as a dict, or an empty one if it cannot be read."""
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _orientation_angles(
+    raw: str | None,
+) -> tuple[float | None, float | None, float | None]:
+    """Rotation about X, Y and Z in degrees, from the stored orientation basis.
+
+    The viewer stores an orientation as the three vectors it is looking along --
+    ``right``, ``up``, ``forward`` -- because that is what the renderer takes.
+    Analysis asks the other question: how far round each axis the object had been
+    turned. The two are the same fact in different clothes, and converting here
+    rather than in a spreadsheet formula means every reader gets the same answer.
+
+    The matrix is built with ``right``, ``up`` and ``forward`` as its rows, and
+    decomposed as Rz then Ry then Rx. Rotation in the viewer happens in whole
+    quarter turns, so the basis is a signed permutation and every angle comes back
+    an exact multiple of 90, reported in [0, 360).
+
+    The one ambiguity is the familiar one. With the object pitched to straight up
+    or straight down, turning about X and turning about Z are the same motion, and
+    the basis alone cannot say which the participant used to get there. Z is
+    reported as 0 in that case and the whole turn is put on X. That is a
+    convention rather than a measurement, which is why ``orientation_basis``
+    carries the untouched vectors in its own column: anything that cannot afford
+    the convention can read them instead.
+
+    A basis that is missing, unparseable or not three vectors of three numbers
+    gives three blanks. Reconstructing an orientation from a partial one would put
+    a number in the spreadsheet that nothing measured.
+    """
+    if not raw:
+        return (None, None, None)
+    try:
+        basis = json.loads(raw)
+    except (TypeError, ValueError):
+        return (None, None, None)
+    if not isinstance(basis, dict):
+        return (None, None, None)
+
+    def _row(key: str) -> list[float] | None:
+        value = basis.get(key)
+        if not isinstance(value, (list, tuple)) or len(value) != 3:
+            return None
+        try:
+            return [float(component) for component in value]
+        except (TypeError, ValueError):
+            return None
+
+    right, up, forward = _row("right"), _row("up"), _row("forward")
+    if right is None or up is None or forward is None:
+        return (None, None, None)
+
+    matrix = [right, up, forward]
+    # Clamped because a basis that has been through JSON can arrive at 1.0000000002,
+    # and asin does not forgive that.
+    sin_y = max(-1.0, min(1.0, -matrix[2][0]))
+    angle_y = math.asin(sin_y)
+    if abs(matrix[2][0]) < 0.999999:
+        angle_x = math.atan2(matrix[2][1], matrix[2][2])
+        angle_z = math.atan2(matrix[1][0], matrix[0][0])
+    else:
+        angle_x = math.atan2(-matrix[1][2], matrix[1][1])
+        angle_z = 0.0
+
+    def _degrees(radians: float) -> float:
+        degrees = round(math.degrees(radians), 6) % 360.0
+        # -0.0 and 359.9999999 both mean "no rotation" and should read as one.
+        return round(degrees, 6) % 360.0
+
+    return (_degrees(angle_x), _degrees(angle_y), _degrees(angle_z))
+
+
+class StudyStore:
+    """One study's database and logs."""
+
+    def __init__(self, db_path: Path, log_dir: Path, *, read_only: bool = False) -> None:
+        self.db_path = Path(db_path)
+        self.log_dir = Path(log_dir)
+        # A closed study's store. Its database is the record of sessions that
+        # cannot be run again, and serving its data must not change it, create
+        # it, or leave an empty one where a restore will put the real one.
+        self.read_only = read_only
+        self._local = threading.local()
+        # Serialises every write to this study. Study traffic is a handful of
+        # participants at once, so contention is irrelevant, and it is what makes
+        # `seq` a reliable ordering.
+        self._write_lock = threading.RLock()
+        # Counted, not raised. Surfaced through logging_health() so the control
+        # panel can show "logging degraded" while the session is still running.
+        self._failures: dict[str, Any] = {
+            "db_writes": 0,
+            "db_reads": 0,
+            "jsonl_writes": 0,
+            "last_error": None,
+        }
+
+
+    def _get_conn(self) -> sqlite3.Connection:
+        """Return this thread's connection, reopening when self.db_path changes (tests)."""
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        current_path = str(self.db_path)
+        if conn is None or getattr(self._local, "conn_path", None) != current_path:
+            if conn is not None:
+                conn.close()
+            if self.read_only:
+                # No directory made, no file created when there is none (#258
+                # review: a closed study with no database used to get an empty
+                # one, and its -wal and -shm, at the path a restore would use),
+                # and no journal-mode change. SQLite refuses writes on this
+                # connection, and still reads what is waiting in the WAL.
+                if not Path(current_path).is_file():
+                    raise FileNotFoundError(f"no database at {current_path}")
+                conn = sqlite3.connect(
+                    f"{Path(current_path).resolve().as_uri()}?mode=ro", uri=True, check_same_thread=True
+                )
+                conn.row_factory = sqlite3.Row
+            else:
+                Path(current_path).parent.mkdir(parents=True, exist_ok=True)
+                conn = sqlite3.connect(current_path, check_same_thread=True)
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            self._local.conn = conn
+            self._local.conn_path = current_path
+        return conn
+
+    def connection(self) -> sqlite3.Connection:
+        """This thread's connection, for read-only queries elsewhere in the
+        package: the export's data checks."""
+        return self._get_conn()
+
+    @property
+    def write_lock(self) -> threading.RLock:
+        """The lock every write takes. Held across a group of writes that must
+        not have another row land between them, such as a step change and its
+        step_advance event."""
+        return self._write_lock
+
+    def init_db(self) -> None:
+        """Create the schema. Safe to call repeatedly."""
+        if self.read_only:
+            raise RuntimeError(f"{self.db_path} is read-only here; it is never created or migrated")
+        with self._write_lock:
+            conn = self._get_conn()
+            conn.executescript(_DDL)
+            _migrate(conn)
+            conn.commit()
+
+    def _note_failure(self, kind: str, error: Exception) -> None:
+        self._failures[kind] = int(self._failures.get(kind, 0)) + 1
+        self._failures["last_error"] = f"{type(error).__name__}: {error}"
+
+    def note_external_failure(self, error: Exception) -> None:
+        """Record a study-logging failure raised outside this module.
+
+        Used by the /render hook, which must swallow everything: it runs inside the
+        render request's own error handling, where an exception would be turned into
+        a failed render and stop the participant's display updating.
+        """
+        self._note_failure("db_writes", error)
+
+    def logging_health(self) -> dict[str, Any]:
+        """Whether study logging is actually working, for the control panel.
+
+        Reported rather than raised: a failed write must not interrupt the session,
+        but the experimenter must not find out afterwards either.
+        """
+        return {
+            "db_write_failures": self._failures["db_writes"],
+            "db_read_failures": self._failures["db_reads"],
+            "jsonl_write_failures": self._failures["jsonl_writes"],
+            "last_error": self._failures["last_error"],
+            "db_path": str(self.db_path),
+            "log_dir": str(self.log_dir),
+        }
+
+    def preview_next_code(self) -> str:
+        """What the next new participant will most likely be called.
+
+        Advisory only -- it is shown in the panel before anyone is enrolled. It is
+        not used to allocate anything, so two panels showing the same suggestion at
+        the same moment is harmless: the real code comes from the id the database
+        assigns. That distinction is the whole point; deriving the code by scanning
+        for a free one is what made simultaneous enrolments fail.
+        """
+        try:
+            row = self._get_conn().execute("SELECT COALESCE(MAX(id), 0) AS n FROM participants").fetchone()
+            return code_for(int(row["n"]) + 1)
+        except Exception:  # noqa: BLE001 - advisory; an unreadable database suggests P01
+            return code_for(1)
+
+    def next_sequence_preview(self) -> int:
+        """The Latin-square position the next new participant will most likely get.
+
+        Advisory, like ``preview_next_code``: it fills in the enrollment form before
+        anyone exists. The binding assignment is made from the id the database hands
+        out, in ``create_participant``.
+        """
+        try:
+            row = self._get_conn().execute("SELECT COALESCE(MAX(id), 0) AS n FROM participants").fetchone()
+            return int(row["n"]) + 1
+        except Exception:  # noqa: BLE001 - advisory, like preview_next_code
+            return 1
+
+    def get_participant(self, participant_id: int) -> dict[str, Any] | None:
+        row = self._get_conn().execute(
+            "SELECT id, code, first_session_at, created_at FROM participants WHERE id = ?",
+            (participant_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_participant_by_code(self, code: str) -> dict[str, Any] | None:
+        row = self._get_conn().execute(
+            "SELECT id, code, first_session_at, created_at FROM participants WHERE code = ?",
+            (code,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def create_participant(self, code: str | None = None) -> dict[str, Any]:
+        """Create a participant and return the row.
+
+        With no ``code``, the database assigns the id and the label is derived from
+        it, so two experimenters enrolling at the same instant get different
+        participants rather than fighting over the same one. With a ``code``, an
+        existing participant of that name is returned unchanged -- that is how a
+        returning participant keeps the model pairs they were assigned first time.
+        """
+        with self._write_lock:
+            if code:
+                existing = self.get_participant_by_code(code)
+                if existing:
+                    return existing
+
+            conn = self._get_conn()
+            try:
+                participant_id = self._insert_participant(conn, code)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            return self.get_participant(participant_id) or {}
+
+    def _insert_participant(self, conn: sqlite3.Connection, code: str | None) -> int:
+        """Insert a participant without committing. Called under the write lock.
+
+        Two statements, one transaction. The insert is what allocates the
+        identity; the update only labels it. code is nullable precisely so the
+        row can exist for the instant in between.
+        """
+        cursor = conn.execute(
+            "INSERT INTO participants (code, first_session_at) VALUES (NULL, ?)", (now(),)
+        )
+        participant_id = int(cursor.lastrowid)
+        conn.execute(
+            "UPDATE participants SET code = ? WHERE id = ?",
+            (code or self._generated_code(conn, participant_id), participant_id),
+        )
+        return participant_id
+
+    @staticmethod
+    def _generated_code(conn: sqlite3.Connection, participant_id: int) -> str:
+        """The label for a new participant: P02 for id 2, unless someone was
+        enrolled under P02 by hand. That clash used to fail this enrolment and,
+        since the id is reused after a rollback, every one after it (#258
+        review). The id still decides the rotation; only the label steps aside,
+        to P02b, P02c and so on."""
+        base = code_for(participant_id)
+        for suffix in ("", *"bcdefghjkmnpqrstuvwxyz"):
+            label = base + suffix
+            if not conn.execute("SELECT 1 FROM participants WHERE code = ?", (label,)).fetchone():
+                return label
+        return f"{base}-{participant_id}"
+
+    def _log_path_for(self, code: str, session_number: int) -> Path:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+        return self.log_dir / f"{code}_S{session_number}_{stamp}.jsonl"
+
+    def create_session(
+        self,
+        participant_id: int,
+        participant_code: str,
+        session_number: int,
+        task_order: list[str],
+        protocol_version: str,
+        *,
+        protocol_hash: str | None = None,
+        app_version: str | None = None,
+    ) -> dict[str, Any]:
+        """Start a study session and return its row. Raises on conflict.
+
+        Deliberately not swallowed: unlike an event write, failing to create the
+        session is not something to carry on past -- there would be nothing to log
+        against, and the experimenter needs to know before the participant starts.
+        """
+        with self._write_lock:
+            conn = self._get_conn()
+            try:
+                session_id = self._insert_session(
+                    conn,
+                    participant_id=participant_id,
+                    participant_code=participant_code,
+                    session_number=session_number,
+                    task_order=task_order,
+                    protocol_version=protocol_version,
+                    protocol_hash=protocol_hash,
+                    app_version=app_version,
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            return self.get_study_session(session_id) or {}
+
+    def _insert_session(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        participant_id: int,
+        participant_code: str,
+        session_number: int,
+        task_order: list[str],
+        protocol_version: str,
+        protocol_hash: str | None,
+        app_version: str | None,
+    ) -> int:
+        """Insert a session row without committing. Called under the write lock."""
+        log_path = self._log_path_for(participant_code, session_number)
+        timestamp = now()
+        # Retry on the (vanishingly unlikely) key collision rather than letting a
+        # unique-index violation surface as a failed enrolment.
+        for _ in range(8):
+            key = new_participant_key()
+            try:
+                cursor = conn.execute(
+                    """INSERT INTO study_sessions
+                       (participant_id, participant_code, session_number, participant_key,
+                        task_order, protocol_version, protocol_hash, app_version,
+                        step_index, status, log_path, started_at, step_started_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'active', ?, ?, ?)""",
+                    (
+                        participant_id,
+                        participant_code,
+                        session_number,
+                        key,
+                        json.dumps(task_order),
+                        protocol_version,
+                        protocol_hash,
+                        app_version,
+                        str(log_path),
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                return int(cursor.lastrowid)
+            except sqlite3.IntegrityError as error:
+                if "participant_key" not in str(error):
+                    raise  # a real conflict, e.g. this participant/session already exists
+        raise RuntimeError("could not allocate a unique participant key")
+
+    def enroll(
+        self,
+        *,
+        code: str | None,
+        session_number: int,
+        choose_task_order: Callable[[int], list[str]],
+        protocol_version: str,
+        protocol_hash: str | None = None,
+        app_version: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Create (or find) the participant and start their session, together.
+
+        One transaction, so a session that cannot be created leaves no
+        participant behind. The two used to be separate writes, with the task
+        order checked in between: a start request naming an unknown task got a
+        400 after a participant had already been issued, which left a code with
+        no session and moved every later participant one place along the
+        rotation (#183).
+
+        ``choose_task_order`` gets the participant's id, which is their place in
+        the rotation, and runs inside the transaction; anything it raises undoes
+        the enrolment.
+        """
+        with self._write_lock:
+            conn = self._get_conn()
+            try:
+                existing = self.get_participant_by_code(code) if code else None
+                if existing:
+                    participant_id = int(existing["id"])
+                    participant_code = str(existing["code"])
+                else:
+                    participant_id = self._insert_participant(conn, code)
+                    participant_code = str(
+                        conn.execute("SELECT code FROM participants WHERE id = ?", (participant_id,)).fetchone()["code"]
+                    )
+                task_order = choose_task_order(participant_id)
+                session_id = self._insert_session(
+                    conn,
+                    participant_id=participant_id,
+                    participant_code=participant_code,
+                    session_number=session_number,
+                    task_order=task_order,
+                    protocol_version=protocol_version,
+                    protocol_hash=protocol_hash,
+                    app_version=app_version,
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return self.get_participant(participant_id) or {}, self.get_study_session(session_id) or {}
+
+    def get_study_session(self, study_session_id: int) -> dict[str, Any] | None:
+        """Look up a session, reporting rather than raising if the database is
+        unreachable.
+
+        Every request path starts with one of these two reads, so letting a database
+        error escape would turn a storage problem into a 500 in front of a
+        participant who is mid-exploration. Counted instead, and shown as degraded
+        logging in the control panel.
+        """
+        try:
+            return _hydrate(
+                self._get_conn()
+                .execute("SELECT * FROM study_sessions WHERE id = ?", (study_session_id,))
+                .fetchone()
+            )
+        except Exception as error:  # noqa: BLE001 - counted, never fatal
+            self._note_failure("db_reads", error)
+            return None
+
+    def list_active_sessions(self) -> list[dict[str, Any]]:
+        """Every session currently running.
+
+        More than one is normal: two experimenters in different cities share one
+        deployment. Callers that need *a* session must say which, or handle the
+        ambiguity -- see the engine's session resolution.
+        """
+        try:
+            rows = self._get_conn().execute(
+                "SELECT * FROM study_sessions WHERE status = 'active' ORDER BY id"
+            ).fetchall()
+        except Exception as error:  # noqa: BLE001 - counted, never fatal
+            self._note_failure("db_reads", error)
+            return []
+        return [session for session in (_hydrate(row) for row in rows) if session]
+
+    def get_session_by_key(self, participant_key: str) -> dict[str, Any] | None:
+        """The session a participant's browser is bound to, by its key."""
+        if not participant_key:
+            return None
+        try:
+            return _hydrate(
+                self._get_conn()
+                .execute("SELECT * FROM study_sessions WHERE participant_key = ?", (participant_key,))
+                .fetchone()
+            )
+        except Exception as error:  # noqa: BLE001 - counted, never fatal
+            self._note_failure("db_reads", error)
+            return None
+
+    def stale_active_sessions(self, max_idle_seconds: int) -> list[dict[str, Any]]:
+        """Active sessions that have shown no sign of life for ``max_idle_seconds``.
+
+        Liveness is the last thing that happened *in* the session, not when it
+        started: the newest event or render belonging to it, falling back to when
+        its current step began and then to when it began. A session being run right
+        now produces events constantly -- keypresses, renders, step advances -- so a
+        gap of hours means nobody is there.
+
+        Read-only. ``close_idle_sessions`` is what acts on the answer.
+        """
+        try:
+            rows = self._get_conn().execute(
+                """SELECT s.id, s.participant_code, s.task_order, s.step_index,
+                          MAX(
+                              COALESCE((SELECT MAX(created_at) FROM study_events
+                                        WHERE study_session_id = s.id), ''),
+                              COALESCE((SELECT MAX(created_at) FROM study_renders
+                                        WHERE study_session_id = s.id), ''),
+                              COALESCE(s.step_started_at, ''),
+                              COALESCE(s.started_at, '')
+                          ) AS last_at
+                   FROM study_sessions s
+                   WHERE s.status = 'active'"""
+            ).fetchall()
+        except Exception as error:  # noqa: BLE001 - counted, never fatal
+            self._note_failure("db_reads", error)
+            return []
+
+        cutoff = _parse(now())
+        stale: list[dict[str, Any]] = []
+        for row in rows:
+            last = _parse(row["last_at"])
+            # An unparseable or missing timestamp is left alone rather than treated
+            # as infinitely old. Closing a session because its clock is unreadable
+            # would be the one bug here that costs a live session.
+            if last is None or cutoff is None:
+                continue
+            idle = (cutoff - last).total_seconds()
+            if idle >= max_idle_seconds:
+                entry = dict(row)
+                try:
+                    entry["task_order"] = json.loads(entry.get("task_order") or "[]")
+                except (TypeError, ValueError):
+                    entry["task_order"] = []
+                entry["idle_seconds"] = int(idle)
+                stale.append(entry)
+        return stale
+
+    def close_idle_sessions(self, max_idle_seconds: int) -> list[dict[str, Any]]:
+        """Mark long-idle active sessions as abandoned, and return what was closed.
+
+        'abandoned', never 'completed'. The difference is not cosmetic: a completed
+        session counts as having used its model set, and inventing that for a
+        session nobody finished would quietly take a cell out of the counterbalanced
+        design. Abandoning says what actually happened -- it was started and left.
+
+        Nothing is deleted, and no event rows are touched. A session that ran for an
+        hour before being abandoned keeps every one of its events and its JSONL log;
+        all that changes is that it stops claiming to be in progress.
+        """
+        closed: list[dict[str, Any]] = []
+        for session in self.stale_active_sessions(max_idle_seconds):
+            # end_session re-checks the status under the write lock. This loop
+            # read the session as active a moment ago, and an experimenter may
+            # have ended it since; ending it again is what wrote a second
+            # session_end and turned a completed session into an abandoned one.
+            ended = self.end_session(
+                int(session["id"]),
+                status="abandoned",
+                source="server",
+                event_data={
+                    "reason": f"no activity for {int(session['idle_seconds'])} seconds",
+                    "closed_automatically": True,
+                },
+                step_index=int(session.get("step_index") or 0),
+            )
+            if ended:
+                closed.append(session)
+        return closed
+
+    def count_task_orders(self, status: str = "completed") -> dict[str, int]:
+        """How many sessions of ``status`` ran each task order, keyed by the order
+        joined with ``+``.
+
+        This is what tells the control panel which model sets a round has already
+        got through. It counts *sessions*, not participants: a session that was
+        started and abandoned did not consume its set, and a set that was genuinely
+        run twice should show as run twice.
+
+        Counted in Python rather than with GROUP BY on the stored JSON, because
+        grouping on the text would treat ``["a", "b"]`` and ``["a","b"]`` as
+        different sets -- true of every row this code writes, but not of a row
+        inserted by hand or by an older version.
+        """
+        counts: dict[str, int] = {}
+        try:
+            rows = self._get_conn().execute(
+                "SELECT task_order FROM study_sessions WHERE status = ?", (status,)
+            ).fetchall()
+        except Exception as error:  # noqa: BLE001 - counted, never fatal
+            self._note_failure("db_reads", error)
+            return {}
+        for row in rows:
+            try:
+                order = json.loads(row["task_order"] or "[]")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(order, list):
+                continue
+            key = "+".join(str(item) for item in order)
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def list_sessions(self, limit: int = 100) -> list[dict[str, Any]]:
+        # Every column rather than a list of them, so a database written before a
+        # column existed is still read. See _long_rows_for_session.
+        rows = self._get_conn().execute(
+            "SELECT * FROM study_sessions ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [session for session in (_hydrate(row) for row in rows) if session]
+
+    def all_sessions(self) -> list[dict[str, Any]]:
+        """Every session, oldest first, for the export's session table."""
+        rows = self._get_conn().execute("SELECT * FROM study_sessions ORDER BY id").fetchall()
+        return [session for session in (_hydrate(row) for row in rows) if session]
+
+    def set_mode(self, study_session_id: int, mode: str) -> None:
+        """Switch a session between running on two machines and running on one."""
+        with self._write_lock:
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE study_sessions SET mode = ? WHERE id = ?",
+                ("solo" if mode == "solo" else "paired", study_session_id),
+            )
+            conn.commit()
+
+    def set_step_index(self, study_session_id: int, step_index: int) -> None:
+        """Move the session to a step and restart the per-step clock."""
+        with self._write_lock:
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE study_sessions SET step_index = ?, step_started_at = ? WHERE id = ?",
+                (int(step_index), now(), study_session_id),
+            )
+            conn.commit()
+
+    def checkpoint(self) -> None:
+        """Fold the write-ahead log back into the database file.
+
+        WAL mode means recent writes live in ``study.db-wal`` until SQLite decides to
+        checkpoint. That is invisible while the server is reading through its own
+        connection, and quietly destructive afterwards: copying ``study.db`` on its
+        own -- the obvious way to get a session off the server for analysis -- yields
+        a database missing everything still in the WAL. A real session lost about a
+        third of its rows that way.
+
+        Checkpointing at the end of a session makes the file self-contained, so the
+        obvious thing to copy is also the correct thing to copy.
+        """
+        with self._write_lock:
+            try:
+                self._get_conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception as error:  # noqa: BLE001 - counted, never fatal
+                self._note_failure("db_writes", error)
+
+    def end_session(
+        self,
+        study_session_id: int,
+        *,
+        status: str,
+        source: str,
+        event_data: dict[str, Any] | None = None,
+        part_id: str | None = None,
+        step_id: str | None = None,
+        step_index: int | None = None,
+    ) -> bool:
+        """End an active session: one ``session_end`` event, then the status.
+
+        Only ever from 'active', and the check and both writes happen under the
+        write lock, so two things ending the same session at once -- the idle
+        sweep and an experimenter pressing End, or End pressed in two panels --
+        leave one record of it. Whichever comes second finds the session already
+        ended and does nothing. Before this, the sweep could end a session the
+        experimenter had just completed, adding a second ``session_end`` and
+        overwriting 'completed' with 'abandoned' (#183).
+
+        The event is written before the status changes, so a session closed
+        automatically reads differently in the log from one an experimenter
+        ended. Returns whether this call ended it.
+        """
+        if status not in ("completed", "abandoned"):
+            raise ValueError(f"a session ends completed or abandoned, not {status!r}")
+        with self._write_lock:
+            session = self.get_study_session(study_session_id)
+            if not session or session.get("status") != "active":
+                return False
+            self.record_event(
+                study_session_id,
+                "session_end",
+                source=source,
+                event_data={"status": status, **(event_data or {})},
+                part_id=part_id,
+                step_id=step_id,
+                step_index=step_index,
+            )
+            conn = self._get_conn()
+            cursor = conn.execute(
+                "UPDATE study_sessions SET status = ?, completed_at = ? "
+                "WHERE id = ? AND status = 'active'",
+                (status, now(), study_session_id),
+            )
+            conn.commit()
+            ended = cursor.rowcount == 1
+        self.checkpoint()
+        return ended
+
+    def complete_session(self, study_session_id: int, status: str = "completed") -> None:
+        """Set a session's status unconditionally, with no event. The request
+        paths use ``end_session``; this is for repairs and tests."""
+        with self._write_lock:
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE study_sessions SET status = ?, completed_at = ? WHERE id = ?",
+                (status, now(), study_session_id),
+            )
+            conn.commit()
+        self.checkpoint()
+
+    def _append_jsonl(self, session: dict[str, Any], record: dict[str, Any]) -> None:
+        """Append one line to this session's reconstruction log.
+
+        Separate from the database write and never conditional on it: if SQLite is the
+        thing that is broken, this file is what the session is recovered from.
+        """
+        path_value = session.get("log_path")
+        if not path_value:
+            return
+        try:
+            path = Path(path_value)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        except Exception as error:  # noqa: BLE001 - counted, never fatal
+            self._note_failure("jsonl_writes", error)
+
+    def record_event(
+        self,
+        study_session_id: int,
+        event_type: str,
+        *,
+        source: str = "participant",
+        event_data: dict[str, Any] | None = None,
+        part_id: str | None = None,
+        step_id: str | None = None,
+        step_index: int | None = None,
+        client_id: str | None = None,
+        client_time: str | None = None,
+        viewer_state: dict[str, Any] | None = None,
+    ) -> int | None:
+        """Record one interaction in both the database and the JSONL log.
+
+        ``viewer_state`` is the full state of the viewer at the moment it happened --
+        model, view, depth, render mode, zoom. It goes into the JSONL line rather than
+        into columns, because the point of that file is that every line is
+        self-describing: reconstructing what was under the participant's fingers
+        should not require joining against the render table.
+
+        Returns the assigned ``seq``, or None if the session is gone.
+        """
+        seq: int | None = None
+        # Both writes happen under the one lock. The JSONL append used to sit outside
+        # it, which let two clients posting at the same moment take seq 10 and 11 and
+        # then append in the other order -- a file whose whole point is that it is an
+        # ordered append-only record. The data was complete either way, but a reader
+        # trusting file order got it wrong.
+        #
+        # The session is read, and the clock taken, under it as well. Read before
+        # it, a row racing a step change could take the old step's clock and a
+        # time earlier than a row with a lower seq (#258 review).
+        with self._write_lock:
+            session = self.get_study_session(study_session_id)
+            if not session:
+                return None
+            timestamp = now()
+            elapsed = _elapsed_ms(session.get("started_at"), timestamp)
+            step_elapsed = _elapsed_ms(session.get("step_started_at"), timestamp)
+            participant_code = str(session.get("participant_code") or "")
+            participant_id = session.get("participant_id")
+            try:
+                conn = self._get_conn()
+                seq = _next_seq(conn, study_session_id)
+                conn.execute(
+                    """INSERT INTO study_events
+                       (study_session_id, participant_id, participant_code, seq, part_id,
+                        step_id, step_index, event_type, source, client_id, event_data,
+                        client_time, created_at, elapsed_ms, step_elapsed_ms)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        study_session_id,
+                        participant_id,
+                        participant_code,
+                        seq,
+                        part_id,
+                        step_id,
+                        step_index,
+                        event_type,
+                        source,
+                        client_id,
+                        json.dumps(event_data or {}, default=str),
+                        client_time,
+                        timestamp,
+                        elapsed,
+                        step_elapsed,
+                    ),
+                )
+                conn.commit()
+            except Exception as error:  # noqa: BLE001 - counted, never fatal
+                self._note_failure("db_writes", error)
+
+            # Still written when the database write failed: that is the case the
+            # second record exists for.
+            self._append_jsonl(
+                session,
+                {
+                    "timestamp": timestamp,
+                    "elapsed_ms": elapsed,
+                    "step_elapsed_ms": step_elapsed,
+                    "seq": seq,
+                    "study_session_id": study_session_id,
+                    "participant_code": participant_code,
+                    "session_number": session.get("session_number"),
+                    "task_order": session.get("task_order"),
+                    "part_id": part_id,
+                    "step_id": step_id,
+                    "step_index": step_index,
+                    "event_type": event_type,
+                    "source": source,
+                    "client_id": client_id,
+                    "client_time": client_time,
+                    "viewer_state": viewer_state or {},
+                    "event_data": event_data or {},
+                },
+            )
+        return seq
+
+    def record_render(
+        self,
+        study_session_id: int,
+        *,
+        model: str | None,
+        view: str | None,
+        render_mode: str | None,
+        layout_mode: str | None,
+        depth: float | None,
+        zoom: float | None,
+        input_source: str | None,
+        cache_hit: bool,
+        orientation: dict[str, Any] | None = None,
+        part_id: str | None = None,
+        step_id: str | None = None,
+        step_index: int | None = None,
+        axis_mode: str | None = None,
+        cut_axis: str | None = None,
+        cut_side: str | None = None,
+        cut_percent: float | None = None,
+        resolve_step: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
+        only_if_active: bool = False,
+    ) -> int | None:
+        """Record one render request against the active study session.
+
+        Recorded on the server rather than reported by the client, so a browser that
+        crashes or a tab that is closed cannot take the record of what was displayed
+        with it.
+
+        ``resolve_step`` maps the session to its current step. Given, it is asked
+        under the lock with the session read there, so the step a render is filed
+        under and the step clock it carries come from the same moment.
+        ``only_if_active`` drops a render that arrives after the session ended.
+        """
+        seq: int | None = None
+        # One lock over both writes, so the file stays in seq order, and over the
+        # session read and the clock. See record_event.
+        with self._write_lock:
+            session = self.get_study_session(study_session_id)
+            if not session or (only_if_active and session.get("status") != "active"):
+                return None
+            if resolve_step is not None:
+                step = resolve_step(session) or {}
+                part_id, step_id, step_index = step.get("part_id"), step.get("id"), step.get("index")
+            timestamp = now()
+            elapsed = _elapsed_ms(session.get("started_at"), timestamp)
+            step_elapsed = _elapsed_ms(session.get("step_started_at"), timestamp)
+            participant_code = str(session.get("participant_code") or "")
+            participant_id = session.get("participant_id")
+            try:
+                conn = self._get_conn()
+                seq = _next_seq(conn, study_session_id)
+                conn.execute(
+                    """INSERT INTO study_renders
+                       (study_session_id, participant_id, participant_code, seq, part_id,
+                        step_id, step_index, model, view, render_mode, layout_mode, depth,
+                        zoom, input_source, cache_hit, orientation, created_at, elapsed_ms,
+                        step_elapsed_ms, axis_mode, cut_axis, cut_side, cut_percent)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                               ?, ?, ?, ?)""",
+                    (
+                        study_session_id,
+                        participant_id,
+                        participant_code,
+                        seq,
+                        part_id,
+                        step_id,
+                        step_index,
+                        model,
+                        view,
+                        render_mode,
+                        layout_mode,
+                        None if depth is None else float(depth),
+                        None if zoom is None else float(zoom),
+                        input_source,
+                        1 if cache_hit else 0,
+                        json.dumps(orientation) if orientation else None,
+                        timestamp,
+                        elapsed,
+                        step_elapsed,
+                        axis_mode,
+                        cut_axis,
+                        cut_side,
+                        None if cut_percent is None else float(cut_percent),
+                    ),
+                )
+                conn.commit()
+            except Exception as error:  # noqa: BLE001 - counted, never fatal
+                self._note_failure("db_writes", error)
+
+            self._append_jsonl(
+                session,
+                {
+                    "timestamp": timestamp,
+                    "elapsed_ms": elapsed,
+                    "step_elapsed_ms": step_elapsed,
+                    "seq": seq,
+                    "study_session_id": study_session_id,
+                    "participant_code": participant_code,
+                    "session_number": session.get("session_number"),
+                    "part_id": part_id,
+                    "step_id": step_id,
+                    "step_index": step_index,
+                    "event_type": "render",
+                    "source": "server",
+                    "viewer_state": {
+                        "model": model,
+                        "view": view,
+                        "render_mode": render_mode,
+                        "layout_mode": layout_mode,
+                        "depth": depth,
+                        "zoom": zoom,
+                        "orientation": orientation,
+                        "axis_mode": axis_mode,
+                        "cut_axis": cut_axis,
+                        "cut_side": cut_side,
+                        "cut_percent": cut_percent,
+                    },
+                    "event_data": {"input_source": input_source, "cache_hit": bool(cache_hit)},
+                },
+            )
+        return seq
+
+    def session_counts(self, study_session_id: int) -> dict[str, int]:
+        """Row counts for the control panel, so the experimenter can see logging is
+        alive without opening the database."""
+        conn = self._get_conn()
+        try:
+            events = conn.execute(
+                "SELECT COUNT(*) AS n FROM study_events WHERE study_session_id = ?",
+                (study_session_id,),
+            ).fetchone()["n"]
+            renders = conn.execute(
+                "SELECT COUNT(*) AS n FROM study_renders WHERE study_session_id = ?",
+                (study_session_id,),
+            ).fetchone()["n"]
+        except Exception:  # noqa: BLE001 - a count for the panel, never fatal
+            return {"events": 0, "renders": 0}
+        return {"events": int(events), "renders": int(renders)}
+
+    def export_session(self, study_session_id: int) -> dict[str, Any] | None:
+        """Everything recorded for one session, as one JSON document.
+
+        Exists so the analysis does not begin with someone working out how to get a
+        SQLite file off a Docker volume.
+        """
+        session = self.get_study_session(study_session_id)
+        if not session:
+            return None
+        conn = self._get_conn()
+        events = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM study_events WHERE study_session_id = ? ORDER BY seq",
+                (study_session_id,),
+            )
+        ]
+        for event in events:
+            # A payload that does not parse is left as the text it was stored as,
+            # rather than replaced with something nobody recorded.
+            with contextlib.suppress(TypeError, ValueError):
+                event["event_data"] = json.loads(event.get("event_data") or "{}")
+        renders = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM study_renders WHERE study_session_id = ? ORDER BY seq",
+                (study_session_id,),
+            )
+        ]
+        return {
+            "session": session,
+            "participant": self.get_participant(int(session["participant_id"])) if session.get("participant_id") else None,
+            "events": events,
+            "renders": renders,
+        }
+
+    def completed_sessions(self) -> list[dict[str, Any]]:
+        """Every session someone actually finished, oldest first.
+
+        'completed' is the only status long.csv accepts. An active session is still
+        being written to, so exporting it produces a different file every time it is
+        asked for, and an abandoned one is a session that stopped partway. Both
+        belong in the analysis only after a person has looked at them and said so,
+        which is why the archive keeps them apart, in long_incomplete.csv (see
+        ``incomplete_sessions``).
+        """
+        try:
+            rows = self._get_conn().execute(
+                """SELECT * FROM study_sessions
+                   WHERE status = 'completed'
+                   ORDER BY id""",
+            ).fetchall()
+        except Exception as error:  # noqa: BLE001 - counted, never fatal
+            self._note_failure("db_reads", error)
+            return []
+        return [session for session in (_hydrate(row) for row in rows) if session]
+
+    def incomplete_sessions(self, *, include_active: bool) -> list[dict[str, Any]]:
+        """The sessions long.csv leaves out that nothing is still writing to,
+        oldest first, for long_incomplete.csv: every abandoned one, and with
+        ``include_active`` the ones still marked active. Only a closed study
+        passes that. Nothing will end its sessions now, since the idle sweep runs
+        only while a study is open, so its 'active' ones are finished records that
+        were never closed (#258 review). In an open study an active session is
+        still being written to, and stays out."""
+        statuses = ("abandoned", "active") if include_active else ("abandoned",)
+        marks = ", ".join("?" for _ in statuses)
+        try:
+            rows = self._get_conn().execute(
+                f"SELECT * FROM study_sessions WHERE status IN ({marks}) ORDER BY id",
+                statuses,
+            ).fetchall()
+        except Exception as error:  # noqa: BLE001 - counted, never fatal
+            self._note_failure("db_reads", error)
+            return []
+        return [session for session in (_hydrate(row) for row in rows) if session]
+
+    def _long_rows_for_session(self, session: dict[str, Any]) -> list[dict[str, Any]]:
+        """One session's interactions as long-format rows, in the order they happened."""
+        study_session_id = int(session["id"])
+        conn = self._get_conn()
+        events = conn.execute(
+            """SELECT seq, part_id, step_id, step_index, event_type, source, event_data,
+                      created_at, elapsed_ms, step_elapsed_ms
+               FROM study_events WHERE study_session_id = ?""",
+            (study_session_id,),
+        ).fetchall()
+        # Every column, and the newer ones read blank where they are missing. A
+        # closed study's database is read where it is and never migrated, and the
+        # comparison study's on production predates the axis columns of #185:
+        # naming them here returned nothing at all for it.
+        renders = conn.execute(
+            "SELECT * FROM study_renders WHERE study_session_id = ?",
+            (study_session_id,),
+        ).fetchall()
+        render_columns = set(renders[0].keys()) if renders else set()
+
+        # seq is one counter across both tables, so this puts a keypress and the render
+        # it caused in the order they actually happened. Ties keep the event first: the
+        # command comes before the picture it produced.
+        merged = [("event", row) for row in events] + [("render", row) for row in renders]
+        merged.sort(key=lambda item: (item[1]["seq"] or 0, 0 if item[0] == "event" else 1))
+
+        # Only renders carry viewer state in the database; an event row would otherwise
+        # have blanks where the analysis needs to know which model was under their
+        # hands. Carried forward from the last render of this session, never across
+        # sessions, and blank until the first render because nothing was on the display
+        # yet.
+        state: dict[str, Any] = {
+            "model": None,
+            "view": None,
+            "render_mode": None,
+            "layout_mode": None,
+            "depth": None,
+            "zoom": None,
+            "orientation_x": None,
+            "orientation_y": None,
+            "orientation_z": None,
+            "orientation_basis": None,
+            **{name: None for name, _ in AXIS_RENDER_COLUMNS},
+        }
+        rows: list[dict[str, Any]] = []
+        for kind, row in merged:
+            if kind == "render":
+                angle_x, angle_y, angle_z = _orientation_angles(row["orientation"])
+                state = {
+                    "model": row["model"],
+                    "view": row["view"],
+                    "render_mode": _canonical_render_mode(row["render_mode"]),
+                    "layout_mode": row["layout_mode"],
+                    "depth": row["depth"],
+                    "zoom": row["zoom"],
+                    "orientation_x": angle_x,
+                    "orientation_y": angle_y,
+                    "orientation_z": angle_z,
+                    "orientation_basis": row["orientation"],
+                    **{
+                        name: row[name] if name in render_columns else None
+                        for name, _ in AXIS_RENDER_COLUMNS
+                    },
+                }
+                event_type = "render"
+                source = "server"
+                input_source = row["input_source"]
+                cache_hit = bool(row["cache_hit"])
+                key = None
+                key_repeat = None
+                key_shift = None
+            else:
+                event_type = row["event_type"]
+                source = row["source"]
+                input_source = None
+                cache_hit = None
+                # Which key, not just that a key was pressed. The viewer has recorded
+                # this in event_data since study mode existed, so the column fills in
+                # for sessions already run; it was simply never lifted out into one.
+                # Without it a rotation and a change of view cannot be separated at
+                # all: there is no view-switching command in the viewer, and the view
+                # label follows the depth axis, so the two necessarily move together.
+                payload = _event_payload(row["event_data"])
+                raw_key = payload.get("key")
+                key = None if raw_key is None else str(raw_key)
+                # A held arrow key repeats, and counting repeats as separate commands
+                # overstates deliberate presses. Blank on anything that is not a key.
+                key_repeat = bool(payload.get("repeat")) if key is not None else None
+                key_shift = bool(payload["shift"]) if key is not None and "shift" in payload else None
+
+            rows.append(
+                {
+                    "participant_code": session.get("participant_code"),
+                    "session_number": session.get("session_number"),
+                    "study_session_id": study_session_id,
+                    "seq": row["seq"],
+                    "timestamp": row["created_at"],
+                    "elapsed_ms": row["elapsed_ms"],
+                    "step_elapsed_ms": row["step_elapsed_ms"],
+                    # part_id is the phase: onboarding, task1, task2, discussion. It is
+                    # what keeps a rotation during onboarding from being counted as a
+                    # participant working out a model.
+                    "phase": row["part_id"],
+                    "step_id": row["step_id"],
+                    "step_index": row["step_index"],
+                    "event_type": event_type,
+                    "source": source,
+                    "key": key,
+                    "key_repeat": key_repeat,
+                    "key_shift": key_shift,
+                    "input_source": input_source,
+                    "cache_hit": cache_hit,
+                    **state,
+                }
+            )
+        return rows
+
+    def export_long_rows(self, study_session_id: int | None = None) -> list[dict[str, Any]]:
+        """Long-format rows for every completed session, or for one of them.
+
+        One row per recorded interaction rather than one per session, because every
+        question the analysis asks -- time in each render mode, rotations per phase,
+        how often the view was switched -- is a count over interactions grouped some
+        way. A wide table would have to guess the groupings in advance.
+
+        Passing a session id that is not a completed session returns nothing. That is
+        the same answer as a session with no interactions, so callers that need to
+        tell those apart should check the status themselves.
+
+        A session that cannot be read raises. It used to be skipped quietly, so the
+        file left a session out and still looked whole (#258 review).
+        """
+        if study_session_id is None:
+            sessions = self.completed_sessions()
+        else:
+            session = self.get_study_session(study_session_id)
+            sessions = [session] if session and session.get("status") == "completed" else []
+        return list(self.iter_long_rows(sessions))
+
+    def iter_long_rows(
+        self,
+        sessions: Iterable[dict[str, Any]],
+        on_error: Callable[[dict[str, Any], Exception], None] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """The long rows of ``sessions``, one session at a time, so a large study
+        is never held in memory whole.
+
+        A session that cannot be read raises, unless ``on_error`` is given: then
+        it is told, and the rest are still produced. The archive passes one, and
+        lists what failed in its checks and its manifest.
+        """
+        for session in sessions:
+            try:
+                rows = self._long_rows_for_session(session)
+            except Exception as error:  # reported, never silent
+                self._note_failure("db_reads", error)
+                if on_error is None:
+                    raise
+                on_error(session, error)
+                continue
+            yield from rows

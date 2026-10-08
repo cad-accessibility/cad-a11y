@@ -23,7 +23,7 @@ data-collection incident at a venue that forbade it, and the forgotten check is
 invisible until afterwards. Swapping the transport inverts that: a call site
 someone adds next month and forgets to guard still calls ``current()``, still
 gets the ``NullRecorder`` on the demo path, and still writes nothing. The way to
-break the guarantee is to import ``db`` or ``study_db`` directly from a request
+break the guarantee is to import ``db`` or a study store directly from a request
 handler, which is a visible thing to do and is what
 ``tests/test_demo_no_recording.py`` looks for.
 
@@ -148,7 +148,7 @@ class PersistentRecorder:
     """Writes to the real sinks.
 
     The sink modules are injected rather than imported, so this file has no
-    import edge to ``db`` or ``study_db`` and ``server.py`` stays the only place
+    import edge to ``db`` or ``app.studies`` and ``server.py`` stays the only place
     that wires them together.
     """
 

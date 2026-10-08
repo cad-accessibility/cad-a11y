@@ -1,48 +1,57 @@
-"""Integration tests for the /study endpoints.
+"""Integration tests for the /studies/<slug> endpoints.
 
 Runs against a real SQLite database in a temp directory; no mocks. The emphasis
 is on the two things a session cannot recover from: data that was not recorded,
 and the answer key reaching the participant's browser.
+
+The engine is run on the comparison study's protocol, the one it was built for,
+opened under another name. The real definition stays retired; see
+test_studies_registry.py for what a retired study serves (nothing).
 """
 
 from __future__ import annotations
 
 import csv
+import dataclasses
 import io
 import json
 from datetime import timedelta
 
 import pytest
 
-import app.study as study_module
-import app.study_db as study_db
-import app.study_protocol as study_protocol
+import app.studies.engine as engine
+import app.studies.store as store_module
 from app.server import app as flask_app
-
+from app.studies import protocol, registry, tokens
+from app.studies.definition import Status
+from app.studies.definitions import comparison_2026
+from app.studies.registry import StudyRuntime
+from app.studies.store import StudyStore
 
 TOKEN = "test-token"
+TOKEN_HASH = tokens.hash_token(TOKEN)
+SLUG = "comparison-test"
+BASE = f"/studies/{SLUG}"
+CONTROL = f"{BASE}/control"
+STUDY = dataclasses.replace(
+    comparison_2026.STUDY, slug=SLUG, status=Status.OPEN, token_hash=TOKEN_HASH, storage=None
+)
+
+# Set by the study_env fixture: this test's store and the runtime serving it.
+store: StudyStore
+runtime: StudyRuntime
 
 
 @pytest.fixture()
-def study_env(tmp_path, monkeypatch):
-    """Point the study database and log directory at a temp dir, and pin the
-    control token so the tests are not at the mercy of a generated one."""
-    monkeypatch.setattr(study_db, "DB_PATH", tmp_path / "study.db")
-    monkeypatch.setattr(study_db, "LOG_DIR", tmp_path / "logs")
-    # Most of these run with the optional gate turned on, so the token paths stay
-    # covered. The default -- no gate at all -- is covered by TestPanelIsOpen.
-    monkeypatch.setenv("STUDY_CONTROL_TOKEN", TOKEN)
-    study_db._local.__dict__.clear()
-    study_db._failures.update(
-        {"db_writes": 0, "db_reads": 0, "jsonl_writes": 0, "last_error": None}
-    )
-    study_module._ready_signals.clear()
-    # The idle sweep throttles itself with a module-level timestamp, so it has
-    # to be reset or one test's sweep suppresses the next test's.
-    study_module._last_sweep_at = 0.0
-    study_db.init_db()
+def study_env(tmp_path):
+    """Serve the study from a database and log directory in a temp dir."""
+    global store, runtime
+    store = StudyStore(tmp_path / "study.db", tmp_path / "logs")
+    store.init_db()
+    runtime = registry.install(StudyRuntime(study=STUDY, store=store, served_as=Status.OPEN))
     yield tmp_path
-    study_db._local.__dict__.clear()
+    registry.remove(SLUG)
+    store._local.__dict__.clear()
 
 
 @pytest.fixture()
@@ -56,27 +65,33 @@ def _auth(**extra):
     return {"X-Study-Token": TOKEN, **extra}
 
 
+def _render_headers(study_session_id):
+    """What the participant's viewer tags a render with: the study, and the
+    session's join code."""
+    return {"X-Study": SLUG, "X-Study-Key": _key(study_session_id)}
+
+
 def _start(client, **payload):
-    return client.post("/study/session/start", json=payload, headers=_auth())
+    return client.post(f"{CONTROL}/session/start", json=payload, headers=_auth())
 
 
 def _key(state_or_id):
     """The join code for a session, as a participant's browser would carry it."""
     if isinstance(state_or_id, dict):
         return state_or_id["participant_key"]
-    return study_db.get_study_session(int(state_or_id))["participant_key"]
+    return store.get_study_session(int(state_or_id))["participant_key"]
 
 
 def _advance_to(client, step_id):
     """Advance until the named step is current. Used instead of hard-coding step
     numbers so a protocol edit does not silently retarget these tests."""
     for _ in range(200):
-        state = client.get("/study/state", headers=_auth()).get_json()
+        state = client.get(f"{CONTROL}/state", headers=_auth()).get_json()
         if state["step"]["id"] == step_id:
             return state
         if state["step_index"] >= state["step_count"] - 1:
             break
-        client.post("/study/step/advance", json={"direction": "next"}, headers=_auth())
+        client.post(f"{CONTROL}/step/advance", json={"direction": "next"}, headers=_auth())
     raise AssertionError(f"never reached step {step_id}")
 
 
@@ -86,88 +101,114 @@ def _advance_to(client, step_id):
 
 class TestAccessControl:
     def test_participant_view_needs_no_token(self, client):
-        assert client.get("/study").status_code == 200
+        assert client.get(f"{BASE}").status_code == 200
 
-    def test_control_panel_requires_a_token(self, client):
-        assert client.get("/study/control").status_code == 403
-        assert client.get("/study/control?token=wrong").status_code == 403
-        assert client.get(f"/study/control?token={TOKEN}").status_code == 200
+    def test_the_panel_page_itself_needs_no_token(self, client):
+        """It holds no data, and it is where the token is entered."""
+        assert client.get(f"{CONTROL}").status_code == 200
 
     @pytest.mark.parametrize(
         "path",
         [
-            "/study/config",
-            "/study/sessions",
-            "/study/sets",
+            f"{CONTROL}/config",
+            f"{CONTROL}/state",
+            f"{CONTROL}/sessions",
+            f"{CONTROL}/sets",
+            f"{CONTROL}/stream",
+            f"{CONTROL}/export/long.csv",
+            f"{CONTROL}/export/checks.json",
+            f"{CONTROL}/export/archive.zip",
+            f"{CONTROL}/export/sessions/1.json",
         ],
     )
     def test_experimenter_endpoints_require_a_token(self, client, path):
-        assert client.get(path).status_code == 403
+        assert client.get(path).status_code == 401
+        assert client.get(path, headers={"X-Study-Token": "wrong"}).status_code == 401
 
     @pytest.mark.parametrize(
         "path",
         [
-            "/study/session/start",
-            "/study/session/end",
-            "/study/step/advance",
+            f"{CONTROL}/session/start",
+            f"{CONTROL}/session/end",
+            f"{CONTROL}/session/mode",
+            f"{CONTROL}/step/advance",
         ],
     )
     def test_mutating_endpoints_require_a_token(self, client, path):
-        assert client.post(path, json={}).status_code == 403
+        assert client.post(path, json={}).status_code == 401
 
-    def test_token_accepted_in_header_or_query(self, client):
-        assert client.get("/study/config", headers=_auth()).status_code == 200
-        assert client.get(f"/study/config?token={TOKEN}").status_code == 200
+    def test_token_accepted_in_a_header(self, client):
+        assert client.get(f"{CONTROL}/config", headers=_auth()).status_code == 200
 
-    def test_rejection_names_the_variable_that_turns_the_gate_on(self, client):
-        body = client.get("/study/config").get_json()
-        assert "STUDY_CONTROL_TOKEN" in body["message"]
+    def test_the_token_is_never_read_from_the_url(self, client):
+        """A token in a URL ends up in browser history and in the logs of the
+        proxy in front of the server."""
+        assert client.get(f"{CONTROL}/config?token={TOKEN}").status_code == 401
 
-
-class TestPanelIsOpenByDefault:
-    """Running a session should be: open the app, start.
-
-    The panel used to be gated on a generated secret that an experimenter had to
-    find in the server log. Now it is open unless the deployment sets
-    STUDY_CONTROL_TOKEN, which turns the gate back on without changing anything
-    else.
-    """
-
-    @pytest.fixture()
-    def open_client(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(study_db, "DB_PATH", tmp_path / "study.db")
-        monkeypatch.setattr(study_db, "LOG_DIR", tmp_path / "logs")
-        monkeypatch.delenv("STUDY_CONTROL_TOKEN", raising=False)
-        study_db._local.__dict__.clear()
-        study_db.init_db()
-        flask_app.config["TESTING"] = True
-        with flask_app.test_client() as c:
-            yield c
-        study_db._local.__dict__.clear()
-
-    def test_the_panel_opens_with_no_token(self, open_client):
-        assert open_client.get("/study/control").status_code == 200
-
-    def test_a_session_can_be_run_with_no_token(self, open_client):
-        started = open_client.post("/study/session/start", json={})
-        assert started.status_code == 200
-        session_id = started.get_json()["state"]["study_session_id"]
-        assert open_client.post(
-            "/study/step/advance", json={"direction": "next", "study_session_id": session_id}
-        ).status_code == 200
-        assert open_client.post(
-            "/study/session/end", json={"study_session_id": session_id}
-        ).status_code == 200
-
-    def test_there_is_no_generated_secret_to_find(self, open_client, tmp_path):
-        """No token file, no startup banner, nothing to go looking for."""
-        assert study_module.control_token() == ""
-        assert not list(tmp_path.glob("**/*token*"))
-
-    def test_setting_the_variable_turns_the_gate_back_on(self, open_client, monkeypatch):
+    def test_the_old_deployment_variable_opens_nothing(self, client, monkeypatch):
+        """STUDY_CONTROL_TOKEN was the comparison study's switch. It is not a
+        token for any study now."""
         monkeypatch.setenv("STUDY_CONTROL_TOKEN", "gated")
-        assert open_client.get("/study/control").status_code == 403
-        assert open_client.get("/study/control?token=gated").status_code == 200
+        assert client.get(f"{CONTROL}/config", headers={"X-Study-Token": "gated"}).status_code == 401
+
+    def test_a_panel_post_must_be_json(self, client):
+        """The second lock on cross-site requests, beside the SameSite cookie: a
+        plain form from another site cannot send JSON."""
+        response = client.post(
+            f"{CONTROL}/session/start", data="participant_code=P01", headers=_auth(),
+            content_type="application/x-www-form-urlencoded",
+        )
+        assert response.status_code == 415
+
+
+class TestSigningIn:
+    def test_the_panel_can_ask_whether_it_is_signed_in(self, client):
+        """As a 200 either way, so a fresh panel has no 401 to log."""
+        before = client.get(f"{CONTROL}/signed-in")
+        assert before.status_code == 200
+        assert before.get_json() == {"signed_in": False, "status": "open"}
+        client.post(f"{CONTROL}/sign-in", json={"token": TOKEN})
+        assert client.get(f"{CONTROL}/signed-in").get_json()["signed_in"] is True
+
+    def test_sign_in_sets_a_cookie_only_the_panel_receives(self, client):
+        response = client.post(f"{CONTROL}/sign-in", json={"token": TOKEN})
+        assert response.status_code == 200
+        cookie = response.headers["Set-Cookie"]
+        assert f"Path={CONTROL}" in cookie
+        assert "HttpOnly" in cookie
+        assert "SameSite=Strict" in cookie
+        assert TOKEN not in cookie
+
+    def test_a_signed_in_panel_needs_no_header(self, client):
+        client.post(f"{CONTROL}/sign-in", json={"token": TOKEN})
+        assert client.get(f"{CONTROL}/config").status_code == 200
+        assert client.post(f"{CONTROL}/session/start", json={}).status_code == 200
+
+    def test_the_wrong_token_signs_nobody_in(self, client):
+        response = client.post(f"{CONTROL}/sign-in", json={"token": "wrong"})
+        assert response.status_code == 403
+        assert "Set-Cookie" not in response.headers
+        assert client.get(f"{CONTROL}/config").status_code == 401
+
+    def test_signing_out_ends_it(self, client):
+        client.post(f"{CONTROL}/sign-in", json={"token": TOKEN})
+        assert client.post(f"{CONTROL}/sign-out", json={}).status_code == 200
+        assert client.get(f"{CONTROL}/config").status_code == 401
+
+    def test_a_signed_in_browser_still_gets_the_participant_view(self, client):
+        """One laptop, handed over: the experimenter's browser is signed in to the
+        panel and is now the participant's. The participant's address answers
+        with the participant's payload whoever asks."""
+        client.post(f"{CONTROL}/sign-in", json={"token": TOKEN})
+        state = client.post(
+            f"{CONTROL}/session/start", json={"task_order": ["cane_tip", "lego"]}
+        ).get_json()["state"]
+        _advance_to(client, "task1.b.virtual")
+        payload = client.get(f"{BASE}/state?s={state['participant_key']}").get_json()
+        serialised = json.dumps(payload)
+        assert payload["model"]["label"] == "Second object"
+        for leak in ("script", "differences", "Cane tip", "tasks", "active_sessions"):
+            assert leak not in serialised
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +222,7 @@ class TestParticipantPayloadWithholdsTheAnswer:
         two the interface ever shows or announces."""
         state = _start(client, participant_code="P01").get_json()["state"]
         _advance_to(client, "task1.a.virtual")
-        payload = client.get(f"/study/state?s={state['participant_key']}").get_json()
+        payload = client.get(f"{BASE}/state?s={state['participant_key']}").get_json()
         assert payload["model"]["label"] == "First object"
         assert payload["model"]["stem"] == "pencil_holder_2x2"
 
@@ -190,7 +231,7 @@ class TestParticipantPayloadWithholdsTheAnswer:
         it changed: the human label, the description, the answer key."""
         _start(client, participant_code="P01")
         _advance_to(client, "task1.b.virtual")
-        serialised = json.dumps(client.get("/study/state").get_json())
+        serialised = json.dumps(client.get(f"{BASE}/state").get_json())
 
         for leak in (
             "pencil holder",  # the pair's human label and description
@@ -203,15 +244,15 @@ class TestParticipantPayloadWithholdsTheAnswer:
     def test_part_b_label_does_not_say_what_changed(self, client):
         state = _start(client, participant_code="P01").get_json()["state"]
         _advance_to(client, "task1.b.virtual")
-        payload = client.get(f"/study/state?s={state['participant_key']}").get_json()
+        payload = client.get(f"{BASE}/state?s={state['participant_key']}").get_json()
         assert payload["model"]["label"] == "Second object"
 
     def test_no_answer_key_or_script_reaches_the_participant(self, client):
         _start(client, participant_code="P01")
         _advance_to(client, "task1.b.virtual")
-        payload = client.get("/study/state").get_json()
+        payload = client.get(f"{BASE}/state").get_json()
         assert "script" not in payload
-        assert "pair" not in payload
+        assert "task" not in payload
         assert "differences" not in json.dumps(payload)
 
     def test_experimenter_does_get_the_answer_key(self, client):
@@ -219,7 +260,7 @@ class TestParticipantPayloadWithholdsTheAnswer:
         missing -- otherwise the panel is useless."""
         _start(client, participant_code="P01", task_order=["cane_tip", "lego"])
         state = _advance_to(client, "task1.b.virtual")
-        assert state["step"]["pair"]["differences"]
+        assert state["step"]["task"]["differences"]
         assert state["step"]["model"]["model"] == "cane_tip_fitted"
         assert state["step"]["script"]
 
@@ -235,23 +276,23 @@ class TestEnrollment:
 
     def test_each_run_gets_a_new_participant_id(self, client):
         first = _start(client).get_json()["state"]["participant_code"]
-        client.post("/study/session/end", json={}, headers=_auth())
+        client.post(f"{CONTROL}/session/end", json={}, headers=_auth())
         second = _start(client).get_json()["state"]["participant_code"]
         assert first == "P01"
         assert second == "P02"
 
     def test_task_order_defaults_to_the_latin_square(self, client):
         first = _start(client).get_json()["state"]["task_order"]
-        client.post("/study/session/end", json={}, headers=_auth())
+        client.post(f"{CONTROL}/session/end", json={}, headers=_auth())
         second = _start(client).get_json()["state"]["task_order"]
         assert first == ["pencil_holder", "cane_tip"]
         assert second == ["cane_tip", "lego"]
 
     def test_a_returning_participant_keeps_their_assignment(self, client):
         first = _start(client, participant_code="P01").get_json()["state"]["task_order"]
-        client.post("/study/session/end", json={}, headers=_auth())
+        client.post(f"{CONTROL}/session/end", json={}, headers=_auth())
         _start(client, participant_code="P09")
-        client.post("/study/session/end", json={}, headers=_auth())
+        client.post(f"{CONTROL}/session/end", json={}, headers=_auth())
         again = _start(
             client, participant_code="P01", session_number=2
         ).get_json()["state"]["task_order"]
@@ -271,9 +312,9 @@ class TestEnrollment:
         first_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
         second_id = _start(client, participant_code="P02").get_json()["state"]["study_session_id"]
 
-        assert study_db.get_study_session(first_id)["status"] == "active"
-        assert study_db.get_study_session(second_id)["status"] == "active"
-        assert {s["participant_code"] for s in study_db.list_active_sessions()} == {"P01", "P02"}
+        assert store.get_study_session(first_id)["status"] == "active"
+        assert store.get_study_session(second_id)["status"] == "active"
+        assert {s["participant_code"] for s in store.list_active_sessions()} == {"P01", "P02"}
 
     def test_a_panel_is_told_which_other_sessions_are_running(self, client):
         """So a second experimenter knows someone else is mid-session on this
@@ -282,7 +323,7 @@ class TestEnrollment:
         second = _start(client, participant_code="P02").get_json()["state"]["study_session_id"]
 
         state = client.get(
-            f"/study/state?study_session_id={second}", headers=_auth()
+            f"{CONTROL}/state?study_session_id={second}", headers=_auth()
         ).get_json()
         listed = {o["participant_code"]: o["is_current"] for o in state["active_sessions"]}
         assert listed == {"P01": False, "P02": True}
@@ -313,31 +354,31 @@ class TestSteps:
 
     def test_advance_moves_forward_and_back(self, client):
         _start(client)
-        client.post("/study/step/advance", json={"direction": "next"}, headers=_auth())
-        state = client.get("/study/state", headers=_auth()).get_json()
+        client.post(f"{CONTROL}/step/advance", json={"direction": "next"}, headers=_auth())
+        state = client.get(f"{CONTROL}/state", headers=_auth()).get_json()
         assert state["step_index"] == 1
-        client.post("/study/step/advance", json={"direction": "previous"}, headers=_auth())
-        assert client.get("/study/state", headers=_auth()).get_json()["step_index"] == 0
+        client.post(f"{CONTROL}/step/advance", json={"direction": "previous"}, headers=_auth())
+        assert client.get(f"{CONTROL}/state", headers=_auth()).get_json()["step_index"] == 0
 
     def test_cannot_step_before_the_first_or_past_the_last(self, client):
         _start(client)
-        client.post("/study/step/advance", json={"direction": "previous"}, headers=_auth())
-        assert client.get("/study/state", headers=_auth()).get_json()["step_index"] == 0
+        client.post(f"{CONTROL}/step/advance", json={"direction": "previous"}, headers=_auth())
+        assert client.get(f"{CONTROL}/state", headers=_auth()).get_json()["step_index"] == 0
 
-        state = client.get("/study/state", headers=_auth()).get_json()
+        state = client.get(f"{CONTROL}/state", headers=_auth()).get_json()
         client.post(
-            "/study/step/advance", json={"step_index": state["step_count"] + 50}, headers=_auth()
+            f"{CONTROL}/step/advance", json={"step_index": state["step_count"] + 50}, headers=_auth()
         )
-        final = client.get("/study/state", headers=_auth()).get_json()
+        final = client.get(f"{CONTROL}/state", headers=_auth()).get_json()
         assert final["step_index"] == final["step_count"] - 1
 
     def test_jump_to_an_absolute_step(self, client):
         _start(client)
-        client.post("/study/step/advance", json={"step_index": 5}, headers=_auth())
-        assert client.get("/study/state", headers=_auth()).get_json()["step_index"] == 5
+        client.post(f"{CONTROL}/step/advance", json={"step_index": 5}, headers=_auth())
+        assert client.get(f"{CONTROL}/state", headers=_auth()).get_json()["step_index"] == 5
 
     def test_advance_without_a_session_is_a_clean_404(self, client):
-        assert client.post("/study/step/advance", json={}, headers=_auth()).status_code == 404
+        assert client.post(f"{CONTROL}/step/advance", json={}, headers=_auth()).status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -348,29 +389,29 @@ class TestReadySignal:
     def test_ready_is_logged_and_shown_to_the_experimenter(self, client):
         state = _start(client).get_json()["state"]
         assert client.post(
-            f"/study/step/ready?s={state['participant_key']}", json={"client_id": "c1"}
+            f"{BASE}/step/ready?s={state['participant_key']}", json={"client_id": "c1"}
         ).status_code == 200
-        state = client.get("/study/state", headers=_auth()).get_json()
+        state = client.get(f"{CONTROL}/state", headers=_auth()).get_json()
         assert state["participant_ready"]["step_id"] == state["step"]["id"]
 
     def test_ready_does_not_advance_the_session(self, client):
         """Advisory by design: a stray press must not skip a step and lose the
         exploration that was still in progress."""
         _start(client)
-        before = client.get("/study/state", headers=_auth()).get_json()["step_index"]
-        client.post("/study/step/ready", json={})
-        after = client.get("/study/state", headers=_auth()).get_json()["step_index"]
+        before = client.get(f"{CONTROL}/state", headers=_auth()).get_json()["step_index"]
+        client.post(f"{BASE}/step/ready", json={})
+        after = client.get(f"{CONTROL}/state", headers=_auth()).get_json()["step_index"]
         assert before == after
 
     def test_the_signal_belongs_to_the_step_it_was_raised_on(self, client):
         _start(client)
-        client.post("/study/step/ready", json={})
-        client.post("/study/step/advance", json={"direction": "next"}, headers=_auth())
-        state = client.get("/study/state", headers=_auth()).get_json()
+        client.post(f"{BASE}/step/ready", json={})
+        client.post(f"{CONTROL}/step/advance", json={"direction": "next"}, headers=_auth())
+        state = client.get(f"{CONTROL}/state", headers=_auth()).get_json()
         assert state["participant_ready"] is None
 
     def test_ready_without_a_session_is_a_clean_404(self, client):
-        assert client.post("/study/step/ready", json={}).status_code == 404
+        assert client.post(f"{BASE}/step/ready", json={}).status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +422,7 @@ class TestEventLogging:
     def test_participant_events_are_recorded_against_the_participant(self, client):
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
         client.post(
-            f"/study/event?s={_key(session_id)}",
+            f"{BASE}/event?s={_key(session_id)}",
             json={
                 "event_type": "keyboard",
                 "event_data": {"key": "arrowup"},
@@ -389,7 +430,7 @@ class TestEventLogging:
                 "client_id": "c1",
             },
         )
-        export = study_db.export_session(session_id)
+        export = store.export_session(session_id)
         keyboard = [e for e in export["events"] if e["event_type"] == "keyboard"]
         assert len(keyboard) == 1
         assert keyboard[0]["participant_code"] == "P01"
@@ -398,14 +439,14 @@ class TestEventLogging:
     def test_unknown_event_types_are_rejected(self, client):
         session_id = _start(client).get_json()["state"]["study_session_id"]
         response = client.post(
-            f"/study/event?s={_key(session_id)}", json={"event_type": "exfiltrate"}
+            f"{BASE}/event?s={_key(session_id)}", json={"event_type": "exfiltrate"}
         )
         assert response.status_code == 400
 
     def test_events_without_a_session_are_ignored_not_errors(self, client):
         """A participant page left open after a session ends must not spam errors
         into the browser console during the next session's setup."""
-        response = client.post("/study/event?s=ZZZZ", json={"event_type": "keyboard"})
+        response = client.post(f"{BASE}/event?s=ZZZZ", json={"event_type": "keyboard"})
         assert response.status_code == 200
         assert response.get_json()["status"] == "ignored"
 
@@ -415,46 +456,46 @@ class TestEventLogging:
         ).get_json()["state"]["study_session_id"]
         state = _advance_to(client, "task1.a.virtual")
         client.post(
-            f"/study/event?s={_key(session_id)}",
+            f"{BASE}/event?s={_key(session_id)}",
             json={"event_type": "keyboard", "event_data": {"key": "r"}},
         )
-        export = study_db.export_session(session_id)
+        export = store.export_session(session_id)
         keyboard = [e for e in export["events"] if e["event_type"] == "keyboard"][0]
         assert keyboard["step_id"] == state["step"]["id"]
         assert keyboard["part_id"] == "task1"
 
     def test_timings_are_recorded(self, client):
         session_id = _start(client).get_json()["state"]["study_session_id"]
-        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
-        event = study_db.export_session(session_id)["events"][-1]
+        client.post(f"{BASE}/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        event = store.export_session(session_id)["events"][-1]
         assert event["elapsed_ms"] is not None and event["elapsed_ms"] >= 0
         assert event["step_elapsed_ms"] is not None and event["step_elapsed_ms"] >= 0
 
     def test_the_step_clock_restarts_on_advance(self, client):
         session_id = _start(client).get_json()["state"]["study_session_id"]
-        client.post("/study/step/advance", json={"step_index": 3}, headers=_auth())
-        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
-        event = study_db.export_session(session_id)["events"][-1]
+        client.post(f"{CONTROL}/step/advance", json={"step_index": 3}, headers=_auth())
+        client.post(f"{BASE}/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        event = store.export_session(session_id)["events"][-1]
         # Session elapsed keeps counting from the start; the step clock does not.
         assert event["step_elapsed_ms"] <= event["elapsed_ms"]
 
     def test_ordering_is_shared_between_events_and_renders(self, client):
         session_id = _start(client).get_json()["state"]["study_session_id"]
-        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
-        study_db.record_render(
+        client.post(f"{BASE}/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        store.record_render(
             session_id, model="mug", view="x-", render_mode="Cut", layout_mode="single",
             depth=50, zoom=0, input_source="keyboard", cache_hit=False,
         )
-        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
-        export = study_db.export_session(session_id)
+        client.post(f"{BASE}/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        export = store.export_session(session_id)
         sequences = [e["seq"] for e in export["events"]] + [r["seq"] for r in export["renders"]]
         assert len(sequences) == len(set(sequences)), "seq must be unique across both tables"
 
     def test_session_lifecycle_is_logged(self, client):
         session_id = _start(client).get_json()["state"]["study_session_id"]
-        client.post("/study/step/advance", json={"direction": "next"}, headers=_auth())
-        client.post("/study/session/end", json={}, headers=_auth())
-        types = [e["event_type"] for e in study_db.export_session(session_id)["events"]]
+        client.post(f"{CONTROL}/step/advance", json={"direction": "next"}, headers=_auth())
+        client.post(f"{CONTROL}/session/end", json={}, headers=_auth())
+        types = [e["event_type"] for e in store.export_session(session_id)["events"]]
         assert "session_start" in types
         assert "step_advance" in types
         assert "session_end" in types
@@ -464,7 +505,7 @@ class TestEventLogging:
             client, participant_code="P01", task_order=["cane_tip", "lego"]
         ).get_json()["state"]["study_session_id"]
         _advance_to(client, "task1.b.virtual")
-        events = study_db.export_session(session_id)["events"]
+        events = store.export_session(session_id)["events"]
         autoloads = [e for e in events if e["event_type"] == "model_autoload"]
         assert any(e["event_data"]["model"] == "cane_tip_fitted" for e in autoloads)
 
@@ -473,11 +514,11 @@ class TestJsonlLog:
     def test_every_event_is_mirrored_to_the_jsonl_log(self, client, study_env):
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
         client.post(
-            f"/study/event?s={_key(session_id)}",
+            f"{BASE}/event?s={_key(session_id)}",
             json={"event_type": "keyboard", "event_data": {"key": "r"}},
         )
 
-        log_path = study_db.get_study_session(session_id)["log_path"]
+        log_path = store.get_study_session(session_id)["log_path"]
         lines = [json.loads(line) for line in open(log_path, encoding="utf-8")]
         assert lines
         assert lines[0]["event_type"] == "session_start"
@@ -491,10 +532,10 @@ class TestJsonlLog:
         ).get_json()["state"]["study_session_id"]
         _advance_to(client, "task1.a.virtual")
         client.post(
-            f"/study/event?s={_key(session_id)}",
+            f"{BASE}/event?s={_key(session_id)}",
             json={"event_type": "keyboard", "viewer_state": {"depth": 60, "view": "x-"}},
         )
-        log_path = study_db.get_study_session(session_id)["log_path"]
+        log_path = store.get_study_session(session_id)["log_path"]
         line = [json.loads(line) for line in open(log_path, encoding="utf-8")][-1]
         for field in (
             "timestamp", "elapsed_ms", "step_elapsed_ms", "participant_code",
@@ -507,19 +548,19 @@ class TestJsonlLog:
         session_id = _start(
             client, participant_code="P07", session_number=2
         ).get_json()["state"]["study_session_id"]
-        log_path = study_db.get_study_session(session_id)["log_path"]
+        log_path = store.get_study_session(session_id)["log_path"]
         assert "P07_S2_" in log_path
 
 
 class TestRenderLogging:
     def test_renders_are_attributed_via_the_session_header(self, client, monkeypatch):
         session_id = _start(client).get_json()["state"]["study_session_id"]
-        study_module.record_render_for_request  # attribution happens inside /render
+        engine.record_render_for_request  # attribution happens inside /render
 
         with flask_app.test_request_context(
-            "/render", headers={"X-Study-Session": str(session_id)}
+            "/render", headers=_render_headers(session_id)
         ):
-            study_module.record_render_for_request(
+            engine.record_render_for_request(
                 {
                     "view": "x-", "renderMode": "Cut", "mode": "single",
                     "depth": 50, "zoom": 0.0, "input_source": "keyboard",
@@ -527,7 +568,7 @@ class TestRenderLogging:
                 model_stem="mug",
                 cache_hit=False,
             )
-        renders = study_db.export_session(session_id)["renders"]
+        renders = store.export_session(session_id)["renders"]
         assert len(renders) == 1
         assert renders[0]["render_mode"] == "Cut"
         assert renders[0]["cache_hit"] == 0
@@ -537,10 +578,10 @@ class TestRenderLogging:
         Dropping them would lose most of a fast arrow-key traversal."""
         session_id = _start(client).get_json()["state"]["study_session_id"]
         with flask_app.test_request_context(
-            "/render", headers={"X-Study-Session": str(session_id)}
+            "/render", headers=_render_headers(session_id)
         ):
-            study_module.record_render_for_request({"depth": 50}, model_stem="mug", cache_hit=True)
-        renders = study_db.export_session(session_id)["renders"]
+            engine.record_render_for_request({"depth": 50}, model_stem="mug", cache_hit=True)
+        renders = store.export_session(session_id)["renders"]
         assert renders[0]["cache_hit"] == 1
 
     def test_renders_without_the_header_are_not_attributed(self, client):
@@ -548,8 +589,8 @@ class TestRenderLogging:
         study record."""
         session_id = _start(client).get_json()["state"]["study_session_id"]
         with flask_app.test_request_context("/render"):
-            study_module.record_render_for_request({"depth": 50}, model_stem="mug", cache_hit=False)
-        assert study_db.export_session(session_id)["renders"] == []
+            engine.record_render_for_request({"depth": 50}, model_stem="mug", cache_hit=False)
+        assert store.export_session(session_id)["renders"] == []
 
     def test_a_fault_in_render_logging_never_breaks_the_render(self, client, monkeypatch):
         """This hook runs inside /render's try block, where a raise becomes a 400.
@@ -559,22 +600,22 @@ class TestRenderLogging:
         def broken(*_args, **_kwargs):
             raise RuntimeError("protocol resolution blew up")
 
-        monkeypatch.setattr(study_module, "_current_step", broken)
+        monkeypatch.setattr(engine, "_current_step", broken)
         with flask_app.test_request_context(
-            "/render", headers={"X-Study-Session": str(session_id)}
+            "/render", headers=_render_headers(session_id)
         ):
-            study_module.record_render_for_request({"depth": 50}, model_stem="mug", cache_hit=False)
+            engine.record_render_for_request({"depth": 50}, model_stem="mug", cache_hit=False)
 
-        assert study_db.logging_health()["db_write_failures"] >= 1
+        assert store.logging_health()["db_write_failures"] >= 1
 
     def test_renders_for_an_ended_session_are_not_recorded(self, client):
         session_id = _start(client).get_json()["state"]["study_session_id"]
-        client.post("/study/session/end", json={}, headers=_auth())
+        client.post(f"{CONTROL}/session/end", json={}, headers=_auth())
         with flask_app.test_request_context(
-            "/render", headers={"X-Study-Session": str(session_id)}
+            "/render", headers=_render_headers(session_id)
         ):
-            study_module.record_render_for_request({"depth": 50}, model_stem="mug", cache_hit=False)
-        assert study_db.export_session(session_id)["renders"] == []
+            engine.record_render_for_request({"depth": 50}, model_stem="mug", cache_hit=False)
+        assert store.export_session(session_id)["renders"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -585,7 +626,7 @@ class TestStorageScope:
     def test_the_study_database_holds_only_interactions_and_timings(self, study_env):
         import sqlite3
 
-        conn = sqlite3.connect(str(study_db.DB_PATH))
+        conn = sqlite3.connect(str(store.db_path))
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         conn.close()
         assert tables >= {"participants", "study_sessions", "study_events", "study_renders"}
@@ -596,14 +637,14 @@ class TestStorageScope:
 
     def test_no_endpoint_accepts_questionnaire_or_note_content(self, client):
         _start(client)
-        for path in ("/study/observation", "/study/likert", "/study/survey", "/study/note"):
+        for path in (f"{BASE}/observation", f"{BASE}/likert", f"{BASE}/survey", f"{BASE}/note"):
             response = client.post(path, json={"text": "x"}, headers=_auth())
             assert response.status_code == 404, f"{path} should not exist"
 
     def test_the_study_database_is_a_separate_file(self):
         import app.db as analytics_db
 
-        assert study_db.DB_PATH != analytics_db.DB_PATH
+        assert store.db_path != analytics_db.DB_PATH
 
 
 # ---------------------------------------------------------------------------
@@ -626,15 +667,15 @@ class TestLoggingHealth:
         def broken(_conn, _session_id):
             raise sqlite3.OperationalError("database or disk is full")
 
-        monkeypatch.setattr(study_db, "_next_seq", broken)
-        response = client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        monkeypatch.setattr(store_module, "_next_seq", broken)
+        response = client.post(f"{BASE}/event?s={_key(session_id)}", json={"event_type": "keyboard"})
 
         assert response.status_code == 200
-        assert study_db.logging_health()["db_write_failures"] >= 1
+        assert store.logging_health()["db_write_failures"] >= 1
         # The JSONL is written independently, so the interaction is still on
         # disk even though the database write failed. That is the whole point of
         # having two records.
-        log_path = study_db.get_study_session(session_id)["log_path"]
+        log_path = store.get_study_session(session_id)["log_path"]
         lines = [json.loads(line) for line in open(log_path, encoding="utf-8")]
         assert lines[-1]["event_type"] == "keyboard"
 
@@ -649,13 +690,13 @@ class TestLoggingHealth:
         def broken():
             raise sqlite3.OperationalError("unable to open database file")
 
-        monkeypatch.setattr(study_db, "_get_conn", broken)
+        monkeypatch.setattr(store, "_get_conn", broken)
         response = client.post(
-            f"/study/event?s={state['participant_key']}", json={"event_type": "keyboard"}
+            f"{BASE}/event?s={state['participant_key']}", json={"event_type": "keyboard"}
         )
 
         assert response.status_code == 200
-        assert study_db.logging_health()["db_read_failures"] >= 1
+        assert store.logging_health()["db_read_failures"] >= 1
 
 
 class TestDataIsRecoverableFromTheFilesAlone:
@@ -672,17 +713,18 @@ class TestDataIsRecoverableFromTheFilesAlone:
 
         state = _start(client, participant_code="P01").get_json()["state"]
         for _ in range(12):
-            client.post("/study/step/advance", json={"direction": "next"}, headers=_auth())
-            client.post(f"/study/event?s={state['participant_key']}",
+            client.post(f"{CONTROL}/step/advance", json={"direction": "next"}, headers=_auth())
+            client.post(f"{BASE}/event?s={state['participant_key']}",
                         json={"event_type": "keyboard", "event_data": {"key": "arrowup"}})
-        client.post("/study/session/end", json={}, headers=_auth())
+        _to_last_step(client, state["study_session_id"])
+        client.post(f"{CONTROL}/session/end", json={}, headers=_auth())
 
-        live = study_db.export_session(1)
+        live = store.export_session(1)
         expected = len(live["events"]) + len(live["renders"])
 
         # Copy ONLY the main database file, as someone would with docker cp.
         alone = study_env / "copied-alone.db"
-        shutil.copy(study_db.DB_PATH, alone)
+        shutil.copy(store.db_path, alone)
         conn = sqlite3.connect(str(alone))
         got = (
             conn.execute("SELECT COUNT(*) FROM study_events").fetchone()[0]
@@ -709,7 +751,7 @@ class TestDataIsRecoverableFromTheFilesAlone:
 
         session_id = _start(client).get_json()["state"]["study_session_id"]
 
-        real_append = study_db._append_jsonl
+        real_append = store._append_jsonl
 
         def slow_append(session, record):
             # Long enough that another thread will take the next seq and reach
@@ -718,11 +760,11 @@ class TestDataIsRecoverableFromTheFilesAlone:
             time.sleep(0.005)
             real_append(session, record)
 
-        monkeypatch.setattr(study_db, "_append_jsonl", slow_append)
+        monkeypatch.setattr(store, "_append_jsonl", slow_append)
 
         def spam(n):
             for i in range(n):
-                study_db.record_event(session_id, "keyboard", event_data={"i": i})
+                store.record_event(session_id, "keyboard", event_data={"i": i})
 
         threads = [threading.Thread(target=spam, args=(8,)) for _ in range(4)]
         for t in threads:
@@ -730,7 +772,7 @@ class TestDataIsRecoverableFromTheFilesAlone:
         for t in threads:
             t.join()
 
-        log_path = study_db.get_study_session(session_id)["log_path"]
+        log_path = store.get_study_session(session_id)["log_path"]
         sequences = [json.loads(line)["seq"] for line in open(log_path, encoding="utf-8")]
         assert sequences == sorted(sequences), (
             f"JSONL lines are out of sequence order: {sequences}"
@@ -740,10 +782,10 @@ class TestDataIsRecoverableFromTheFilesAlone:
     def test_the_jsonl_and_the_database_agree_on_row_count(self, client):
         session_id = _start(client).get_json()["state"]["study_session_id"]
         for _ in range(5):
-            client.post("/study/step/advance", json={"direction": "next"}, headers=_auth())
-            client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
-        export = study_db.export_session(session_id)
-        log_path = study_db.get_study_session(session_id)["log_path"]
+            client.post(f"{CONTROL}/step/advance", json={"direction": "next"}, headers=_auth())
+            client.post(f"{BASE}/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        export = store.export_session(session_id)
+        log_path = store.get_study_session(session_id)["log_path"]
         lines = sum(1 for _ in open(log_path, encoding="utf-8"))
         assert lines == len(export["events"]) + len(export["renders"])
 
@@ -751,18 +793,18 @@ class TestDataIsRecoverableFromTheFilesAlone:
 class TestExport:
     def test_export_returns_the_whole_session(self, client):
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
-        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
-        body = client.get(f"/study/sessions/{session_id}/export", headers=_auth()).get_json()
+        client.post(f"{BASE}/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        body = client.get(f"{CONTROL}/export/sessions/{session_id}.json", headers=_auth()).get_json()
         assert body["session"]["participant_code"] == "P01"
         assert body["participant"]["id"] == 1
         assert any(e["event_type"] == "keyboard" for e in body["events"])
 
     def test_export_requires_a_token(self, client):
         session_id = _start(client).get_json()["state"]["study_session_id"]
-        assert client.get(f"/study/sessions/{session_id}/export").status_code == 403
+        assert client.get(f"{CONTROL}/export/sessions/{session_id}.json").status_code == 401
 
     def test_unknown_session_is_a_clean_404(self, client):
-        assert client.get("/study/sessions/999/export", headers=_auth()).status_code == 404
+        assert client.get(f"{CONTROL}/export/sessions/999.json", headers=_auth()).status_code == 404
 
 
 class TestModelSets:
@@ -777,20 +819,21 @@ class TestModelSets:
     def _sets(self, client):
         return {
             entry["id"]: entry
-            for entry in client.get("/study/sets", headers=_auth()).get_json()["sets"]
+            for entry in client.get(f"{CONTROL}/sets", headers=_auth()).get_json()["sets"]
         }
 
     def _finish(self, client, **payload):
         state = _start(client, **payload).get_json()["state"]
+        _to_last_step(client, state["study_session_id"])
         client.post(
-            "/study/session/end",
+            f"{CONTROL}/session/end",
             json={"study_session_id": state["study_session_id"], "status": "completed"},
             headers=_auth(),
         )
         return state
 
     def test_a_fresh_database_offers_every_set(self, client):
-        body = client.get("/study/sets", headers=_auth()).get_json()
+        body = client.get(f"{CONTROL}/sets", headers=_auth()).get_json()
         assert body["round"] == 1
         assert body["sets_per_round"] == 6
         assert body["remaining"] == 6
@@ -803,7 +846,7 @@ class TestModelSets:
         assert sets["cane_tip+lego"]["used"] is True
         assert sets["cane_tip+lego"]["completed_count"] == 1
         assert sets["lego+cane_tip"]["used"] is False, "the reverse order is its own set"
-        assert client.get("/study/sets", headers=_auth()).get_json()["remaining"] == 5
+        assert client.get(f"{CONTROL}/sets", headers=_auth()).get_json()["remaining"] == 5
 
     def test_an_unfinished_session_does_not_consume_its_set(self, client):
         """A session that was started and never completed did not run that set.
@@ -816,7 +859,7 @@ class TestModelSets:
     def test_an_abandoned_session_does_not_consume_its_set_either(self, client):
         state = _start(client, task_order=["cane_tip", "lego"]).get_json()["state"]
         client.post(
-            "/study/session/end",
+            f"{CONTROL}/session/end",
             json={"study_session_id": state["study_session_id"], "status": "abandoned"},
             headers=_auth(),
         )
@@ -827,10 +870,10 @@ class TestModelSets:
     def test_a_full_round_repopulates_the_whole_list(self, client):
         """The rollover the experimenter never has to trigger: once every set has
         been run, they all come back unstruck as a new round."""
-        for entry in study_protocol.task_sets():
+        for entry in protocol.task_sets(STUDY):
             self._finish(client, task_order=entry["task_order"])
 
-        body = client.get("/study/sets", headers=_auth()).get_json()
+        body = client.get(f"{CONTROL}/sets", headers=_auth()).get_json()
         assert body["round"] == 2
         assert body["remaining"] == 6
         assert not any(entry["used"] for entry in body["sets"]), (
@@ -839,11 +882,11 @@ class TestModelSets:
         assert all(entry["completed_count"] == 1 for entry in body["sets"])
 
     def test_a_partly_finished_second_round_strikes_only_what_it_ran(self, client):
-        for entry in study_protocol.task_sets():
+        for entry in protocol.task_sets(STUDY):
             self._finish(client, task_order=entry["task_order"])
         self._finish(client, task_order=["cane_tip", "lego"])
 
-        body = client.get("/study/sets", headers=_auth()).get_json()
+        body = client.get(f"{CONTROL}/sets", headers=_auth()).get_json()
         sets = {entry["id"]: entry for entry in body["sets"]}
         assert body["round"] == 2
         assert body["remaining"] == 5
@@ -860,23 +903,23 @@ class TestModelSets:
         sets = self._sets(client)
         assert sets["cane_tip+lego"]["completed_count"] == 2
         assert sets["cane_tip+lego"]["used"] is True
-        assert client.get("/study/sets", headers=_auth()).get_json()["remaining"] == 5
+        assert client.get(f"{CONTROL}/sets", headers=_auth()).get_json()["remaining"] == 5
 
     def test_sessions_on_retired_pairs_are_ignored_not_counted(self, client):
         """Old sessions in a real database name the coat rack. They belong to no
         current set and must not shift the round on."""
-        study_db.create_participant("PX1")
-        participant = study_db.get_participant_by_code("PX1")
-        session = study_db.create_session(
+        store.create_participant("PX1")
+        participant = store.get_participant_by_code("PX1")
+        session = store.create_session(
             participant_id=int(participant["id"]),
             participant_code="PX1",
             session_number=1,
             task_order=["cane_tip", "coat_rack"],
             protocol_version="old",
         )
-        study_db.complete_session(int(session["id"]))
+        store.complete_session(int(session["id"]))
 
-        body = client.get("/study/sets", headers=_auth()).get_json()
+        body = client.get(f"{CONTROL}/sets", headers=_auth()).get_json()
         assert body["round"] == 1
         assert body["remaining"] == 6
 
@@ -889,7 +932,7 @@ class TestModelSets:
     def test_starting_a_session_on_a_chosen_set_uses_it(self, client):
         """The whole point: the panel sends the set, and that is what the session
         runs -- not whatever the rotation would have handed out."""
-        rotation = study_protocol.assign_task_order(1)
+        rotation = protocol.assign_task_order(STUDY, 1)
         chosen = ["lego", "cane_tip"]
         assert chosen != rotation
         state = _start(client, task_order=chosen).get_json()["state"]
@@ -916,10 +959,10 @@ class TestAbandonedSessionsAreClosed:
 
     def _age_session(self, session_id, seconds):
         """Backdate everything that counts as activity for this session."""
-        old = study_db._parse(study_db.now())
+        old = store_module._parse(store_module.now())
         assert old is not None
         stamp = (old - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-        conn = study_db._get_conn()
+        conn = store._get_conn()
         conn.execute(
             "UPDATE study_sessions SET started_at = ?, step_started_at = ? WHERE id = ?",
             (stamp, stamp, session_id),
@@ -939,9 +982,9 @@ class TestAbandonedSessionsAreClosed:
         session_id = state["study_session_id"]
         self._age_session(session_id, 13 * 3600)
 
-        closed = study_module.sweep_idle_sessions(force=True)
+        closed = engine.sweep_idle_sessions(runtime, force=True)
         assert [int(c["id"]) for c in closed] == [session_id]
-        assert study_db.get_study_session(session_id)["status"] == "abandoned"
+        assert store.get_study_session(session_id)["status"] == "abandoned"
 
     def test_it_is_abandoned_never_completed(self, client):
         """The distinction is not cosmetic. A completed session counts as having
@@ -949,12 +992,12 @@ class TestAbandonedSessionsAreClosed:
         quietly take a cell out of the counterbalanced design."""
         state = _start(client, task_order=["cane_tip", "lego"]).get_json()["state"]
         self._age_session(state["study_session_id"], 13 * 3600)
-        study_module.sweep_idle_sessions(force=True)
+        engine.sweep_idle_sessions(runtime, force=True)
 
-        assert study_db.get_study_session(state["study_session_id"])["status"] == "abandoned"
+        assert store.get_study_session(state["study_session_id"])["status"] == "abandoned"
         sets = {
             entry["id"]: entry
-            for entry in client.get("/study/sets", headers=_auth()).get_json()["sets"]
+            for entry in client.get(f"{CONTROL}/sets", headers=_auth()).get_json()["sets"]
         }
         assert sets["cane_tip+lego"]["used"] is False
         assert sets["cane_tip+lego"]["in_progress"] == 0
@@ -963,8 +1006,8 @@ class TestAbandonedSessionsAreClosed:
         """The one bug here that would cost real data is closing a session
         somebody is sitting in front of."""
         state = _start(client).get_json()["state"]
-        assert study_module.sweep_idle_sessions(force=True) == []
-        assert study_db.get_study_session(state["study_session_id"])["status"] == "active"
+        assert engine.sweep_idle_sessions(runtime, force=True) == []
+        assert store.get_study_session(state["study_session_id"])["status"] == "active"
 
     def test_recent_activity_keeps_a_session_alive(self, client):
         """Liveness is the last thing that happened in the session, not when it
@@ -975,12 +1018,12 @@ class TestAbandonedSessionsAreClosed:
         self._age_session(session_id, 13 * 3600)
         # One interaction, now.
         client.post(
-            f"/study/event?s={_key(session_id)}",
+            f"{BASE}/event?s={_key(session_id)}",
             json={"event_type": "keyboard", "event_data": {"key": "r"}},
         )
 
-        assert study_module.sweep_idle_sessions(force=True) == []
-        assert study_db.get_study_session(session_id)["status"] == "active"
+        assert engine.sweep_idle_sessions(runtime, force=True) == []
+        assert store.get_study_session(session_id)["status"] == "active"
 
     def test_closing_keeps_every_recorded_interaction(self, client):
         """Nothing is deleted. A session that ran for an hour before being
@@ -990,18 +1033,18 @@ class TestAbandonedSessionsAreClosed:
         session_id = state["study_session_id"]
         for _ in range(5):
             client.post(
-                f"/study/event?s={_key(session_id)}",
+                f"{BASE}/event?s={_key(session_id)}",
                 json={"event_type": "keyboard", "event_data": {"key": "i"}},
             )
-        before = study_db.session_counts(session_id)["events"]
+        before = store.session_counts(session_id)["events"]
         self._age_session(session_id, 13 * 3600)
-        study_module.sweep_idle_sessions(force=True)
+        engine.sweep_idle_sessions(runtime, force=True)
 
-        after = study_db.session_counts(session_id)["events"]
+        after = store.session_counts(session_id)["events"]
         assert after >= before, "closing a session must not remove its events"
         keys = [
             e
-            for e in study_db.export_session(session_id)["events"]
+            for e in store.export_session(session_id)["events"]
             if e["event_type"] == "keyboard"
         ]
         assert len(keys) == 5
@@ -1012,11 +1055,11 @@ class TestAbandonedSessionsAreClosed:
         state = _start(client).get_json()["state"]
         session_id = state["study_session_id"]
         self._age_session(session_id, 13 * 3600)
-        study_module.sweep_idle_sessions(force=True)
+        engine.sweep_idle_sessions(runtime, force=True)
 
         ends = [
             e
-            for e in study_db.export_session(session_id)["events"]
+            for e in store.export_session(session_id)["events"]
             if e["event_type"] == "session_end"
         ]
         assert ends, "no session_end recorded"
@@ -1025,16 +1068,16 @@ class TestAbandonedSessionsAreClosed:
 
     def test_the_sweep_is_throttled(self, client):
         """It runs from ordinary requests, so it must not rescan on every poll."""
-        study_module.sweep_idle_sessions(force=True)
+        engine.sweep_idle_sessions(runtime, force=True)
         state = _start(client).get_json()["state"]
         self._age_session(state["study_session_id"], 13 * 3600)
         # Not forced, and one just ran: this must be a no-op.
-        assert study_module.sweep_idle_sessions() == []
-        assert study_db.get_study_session(state["study_session_id"])["status"] == "active"
+        assert engine.sweep_idle_sessions(runtime) == []
+        assert store.get_study_session(state["study_session_id"])["status"] == "active"
 
     def test_the_timeout_is_configurable(self, client, monkeypatch):
         monkeypatch.setenv("STUDY_SESSION_IDLE_HOURS", "2")
-        assert study_module.idle_timeout_seconds() == 7200
+        assert engine.idle_timeout_seconds() == 7200
 
     @pytest.mark.parametrize("bad", ["", "nonsense", "0", "-3"])
     def test_a_broken_timeout_falls_back_rather_than_closing_everything(
@@ -1042,14 +1085,14 @@ class TestAbandonedSessionsAreClosed:
     ):
         """A zero or unparseable setting must not mean "close every session"."""
         monkeypatch.setenv("STUDY_SESSION_IDLE_HOURS", bad)
-        assert study_module.idle_timeout_seconds() == int(12 * 3600)
+        assert engine.idle_timeout_seconds() == int(12 * 3600)
 
     def test_an_unreadable_timestamp_leaves_the_session_alone(self, client):
         """Closing a session because its clock is unreadable is the one failure
         here that would cost a live session."""
         state = _start(client).get_json()["state"]
         session_id = state["study_session_id"]
-        conn = study_db._get_conn()
+        conn = store._get_conn()
         conn.execute(
             "UPDATE study_sessions SET started_at = ?, step_started_at = ? WHERE id = ?",
             ("not-a-timestamp", None, session_id),
@@ -1060,18 +1103,18 @@ class TestAbandonedSessionsAreClosed:
         )
         conn.commit()
 
-        assert study_module.sweep_idle_sessions(force=True) == []
-        assert study_db.get_study_session(session_id)["status"] == "active"
+        assert engine.sweep_idle_sessions(runtime, force=True) == []
+        assert store.get_study_session(session_id)["status"] == "active"
 
 
 class TestConfig:
     def test_config_reports_missing_models(self, client, monkeypatch):
-        monkeypatch.setattr(study_module, "_model_list_provider", lambda: ["mug"])
-        body = client.get("/study/config", headers=_auth()).get_json()
+        monkeypatch.setattr(engine, "_model_list_provider", lambda: ["mug"])
+        body = client.get(f"{CONTROL}/config", headers=_auth()).get_json()
         assert "lego_2x3" in body["missing_models"]
 
     def test_config_carries_no_questionnaire_content(self, client):
-        body = client.get("/study/config", headers=_auth()).get_json()
+        body = client.get(f"{CONTROL}/config", headers=_auth()).get_json()
         assert "background_questions" not in body
         assert "likert_items" not in body
 
@@ -1098,11 +1141,11 @@ class TestConcurrentSessions:
         # changes the step count ahead of task 1 does not silently retarget
         # this fixture onto a different step.
         steps = client.get(
-            f"/study/state?study_session_id={first_state['study_session_id']}", headers=_auth()
+            f"{CONTROL}/state?study_session_id={first_state['study_session_id']}", headers=_auth()
         ).get_json()["steps"]
         target_index = next(s["index"] for s in steps if s["id"] == "task1.a.virtual")
         client.post(
-            "/study/step/advance",
+            f"{CONTROL}/step/advance",
             json={"step_index": target_index, "study_session_id": first_state["study_session_id"]},
             headers=_auth(),
         )
@@ -1113,13 +1156,13 @@ class TestConcurrentSessions:
 
     def test_both_stay_active(self, two):
         _, first, second = two
-        assert study_db.get_study_session(first["study_session_id"])["status"] == "active"
-        assert study_db.get_study_session(second["study_session_id"])["status"] == "active"
+        assert store.get_study_session(first["study_session_id"])["status"] == "active"
+        assert store.get_study_session(second["study_session_id"])["status"] == "active"
 
     def test_the_first_session_keeps_its_place(self, two):
         """Starting the second must not rewind or end the first."""
         _, first, _ = two
-        assert study_db.get_study_session(first["study_session_id"])["step_index"] == first["step_index"]
+        assert store.get_study_session(first["study_session_id"])["step_index"] == first["step_index"]
 
     def test_each_session_gets_its_own_participant_key(self, two):
         _, first, second = two
@@ -1129,8 +1172,8 @@ class TestConcurrentSessions:
 
     def test_a_participant_reaches_their_own_session_by_key(self, two):
         client, first, second = two
-        a = client.get(f"/study/state?s={first['participant_key']}").get_json()
-        b = client.get(f"/study/state?s={second['participant_key']}").get_json()
+        a = client.get(f"{BASE}/state?s={first['participant_key']}").get_json()
+        b = client.get(f"{BASE}/state?s={second['participant_key']}").get_json()
         assert a["study_session_id"] == first["study_session_id"]
         assert b["study_session_id"] == second["study_session_id"]
         assert a["step_id"] != b["step_id"]
@@ -1139,26 +1182,26 @@ class TestConcurrentSessions:
         """The failure that matters most: a model loading onto the wrong
         participant's braille display mid-exploration."""
         client, first, second = two
-        a = client.get(f"/study/state?s={first['participant_key']}").get_json()
+        a = client.get(f"{BASE}/state?s={first['participant_key']}").get_json()
         assert a["model"]["stem"] == "cane_tip_hook"  # AAA is at task 1 part A
-        b = client.get(f"/study/state?s={second['participant_key']}").get_json()
+        b = client.get(f"{BASE}/state?s={second['participant_key']}").get_json()
         assert b["model"] is None  # BBB is still on the opening step
 
     def test_interactions_are_logged_against_the_right_participant(self, two):
         client, first, second = two
         client.post(
-            f"/study/event?s={first['participant_key']}",
+            f"{BASE}/event?s={first['participant_key']}",
             json={"event_type": "keyboard", "event_data": {"key": "arrowup"}},
         )
         client.post(
-            f"/study/event?s={second['participant_key']}",
+            f"{BASE}/event?s={second['participant_key']}",
             json={"event_type": "keyboard", "event_data": {"key": "pagedown"}},
         )
 
         def keys_for(session_id):
             return [
                 event["event_data"]["key"]
-                for event in study_db.export_session(session_id)["events"]
+                for event in store.export_session(session_id)["events"]
                 if event["event_type"] == "keyboard"
             ]
 
@@ -1167,36 +1210,37 @@ class TestConcurrentSessions:
 
     def test_a_ready_signal_reaches_only_its_own_session(self, two):
         client, first, second = two
-        client.post(f"/study/step/ready?s={first['participant_key']}", json={})
+        client.post(f"{BASE}/step/ready?s={first['participant_key']}", json={})
 
         a = client.get(
-            f"/study/state?study_session_id={first['study_session_id']}", headers=_auth()
+            f"{CONTROL}/state?study_session_id={first['study_session_id']}", headers=_auth()
         ).get_json()
         b = client.get(
-            f"/study/state?study_session_id={second['study_session_id']}", headers=_auth()
+            f"{CONTROL}/state?study_session_id={second['study_session_id']}", headers=_auth()
         ).get_json()
         assert a["participant_ready"] is not None
         assert b["participant_ready"] is None
 
     def test_advancing_one_session_does_not_move_the_other(self, two):
         client, first, second = two
-        before = study_db.get_study_session(second["study_session_id"])["step_index"]
+        before = store.get_study_session(second["study_session_id"])["step_index"]
         client.post(
-            "/study/step/advance",
+            f"{CONTROL}/step/advance",
             json={"direction": "next", "study_session_id": first["study_session_id"]},
             headers=_auth(),
         )
-        assert study_db.get_study_session(second["study_session_id"])["step_index"] == before
+        assert store.get_study_session(second["study_session_id"])["step_index"] == before
 
     def test_ending_one_session_leaves_the_other_running(self, two):
         client, first, second = two
+        _to_last_step(client, first["study_session_id"])
         client.post(
-            "/study/session/end",
+            f"{CONTROL}/session/end",
             json={"study_session_id": first["study_session_id"]},
             headers=_auth(),
         )
-        assert study_db.get_study_session(first["study_session_id"])["status"] == "completed"
-        assert study_db.get_study_session(second["study_session_id"])["status"] == "active"
+        assert store.get_study_session(first["study_session_id"])["status"] == "completed"
+        assert store.get_study_session(second["study_session_id"])["status"] == "active"
 
     def test_renders_are_attributed_per_session(self, two):
         client, first, second = two
@@ -1205,23 +1249,23 @@ class TestConcurrentSessions:
             (second["study_session_id"], "mug"),
         ):
             with flask_app.test_request_context(
-                "/render", headers={"X-Study-Session": str(session)}
+                "/render", headers=_render_headers(session)
             ):
-                study_module.record_render_for_request(
+                engine.record_render_for_request(
                     {"depth": 50}, model_stem=stem, cache_hit=False
                 )
 
-        assert [r["model"] for r in study_db.export_session(first["study_session_id"])["renders"]] == [
+        assert [r["model"] for r in store.export_session(first["study_session_id"])["renders"]] == [
             "cane_tip_hook"
         ]
-        assert [r["model"] for r in study_db.export_session(second["study_session_id"])["renders"]] == [
+        assert [r["model"] for r in store.export_session(second["study_session_id"])["renders"]] == [
             "mug"
         ]
 
     def test_each_session_writes_its_own_log_file(self, two):
         _, first, second = two
-        a = study_db.get_study_session(first["study_session_id"])["log_path"]
-        b = study_db.get_study_session(second["study_session_id"])["log_path"]
+        a = store.get_study_session(first["study_session_id"])["log_path"]
+        b = store.get_study_session(second["study_session_id"])["log_path"]
         assert a != b
         assert "AAA" in a and "BBB" in b
 
@@ -1230,11 +1274,11 @@ class TestConcurrentSessions:
         interleave each other's sequence numbers."""
         client, first, second = two
         for _ in range(3):
-            client.post(f"/study/event?s={first['participant_key']}", json={"event_type": "keyboard"})
-        client.post(f"/study/event?s={second['participant_key']}", json={"event_type": "keyboard"})
+            client.post(f"{BASE}/event?s={first['participant_key']}", json={"event_type": "keyboard"})
+        client.post(f"{BASE}/event?s={second['participant_key']}", json={"event_type": "keyboard"})
 
         for session_id in (first["study_session_id"], second["study_session_id"]):
-            export = study_db.export_session(session_id)
+            export = store.export_session(session_id)
             sequences = sorted(e["seq"] for e in export["events"])
             assert sequences == list(range(1, len(sequences) + 1))
 
@@ -1251,30 +1295,30 @@ class TestTheJoinCodeIsAlwaysRequired:
 
     def test_an_event_without_a_code_is_not_recorded(self, client):
         session_id = _start(client).get_json()["state"]["study_session_id"]
-        before = len(study_db.export_session(session_id)["events"])
-        response = client.post("/study/event", json={"event_type": "keyboard"})
+        before = len(store.export_session(session_id)["events"])
+        response = client.post(f"{BASE}/event", json={"event_type": "keyboard"})
         assert response.get_json()["status"] == "ignored"
-        assert len(study_db.export_session(session_id)["events"]) == before
+        assert len(store.export_session(session_id)["events"]) == before
 
     def test_a_readiness_signal_without_a_code_is_refused(self, client):
         _start(client)
-        assert client.post("/study/step/ready", json={}).status_code == 404
+        assert client.post(f"{BASE}/step/ready", json={}).status_code == 404
 
     def test_the_participant_view_asks_for_the_code(self, client):
         """One session running, no code: the page still asks. Same instruction
         every time."""
         _start(client)
-        assert client.get("/study/state").get_json()["active"] is False
+        assert client.get(f"{BASE}/state").get_json()["active"] is False
 
     def test_a_wrong_code_joins_nothing(self, client):
         _start(client)
-        payload = client.get("/study/state?s=ZZZZ").get_json()
+        payload = client.get(f"{BASE}/state?s=ZZZZ").get_json()
         assert payload["active"] is False
         assert payload.get("study_session_id") is None
 
     def test_the_right_code_joins_that_session(self, client):
         state = _start(client).get_json()["state"]
-        payload = client.get(f"/study/state?s={state['participant_key']}").get_json()
+        payload = client.get(f"{BASE}/state?s={state['participant_key']}").get_json()
         assert payload["active"] is True
         assert payload["study_session_id"] == state["study_session_id"]
 
@@ -1286,13 +1330,13 @@ class TestTheJoinCodeIsAlwaysRequired:
         for _ in range(20):
             state = _start(client).get_json()["state"]
             assert not (set(state["participant_key"]) & set("O0I1L5S2Z"))
-            client.post("/study/session/end",
+            client.post(f"{CONTROL}/session/end",
                         json={"study_session_id": state["study_session_id"]}, headers=_auth())
 
     def test_the_code_is_accepted_case_insensitively(self, client):
         """A participant typing it will not match the panel's capitals."""
         state = _start(client).get_json()["state"]
-        payload = client.get(f"/study/state?s={state['participant_key'].lower()}").get_json()
+        payload = client.get(f"{BASE}/state?s={state['participant_key'].lower()}").get_json()
         assert payload["active"] is True
 
 
@@ -1308,18 +1352,18 @@ class TestNothingIsWrittenBetweenSessions:
     def _run_and_end(self, client, code="AAA"):
         state = _start(client, participant_code=code).get_json()["state"]
         client.post(
-            f"/study/event?s={state['participant_key']}",
+            f"{BASE}/event?s={state['participant_key']}",
             json={"event_type": "keyboard", "event_data": {"key": "during"}},
         )
         client.post(
-            "/study/session/end",
+            f"{CONTROL}/session/end",
             json={"study_session_id": state["study_session_id"]},
             headers=_auth(),
         )
         return state
 
     def _counts(self, session_id):
-        export = study_db.export_session(session_id)
+        export = store.export_session(session_id)
         return len(export["events"]), len(export["renders"])
 
     def test_a_finished_session_stops_accepting_events(self, client):
@@ -1327,7 +1371,7 @@ class TestNothingIsWrittenBetweenSessions:
         before = self._counts(state["study_session_id"])
 
         response = client.post(
-            f"/study/event?s={state['participant_key']}",
+            f"{BASE}/event?s={state['participant_key']}",
             json={"event_type": "keyboard", "event_data": {"key": "after-end"}},
         )
         assert response.get_json()["status"] == "ignored"
@@ -1337,24 +1381,24 @@ class TestNothingIsWrittenBetweenSessions:
         state = self._run_and_end(client)
         before = self._counts(state["study_session_id"])
         with flask_app.test_request_context(
-            "/render", headers={"X-Study-Session": str(state["study_session_id"])}
+            "/render", headers=_render_headers(state["study_session_id"])
         ):
-            study_module.record_render_for_request({"depth": 50}, model_stem="mug", cache_hit=False)
+            engine.record_render_for_request({"depth": 50}, model_stem="mug", cache_hit=False)
         assert self._counts(state["study_session_id"]) == before
 
     def test_a_finished_session_stops_accepting_readiness(self, client):
         state = self._run_and_end(client)
         before = self._counts(state["study_session_id"])
-        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        client.post(f"{BASE}/step/ready?s={state['participant_key']}", json={})
         assert self._counts(state["study_session_id"]) == before
 
     def test_the_last_event_of_a_session_is_its_end(self, client):
         state = self._run_and_end(client)
         client.post(
-            f"/study/event?s={state['participant_key']}",
+            f"{BASE}/event?s={state['participant_key']}",
             json={"event_type": "keyboard", "event_data": {"key": "after-end"}},
         )
-        events = study_db.export_session(state["study_session_id"])["events"]
+        events = store.export_session(state["study_session_id"])["events"]
         assert events[-1]["event_type"] == "session_end"
 
     def test_a_stale_key_does_not_reach_the_next_session(self, client):
@@ -1362,12 +1406,12 @@ class TestNothingIsWrittenBetweenSessions:
         nxt = _start(client, participant_code="BBB").get_json()["state"]
 
         client.post(
-            f"/study/event?s={stale['participant_key']}",
+            f"{BASE}/event?s={stale['participant_key']}",
             json={"event_type": "keyboard", "event_data": {"key": "stale"}},
         )
         keys = [
             e["event_data"].get("key")
-            for e in study_db.export_session(nxt["study_session_id"])["events"]
+            for e in store.export_session(nxt["study_session_id"])["events"]
             if e["event_type"] == "keyboard"
         ]
         assert "stale" not in keys
@@ -1379,13 +1423,13 @@ class TestNothingIsWrittenBetweenSessions:
         second = _start(client, participant_code="BBB").get_json()["state"]
 
         response = client.post(
-            f"/study/event?s={first['participant_key']}",
+            f"{BASE}/event?s={first['participant_key']}",
             json={"event_type": "keyboard", "event_data": {"key": "from-the-old-tab"}},
         )
         assert response.get_json()["status"] == "ignored"
 
         leaked = [
-            e for e in study_db.export_session(second["study_session_id"])["events"]
+            e for e in store.export_session(second["study_session_id"])["events"]
             if e["event_type"] == "keyboard"
             and e["event_data"].get("key") == "from-the-old-tab"
         ]
@@ -1395,12 +1439,12 @@ class TestNothingIsWrittenBetweenSessions:
         first = self._run_and_end(client, code="AAA")
         second = _start(client, participant_code="BBB").get_json()["state"]
         client.post(
-            f"/study/event?s={second['participant_key']}",
+            f"{BASE}/event?s={second['participant_key']}",
             json={"event_type": "keyboard", "event_data": {"key": "b"}},
         )
 
         for state, expected in ((first, "AAA"), (second, "BBB")):
-            path = study_db.get_study_session(state["study_session_id"])["log_path"]
+            path = store.get_study_session(state["study_session_id"])["log_path"]
             codes = {json.loads(line)["participant_code"] for line in open(path, encoding="utf-8")}
             assert codes == {expected}, f"{path} contains {codes}"
 
@@ -1429,7 +1473,7 @@ class TestConcurrentSessionsDoNotMuddleEachOther:
             with flask_app.test_client() as own:
                 for n in range(self.EVENTS):
                     own.post(
-                        "/study/event",
+                        f"{BASE}/event",
                         json={
                             "event_type": "keyboard",
                             "event_data": {"src": session["code"], "n": n},
@@ -1445,7 +1489,7 @@ class TestConcurrentSessionsDoNotMuddleEachOther:
             t.join()
 
         for session in sessions:
-            export = study_db.export_session(session["id"])
+            export = store.export_session(session["id"])
             keyboard = [e for e in export["events"] if e["event_type"] == "keyboard"]
             assert len(keyboard) == self.EVENTS, (
                 f"{session['code']} recorded {len(keyboard)} of {self.EVENTS} events"
@@ -1466,7 +1510,7 @@ class TestConcurrentSessionsDoNotMuddleEachOther:
 
         def hammer(session_id):
             for n in range(self.EVENTS):
-                study_db.record_event(session_id, "keyboard", event_data={"n": n})
+                store.record_event(session_id, "keyboard", event_data={"n": n})
 
         threads = [threading.Thread(target=hammer, args=(i,)) for i in ids]
         for t in threads:
@@ -1475,7 +1519,7 @@ class TestConcurrentSessionsDoNotMuddleEachOther:
             t.join()
 
         for session_id in ids:
-            export = study_db.export_session(session_id)
+            export = store.export_session(session_id)
             sequences = sorted(
                 [e["seq"] for e in export["events"]] + [r["seq"] for r in export["renders"]]
             )
@@ -1493,7 +1537,7 @@ class TestConcurrentSessionsDoNotMuddleEachOther:
 
         def hammer(session):
             for n in range(self.EVENTS):
-                study_db.record_event(
+                store.record_event(
                     session["id"], "keyboard", event_data={"src": session["code"], "n": n}
                 )
 
@@ -1504,7 +1548,7 @@ class TestConcurrentSessionsDoNotMuddleEachOther:
             t.join()
 
         for session in sessions:
-            path = study_db.get_study_session(session["id"])["log_path"]
+            path = store.get_study_session(session["id"])["log_path"]
             lines = [json.loads(line) for line in open(path, encoding="utf-8")]
             codes = {line["participant_code"] for line in lines}
             assert codes == {session["code"]}, f"{path} contains {codes}"
@@ -1530,12 +1574,12 @@ class TestConcurrentSessionsDoNotMuddleEachOther:
         for session_id in (first_id, second_id):
             for _ in range(40):
                 state = client.get(
-                    f"/study/state?study_session_id={session_id}", headers=_auth()
+                    f"{CONTROL}/state?study_session_id={session_id}", headers=_auth()
                 ).get_json()
                 if state["step"]["id"] == "task1.a.virtual":
                     break
                 client.post(
-                    "/study/step/advance",
+                    f"{CONTROL}/step/advance",
                     json={"direction": "next", "study_session_id": session_id},
                     headers=_auth(),
                 )
@@ -1543,7 +1587,7 @@ class TestConcurrentSessionsDoNotMuddleEachOther:
         def autoloaded(session_id):
             return [
                 e["event_data"]["model"]
-                for e in study_db.export_session(session_id)["events"]
+                for e in store.export_session(session_id)["events"]
                 if e["event_type"] == "model_autoload" and e["step_id"] == "task1.a.virtual"
             ]
 
@@ -1552,7 +1596,7 @@ class TestConcurrentSessionsDoNotMuddleEachOther:
 
 
 def _key_for(session_id: int) -> str:
-    return study_db.get_study_session(session_id)["participant_key"]
+    return store.get_study_session(session_id)["participant_key"]
 
 
 class TestIdentityIsAllocatedByTheDatabase:
@@ -1576,7 +1620,7 @@ class TestIdentityIsAllocatedByTheDatabase:
         def enrol():
             with flask_app.test_client() as own:
                 barrier.wait()  # every request fires at the same instant
-                response = own.post("/study/session/start", json={}, headers=_auth())
+                response = own.post(f"{CONTROL}/session/start", json={}, headers=_auth())
                 with lock:
                     results.append((response.status_code, response.get_json()))
 
@@ -1596,12 +1640,12 @@ class TestIdentityIsAllocatedByTheDatabase:
 
     def test_the_code_is_derived_from_the_id(self, client):
         state = _start(client).get_json()["state"]
-        assert state["participant_code"] == study_db.code_for(state["participant_id"])
+        assert state["participant_code"] == store_module.code_for(state["participant_id"])
 
     def test_a_typed_code_still_names_a_participant(self, client):
         """A returning participant keeps their code, and with it their assignment."""
         first = _start(client, participant_code="P01").get_json()["state"]
-        client.post("/study/session/end",
+        client.post(f"{CONTROL}/session/end",
                     json={"study_session_id": first["study_session_id"]}, headers=_auth())
         again = _start(
             client, participant_code="P01", session_number=2
@@ -1616,7 +1660,7 @@ class TestIdentityIsAllocatedByTheDatabase:
         for _ in range(6):
             state = _start(client).get_json()["state"]
             orders.append(tuple(state["task_order"]))
-            client.post("/study/session/end",
+            client.post(f"{CONTROL}/session/end",
                         json={"study_session_id": state["study_session_id"]}, headers=_auth())
         assert len(set(orders)) == 6, f"assignments repeated within one cycle: {orders}"
 
@@ -1624,7 +1668,7 @@ class TestIdentityIsAllocatedByTheDatabase:
         """AUTOINCREMENT, not max(id)+1: a deleted row must not hand its number to
         somebody else, or two participants share a code in the exported data."""
         first = _start(client).get_json()["state"]
-        conn = study_db._get_conn()
+        conn = store._get_conn()
         # Children first: the foreign keys correctly refuse to orphan them.
         for table in ("study_events", "study_renders"):
             conn.execute(
@@ -1634,7 +1678,7 @@ class TestIdentityIsAllocatedByTheDatabase:
         conn.execute("DELETE FROM participants WHERE id = ?", (first["participant_id"],))
         conn.commit()
 
-        second = study_db.create_participant()
+        second = store.create_participant()
         assert second["id"] > first["participant_id"], (
             "a deleted participant's number was handed to somebody else, so two "
             "participants would share a code in the exported data"
@@ -1642,14 +1686,14 @@ class TestIdentityIsAllocatedByTheDatabase:
 
     def test_every_row_carries_the_numeric_identity(self, client):
         state = _start(client).get_json()["state"]
-        client.post(f"/study/event?s={state['participant_key']}",
+        client.post(f"{BASE}/event?s={state['participant_key']}",
                     json={"event_type": "keyboard"})
         with flask_app.test_request_context(
-            "/render", headers={"X-Study-Session": str(state["study_session_id"])}
+            "/render", headers=_render_headers(state["study_session_id"])
         ):
-            study_module.record_render_for_request({"depth": 50}, model_stem="mug", cache_hit=False)
+            engine.record_render_for_request({"depth": 50}, model_stem="mug", cache_hit=False)
 
-        export = study_db.export_session(state["study_session_id"])
+        export = store.export_session(state["study_session_id"])
         for row in export["events"] + export["renders"]:
             assert row["participant_id"] == state["participant_id"]
             assert row["participant_code"] == state["participant_code"]
@@ -1661,16 +1705,17 @@ class TestIdentityIsAllocatedByTheDatabase:
         count = 6
         states = [_start(client).get_json()["state"] for _ in range(count)]
         for state in states:
-            client.post(f"/study/event?s={state['participant_key']}",
+            client.post(f"{BASE}/event?s={state['participant_key']}",
                         json={"event_type": "keyboard",
                               "event_data": {"src": state["participant_code"]}})
+            _to_last_step(client, state["study_session_id"])
 
         barrier = threading.Barrier(count)
 
         def finish(state):
             with flask_app.test_client() as own:
                 barrier.wait()
-                own.post("/study/session/end",
+                own.post(f"{CONTROL}/session/end",
                          json={"study_session_id": state["study_session_id"]}, headers=_auth())
 
         threads = [threading.Thread(target=finish, args=(s,)) for s in states]
@@ -1680,9 +1725,9 @@ class TestIdentityIsAllocatedByTheDatabase:
             t.join()
 
         for state in states:
-            session = study_db.get_study_session(state["study_session_id"])
+            session = store.get_study_session(state["study_session_id"])
             assert session["status"] == "completed", f"{state['participant_code']} did not close"
-            export = study_db.export_session(state["study_session_id"])
+            export = store.export_session(state["study_session_id"])
             ends = [e for e in export["events"] if e["event_type"] == "session_end"]
             assert len(ends) == 1, f"{state['participant_code']} has {len(ends)} end events"
             keyboard = [e for e in export["events"] if e["event_type"] == "keyboard"]
@@ -1749,23 +1794,23 @@ class TestUpgradingToDatabaseAssignedIdentity:
     def _upgraded(self, tmp_path, monkeypatch):
         legacy = tmp_path / "study.db"
         self._text_key_database(legacy)
-        monkeypatch.setattr(study_db, "DB_PATH", legacy)
-        monkeypatch.setattr(study_db, "LOG_DIR", tmp_path / "logs")
-        study_db._local.__dict__.clear()
-        study_db.init_db()
+        monkeypatch.setattr(store, "db_path", legacy)
+        monkeypatch.setattr(store, "log_dir", tmp_path / "logs")
+        store._local.__dict__.clear()
+        store.init_db()
         return legacy
 
     def test_existing_participants_keep_their_code_and_their_position(self, tmp_path, monkeypatch):
         """The old sequence_number becomes the id, so a participant already run
         keeps the model pairs the Latin square gave them."""
         self._upgraded(tmp_path, monkeypatch)
-        assert study_db.get_participant_by_code("P01")["id"] == 1
-        assert study_db.get_participant_by_code("P02")["id"] == 2
-        study_db._local.__dict__.clear()
+        assert store.get_participant_by_code("P01")["id"] == 1
+        assert store.get_participant_by_code("P02")["id"] == 2
+        store._local.__dict__.clear()
 
     def test_existing_sessions_and_rows_are_relinked(self, tmp_path, monkeypatch):
         self._upgraded(tmp_path, monkeypatch)
-        conn = study_db._get_conn()
+        conn = store._get_conn()
         assert conn.execute("SELECT participant_id FROM study_sessions WHERE id=1").fetchone()[0] == 1
         assert conn.execute("SELECT participant_id FROM study_sessions WHERE id=4").fetchone()[0] == 2
         for table in ("study_events", "study_renders"):
@@ -1775,30 +1820,30 @@ class TestUpgradingToDatabaseAssignedIdentity:
             assert missing == 0, f"{table} has {missing} rows with no participant id"
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        study_db._local.__dict__.clear()
+        store._local.__dict__.clear()
 
     def test_no_session_data_is_lost(self, tmp_path, monkeypatch):
         self._upgraded(tmp_path, monkeypatch)
-        session = study_db.get_study_session(1)
+        session = store.get_study_session(1)
         assert session["participant_code"] == "P01"
         assert session["step_index"] == 28
         assert session["status"] == "completed"
-        export = study_db.export_session(1)
+        export = store.export_session(1)
         assert len(export["events"]) == 1 and len(export["renders"]) == 1
-        study_db._local.__dict__.clear()
+        store._local.__dict__.clear()
 
     def test_the_next_participant_does_not_reuse_a_migrated_id(self, tmp_path, monkeypatch):
         self._upgraded(tmp_path, monkeypatch)
-        created = study_db.create_participant()
+        created = store.create_participant()
         assert created["id"] == 3 and created["code"] == "P03"
-        study_db._local.__dict__.clear()
+        store._local.__dict__.clear()
 
     def test_the_upgrade_is_idempotent(self, tmp_path, monkeypatch):
         self._upgraded(tmp_path, monkeypatch)
-        study_db.init_db()
-        study_db.init_db()
-        assert study_db.get_participant_by_code("P01")["id"] == 1
-        study_db._local.__dict__.clear()
+        store.init_db()
+        store.init_db()
+        assert store.get_participant_by_code("P01")["id"] == 1
+        store._local.__dict__.clear()
 
     def test_a_half_finished_upgrade_recovers(self, tmp_path, monkeypatch):
         """A rebuild that died between creating the new table and swapping it in
@@ -1812,70 +1857,63 @@ class TestUpgradingToDatabaseAssignedIdentity:
         conn.commit()
         conn.close()
 
-        monkeypatch.setattr(study_db, "DB_PATH", legacy)
-        study_db._local.__dict__.clear()
-        study_db.init_db()
-        assert study_db.get_participant_by_code("P01")["id"] == 1
-        study_db._local.__dict__.clear()
+        monkeypatch.setattr(store, "db_path", legacy)
+        store._local.__dict__.clear()
+        store.init_db()
+        assert store.get_participant_by_code("P01")["id"] == 1
+        store._local.__dict__.clear()
 
 
-class TestPanelAndParticipantAreToldApartWithoutAToken:
-    """With the panel open by default, the token no longer says who is asking.
+class TestPanelAndParticipantHaveSeparateAddresses:
+    """The participant's page and the panel used to share /study/state, and the
+    server worked out which was asking from what the request carried. Now each
+    has its own address: the participant's answers with the payload that
+    withholds the answer key, always, and the panel's needs the token."""
 
-    A request identifies itself by what it carries: a participant has a join
-    code, a panel names a session. Neither means participant -- the payload that
-    withholds the answer key is the safe default when we cannot tell.
-    """
-
-    @pytest.fixture()
-    def open_client(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(study_db, "DB_PATH", tmp_path / "study.db")
-        monkeypatch.setattr(study_db, "LOG_DIR", tmp_path / "logs")
-        monkeypatch.delenv("STUDY_CONTROL_TOKEN", raising=False)
-        study_db._local.__dict__.clear()
-        study_db.init_db()
-        flask_app.config["TESTING"] = True
-        with flask_app.test_client() as c:
-            yield c
-        study_db._local.__dict__.clear()
-
-    def test_a_bare_request_gets_the_participant_payload(self, open_client):
+    def test_a_bare_request_gets_the_participant_payload(self, client):
         """Not the experimenter one, and not a 409. This is what a participant's
-        browser sends before they have typed their code, and it used to be
-        treated as a panel request and answered with 'which session do you mean'
-        -- so the page never got as far as asking for the code."""
-        open_client.post("/study/session/start", json={})
-        open_client.post("/study/session/start", json={})  # two running
+        browser sends before they have typed their code, and with two sessions
+        running it used to be answered with 'which session do you mean' -- so the
+        page never got as far as asking for the code."""
+        _start(client)
+        _start(client)  # two running
 
-        response = open_client.get("/study/state")
+        response = client.get(f"{BASE}/state")
         assert response.status_code == 200
         payload = response.get_json()
         assert payload["active"] is False
         assert "step" not in payload, "a bare request must not get the experimenter payload"
 
-    def test_a_code_gets_the_participant_payload(self, open_client):
-        state = open_client.post("/study/session/start", json={}).get_json()["state"]
-        payload = open_client.get(f"/study/state?s={state['participant_key']}").get_json()
+    def test_a_code_gets_the_participant_payload(self, client):
+        state = _start(client).get_json()["state"]
+        payload = client.get(f"{BASE}/state?s={state['participant_key']}").get_json()
         assert payload["active"] is True
         assert "script" not in payload
-        assert "pair" not in payload
+        assert "task" not in payload
 
-    def test_naming_a_session_gets_the_panel_payload(self, open_client):
-        state = open_client.post("/study/session/start", json={}).get_json()["state"]
-        payload = open_client.get(
-            f"/study/state?study_session_id={state['study_session_id']}"
+    def test_the_token_does_not_change_what_the_participant_address_answers(self, client):
+        state = _start(client).get_json()["state"]
+        payload = client.get(
+            f"{BASE}/state?s={state['participant_key']}", headers=_auth()
+        ).get_json()
+        assert "step" not in payload and "active_sessions" not in payload
+
+    def test_the_panel_address_gets_the_panel_payload(self, client):
+        state = _start(client).get_json()["state"]
+        payload = client.get(
+            f"{CONTROL}/state?study_session_id={state['study_session_id']}", headers=_auth()
         ).get_json()
         assert payload["active"] is True
         assert payload["step"]["script"], "the panel needs its script"
 
-    def test_two_running_sessions_do_not_break_a_participant_arriving(self, open_client):
-        """The regression this class exists for: with two sessions up, a
-        participant opening /study got a 409 instead of the code prompt."""
-        open_client.post("/study/session/start", json={})
-        second = open_client.post("/study/session/start", json={}).get_json()["state"]
+    def test_two_running_sessions_do_not_break_a_participant_arriving(self, client):
+        """The regression the shared address had: with two sessions up, a
+        participant opening the page got a 409 instead of the code prompt."""
+        _start(client)
+        second = _start(client).get_json()["state"]
 
-        assert open_client.get("/study/state").status_code == 200
-        joined = open_client.get(f"/study/state?s={second['participant_key']}").get_json()
+        assert client.get(f"{BASE}/state").status_code == 200
+        joined = client.get(f"{BASE}/state?s={second['participant_key']}").get_json()
         assert joined["study_session_id"] == second["study_session_id"]
 
 
@@ -1892,7 +1930,7 @@ class TestSingleDeviceMode:
     def _solo(self, client, **payload):
         state = _start(client, **payload).get_json()["state"]
         client.post(
-            "/study/session/mode",
+            f"{CONTROL}/session/mode",
             json={"mode": "solo", "study_session_id": state["study_session_id"]},
             headers=_auth(),
         )
@@ -1900,27 +1938,27 @@ class TestSingleDeviceMode:
 
     def test_ready_advances_the_step(self, client):
         state = self._solo(client)
-        before = study_db.get_study_session(state["study_session_id"])["step_index"]
-        response = client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        before = store.get_study_session(state["study_session_id"])["step_index"]
+        response = client.post(f"{BASE}/step/ready?s={state['participant_key']}", json={})
         assert response.get_json()["advanced"] is True
-        after = study_db.get_study_session(state["study_session_id"])["step_index"]
+        after = store.get_study_session(state["study_session_id"])["step_index"]
         assert after == before + 1
 
     def test_ready_stays_advisory_on_two_machines(self, client):
         """The default is unchanged: a stray press must not skip a step and lose
         the exploration that was still in progress."""
         state = _start(client).get_json()["state"]
-        before = study_db.get_study_session(state["study_session_id"])["step_index"]
-        response = client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        before = store.get_study_session(state["study_session_id"])["step_index"]
+        response = client.post(f"{BASE}/step/ready?s={state['participant_key']}", json={})
         assert response.get_json()["advanced"] is False
-        assert study_db.get_study_session(state["study_session_id"])["step_index"] == before
+        assert store.get_study_session(state["study_session_id"])["step_index"] == before
 
     def test_the_mode_survives_a_reload(self, client):
         """It is a property of the session, not of the URL a browser happens to
         be sitting on."""
         state = self._solo(client)
-        assert study_db.get_study_session(state["study_session_id"])["mode"] == "solo"
-        payload = client.get(f"/study/state?s={state['participant_key']}").get_json()
+        assert store.get_study_session(state["study_session_id"])["mode"] == "solo"
+        payload = client.get(f"{BASE}/state?s={state['participant_key']}").get_json()
         assert payload["mode"] == "solo"
 
     def test_the_participant_page_is_unchanged(self, client):
@@ -1929,14 +1967,14 @@ class TestSingleDeviceMode:
         onto a page the participant's screen reader can read."""
         solo = self._solo(client, participant_code="SOLO")
         _advance_to(client, "task1.b.virtual")
-        payload = client.get(f"/study/state?s={solo['participant_key']}").get_json()
+        payload = client.get(f"{BASE}/state?s={solo['participant_key']}").get_json()
 
         assert "script" not in payload
-        assert "pair" not in payload
+        assert "task" not in payload
         assert "differences" not in json.dumps(payload)
         # Same keys as an ordinary participant payload, plus the mode.
         paired = _start(client, participant_code="PAIR").get_json()["state"]
-        ordinary = client.get(f"/study/state?s={paired['participant_key']}").get_json()
+        ordinary = client.get(f"{BASE}/state?s={paired['participant_key']}").get_json()
         assert set(payload) == set(ordinary)
 
     def test_the_record_is_the_same_as_a_two_machine_session(self, client):
@@ -1946,21 +1984,21 @@ class TestSingleDeviceMode:
         def event_shape(session_id):
             return [
                 (e["event_type"], e["step_id"], e["step_index"])
-                for e in study_db.export_session(session_id)["events"]
+                for e in store.export_session(session_id)["events"]
             ]
 
         # Two machines: the panel advances.
         paired = _start(client, participant_code="PAIR").get_json()["state"]
-        client.post(f"/study/step/ready?s={paired['participant_key']}", json={})
+        client.post(f"{BASE}/step/ready?s={paired['participant_key']}", json={})
         client.post(
-            "/study/step/advance",
+            f"{CONTROL}/step/advance",
             json={"direction": "next", "study_session_id": paired["study_session_id"]},
             headers=_auth(),
         )
 
         # One machine: the ready button advances.
         solo = self._solo(client, participant_code="SOLO")
-        client.post(f"/study/step/ready?s={solo['participant_key']}", json={})
+        client.post(f"{BASE}/step/ready?s={solo['participant_key']}", json={})
 
         paired_events = [e for e in event_shape(paired["study_session_id"])]
         solo_events = [
@@ -1974,9 +2012,9 @@ class TestSingleDeviceMode:
         """They pressed the button, so the log should say so -- the only thing
         that legitimately differs between the two modes."""
         state = self._solo(client)
-        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        client.post(f"{BASE}/step/ready?s={state['participant_key']}", json={})
         advances = [
-            e for e in study_db.export_session(state["study_session_id"])["events"]
+            e for e in store.export_session(state["study_session_id"])["events"]
             if e["event_type"] == "step_advance"
         ]
         assert [e["source"] for e in advances] == ["participant"]
@@ -1985,7 +2023,7 @@ class TestSingleDeviceMode:
         state = self._solo(client)
         modes = [
             e["event_data"]["mode"]
-            for e in study_db.export_session(state["study_session_id"])["events"]
+            for e in store.export_session(state["study_session_id"])["events"]
             if e["event_type"] == "session_mode"
         ]
         assert modes == ["solo"]
@@ -1993,11 +2031,11 @@ class TestSingleDeviceMode:
     def test_ready_does_not_run_off_the_end_of_the_protocol(self, client):
         state = self._solo(client)
         steps = client.get(
-            f"/study/state?study_session_id={state['study_session_id']}", headers=_auth()
+            f"{CONTROL}/state?study_session_id={state['study_session_id']}", headers=_auth()
         ).get_json()["step_count"]
         for _ in range(steps + 5):
-            client.post(f"/study/step/ready?s={state['participant_key']}", json={})
-        assert study_db.get_study_session(state["study_session_id"])["step_index"] == steps - 1
+            client.post(f"{BASE}/step/ready?s={state['participant_key']}", json={})
+        assert store.get_study_session(state["study_session_id"])["step_index"] == steps - 1
 
 
 class TestSingleDeviceBackCommand:
@@ -2011,7 +2049,7 @@ class TestSingleDeviceBackCommand:
     def _solo(self, client, **payload):
         state = _start(client, **payload).get_json()["state"]
         client.post(
-            "/study/session/mode",
+            f"{CONTROL}/session/mode",
             json={"mode": "solo", "study_session_id": state["study_session_id"]},
             headers=_auth(),
         )
@@ -2019,11 +2057,11 @@ class TestSingleDeviceBackCommand:
 
     def test_back_moves_to_the_previous_step(self, client):
         state = self._solo(client)
-        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
-        before = study_db.get_study_session(state["study_session_id"])["step_index"]
-        response = client.post(f"/study/step/back?s={state['participant_key']}", json={})
+        client.post(f"{BASE}/step/ready?s={state['participant_key']}", json={})
+        before = store.get_study_session(state["study_session_id"])["step_index"]
+        response = client.post(f"{BASE}/step/back?s={state['participant_key']}", json={})
         assert response.get_json()["moved"] is True
-        after = study_db.get_study_session(state["study_session_id"])["step_index"]
+        after = store.get_study_session(state["study_session_id"])["step_index"]
         assert after == before - 1
 
     def test_back_is_refused_on_two_machines(self, client):
@@ -2031,27 +2069,27 @@ class TestSingleDeviceBackCommand:
         rewind the protocol themselves; this route carries no token, so the
         mode check is the only thing standing in for it."""
         state = _start(client).get_json()["state"]
-        client.post("/study/step/advance", json={"direction": "next"}, headers=_auth())
-        before = study_db.get_study_session(state["study_session_id"])["step_index"]
-        response = client.post(f"/study/step/back?s={state['participant_key']}", json={})
+        client.post(f"{CONTROL}/step/advance", json={"direction": "next"}, headers=_auth())
+        before = store.get_study_session(state["study_session_id"])["step_index"]
+        response = client.post(f"{BASE}/step/back?s={state['participant_key']}", json={})
         assert response.status_code == 404
-        assert study_db.get_study_session(state["study_session_id"])["step_index"] == before
+        assert store.get_study_session(state["study_session_id"])["step_index"] == before
 
     def test_back_does_not_run_off_the_start(self, client):
         state = self._solo(client)
-        response = client.post(f"/study/step/back?s={state['participant_key']}", json={})
+        response = client.post(f"{BASE}/step/back?s={state['participant_key']}", json={})
         assert response.get_json()["moved"] is False
-        assert study_db.get_study_session(state["study_session_id"])["step_index"] == 0
+        assert store.get_study_session(state["study_session_id"])["step_index"] == 0
 
     def test_back_without_a_session_is_a_clean_404(self, client):
-        assert client.post("/study/step/back", json={}).status_code == 404
+        assert client.post(f"{BASE}/step/back", json={}).status_code == 404
 
     def test_the_back_is_attributed_to_the_participant(self, client):
         state = self._solo(client)
-        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
-        client.post(f"/study/step/back?s={state['participant_key']}", json={})
+        client.post(f"{BASE}/step/ready?s={state['participant_key']}", json={})
+        client.post(f"{BASE}/step/back?s={state['participant_key']}", json={})
         advances = [
-            e for e in study_db.export_session(state["study_session_id"])["events"]
+            e for e in store.export_session(state["study_session_id"])["events"]
             if e["event_type"] == "step_advance"
         ]
         assert [e["source"] for e in advances] == ["participant", "participant"]
@@ -2070,15 +2108,15 @@ class TestTheEndOfASingleDeviceSession:
         state = _start(client).get_json()["state"]
         session_id = state["study_session_id"]
         client.post(
-            "/study/session/mode",
+            f"{CONTROL}/session/mode",
             json={"mode": "solo", "study_session_id": session_id},
             headers=_auth(),
         )
         steps = client.get(
-            f"/study/state?study_session_id={session_id}", headers=_auth()
+            f"{CONTROL}/state?study_session_id={session_id}", headers=_auth()
         ).get_json()["step_count"]
         client.post(
-            "/study/step/advance",
+            f"{CONTROL}/step/advance",
             json={"step_index": steps - 1, "study_session_id": session_id},
             headers=_auth(),
         )
@@ -2086,17 +2124,17 @@ class TestTheEndOfASingleDeviceSession:
 
     def test_ready_on_the_last_step_ends_the_session(self, client):
         state, _ = self._solo_at_last_step(client)
-        response = client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        response = client.post(f"{BASE}/step/ready?s={state['participant_key']}", json={})
         assert response.get_json()["finished"] is True
 
-        session = study_db.get_study_session(state["study_session_id"])
+        session = store.get_study_session(state["study_session_id"])
         assert session["status"] == "completed"
         assert session["completed_at"] is not None
 
     def test_the_end_is_recorded(self, client):
         state, _ = self._solo_at_last_step(client)
-        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
-        events = study_db.export_session(state["study_session_id"])["events"]
+        client.post(f"{BASE}/step/ready?s={state['participant_key']}", json={})
+        events = store.export_session(state["study_session_id"])["events"]
         ends = [e for e in events if e["event_type"] == "session_end"]
         assert len(ends) == 1
         assert ends[0]["source"] == "participant"
@@ -2109,11 +2147,11 @@ class TestTheEndOfASingleDeviceSession:
         import sqlite3
 
         state, _ = self._solo_at_last_step(client)
-        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        client.post(f"{BASE}/step/ready?s={state['participant_key']}", json={})
 
-        expected = len(study_db.export_session(state["study_session_id"])["events"])
+        expected = len(store.export_session(state["study_session_id"])["events"])
         alone = study_env / "copied-alone.db"
-        shutil.copy(study_db.DB_PATH, alone)
+        shutil.copy(store.db_path, alone)
         conn = sqlite3.connect(str(alone))
         got = conn.execute("SELECT COUNT(*) FROM study_events").fetchone()[0]
         conn.close()
@@ -2121,19 +2159,19 @@ class TestTheEndOfASingleDeviceSession:
 
     def test_nothing_is_recorded_after_the_end(self, client):
         state, _ = self._solo_at_last_step(client)
-        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
-        before = len(study_db.export_session(state["study_session_id"])["events"])
+        client.post(f"{BASE}/step/ready?s={state['participant_key']}", json={})
+        before = len(store.export_session(state["study_session_id"])["events"])
 
-        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        client.post(f"{BASE}/step/ready?s={state['participant_key']}", json={})
         client.post(
-            f"/study/event?s={state['participant_key']}", json={"event_type": "keyboard"}
+            f"{BASE}/event?s={state['participant_key']}", json={"event_type": "keyboard"}
         )
-        assert len(study_db.export_session(state["study_session_id"])["events"]) == before
+        assert len(store.export_session(state["study_session_id"])["events"]) == before
 
     def test_the_participant_page_is_told_the_session_is_over(self, client):
         state, _ = self._solo_at_last_step(client)
-        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
-        payload = client.get(f"/study/state?s={state['participant_key']}").get_json()
+        client.post(f"{BASE}/step/ready?s={state['participant_key']}", json={})
+        payload = client.get(f"{BASE}/state?s={state['participant_key']}").get_json()
         assert payload["active"] is False
         assert payload["status"] == "completed"
 
@@ -2143,14 +2181,14 @@ class TestTheEndOfASingleDeviceSession:
         and "how many steps did this session take" would count it."""
         state = _start(client).get_json()["state"]
         session_id = state["study_session_id"]
-        before = len(study_db.export_session(session_id)["events"])
+        before = len(store.export_session(session_id)["events"])
 
         client.post(
-            "/study/step/advance",
+            f"{CONTROL}/step/advance",
             json={"direction": "previous", "study_session_id": session_id},
             headers=_auth(),
         )
-        assert len(study_db.export_session(session_id)["events"]) == before
+        assert len(store.export_session(session_id)["events"]) == before
 
     def test_two_machine_sessions_still_end_from_the_panel(self, client):
         """Only the single-device case ends itself. With two machines the
@@ -2158,17 +2196,17 @@ class TestTheEndOfASingleDeviceSession:
         state = _start(client).get_json()["state"]
         session_id = state["study_session_id"]
         steps = client.get(
-            f"/study/state?study_session_id={session_id}", headers=_auth()
+            f"{CONTROL}/state?study_session_id={session_id}", headers=_auth()
         ).get_json()["step_count"]
         client.post(
-            "/study/step/advance",
+            f"{CONTROL}/step/advance",
             json={"step_index": steps - 1, "study_session_id": session_id},
             headers=_auth(),
         )
 
-        response = client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        response = client.post(f"{BASE}/step/ready?s={state['participant_key']}", json={})
         assert response.get_json()["finished"] is False
-        assert study_db.get_study_session(session_id)["status"] == "active"
+        assert store.get_study_session(session_id)["status"] == "active"
 
 
 class TestTheParticipantPageCanTellTheStatesApart:
@@ -2178,7 +2216,7 @@ class TestTheParticipantPageCanTellTheStatesApart:
     def _solo(self, client):
         state = _start(client).get_json()["state"]
         client.post(
-            "/study/session/mode",
+            f"{CONTROL}/session/mode",
             json={"mode": "solo", "study_session_id": state["study_session_id"]},
             headers=_auth(),
         )
@@ -2189,8 +2227,8 @@ class TestTheParticipantPageCanTellTheStatesApart:
         exactly like never having joined: the page showed the code prompt with no
         hint that what was entered had been refused."""
         _start(client)
-        nothing_entered = client.get("/study/state").get_json()
-        rejected = client.get("/study/state?s=ZZZZ").get_json()
+        nothing_entered = client.get(f"{BASE}/state").get_json()
+        rejected = client.get(f"{BASE}/state?s=ZZZZ").get_json()
 
         assert nothing_entered["unknown_code"] is False
         assert rejected["unknown_code"] is True
@@ -2200,16 +2238,16 @@ class TestTheParticipantPageCanTellTheStatesApart:
         state = self._solo(client)
         session_id = state["study_session_id"]
         steps = client.get(
-            f"/study/state?study_session_id={session_id}", headers=_auth()
+            f"{CONTROL}/state?study_session_id={session_id}", headers=_auth()
         ).get_json()["step_count"]
         client.post(
-            "/study/step/advance",
+            f"{CONTROL}/step/advance",
             json={"step_index": steps - 1, "study_session_id": session_id},
             headers=_auth(),
         )
-        client.post(f"/study/step/ready?s={state['participant_key']}", json={})
+        client.post(f"{BASE}/step/ready?s={state['participant_key']}", json={})
 
-        finished = client.get(f"/study/state?s={state['participant_key']}").get_json()
+        finished = client.get(f"{BASE}/state?s={state['participant_key']}").get_json()
         assert finished["active"] is False
         assert finished["status"] == "completed"
         assert finished.get("unknown_code") is None, "a known session is not an unknown code"
@@ -2218,16 +2256,16 @@ class TestTheParticipantPageCanTellTheStatesApart:
         """So it can word things for whoever is actually reading: on one machine
         there is no second person to refer them to."""
         solo = self._solo(client)
-        assert client.get(f"/study/state?s={solo['participant_key']}").get_json()["mode"] == "solo"
+        assert client.get(f"{BASE}/state?s={solo['participant_key']}").get_json()["mode"] == "solo"
 
         paired = _start(client).get_json()["state"]
-        assert client.get(f"/study/state?s={paired['participant_key']}").get_json()["mode"] == "paired"
+        assert client.get(f"{BASE}/state?s={paired['participant_key']}").get_json()["mode"] == "paired"
 
     def test_the_participant_code_is_available_for_the_end_message(self, client):
         """On one machine the experimenter reads this screen and wants to know
         which session was just recorded."""
         state = _start(client).get_json()["state"]
-        payload = client.get(f"/study/state?s={state['participant_key']}").get_json()
+        payload = client.get(f"{BASE}/state?s={state['participant_key']}").get_json()
         assert payload["participant_code"] == state["participant_code"]
 
     def test_the_code_does_not_bring_the_answer_key_with_it(self, client):
@@ -2235,7 +2273,7 @@ class TestTheParticipantPageCanTellTheStatesApart:
         would get in."""
         state = _start(client, participant_code="P01").get_json()["state"]
         _advance_to(client, "task1.b.virtual")
-        serialised = json.dumps(client.get(f"/study/state?s={state['participant_key']}").get_json())
+        serialised = json.dumps(client.get(f"{BASE}/state?s={state['participant_key']}").get_json())
         for leak in ("pencil holder", "compartments", "Aspect ratio", "script"):
             assert leak.lower() not in serialised.lower()
 
@@ -2250,17 +2288,18 @@ class TestReconnectingToAFinishedSession:
         state = _start(client).get_json()["state"]
         session_id = state["study_session_id"]
         client.post(
-            "/study/session/mode",
+            f"{CONTROL}/session/mode",
             json={"mode": "solo", "study_session_id": session_id},
             headers=_auth(),
         )
-        client.post("/study/session/end", json={"study_session_id": session_id}, headers=_auth())
+        _to_last_step(client, session_id)
+        client.post(f"{CONTROL}/session/end", json={"study_session_id": session_id}, headers=_auth())
 
-        direct = client.get(f"/study/state?s={state['participant_key']}").get_json()
+        direct = client.get(f"{BASE}/state?s={state['participant_key']}").get_json()
         assert direct["status"] == "completed"
 
         # The first message on the stream is the state it opens with.
-        stream = client.get(f"/study/stream?s={state['participant_key']}")
+        stream = client.get(f"{BASE}/stream?s={state['participant_key']}")
         first = next(iter(stream.response)).decode()
         opening = json.loads(first[len("data: "):])
         stream.close()
@@ -2289,12 +2328,25 @@ def _render(session_id, **overrides):
         "depth": 50, "zoom": 0, "input_source": "keyboard", "cache_hit": False,
     }
     params.update(overrides)
-    return study_db.record_render(session_id, **params)
+    return store.record_render(session_id, **params)
+
+
+def _to_last_step(client, session_id):
+    """Jump to the protocol's last step. End records 'completed' only from
+    there, and 'abandoned' before it (#258 review)."""
+    state = client.get(f"{CONTROL}/state?study_session_id={session_id}", headers=_auth()).get_json()
+    client.post(
+        f"{CONTROL}/step/advance",
+        json={"study_session_id": session_id, "step_index": state["step_count"] - 1},
+        headers=_auth(),
+    )
 
 
 def _end(client, session_id, status="completed"):
+    if status == "completed":
+        _to_last_step(client, session_id)
     return client.post(
-        "/study/session/end",
+        f"{CONTROL}/session/end",
         json={"study_session_id": session_id, "status": status},
         headers=_auth(),
     )
@@ -2302,7 +2354,7 @@ def _end(client, session_id, status="completed"):
 
 def _long_csv(client, query=""):
     """The export, as (response, parsed rows)."""
-    response = client.get(f"/study/export/long.csv{query}", headers=_auth())
+    response = client.get(f"{CONTROL}/export/long.csv{query}", headers=_auth())
     text = response.get_data(as_text=True)
     return response, list(csv.DictReader(io.StringIO(text)))
 
@@ -2350,7 +2402,7 @@ class TestLongExportCoversCompletedSessionsOnly:
     def test_asking_for_one_unfinished_session_by_id_is_refused_and_says_why(self, client):
         session_id = _start(client).get_json()["state"]["study_session_id"]
         _render(session_id)
-        response = client.get(f"/study/export/long.csv?session={session_id}", headers=_auth())
+        response = client.get(f"{CONTROL}/export/long.csv?session={session_id}", headers=_auth())
         assert response.status_code == 409
         # Named status, so the experimenter can tell a typo from a session that
         # nobody finished.
@@ -2367,36 +2419,37 @@ class TestLongExportCoversCompletedSessionsOnly:
         assert {row["participant_code"] for row in rows} == {"P01"}
 
     def test_an_unknown_session_is_a_clean_404(self, client):
-        assert client.get("/study/export/long.csv?session=999", headers=_auth()).status_code == 404
+        assert client.get(f"{CONTROL}/export/long.csv?session=999", headers=_auth()).status_code == 404
 
     def test_a_session_that_is_not_a_number_is_a_400(self, client):
-        assert client.get("/study/export/long.csv?session=P01", headers=_auth()).status_code == 400
+        assert client.get(f"{CONTROL}/export/long.csv?session=P01", headers=_auth()).status_code == 400
 
-    def test_the_export_is_a_plain_address_with_no_token(self, client):
-        """Opened in a browser, not fetched with a header. The fixture turns the
-        optional gate on, and this route is open regardless: a token to look up
-        and paste is the friction the panel's own token was removed for."""
+    def test_the_export_is_a_plain_link_once_signed_in(self, client):
+        """Opened in a browser from the panel, not fetched with a header: the
+        sign-in cookie is what lets it through, so there is no token to look up
+        and paste into a terminal."""
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
         _render(session_id)
         _end(client, session_id)
 
-        response = client.get("/study/export/long.csv")
+        client.post(f"{CONTROL}/sign-in", json={"token": TOKEN})
+        response = client.get(f"{CONTROL}/export/long.csv")
         assert response.status_code == 200
         assert response.mimetype == "text/csv"
         rows = list(csv.DictReader(io.StringIO(response.get_data(as_text=True))))
         assert {row["participant_code"] for row in rows} == {"P01"}
 
-    def test_one_session_by_id_needs_no_token_either(self, client):
+    def test_without_the_token_nothing_is_exported(self, client):
+        """The comparison study's CSV needed no token, by design, and its address
+        was in the docs: on a public server anyone could download every completed
+        session. Every export now needs the study's token."""
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
         _render(session_id)
         _end(client, session_id)
-        assert client.get(f"/study/export/long.csv?session={session_id}").status_code == 200
-
-    def test_the_rest_of_the_panel_is_still_gated(self, client):
-        """Opening this one route must not have opened the others."""
-        session_id = _start(client).get_json()["state"]["study_session_id"]
-        assert client.get(f"/study/sessions/{session_id}/export").status_code == 403
-        assert client.get("/study/sessions").status_code == 403
+        assert client.get(f"{CONTROL}/export/long.csv").status_code == 401
+        assert client.get(f"{CONTROL}/export/long.csv?session={session_id}").status_code == 401
+        assert client.get(f"{CONTROL}/export/sessions/{session_id}.json").status_code == 401
+        assert client.get(f"{CONTROL}/export/archive.zip").status_code == 401
 
 
 class TestLongExportShape:
@@ -2409,13 +2462,13 @@ class TestLongExportShape:
         assert "attachment" in response.headers["Content-Disposition"]
         assert rows == []
         header = response.get_data(as_text=True).splitlines()[0]
-        assert header.split(",") == list(study_db.LONG_EXPORT_COLUMNS)
+        assert header.split(",") == list(store_module.LONG_EXPORT_COLUMNS)
 
     def test_one_row_per_interaction_not_one_per_session(self, client):
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
-        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        client.post(f"{BASE}/event?s={_key(session_id)}", json={"event_type": "keyboard"})
         _render(session_id)
-        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        client.post(f"{BASE}/event?s={_key(session_id)}", json={"event_type": "keyboard"})
         _end(client, session_id)
 
         _, rows = _long_csv(client)
@@ -2426,7 +2479,7 @@ class TestLongExportShape:
 
     def test_rows_are_in_the_order_they_happened(self, client):
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
-        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        client.post(f"{BASE}/event?s={_key(session_id)}", json={"event_type": "keyboard"})
         _render(session_id)
         _end(client, session_id)
 
@@ -2463,7 +2516,7 @@ class TestLongExportViewerState:
         a blank where the analysis needs to know what was under their hands."""
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
         _render(session_id, model="pencil_holder_2x3", render_mode="Filled")
-        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        client.post(f"{BASE}/event?s={_key(session_id)}", json={"event_type": "keyboard"})
         _end(client, session_id)
 
         _, rows = _long_csv(client)
@@ -2488,7 +2541,7 @@ class TestLongExportViewerState:
         _end(client, first)
 
         second = _start(client, participant_code="P02").get_json()["state"]["study_session_id"]
-        client.post(f"/study/event?s={_key(second)}", json={"event_type": "keyboard"})
+        client.post(f"{BASE}/event?s={_key(second)}", json={"event_type": "keyboard"})
         _end(client, second)
 
         _, rows = _long_csv(client)
@@ -2569,7 +2622,7 @@ class TestLongExportRecordsWhichKey:
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
         for pressed in ("i", "j", "r"):
             client.post(
-                f"/study/event?s={_key(session_id)}",
+                f"{BASE}/event?s={_key(session_id)}",
                 json={"event_type": "keyboard", "event_data": {"key": pressed}},
             )
         _end(client, session_id)
@@ -2584,7 +2637,7 @@ class TestLongExportRecordsWhichKey:
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
         for pressed in ("i", "i", "k", "u", "o", "r"):
             client.post(
-                f"/study/event?s={_key(session_id)}",
+                f"{BASE}/event?s={_key(session_id)}",
                 json={"event_type": "keyboard", "event_data": {"key": pressed}},
             )
         _end(client, session_id)
@@ -2600,11 +2653,11 @@ class TestLongExportRecordsWhichKey:
         overstate every continuous control."""
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
         client.post(
-            f"/study/event?s={_key(session_id)}",
+            f"{BASE}/event?s={_key(session_id)}",
             json={"event_type": "keyboard", "event_data": {"key": "arrowup", "repeat": False}},
         )
         client.post(
-            f"/study/event?s={_key(session_id)}",
+            f"{BASE}/event?s={_key(session_id)}",
             json={"event_type": "keyboard", "event_data": {"key": "arrowup", "repeat": True}},
         )
         _end(client, session_id)
@@ -2617,7 +2670,7 @@ class TestLongExportRecordsWhichKey:
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
         _render(session_id)
         client.post(
-            f"/study/event?s={_key(session_id)}",
+            f"{BASE}/event?s={_key(session_id)}",
             json={"event_type": "braille_send", "event_data": {"cells": 32}},
         )
         _end(client, session_id)
@@ -2630,7 +2683,7 @@ class TestLongExportRecordsWhichKey:
 
     def test_an_unreadable_payload_does_not_take_the_row_with_it(self, client):
         session_id = _start(client, participant_code="P01").get_json()["state"]["study_session_id"]
-        client.post(f"/study/event?s={_key(session_id)}", json={"event_type": "keyboard"})
+        client.post(f"{BASE}/event?s={_key(session_id)}", json={"event_type": "keyboard"})
         _end(client, session_id)
 
         _, rows = _long_csv(client)
@@ -2688,3 +2741,355 @@ class TestLongExportRenderModeSpelling:
 
         _, rows = _long_csv(client)
         assert [row["render_mode"] for row in rows if row["event_type"] == "render"] == ["hologram"]
+
+
+# ---------------------------------------------------------------------------
+# The two findings of the #183 review, fixed
+# ---------------------------------------------------------------------------
+
+
+def _participant_count():
+    return store.connection().execute("SELECT COUNT(*) FROM participants").fetchone()[0]
+
+
+def _session_ends(session_id):
+    return [e for e in store.export_session(session_id)["events"] if e["event_type"] == "session_end"]
+
+
+class TestARefusedStartLeavesNoParticipant:
+    """A start request naming an unknown task got its 400 after a participant
+    had been created: a code with no session, and every later participant one
+    place further along the rotation than the design intended."""
+
+    def test_an_unknown_task_creates_nobody(self, client):
+        assert _start(client, task_order=["not_a_task"]).status_code == 400
+        assert _participant_count() == 0
+        # The rotation did not move: the next participant is still the first.
+        first = _start(client).get_json()["state"]
+        assert first["participant_code"] == "P01"
+        assert first["task_order"] == protocol.assign_task_order(STUDY, 1)
+
+    def test_a_failure_inside_enrolment_undoes_all_of_it(self, client):
+        def refuse(_participant_id):
+            raise RuntimeError("no order for you")
+
+        with pytest.raises(RuntimeError):
+            store.enroll(code=None, session_number=1, choose_task_order=refuse, protocol_version="x")
+        assert _participant_count() == 0
+        assert store.list_sessions() == []
+
+
+class TestASessionEndsOnce:
+    """The idle sweep read a session as active, the experimenter ended it, and
+    the sweep then ended it again: a second session_end, and 'completed'
+    overwritten with 'abandoned'."""
+
+    def test_the_sweep_leaves_a_session_ended_since_it_looked(self, client, monkeypatch):
+        state = _start(client).get_json()["state"]
+        session_id = state["study_session_id"]
+        stale = [{**store.get_study_session(session_id), "idle_seconds": 99999}]
+        # What the sweep saw a moment ago...
+        monkeypatch.setattr(store, "stale_active_sessions", lambda _seconds: stale)
+        # ...and what happened since.
+        assert _end(client, session_id).status_code == 200
+
+        assert store.close_idle_sessions(60) == []
+        assert store.get_study_session(session_id)["status"] == "completed"
+        assert len(_session_ends(session_id)) == 1
+
+    def test_ending_twice_is_refused_and_recorded_once(self, client):
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        assert _end(client, session_id).status_code == 200
+        second = _end(client, session_id, status="abandoned")
+        assert second.status_code == 409
+        assert "already ended" in second.get_json()["message"]
+        assert store.get_study_session(session_id)["status"] == "completed"
+        assert len(_session_ends(session_id)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Which session a render belongs to
+# ---------------------------------------------------------------------------
+
+
+class TestRenderAttribution:
+    """By the study and the session's join code. Session ids are small
+    sequential numbers, and a render tagged with a guessed one used to be
+    enough to write into someone else's session."""
+
+    def _render_with(self, headers):
+        with flask_app.test_request_context("/render", headers=headers):
+            engine.record_render_for_request({"depth": 50}, model_stem="mug", cache_hit=False)
+
+    def test_a_session_id_alone_is_not_enough(self, client):
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        self._render_with({"X-Study-Session": str(session_id)})
+        self._render_with({"X-Study": SLUG, "X-Study-Session": str(session_id)})
+        assert store.export_session(session_id)["renders"] == []
+
+    def test_a_wrong_code_is_not_enough(self, client):
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        wrong = "ZZZZ" if _key(session_id) != "ZZZZ" else "YYYY"
+        self._render_with({"X-Study": SLUG, "X-Study-Key": wrong})
+        assert store.export_session(session_id)["renders"] == []
+
+    def test_the_right_code_for_another_study_is_not_enough(self, client):
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        self._render_with({"X-Study": "another-study", "X-Study-Key": _key(session_id)})
+        assert store.export_session(session_id)["renders"] == []
+
+    def test_a_finished_session_takes_no_more_renders(self, client):
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        _end(client, session_id)
+        self._render_with(_render_headers(session_id))
+        assert store.export_session(session_id)["renders"] == []
+
+
+# ---------------------------------------------------------------------------
+# What ran, recorded with each session
+# ---------------------------------------------------------------------------
+
+
+class TestWhatRanIsRecorded:
+    """The orientation fix in #185 changed what three views store, and telling
+    sessions from either side of it apart meant reading vectors out of the data.
+    Each session now says which protocol and which release of the app it ran."""
+
+    @pytest.fixture(autouse=True)
+    def fixed_version(self, monkeypatch):
+        from app.studies import version
+
+        monkeypatch.setenv("CAD_A11Y_VERSION", "v9.9.9-test")
+        version.app_version.cache_clear()
+        yield
+        version.app_version.cache_clear()
+
+    def test_the_session_row_says_what_ran(self, client):
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        session = store.get_study_session(session_id)
+        assert session["app_version"] == "v9.9.9-test"
+        assert session["protocol_hash"] == protocol.protocol_hash(STUDY)
+        assert session["protocol_version"] == STUDY.version
+
+    def test_so_does_the_session_start_event(self, client):
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        start = next(e for e in store.export_session(session_id)["events"] if e["event_type"] == "session_start")
+        assert start["event_data"]["app_version"] == "v9.9.9-test"
+        assert start["event_data"]["protocol_hash"] == protocol.protocol_hash(STUDY)
+
+    def test_the_panel_is_told_too(self, client):
+        config = client.get(f"{CONTROL}/config", headers=_auth()).get_json()
+        assert config["app_version"] == "v9.9.9-test"
+        assert config["protocol_hash"] == protocol.protocol_hash(STUDY)
+
+
+# ---------------------------------------------------------------------------
+# From the review of #258
+# ---------------------------------------------------------------------------
+
+
+def _events(session_id, event_type):
+    return [e for e in store.export_session(session_id)["events"] if e["event_type"] == event_type]
+
+
+class TestEndingEarlyIsNotCompleting:
+    """End recorded 'completed' at any step, so a session stopped at step 3 of 22
+    went into long.csv and used up its task set (#258 review)."""
+
+    def test_ending_before_the_last_step_records_abandoned(self, client):
+        state = _start(client, task_order=["cane_tip", "lego"]).get_json()["state"]
+        session_id = state["study_session_id"]
+        response = client.post(
+            f"{CONTROL}/session/end",
+            json={"study_session_id": session_id, "status": "completed"},
+            headers=_auth(),
+        )
+        assert response.get_json()["session_status"] == "abandoned", "a request cannot make an early end complete"
+        assert store.get_study_session(session_id)["status"] == "abandoned"
+        (end,) = _events(session_id, "session_end")
+        assert end["event_data"]["reason"] == f"ended by the experimenter at step 1 of {state['step_count']}"
+        sets = {entry["id"]: entry for entry in client.get(f"{CONTROL}/sets", headers=_auth()).get_json()["sets"]}
+        assert sets["cane_tip+lego"]["used"] is False, "its task set is still there to run"
+
+    def test_ending_on_the_last_step_records_completed(self, client):
+        state = _start(client).get_json()["state"]
+        assert _end(client, state["study_session_id"]).get_json()["session_status"] == "completed"
+        assert store.get_study_session(state["study_session_id"])["status"] == "completed"
+
+    def test_the_last_step_can_still_be_ended_as_not_finished(self, client):
+        state = _start(client).get_json()["state"]
+        _end(client, state["study_session_id"], status="abandoned")
+        assert store.get_study_session(state["study_session_id"])["status"] == "abandoned"
+
+
+class TestAStepPressCountsOnce:
+    """Next and Back are relative, so a double click, a held key or a second
+    panel on the same session each moved one step further than anyone meant,
+    and the server could not tell (#258 review)."""
+
+    def _next(self, client, session_id, **extra):
+        return client.post(
+            f"{CONTROL}/step/advance",
+            json={"study_session_id": session_id, "direction": "next", **extra},
+            headers=_auth(),
+        )
+
+    def test_a_press_for_a_step_already_left_is_refused(self, client):
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        first = self._next(client, session_id, from_index=0)
+        assert first.status_code == 200 and first.get_json()["moved"] is True
+        again = self._next(client, session_id, from_index=0)
+        assert again.status_code == 409
+        assert "step 2 now" in again.get_json()["message"]
+        assert again.get_json()["state"]["step_index"] == 1, "the refusal says where the session is"
+        assert store.get_study_session(session_id)["step_index"] == 1
+        assert len(_events(session_id, "step_advance")) == 1
+
+    def test_presses_arriving_together_move_one_step(self, client):
+        import threading
+
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        barrier = threading.Barrier(4)
+
+        def press():
+            with flask_app.test_client() as own:
+                barrier.wait()
+                self._next(own, session_id, from_index=0)
+
+        threads = [threading.Thread(target=press) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert store.get_study_session(session_id)["step_index"] == 1
+        assert len(_events(session_id, "step_advance")) == 1
+
+    def test_a_request_that_names_no_step_still_moves(self, client):
+        """A script driving the panel's API, or a panel from before this."""
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        assert self._next(client, session_id).get_json()["moved"] is True
+        assert store.get_study_session(session_id)["step_index"] == 1
+
+
+class TestTheParticipantsOwnStepKeys:
+    """In a one-device session the participant's N and B move the session, so
+    the same double press applies to them; and B said nothing when it did
+    nothing (#258 review)."""
+
+    def _solo(self, client):
+        state = _start(client).get_json()["state"]
+        client.post(
+            f"{CONTROL}/session/mode",
+            json={"mode": "solo", "study_session_id": state["study_session_id"]},
+            headers=_auth(),
+        )
+        return state
+
+    def test_back_on_the_first_step_says_why_nothing_happened(self, client):
+        state = self._solo(client)
+        body = client.post(f"{BASE}/step/back?s={state['participant_key']}", json={"from_index": 0}).get_json()
+        assert body == {"status": "success", "moved": False, "reason": "first_step"}
+
+    def test_a_second_ready_for_a_step_already_left_does_not_move_it_again(self, client):
+        state = self._solo(client)
+        key = state["participant_key"]
+        first = client.post(f"{BASE}/step/ready?s={key}", json={"from_index": 0}).get_json()
+        second = client.post(f"{BASE}/step/ready?s={key}", json={"from_index": 0}).get_json()
+        assert first["advanced"] is True
+        assert second["advanced"] is False and second["finished"] is False
+        assert store.get_study_session(state["study_session_id"])["step_index"] == 1
+        assert len(_events(state["study_session_id"], "step_advance")) == 1
+
+    def test_back_for_a_step_already_left_does_nothing(self, client):
+        state = self._solo(client)
+        key = state["participant_key"]
+        client.post(f"{BASE}/step/ready?s={key}", json={"from_index": 0})
+        client.post(f"{BASE}/step/ready?s={key}", json={"from_index": 1})
+        body = client.post(f"{BASE}/step/back?s={key}", json={"from_index": 1}).get_json()
+        assert body["moved"] is False and body["reason"] == "moved_on"
+        assert store.get_study_session(state["study_session_id"])["step_index"] == 2
+
+
+class TestParticipantCodesDoNotCollide:
+    def test_a_typed_code_does_not_block_the_generated_ones(self, client):
+        """Enrolling participant 1 as P02 made the next automatic code P02 as
+        well: that enrolment failed on the UNIQUE constraint, and since the id
+        was reused after the rollback, so did every one after it (#258 review)."""
+        assert _start(client, participant_code="P02").get_json()["state"]["participant_code"] == "P02"
+        second = _start(client).get_json()
+        assert second["status"] == "success"
+        assert second["state"]["participant_code"] == "P02b", "the label steps aside; the id keeps its place"
+        assert _start(client).get_json()["state"]["participant_code"] == "P03"
+
+    def test_a_refused_start_is_said_in_the_panels_words(self, client):
+        _start(client, participant_code="P01", session_number=1)
+        body = _start(client, participant_code="P01", session_number=1).get_json()
+        assert "UNIQUE" not in body["message"]
+        assert "P01 already has a session 1" in body["message"]
+
+
+class TestAStepWhoseObjectIsMissing:
+    def test_the_participant_is_told_rather_than_left_with_the_last_object(self, client, monkeypatch):
+        """The page loaded nothing, and the step's text told the participant to
+        explore what was on the display: the previous step's object (#258 review)."""
+        state = _start(client, participant_code="P01").get_json()["state"]
+        _advance_to(client, "task1.a.virtual")
+        monkeypatch.setattr(engine, "_model_list", lambda: ["something_else"])
+        payload = client.get(f"{BASE}/state?s={state['participant_key']}").get_json()
+        assert payload["model"] is None
+        assert payload["model_unavailable"] is True
+        assert "lego" not in json.dumps(payload), "that it is missing, never which object"
+
+    def test_a_step_with_no_object_is_not_called_missing(self, client):
+        state = _start(client, participant_code="P01").get_json()["state"]
+        payload = client.get(f"{BASE}/state?s={state['participant_key']}").get_json()
+        assert payload["model"] is None
+        assert payload["model_unavailable"] is False
+
+
+class TestClocksFollowTheOrder:
+    def test_rows_written_at_once_keep_their_time_and_step_in_seq_order(self, client):
+        """A row's time and step clock came from a read made before the write
+        lock, so a row could carry an earlier time than one with a lower seq, and
+        the previous step's clock (#258 review)."""
+        import threading
+
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        stop = threading.Event()
+
+        def render():
+            while not stop.is_set():
+                store.record_render(
+                    session_id, model="lego_2x4", view="x-", render_mode="Cut", layout_mode="single",
+                    depth=50, zoom=0, input_source="keyboard", cache_hit=False,
+                    resolve_step=lambda session: engine._current_step(runtime, session),
+                )
+
+        writers = [threading.Thread(target=render) for _ in range(3)]
+        for writer in writers:
+            writer.start()
+        for target in range(1, 6):
+            engine._advance(runtime, store.get_study_session(session_id), target, source="experimenter")
+        stop.set()
+        for writer in writers:
+            writer.join()
+
+        recorded = store.export_session(session_id)
+        rows = sorted(recorded["events"] + recorded["renders"], key=lambda row: row["seq"])
+        times = [row["created_at"] for row in rows]
+        assert times == sorted(times)
+        step = 0
+        for row in rows:
+            if row.get("event_type") == "step_advance":
+                step = row["step_index"]
+            elif "model" in row:
+                assert row["step_index"] == step, "a render filed under a step the session had left"
+
+
+def test_elapsed_time_is_exact_to_the_millisecond():
+    """It went through a float and truncated: 1001 ms came out as 1000."""
+    start = "2026-10-06T10:00:00.000Z"
+    for second in range(3):
+        for millisecond in range(1000):
+            end = f"2026-10-06T10:00:{second:02d}.{millisecond:03d}Z"
+            assert store_module._elapsed_ms(start, end) == second * 1000 + millisecond
