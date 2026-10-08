@@ -228,12 +228,13 @@ Two consequences that have caught us out before.
 
 ### Studies
 
-Which studies a server runs is decided by each study's status in `app/studies/definitions/`, not by anything on the server. [STUDIES.md](STUDIES.md) has the details. In short:
+Which studies a server runs is decided by each study's status in `app/studies/definitions/`, not by anything on the server except the one variable below that servers leave unset. [STUDIES.md](STUDIES.md) has the details. In short:
 
 * An open study serves its participant page at `/studies/<slug>` and its control panel at `/studies/<slug>/control`. A closed one serves the panel's data downloads and nothing else. Drafts and retired studies serve nothing, and `/study` is gone.
 * Every panel needs its study's token, entered once in a sign-in form. The token is never in a URL, so it is in no proxy log. A study without a token is refused at start-up, and the start-up log says why.
 * The server never sets a study's token in `.env`; the hash is in the study's definition. `STUDY_CONTROL_TOKEN` no longer does anything and can be removed from a server's `.env`.
-* `CAD_A11Y_OPEN_STUDIES` serves a draft study, for development and CI. Leave it unset on the servers.
+* `CAD_A11Y_OPEN_STUDIES` serves a draft study, for piloting it on a development machine. Leave it unset on the servers. The example study, whose panel token is published, also needs `CAD_A11Y_ALLOW_EXAMPLE_STUDY=1`, which `docker-compose.yml` never passes. Never set it on a server, in the environment or in `.env`: anyone could then sign in to the example's panel and write sessions into the server's volume.
+* A closed study's database is only read. A server that does not have it says so on every download, and creates nothing.
 * `CAD_A11Y_VERSION` is set by `scripts/docker_compose_build.sh` from the pipeline's tag or commit, and every study session records it.
 
 Getting a study's data off a server needs no shell access: close the study, and download the zip from its panel or with `scripts/download_study_data.sh`.
@@ -266,6 +267,8 @@ docker compose up -d
 ```
 
 Restoring overwrites whatever is in the volume. Take a fresh backup first if the current contents might matter.
+
+To put back one study's database rather than the whole volume, stop the app first, and delete the `-wal` and `-shm` files beside the one being replaced before copying the restored file in. They belong to the old file, and SQLite would read them against the new one.
 
 ## If the site returns 503
 

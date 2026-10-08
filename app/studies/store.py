@@ -55,10 +55,11 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import os
 import secrets
 import sqlite3
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -353,7 +354,32 @@ def _elapsed_ms(since: str | None, until: str) -> int | None:
     start, end = _parse(since), _parse(until)
     if start is None or end is None:
         return None
-    return int((end - start).total_seconds() * 1000)
+    # Whole numbers throughout. total_seconds() * 1000 is a float, and truncating
+    # it turned 1001 ms into 1000 about once in every 150 values (#258 review).
+    delta = end - start
+    return (delta.days * 86_400 + delta.seconds) * 1000 + delta.microseconds // 1000
+
+
+# Twelve hours. A session is an hour or two and produces events throughout, so
+# this is far beyond any real gap; the point is to catch the abandoned ones by
+# the next working day, not to reclaim them promptly.
+DEFAULT_IDLE_HOURS = 12.0
+IDLE_HOURS_ENV = "STUDY_SESSION_IDLE_HOURS"
+
+
+def idle_timeout_seconds() -> int:
+    """How long an active session in an open study may go quiet before it is
+    closed as abandoned. Here rather than in the engine so the export can say
+    what the server actually does."""
+    raw = os.getenv(IDLE_HOURS_ENV, "").strip()
+    try:
+        hours = float(raw) if raw else DEFAULT_IDLE_HOURS
+    except ValueError:
+        hours = DEFAULT_IDLE_HOURS
+    # Zero or negative would close sessions the moment they were created.
+    if hours <= 0:
+        hours = DEFAULT_IDLE_HOURS
+    return int(hours * 3600)
 
 
 CODE_PREFIX = "P"
@@ -565,9 +591,13 @@ def _orientation_angles(
 class StudyStore:
     """One study's database and logs."""
 
-    def __init__(self, db_path: Path, log_dir: Path) -> None:
+    def __init__(self, db_path: Path, log_dir: Path, *, read_only: bool = False) -> None:
         self.db_path = Path(db_path)
         self.log_dir = Path(log_dir)
+        # A closed study's store. Its database is the record of sessions that
+        # cannot be run again, and serving its data must not change it, create
+        # it, or leave an empty one where a restore will put the real one.
+        self.read_only = read_only
         self._local = threading.local()
         # Serialises every write to this study. Study traffic is a handful of
         # participants at once, so contention is irrelevant, and it is what makes
@@ -590,10 +620,23 @@ class StudyStore:
         if conn is None or getattr(self._local, "conn_path", None) != current_path:
             if conn is not None:
                 conn.close()
-            Path(current_path).parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(current_path, check_same_thread=True)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
+            if self.read_only:
+                # No directory made, no file created when there is none (#258
+                # review: a closed study with no database used to get an empty
+                # one, and its -wal and -shm, at the path a restore would use),
+                # and no journal-mode change. SQLite refuses writes on this
+                # connection, and still reads what is waiting in the WAL.
+                if not Path(current_path).is_file():
+                    raise FileNotFoundError(f"no database at {current_path}")
+                conn = sqlite3.connect(
+                    f"{Path(current_path).resolve().as_uri()}?mode=ro", uri=True, check_same_thread=True
+                )
+                conn.row_factory = sqlite3.Row
+            else:
+                Path(current_path).parent.mkdir(parents=True, exist_ok=True)
+                conn = sqlite3.connect(current_path, check_same_thread=True)
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
             self._local.conn = conn
             self._local.conn_path = current_path
@@ -604,8 +647,17 @@ class StudyStore:
         package: the export's data checks."""
         return self._get_conn()
 
+    @property
+    def write_lock(self) -> threading.RLock:
+        """The lock every write takes. Held across a group of writes that must
+        not have another row land between them, such as a step change and its
+        step_advance event."""
+        return self._write_lock
+
     def init_db(self) -> None:
         """Create the schema. Safe to call repeatedly."""
+        if self.read_only:
+            raise RuntimeError(f"{self.db_path} is read-only here; it is never created or migrated")
         with self._write_lock:
             conn = self._get_conn()
             conn.executescript(_DDL)
@@ -719,9 +771,23 @@ class StudyStore:
         participant_id = int(cursor.lastrowid)
         conn.execute(
             "UPDATE participants SET code = ? WHERE id = ?",
-            (code or code_for(participant_id), participant_id),
+            (code or self._generated_code(conn, participant_id), participant_id),
         )
         return participant_id
+
+    @staticmethod
+    def _generated_code(conn: sqlite3.Connection, participant_id: int) -> str:
+        """The label for a new participant: P02 for id 2, unless someone was
+        enrolled under P02 by hand. That clash used to fail this enrolment and,
+        since the id is reused after a rollback, every one after it (#258
+        review). The id still decides the rotation; only the label steps aside,
+        to P02b, P02c and so on."""
+        base = code_for(participant_id)
+        for suffix in ("", *"bcdefghjkmnpqrstuvwxyz"):
+            label = base + suffix
+            if not conn.execute("SELECT 1 FROM participants WHERE code = ?", (label,)).fetchone():
+                return label
+        return f"{base}-{participant_id}"
 
     def _log_path_for(self, code: str, session_number: int) -> Path:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -841,7 +907,9 @@ class StudyStore:
                     participant_code = str(existing["code"])
                 else:
                     participant_id = self._insert_participant(conn, code)
-                    participant_code = code or code_for(participant_id)
+                    participant_code = str(
+                        conn.execute("SELECT code FROM participants WHERE id = ?", (participant_id,)).fetchone()["code"]
+                    )
                 task_order = choose_task_order(participant_id)
                 session_id = self._insert_session(
                     conn,
@@ -1179,22 +1247,25 @@ class StudyStore:
 
         Returns the assigned ``seq``, or None if the session is gone.
         """
-        session = self.get_study_session(study_session_id)
-        if not session:
-            return None
-
-        timestamp = now()
-        elapsed = _elapsed_ms(session.get("started_at"), timestamp)
-        step_elapsed = _elapsed_ms(session.get("step_started_at"), timestamp)
-        participant_code = str(session.get("participant_code") or "")
-        participant_id = session.get("participant_id")
         seq: int | None = None
         # Both writes happen under the one lock. The JSONL append used to sit outside
         # it, which let two clients posting at the same moment take seq 10 and 11 and
         # then append in the other order -- a file whose whole point is that it is an
         # ordered append-only record. The data was complete either way, but a reader
         # trusting file order got it wrong.
+        #
+        # The session is read, and the clock taken, under it as well. Read before
+        # it, a row racing a step change could take the old step's clock and a
+        # time earlier than a row with a lower seq (#258 review).
         with self._write_lock:
+            session = self.get_study_session(study_session_id)
+            if not session:
+                return None
+            timestamp = now()
+            elapsed = _elapsed_ms(session.get("started_at"), timestamp)
+            step_elapsed = _elapsed_ms(session.get("step_started_at"), timestamp)
+            participant_code = str(session.get("participant_code") or "")
+            participant_id = session.get("participant_id")
             try:
                 conn = self._get_conn()
                 seq = _next_seq(conn, study_session_id)
@@ -1272,25 +1343,35 @@ class StudyStore:
         cut_axis: str | None = None,
         cut_side: str | None = None,
         cut_percent: float | None = None,
+        resolve_step: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
+        only_if_active: bool = False,
     ) -> int | None:
         """Record one render request against the active study session.
 
         Recorded on the server rather than reported by the client, so a browser that
         crashes or a tab that is closed cannot take the record of what was displayed
         with it.
-        """
-        session = self.get_study_session(study_session_id)
-        if not session:
-            return None
 
-        timestamp = now()
-        elapsed = _elapsed_ms(session.get("started_at"), timestamp)
-        step_elapsed = _elapsed_ms(session.get("step_started_at"), timestamp)
-        participant_code = str(session.get("participant_code") or "")
-        participant_id = session.get("participant_id")
+        ``resolve_step`` maps the session to its current step. Given, it is asked
+        under the lock with the session read there, so the step a render is filed
+        under and the step clock it carries come from the same moment.
+        ``only_if_active`` drops a render that arrives after the session ended.
+        """
         seq: int | None = None
-        # One lock over both writes, so the file stays in seq order. See record_event.
+        # One lock over both writes, so the file stays in seq order, and over the
+        # session read and the clock. See record_event.
         with self._write_lock:
+            session = self.get_study_session(study_session_id)
+            if not session or (only_if_active and session.get("status") != "active"):
+                return None
+            if resolve_step is not None:
+                step = resolve_step(session) or {}
+                part_id, step_id, step_index = step.get("part_id"), step.get("id"), step.get("index")
+            timestamp = now()
+            elapsed = _elapsed_ms(session.get("started_at"), timestamp)
+            step_elapsed = _elapsed_ms(session.get("step_started_at"), timestamp)
+            participant_code = str(session.get("participant_code") or "")
+            participant_id = session.get("participant_id")
             try:
                 conn = self._get_conn()
                 seq = _next_seq(conn, study_session_id)
@@ -1421,17 +1502,38 @@ class StudyStore:
     def completed_sessions(self) -> list[dict[str, Any]]:
         """Every session someone actually finished, oldest first.
 
-        'completed' is the only status the export accepts. An active session is still
+        'completed' is the only status long.csv accepts. An active session is still
         being written to, so exporting it produces a different file every time it is
-        asked for, and an abandoned one is a session that stopped partway with no
-        record of why. Both belong in the analysis only after a person has looked at
-        them and said so.
+        asked for, and an abandoned one is a session that stopped partway. Both
+        belong in the analysis only after a person has looked at them and said so,
+        which is why the archive keeps them apart, in long_incomplete.csv (see
+        ``incomplete_sessions``).
         """
         try:
             rows = self._get_conn().execute(
                 """SELECT * FROM study_sessions
                    WHERE status = 'completed'
                    ORDER BY id""",
+            ).fetchall()
+        except Exception as error:  # noqa: BLE001 - counted, never fatal
+            self._note_failure("db_reads", error)
+            return []
+        return [session for session in (_hydrate(row) for row in rows) if session]
+
+    def incomplete_sessions(self, *, include_active: bool) -> list[dict[str, Any]]:
+        """The sessions long.csv leaves out that nothing is still writing to,
+        oldest first, for long_incomplete.csv: every abandoned one, and with
+        ``include_active`` the ones still marked active. Only a closed study
+        passes that. Nothing will end its sessions now, since the idle sweep runs
+        only while a study is open, so its 'active' ones are finished records that
+        were never closed (#258 review). In an open study an active session is
+        still being written to, and stays out."""
+        statuses = ("abandoned", "active") if include_active else ("abandoned",)
+        marks = ", ".join("?" for _ in statuses)
+        try:
+            rows = self._get_conn().execute(
+                f"SELECT * FROM study_sessions WHERE status IN ({marks}) ORDER BY id",
+                statuses,
             ).fetchall()
         except Exception as error:  # noqa: BLE001 - counted, never fatal
             self._note_failure("db_reads", error)
@@ -1566,16 +1668,36 @@ class StudyStore:
         Passing a session id that is not a completed session returns nothing. That is
         the same answer as a session with no interactions, so callers that need to
         tell those apart should check the status themselves.
+
+        A session that cannot be read raises. It used to be skipped quietly, so the
+        file left a session out and still looked whole (#258 review).
         """
         if study_session_id is None:
             sessions = self.completed_sessions()
         else:
             session = self.get_study_session(study_session_id)
             sessions = [session] if session and session.get("status") == "completed" else []
-        rows: list[dict[str, Any]] = []
+        return list(self.iter_long_rows(sessions))
+
+    def iter_long_rows(
+        self,
+        sessions: Iterable[dict[str, Any]],
+        on_error: Callable[[dict[str, Any], Exception], None] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """The long rows of ``sessions``, one session at a time, so a large study
+        is never held in memory whole.
+
+        A session that cannot be read raises, unless ``on_error`` is given: then
+        it is told, and the rest are still produced. The archive passes one, and
+        lists what failed in its checks and its manifest.
+        """
         for session in sessions:
             try:
-                rows.extend(self._long_rows_for_session(session))
-            except Exception as error:  # noqa: BLE001 - counted, never fatal
+                rows = self._long_rows_for_session(session)
+            except Exception as error:  # reported, never silent
                 self._note_failure("db_reads", error)
-        return rows
+                if on_error is None:
+                    raise
+                on_error(session, error)
+                continue
+            yield from rows

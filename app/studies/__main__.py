@@ -8,7 +8,8 @@
 ``check`` and ``export`` read a study's data wherever its definition says it is,
 or from ``--db`` and ``--logs`` when a copy has been restored somewhere else.
 They work on a study of any status, retired included, and never modify what
-they read. On a server, run them inside the container:
+they read. Both exit 1 when the checks find a problem, and 2 when they cannot
+run at all. On a server, run them inside the container:
 
     docker compose exec app conda run --no-capture-output -n cad-a11y \
         python -m app.studies list
@@ -19,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import zipfile
 from pathlib import Path
 
 from . import export, registry, tokens
@@ -65,6 +67,12 @@ def _paths(args: argparse.Namespace) -> tuple[Study, Path, Path] | None:
     if not db_path.is_file():
         print(f"No database at {db_path}.", file=sys.stderr)
         return None
+    # A mistyped --logs used to make an archive with no logs in it, said only by
+    # one finding among the checks (#258 review). The study's own folder may
+    # not exist yet; one that was named must.
+    if args.logs and not log_dir.is_dir():
+        print(f"No log folder at {log_dir}.", file=sys.stderr)
+        return None
     return study, db_path, log_dir
 
 
@@ -72,9 +80,9 @@ def _check(args: argparse.Namespace) -> int:
     found = _paths(args)
     if found is None:
         return 2
-    _, db_path, log_dir = found
+    study, db_path, log_dir = found
     with export.readable_copy(db_path, log_dir) as (_, store):
-        report = export.run_checks(store, log_dir)
+        report = export.run_checks(store, log_dir, study=study)
     if args.json:
         print(json.dumps(report, indent=2, default=str))
     else:
@@ -91,12 +99,26 @@ def _export(args: argparse.Namespace) -> int:
     if out.exists():
         print(f"{out} already exists; choose another --out.", file=sys.stderr)
         return 2
-    with out.open("xb") as handle:
-        export.build_archive(study, db_path, log_dir, target=handle)
+    # Built beside the target and renamed into place once whole. Opening the
+    # target first left a partial zip behind a failed build, which every later
+    # run then refused to overwrite (#258 review).
+    partial = out.with_name(f".{out.name}.partial")
+    try:
+        with partial.open("wb") as handle:
+            export.build_archive(study, db_path, log_dir, target=handle)
+        if out.exists():
+            print(f"{out} appeared while the archive was being built; it is left as it was.", file=sys.stderr)
+            return 2
+        partial.rename(out)
+    finally:
+        partial.unlink(missing_ok=True)
     print(f"Wrote {out}")
-    with export.readable_copy(db_path, log_dir) as (_, store):
-        print(export.summarise_checks(export.run_checks(store, log_dir)))
-    return 0
+    # The checks inside the archive, not a second run of them: the database can
+    # change in between, and what is printed must be what was saved.
+    with zipfile.ZipFile(out) as bundle:
+        report = json.loads(bundle.read("checks.json"))
+    print(export.summarise_checks(report))
+    return 1 if report["problems"] else 0
 
 
 def main(argv: list[str] | None = None) -> int:

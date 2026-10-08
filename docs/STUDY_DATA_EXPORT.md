@@ -135,19 +135,30 @@ therefore has to either report four modes or say plainly that x-ray rows were se
 aside and how many there were. Mapping it onto one of the other three would put
 time in a mode the participant was not in.
 
-## Completed sessions only
+## Completed sessions only, and the rest kept apart
 
-Sessions that are still active or were abandoned are not in the file, and that
-is not something the caller can turn off. An active session is being written to
-while it is read, and an abandoned one stopped partway with nothing recording
-why.
+`long.csv` holds completed sessions only, and that is not something the caller can
+turn off. A session is completed when it reached the last step and was ended
+there. Ended earlier, by the experimenter or after a long time with no activity,
+it is abandoned.
+
+The zip also holds `long_incomplete.csv`, in the same columns, for the sessions
+`long.csv` leaves out that nothing is still writing to: every abandoned session,
+and, once a study is closed, the sessions it left active. A closed study runs no
+idle sweep, so nothing will end those; they are usually finished sessions whose
+panel was closed without pressing End. An open study's active sessions are still
+being written to, so they are in neither file. `sessions.csv` gives each
+session's status and `step_index`, the last step it reached, so using any of them
+is a decision made per participant, and worth saying in the write-up.
 
 This is a filter on status, which is not the same as a filter on usable. A
-session that stopped at step 19 of 21 is excluded; a session marked completed
-after 21 seconds is included. Pull a specific one deliberately with
-`?session=<id>` or `SESSION=<id>`, and say so in the write-up. Asking for a
-session that is not completed returns 409 with its status rather than an empty
-file, so a participant cannot go quietly missing from the analysis.
+session that stopped at step 19 of 21 is in `long_incomplete.csv`; a session
+completed after 21 seconds is in `long.csv`. Sessions recorded before 2026-10
+could be ended as completed from any step, so for those, check `step_index`.
+Asking for one session with `?session=<id>` or `SESSION=<id>` returns 409 with its
+status when it is not completed, rather than an empty file, so a participant
+cannot go quietly missing from the analysis; its rows are in
+`long_incomplete.csv`, or in its JSON export at any time.
 
 ## Axis mode and the cut
 
@@ -209,7 +220,11 @@ sessions from either side of it without accounting for this.
 * **Telling them apart.** It shows in the data. On a row whose `view` is `y-`,
   `y+` or `z-`, the `forward` vector in `orientation_basis` points the other way
   after the fix: a `y-` row recorded before it has `forward` `[0, 1, 0]`, and one
-  recorded after has `[0, -1, 0]`.
+  recorded after has `[0, -1, 0]`. The export reads this for you: the
+  `view_convention` column of `sessions.csv` says `before #185` or `after #185`
+  for every session that used those views, `checks.json` lists the ones from
+  before, and when there are any, the codebook's depth and angle entries and the
+  zip's README say so too.
 * **Depth.** Front (`y-`), back (`y+`) and bottom (`z-`) used to measure depth in
   from the far side. They now measure it from the surface nearest the reader, as
   the other three always did, so the same plane reads as `100 - depth`: 30%
@@ -226,8 +241,8 @@ sessions from either side of it without accounting for this.
 ## If something looks wrong
 
 * Nothing but a header row: no session has been completed yet.
-* A participant missing: their session is probably active or abandoned. Check
-  the control panel's session list.
+* A participant missing: their session is probably active or abandoned. Look in
+  `long_incomplete.csv` and `sessions.csv`.
 * `key` blank on a `keyboard` row: the event was recorded without a payload.
   Rare, and the row is otherwise intact.
 * HTTP 401: the token is wrong, or the panel's sign-in has lapsed.

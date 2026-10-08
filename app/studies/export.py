@@ -2,15 +2,17 @@
 
 One function builds everything: ``build_archive`` makes a zip holding
 
-  study.db        a consistent copy of the database, as the server had it
-  logs/*.jsonl    every session log, the authoritative record
-  long.csv        one row per interaction, completed sessions only
-  long.json       the codebook for long.csv
-  sessions.csv    one row per session, every status
-  sessions.json   the codebook for sessions.csv
-  checks.json     the data checks below, and what they found
-  manifest.json   what the archive is, the counts, and a SHA-256 per file
-  README.txt      the same list, for whoever opens the archive in a year
+  study.db             a consistent copy of the database, as the server had it
+  logs/*.jsonl         every session log, the authoritative record
+  long.csv             one row per interaction, completed sessions only
+  long_incomplete.csv  the same columns, for the sessions long.csv leaves out
+                       that nothing is still writing to
+  long.json            the codebook for both
+  sessions.csv         one row per session, every status
+  sessions.json        the codebook for sessions.csv
+  checks.json          the data checks below, and what they found
+  manifest.json        what the archive is, the counts, and a SHA-256 per file
+  README.txt           the same list, for whoever opens the archive in a year
 
 The control panel serves it, and so does ``python -m app.studies export``, which
 also reads a database restored from a backup. The codebooks follow the shape of
@@ -18,11 +20,13 @@ a BIDS sidecar: one entry per column, with a description, its levels where it
 has a fixed set, and its units.
 
 Reading leaves the original alone. The database is copied with SQLite's backup
-API, which includes anything still in the write-ahead log; the copy in the
-archive is that snapshot, untouched. Everything derived from it is computed from
-a second copy brought up to the current schema, so a database written by older
-code exports the same columns as a new one without the original being migrated
-in place.
+API, which includes anything still in the write-ahead log, and that copy goes
+into the archive untouched. Only then is the same copy brought up to the current
+schema and everything else computed from it, so a database written by older code
+exports the same columns as a new one, the original is never migrated, and one
+copy is made rather than two. Rows are written straight to files as they are
+read, a session at a time, so a large study is never held in memory whole
+(#258 review).
 
 Formulas
 --------
@@ -39,10 +43,8 @@ from __future__ import annotations
 
 import csv
 import hashlib
-import io
 import json
 import re
-import shutil
 import sqlite3
 import tempfile
 import zipfile
@@ -53,8 +55,8 @@ from pathlib import Path
 from typing import IO, Any
 
 from . import protocol
-from .definition import Study
-from .store import LONG_EXPORT_COLUMNS, StudyStore
+from .definition import Status, Study
+from .store import LONG_EXPORT_COLUMNS, StudyStore, idle_timeout_seconds
 from .version import app_version
 
 # ---------------------------------------------------------------------------
@@ -82,19 +84,23 @@ def spreadsheet_safe(value: Any) -> Any:
     return text
 
 
-def _write_csv(handle: IO[str], columns: Iterable[str], rows: Iterable[dict[str, Any]]) -> None:
+def _write_csv(handle: IO[str], columns: Iterable[str], rows: Iterable[dict[str, Any]]) -> int:
+    """Write the rows as they come, and say how many there were."""
     names = list(columns)
     writer = csv.DictWriter(handle, fieldnames=names, extrasaction="ignore", lineterminator="\n")
     # A header even when there are no rows, so the file opens in a spreadsheet
     # and says what it would have contained, rather than being empty and looking
     # like the download failed.
     writer.writeheader()
+    count = 0
     for row in rows:
         writer.writerow({name: spreadsheet_safe(row.get(name)) for name in names})
+        count += 1
+    return count
 
 
-def write_long_csv(handle: IO[str], rows: Iterable[dict[str, Any]]) -> None:
-    _write_csv(handle, LONG_EXPORT_COLUMNS, rows)
+def write_long_csv(handle: IO[str], rows: Iterable[dict[str, Any]]) -> int:
+    return _write_csv(handle, LONG_EXPORT_COLUMNS, rows)
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +239,7 @@ SESSION_COLUMNS: tuple[str, ...] = (
     "protocol_version",
     "protocol_hash",
     "app_version",
+    "view_convention",
     "events",
     "renders",
     "log_file",
@@ -243,11 +250,24 @@ SESSION_COLUMN_DOCS: dict[str, dict[str, Any]] = {
     "participant_code": {"Description": "The participant's code."},
     "session_number": {"Description": "Which of this participant's sessions, from 1."},
     "status": {
-        "Description": "How the session ended.",
+        "Description": (
+            "How the session ended. long.csv has the completed sessions; long_incomplete.csv "
+            "has the abandoned ones, and the active ones of a study that is no longer running."
+        ),
         "Levels": {
-            "completed": "Ended by the experimenter, or by the participant finishing the last step of a one-device session",
-            "abandoned": "Ended without finishing, by the experimenter or after a long time with no activity",
-            "active": "Still running when this was exported",
+            "completed": (
+                "Reached the last step and was ended there, by the experimenter or by the participant "
+                "finishing it in a one-device session. Before 2026-10, End also recorded 'completed' "
+                "before the last step, so for earlier sessions step_index says how far each got"
+            ),
+            "abandoned": (
+                "Ended before the last step: by the experimenter, or closed after a long time with no "
+                "activity (STUDY_SESSION_IDLE_HOURS, 12 by default) while the study was open"
+            ),
+            "active": (
+                "Not ended when this was exported. Still running in an open study; in a closed or "
+                "retired one, left open when it stopped running, and nothing will end it now"
+            ),
         },
     },
     "mode": {
@@ -272,15 +292,48 @@ SESSION_COLUMN_DOCS: dict[str, dict[str, Any]] = {
     "app_version": {
         "Description": "The release or commit of the app that ran it. Blank on sessions recorded before it was."
     },
+    "view_convention": {
+        "Description": (
+            "Which side of the orientation fix (#185) the session was recorded on, read from the "
+            "forward vector of its renders in the front (y-), back (y+) and bottom (z-) views. "
+            "Blank when it never used those views, which read the same on either side."
+        ),
+        "Levels": {
+            "before #185": (
+                "Depth in y-, y+ and z- measured from the far side (the same plane reads as 100 "
+                "minus it after the fix), and those views' angles come from mirrored bases"
+            ),
+            "after #185": "Depth from the surface nearest the reader in every view",
+            "mixed": "Rows of both kinds, which no single release records. Worth a look",
+        },
+    },
     "events": {"Description": "Event rows the database holds for the session."},
     "renders": {"Description": "Render rows the database holds for the session."},
     "log_file": {"Description": "The session's JSONL log, under logs/ in the archive."},
 }
 
 
-def long_codebook(study: Study) -> dict[str, Any]:
-    """The long CSV's codebook, with this study's own phases and steps."""
+BEFORE_VIEW_FIX_NOTE = (
+    "Some sessions here were recorded before the orientation fix (#185); checks.json and the "
+    "view_convention column of sessions.csv say which. In those sessions the front (y-), back "
+    "(y+) and bottom (z-) views measured depth from the far side, so the same plane reads as "
+    "100 minus the depth recorded after the fix, and stored mirrored bases, so the orientation "
+    "angles of those rows describe no turn that could have happened. Do not pool them with "
+    "later sessions without converting; docs/STUDY_DATA_EXPORT.md in the repository explains."
+)
+
+
+def long_codebook(study: Study, *, before_view_fix: bool = False) -> dict[str, Any]:
+    """The long CSVs' codebook, with this study's own phases and steps.
+
+    ``before_view_fix`` says some sessions predate #185. The depth and angle
+    entries then say so where they are read, since someone holding only the
+    archive would otherwise read those sessions' depths backwards (#258 review).
+    """
     book = {name: dict(LONG_COLUMN_DOCS[name]) for name in LONG_EXPORT_COLUMNS}
+    if before_view_fix:
+        for name in ("depth", "orientation_x", "orientation_y", "orientation_z", "orientation_basis"):
+            book[name]["Description"] = f"{book[name]['Description']} {BEFORE_VIEW_FIX_NOTE}"
     phases: dict[str, str] = {}
     steps: dict[str, str] = {}
     for step in study.steps:
@@ -314,7 +367,24 @@ def _finding(check_id: str, title: str, explanation: str, items: list[dict[str, 
     return {"id": check_id, "title": title, "explanation": explanation, "count": len(items), "items": items}
 
 
-def run_checks(store: StudyStore, log_dir: Path | None = None) -> dict[str, Any]:
+# Findings that describe the data rather than a fault in it. They are listed,
+# and not counted as problems.
+_INFORMATIONAL = frozenset({"still_active", "before_view_fix"})
+
+
+def _stops_running(study: Study | None) -> bool:
+    """Whether nothing will end this study's sessions now: a closed or retired
+    study runs no idle sweep, and its database is only ever read."""
+    return study is not None and study.status in (Status.CLOSED, Status.RETIRED)
+
+
+def run_checks(
+    store: StudyStore,
+    log_dir: Path | None = None,
+    *,
+    study: Study | None = None,
+    export_failures: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Look for the problems a study's data is known to be able to have.
 
     Two come from the review of the comparison study's code (#183): sessions
@@ -322,7 +392,13 @@ def run_checks(store: StudyStore, log_dir: Path | None = None) -> dict[str, Any]
     are fixed, and the checks stay because data recorded before the fixes can
     still carry them. The rest are what an analysis would otherwise trip over:
     sessions still running, sessions with no recorded end, rows after the end,
-    and a log file that disagrees with the database.
+    a log file that disagrees with the database, sessions from before the
+    orientation fix (#185), and steps whose object never reached the display.
+
+    ``study`` says what the server does with the study, which changes what a
+    session left running means, and lets the steps be checked against their
+    models. ``export_failures`` lists sessions an export could not read; the
+    archive passes it.
 
     Each finding lists what it found, so a problem can be traced to a session
     rather than only counted.
@@ -386,12 +462,26 @@ def run_checks(store: StudyStore, log_dir: Path | None = None) -> dict[str, Any]
         """SELECT id, participant_code, started_at, step_index FROM study_sessions
            WHERE status = 'active' ORDER BY id"""
     ).fetchall()
+    if _stops_running(study):
+        # The old explanation promised an idle sweep that a closed study never
+        # runs, so these would have stayed out of every file for good (#258 review).
+        active_explanation = (
+            "The study stopped running while these were open, and nothing will end them now. "
+            "long.csv has completed sessions only; their rows are in long_incomplete.csv, and "
+            "step_index says how far each got."
+        )
+    else:
+        hours = idle_timeout_seconds() / 3600
+        active_explanation = (
+            "Still being written to, so in neither long.csv nor long_incomplete.csv. A session "
+            f"left open is closed as abandoned after {hours:g} hours without activity "
+            "(STUDY_SESSION_IDLE_HOURS on the server), and its rows then go to long_incomplete.csv."
+        )
     findings.append(
         _finding(
             "still_active",
-            "Sessions still running",
-            "Not in long.csv, which has completed sessions only. A session left open "
-            "is closed as abandoned after twelve hours without activity.",
+            "Sessions still active",
+            active_explanation,
             [{"study_session_id": r["id"], "participant_code": r["participant_code"],
               "started_at": r["started_at"], "step_index": r["step_index"]} for r in rows],
         )
@@ -469,11 +559,122 @@ def run_checks(store: StudyStore, log_dir: Path | None = None) -> dict[str, Any]
         )
     )
 
+    codes = {int(session["id"]): session.get("participant_code") for session in store.all_sessions()}
+    findings.append(
+        _finding(
+            "before_view_fix",
+            "Sessions recorded before the orientation fix (#185)",
+            "In the front (y-), back (y+) and bottom (z-) views these measured depth from the far "
+            "side, so the same plane reads as 100 minus the depth recorded after the fix, and they "
+            "stored mirrored bases, so those rows' orientation angles describe no real turn. Told "
+            "apart by the forward vector stored with each render in those views. Sessions not "
+            "listed were recorded after the fix, or never used those views and read the same "
+            "either way. docs/STUDY_DATA_EXPORT.md says how to convert.",
+            [
+                {"study_session_id": session_id, "participant_code": codes.get(session_id), "recorded": side}
+                for session_id, side in sorted(view_conventions(store).items())
+                if side != "after #185"
+            ],
+        )
+    )
+
+    if study is not None:
+        findings.append(
+            _finding(
+                "step_model_never_shown",
+                "Steps whose object never reached the display",
+                "Every render in the step showed some other object. Usually the step's model was "
+                "missing from the server, and the previous step's object stayed on the display: "
+                "its rows are filed under this step with that object's name.",
+                _steps_without_their_model(store, study),
+            )
+        )
+
+    if export_failures is not None:
+        findings.append(
+            _finding(
+                "export_failed",
+                "Sessions the export could not read",
+                "Missing from long.csv and long_incomplete.csv. study.db and the logs in the "
+                "archive still hold them. A session used to be left out of the file without a word.",
+                export_failures,
+            )
+        )
+
     return {
         "checked_at": _utc_now(),
-        "problems": sum(1 for finding in findings if finding["count"] and finding["id"] != "still_active"),
+        "problems": sum(1 for finding in findings if finding["count"] and finding["id"] not in _INFORMATIONAL),
         "findings": findings,
     }
+
+
+# The views the orientation fix changed, and where their forward vector points
+# after it: at the reader. Before it, the opposite way (docs/STUDY_DATA_EXPORT.md).
+_FIXED_VIEW_FORWARD = {"y-": (0, -1, 0), "y+": (0, 1, 0), "z-": (0, 0, -1)}
+
+
+def view_conventions(store: StudyStore) -> dict[int, str]:
+    """Which side of the orientation fix (#185) each session was recorded on,
+    read from its renders in the three views the fix changed. A session with no
+    render there is left out: nothing it recorded reads differently."""
+    sides: dict[int, set[str]] = {}
+    rows = store.connection().execute(
+        "SELECT study_session_id, view, orientation FROM study_renders "
+        "WHERE view IN ('y-', 'y+', 'z-') AND orientation IS NOT NULL"
+    )
+    for row in rows:
+        try:
+            forward = json.loads(row["orientation"]).get("forward")
+            vector = tuple(round(float(value)) for value in forward)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        after = _FIXED_VIEW_FORWARD[row["view"]]
+        if vector == after:
+            side = "after #185"
+        elif vector == tuple(-value for value in after):
+            side = "before #185"
+        else:
+            continue
+        sides.setdefault(int(row["study_session_id"]), set()).add(side)
+    return {session_id: "mixed" if len(found) > 1 else next(iter(found)) for session_id, found in sides.items()}
+
+
+def _steps_without_their_model(store: StudyStore, study: Study) -> list[dict[str, Any]]:
+    """Steps with renders, none of them of the step's own model (#258 review).
+    A render of the previous object just after a step change is normal, which is
+    why this asks whether the right object appeared at all."""
+    conn = store.connection()
+    items: list[dict[str, Any]] = []
+    for session in store.all_sessions():
+        try:
+            steps = protocol.resolve_steps(study, session.get("task_order") or [])
+        except Exception:  # noqa: BLE001, S112 - a task order this definition no longer resolves is checked no further
+            continue
+        expected = {
+            step["id"]: (step.get("model") or {}).get("model")
+            for step in steps
+            if (step.get("model") or {}).get("model")
+        }
+        if not expected:
+            continue
+        shown: dict[str, set[str]] = {}
+        for row in conn.execute(
+            "SELECT step_id, model FROM study_renders WHERE study_session_id = ?", (session["id"],)
+        ):
+            if row["step_id"] in expected:
+                shown.setdefault(row["step_id"], set()).add(row["model"] or "")
+        for step_id, models in shown.items():
+            if expected[step_id] not in models:
+                items.append(
+                    {
+                        "study_session_id": session["id"],
+                        "participant_code": session.get("participant_code"),
+                        "step_id": step_id,
+                        "expected_model": expected[step_id],
+                        "models_shown": sorted(model for model in models if model),
+                    }
+                )
+    return items
 
 
 def summarise_checks(report: dict[str, Any]) -> str:
@@ -526,65 +727,65 @@ def snapshot_database(source: Path, target: Path) -> None:
 
 @contextmanager
 def readable_copy(db_path: Path, log_dir: Path) -> Iterator[tuple[Path, StudyStore]]:
-    """A snapshot of ``db_path``, and a store over a second copy brought up to
-    the current schema. Both are deleted afterwards."""
+    """A copy of ``db_path`` brought up to the current schema, and a store over
+    it, for reading. Deleted afterwards; the original is only ever read."""
     if not Path(db_path).is_file():
         raise FileNotFoundError(f"no database at {db_path}")
     with tempfile.TemporaryDirectory(prefix="cad-a11y-study-export-") as scratch:
-        snapshot = Path(scratch) / "study.db"
-        snapshot_database(Path(db_path), snapshot)
-        working = Path(scratch) / "working.db"
-        shutil.copyfile(snapshot, working)
-        store = StudyStore(working, Path(log_dir))
+        copy = Path(scratch) / "study.db"
+        snapshot_database(Path(db_path), copy)
+        store = StudyStore(copy, Path(log_dir))
         store.init_db()
-        yield snapshot, store
+        yield copy, store
 
 
-def _session_rows(store: StudyStore) -> list[dict[str, Any]]:
-    rows = []
+def _session_rows(store: StudyStore, conventions: dict[int, str]) -> Iterator[dict[str, Any]]:
     for session in store.all_sessions():
         counts = store.session_counts(int(session["id"]))
-        rows.append(
-            {
-                "study_session_id": session.get("id"),
-                "participant_code": session.get("participant_code"),
-                "session_number": session.get("session_number"),
-                "status": session.get("status"),
-                "mode": session.get("mode"),
-                "task_order": protocol.set_id(session.get("task_order") or []),
-                "step_index": session.get("step_index"),
-                "started_at": session.get("started_at"),
-                "completed_at": session.get("completed_at"),
-                "protocol_version": session.get("protocol_version"),
-                "protocol_hash": session.get("protocol_hash"),
-                "app_version": session.get("app_version"),
-                "events": counts["events"],
-                "renders": counts["renders"],
-                "log_file": Path(str(session.get("log_path") or "")).name or None,
-            }
-        )
-    return rows
+        yield {
+            "study_session_id": session.get("id"),
+            "participant_code": session.get("participant_code"),
+            "session_number": session.get("session_number"),
+            "status": session.get("status"),
+            "mode": session.get("mode"),
+            "task_order": protocol.set_id(session.get("task_order") or []),
+            "step_index": session.get("step_index"),
+            "started_at": session.get("started_at"),
+            "completed_at": session.get("completed_at"),
+            "protocol_version": session.get("protocol_version"),
+            "protocol_hash": session.get("protocol_hash"),
+            "app_version": session.get("app_version"),
+            "view_convention": conventions.get(int(session["id"])),
+            "events": counts["events"],
+            "renders": counts["renders"],
+            "log_file": Path(str(session.get("log_path") or "")).name or None,
+        }
 
 
-def _readme(study: Study) -> str:
-    return "\n".join(
-        [
-            f"{study.title} ({study.slug}), exported by cad-a11y {app_version()} at {_utc_now()}.",
-            "",
-            "study.db       A consistent copy of the study's SQLite database, unmodified.",
-            "logs/          One JSONL file per session: every interaction with the viewer state",
-            "               at that moment. The authoritative record if the two disagree.",
-            "long.csv       One row per interaction, completed sessions only.",
-            "long.json      What each column of long.csv means.",
-            "sessions.csv   One row per session, every status.",
-            "sessions.json  What each column of sessions.csv means.",
-            "checks.json    Known problems looked for, and what was found.",
-            "manifest.json  Counts, and a SHA-256 for every file here.",
-            "",
-            ESCAPING_NOTE,
-            "",
-        ]
-    )
+def _readme(study: Study, *, before_view_fix: bool) -> str:
+    lines = [
+        f"{study.title} ({study.slug}), exported by cad-a11y {app_version()} at {_utc_now()}.",
+        "",
+        "study.db             A consistent copy of the study's SQLite database, unmodified.",
+        "logs/                One JSONL file per session: every interaction with the viewer",
+        "                     state at that moment. The authoritative record if the two disagree.",
+        "long.csv             One row per interaction, completed sessions only.",
+        "long_incomplete.csv  The same columns for the sessions long.csv leaves out that nothing",
+        "                     is still writing to: the abandoned ones, and, once a study has",
+        "                     stopped running, the ones left active. Kept apart so that using",
+        "                     them is a decision; sessions.csv gives each one's status.",
+        "long.json            What each column of the two long files means.",
+        "sessions.csv         One row per session, every status.",
+        "sessions.json        What each column of sessions.csv means.",
+        "checks.json          Known problems looked for, and what was found.",
+        "manifest.json        Counts, and a SHA-256 for every file here.",
+        "",
+        ESCAPING_NOTE,
+        "",
+    ]
+    if before_view_fix:
+        lines += [BEFORE_VIEW_FIX_NOTE, ""]
+    return "\n".join(lines)
 
 
 def build_archive(
@@ -597,44 +798,66 @@ def build_archive(
     """Everything about a study, as a zip written to ``target`` (a temporary
     file when omitted), positioned at its start and ready to send."""
     log_dir = Path(log_dir)
+    if not Path(db_path).is_file():
+        raise FileNotFoundError(f"no database at {db_path}")
     # Not a with block: the file is handed back open, and send_file closes it.
     archive = target if target is not None else tempfile.TemporaryFile()  # noqa: SIM115
-    with readable_copy(Path(db_path), log_dir) as (snapshot, store):
-        files: dict[str, bytes] = {}
-
-        long_buffer = io.StringIO()
-        write_long_csv(long_buffer, store.export_long_rows())
-        files["long.csv"] = long_buffer.getvalue().encode("utf-8")
-        files["long.json"] = _json_bytes(long_codebook(study))
-
-        sessions = _session_rows(store)
-        session_buffer = io.StringIO()
-        _write_csv(session_buffer, SESSION_COLUMNS, sessions)
-        files["sessions.csv"] = session_buffer.getvalue().encode("utf-8")
-        files["sessions.json"] = _json_bytes(session_codebook(study))
-
-        checks = run_checks(store, log_dir)
-        files["checks.json"] = _json_bytes(checks)
-        files["README.txt"] = _readme(study).encode("utf-8")
-
-        log_files = sorted(log_dir.glob("*.jsonl")) if log_dir.is_dir() else []
-        conn = store.connection()
-        statuses = {
-            row["status"]: row["n"]
-            for row in conn.execute("SELECT status, COUNT(*) AS n FROM study_sessions GROUP BY status")
-        }
-
+    with tempfile.TemporaryDirectory(prefix="cad-a11y-study-export-") as scratch_dir:
+        scratch = Path(scratch_dir)
+        snapshot = scratch / "study.db"
+        snapshot_database(Path(db_path), snapshot)
         manifest_files: dict[str, dict[str, Any]] = {}
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
-            bundle.write(snapshot, "study.db")
-            manifest_files["study.db"] = _describe(snapshot.read_bytes())
+            # The copy as the server had it goes in first, untouched. Only then
+            # is the same file brought up to the current schema to work out the
+            # rest from.
+            _add_file(bundle, snapshot, "study.db", manifest_files)
+            store = StudyStore(snapshot, log_dir)
+            store.init_db()
+
+            failures: list[dict[str, Any]] = []
+
+            def note_failure(session: dict[str, Any], error: Exception) -> None:
+                failures.append(
+                    {
+                        "study_session_id": session.get("id"),
+                        "participant_code": session.get("participant_code"),
+                        "error": f"{type(error).__name__}: {error}",
+                    }
+                )
+
+            row_counts: dict[str, int] = {}
+            for name, sessions in (
+                ("long.csv", store.completed_sessions()),
+                ("long_incomplete.csv", store.incomplete_sessions(include_active=_stops_running(study))),
+            ):
+                path = scratch / name
+                with path.open("w", encoding="utf-8", newline="") as handle:
+                    row_counts[name] = write_long_csv(handle, store.iter_long_rows(sessions, on_error=note_failure))
+                _add_file(bundle, path, name, manifest_files)
+
+            conventions = view_conventions(store)
+            sessions_path = scratch / "sessions.csv"
+            with sessions_path.open("w", encoding="utf-8", newline="") as handle:
+                _write_csv(handle, SESSION_COLUMNS, _session_rows(store, conventions))
+            _add_file(bundle, sessions_path, "sessions.csv", manifest_files)
+
+            checks = run_checks(store, log_dir, study=study, export_failures=failures)
+            before_view_fix = any(side != "after #185" for side in conventions.values())
+            _add_bytes(bundle, "long.json", _json_bytes(long_codebook(study, before_view_fix=before_view_fix)), manifest_files)
+            _add_bytes(bundle, "sessions.json", _json_bytes(session_codebook(study)), manifest_files)
+            _add_bytes(bundle, "checks.json", _json_bytes(checks), manifest_files)
+            _add_bytes(bundle, "README.txt", _readme(study, before_view_fix=before_view_fix).encode("utf-8"), manifest_files)
+
+            log_files = sorted(log_dir.glob("*.jsonl")) if log_dir.is_dir() else []
             for path in log_files:
-                data = path.read_bytes()
-                bundle.writestr(f"logs/{path.name}", data)
-                manifest_files[f"logs/{path.name}"] = _describe(data)
-            for name, data in files.items():
-                bundle.writestr(name, data)
-                manifest_files[name] = _describe(data)
+                _add_file(bundle, path, f"logs/{path.name}", manifest_files)
+
+            conn = store.connection()
+            statuses = {
+                row["status"]: row["n"]
+                for row in conn.execute("SELECT status, COUNT(*) AS n FROM study_sessions GROUP BY status")
+            }
             manifest = {
                 "study": {
                     "slug": study.slug,
@@ -651,7 +874,9 @@ def build_archive(
                     "sessions": statuses,
                     "events": conn.execute("SELECT COUNT(*) FROM study_events").fetchone()[0],
                     "renders": conn.execute("SELECT COUNT(*) FROM study_renders").fetchone()[0],
-                    "long_csv_rows": max(0, files["long.csv"].count(b"\n") - 1),
+                    "long_csv_rows": row_counts["long.csv"],
+                    "long_incomplete_csv_rows": row_counts["long_incomplete.csv"],
+                    "sessions_not_exported": len(failures),
                     "log_files": len(log_files),
                 },
                 "problems_found": checks["problems"],
@@ -667,5 +892,19 @@ def _json_bytes(payload: Any) -> bytes:
     return (json.dumps(payload, indent=2, ensure_ascii=False, default=str) + "\n").encode("utf-8")
 
 
-def _describe(data: bytes) -> dict[str, Any]:
-    return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+def _add_bytes(bundle: zipfile.ZipFile, name: str, data: bytes, manifest: dict[str, dict[str, Any]]) -> None:
+    bundle.writestr(name, data)
+    manifest[name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def _add_file(bundle: zipfile.ZipFile, path: Path, name: str, manifest: dict[str, dict[str, Any]]) -> None:
+    """Put a file into the archive from disk, and hash it as it streams past:
+    a database or a log is never read into memory whole (#258 review)."""
+    bundle.write(path, name)
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    manifest[name] = {"bytes": size, "sha256": digest.hexdigest()}

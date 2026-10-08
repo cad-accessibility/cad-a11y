@@ -24,8 +24,11 @@ code.
 ## Status
 
 Every study has one of four statuses, set in its definition. The server serves
-exactly what the status allows, and nothing on a server can change it: changing a
-status is a change to the repository, reviewed and deployed like any other.
+exactly what the status allows, and changing a status is a change to the
+repository, reviewed and deployed like any other. The one way round it is
+`CAD_A11Y_OPEN_STUDIES`, which opens a draft for piloting on a development
+machine. No server sets it, and the example study needs a second variable as well
+(see [Development and CI](#development-and-ci)).
 
 | Status | Participant page | Control panel | Data downloads | New sessions |
 |---|---|---|---|---|
@@ -35,19 +38,22 @@ status is a change to the repository, reviewed and deployed like any other.
 | `retired` | no | no | no | no |
 
 * **draft** is for writing a study. A development machine can serve one by naming
-  it in `CAD_A11Y_OPEN_STUDIES`, which is also how CI checks the example study's
-  pages. No server sets that variable.
+  it in `CAD_A11Y_OPEN_STUDIES`. No server sets that variable.
 * **open** is for collecting data.
 * **closed** is for after collection. The panel offers only the downloads, so the
-  data can come off a server nobody has shell access to.
+  data can come off a server nobody has shell access to. Its database is only
+  read: never created, migrated or written. A server that does not have it
+  answers every download with "This server has no data for this study."
 * **retired** is for after the data has been exported, checked and stored. The
   study's addresses answer exactly as a study that never existed would. The
   definition stays, because it is the record of what every session in the data
   was asked to do, and the command line can still export the data.
 
 A study the server should serve is refused at start-up, and the reason logged,
-if its definition is invalid, if it has no token, or if its token is the
-example's. Refusing one study never keeps the viewer from starting.
+if its definition is invalid, if it has no token, if its token is the example's,
+if it is the example opened without `CAD_A11Y_ALLOW_EXAMPLE_STUDY=1`, or if its
+database cannot be prepared. Refusing one study never keeps the viewer from
+starting.
 
 ## Starting a new study
 
@@ -156,7 +162,9 @@ keeps counting what was actually run.
    participant's display; H lists every command. The panel says when the
    participant presses "I am ready to move on", and says in words if logging
    stops working.
-5. N on the last step finishes the session and closes its record.
+5. N on the last step finishes the session and records it as completed. End
+   before the last step records it as not finished (abandoned), and its task set
+   stays available for another participant; the panel says which before it asks.
 
 One panel tab owns one session. A reload stays on it, and a new tab starts
 another, which is how two experimenters run participants at once.
@@ -167,7 +175,9 @@ move on". The script is not shown there, because that is where the participant's
 screen reader is.
 
 A session nobody ends is closed as abandoned after twelve hours without activity
-(`STUDY_SESSION_IDLE_HOURS` changes this).
+(`STUDY_SESSION_IDLE_HOURS` changes this), while the study is open. A closed study
+ends nothing: a session it left active stays active, and its rows are in
+`long_incomplete.csv`.
 
 ## What is recorded
 
@@ -198,7 +208,9 @@ has the downloads. **Everything, as one zip** is the one to keep:
 |---|---|
 | `study.db` | A consistent copy of the database, including anything still in its write-ahead log |
 | `logs/` | Every session's JSONL log |
-| `long.csv`, `long.json` | One row per interaction, completed sessions only, and its codebook |
+| `long.csv` | One row per interaction, completed sessions only |
+| `long_incomplete.csv` | The same columns for the sessions `long.csv` leaves out that nothing is still writing to: the abandoned ones, and once a study is closed, the ones left active. Kept apart so that using them is a decision |
+| `long.json` | The codebook for both |
 | `sessions.csv`, `sessions.json` | One row per session, every status, and its codebook |
 | `checks.json` | Known problems looked for, and what was found |
 | `manifest.json` | What this is, the counts, and a SHA-256 for every file |
@@ -209,8 +221,13 @@ a BIDS sidecar. Any text cell a spreadsheet would run as a formula starts with a
 
 The checks look for sessions ended twice, participant codes with no session,
 sessions marked ended with no end recorded, rows recorded after the end, order
-numbers used twice, and logs that disagree with the database. Each finding names
-the sessions it found, so it can be traced rather than only counted.
+numbers used twice, logs that disagree with the database, steps whose object
+never reached the display, and sessions the export could not read. They also
+list, without counting them as problems, the sessions still active and the
+sessions recorded before the orientation fix (#185), whose depths in three views
+read the other way round; the codebook and README say so too when there are any.
+Each finding names the sessions it found, so it can be traced rather than only
+counted.
 
 From a terminal, `scripts/download_study_data.sh` downloads the zip with the
 token, and refuses to save anything that is not one:
@@ -226,6 +243,9 @@ backup, without changing it:
 python -m app.studies check <slug> --db path/to/study.db --logs path/to/logs
 python -m app.studies export <slug> --db path/to/study.db --logs path/to/logs --out <slug>.zip
 ```
+
+Both exit 1 when the checks find a problem, and 2 when they cannot run, such as a
+`--logs` folder that is not there.
 
 ## Ending a study
 
@@ -245,7 +265,10 @@ deletes it there deliberately.
 The comparison study ran in 2026 at `/study`, and the last code that served it
 is tagged `study-instrument-2026`. Its definition is
 `app/studies/definitions/comparison_2026.py`, unchanged since it ran except for
-its status.
+its status and naming Turn as its axis mode, the only one there was then. Two
+things it cannot settle: the code that served it read
+`data/study/protocol.json` instead of the built-in protocol when that file
+existed, and its sessions carry no protocol fingerprint, which came later.
 
 It is closed, so `/study` is gone and only its data downloads are served, behind
 its own token. Its data is where that code wrote it, from before studies had
@@ -256,7 +279,9 @@ through the app:
 1. Download the zip from `/studies/comparison-2026/control` on staging, which
    serves it once this change is on `master`, and on production after the next
    release. The zip reads a database from before #185 as it is, without changing
-   it.
+   it. Most of its sessions were left active when the panel was closed, so expect
+   them in `long_incomplete.csv` rather than `long.csv`, with `step_index` in
+   `sessions.csv` saying how far each got.
 2. Check both: run the data checks, and compare each manifest's session count with
    the experimenters' records. Store them where the IRB protocol says study data
    lives.
@@ -274,9 +299,17 @@ docker compose cp app:/tmp/comparison-2026.zip .
 
 ## Development and CI
 
-* `CAD_A11Y_OPEN_STUDIES=example` serves the example study. Its panel token is
-  `example-panel-token`, published in its definition so it works out of the box.
-* CI's accessibility job opens the example the same way and checks the panel
+* The example study's panel token, `example-panel-token`, is published in its
+  definition so it works out of the box. That is why naming it in
+  `CAD_A11Y_OPEN_STUDIES` is not enough: it also needs
+  `CAD_A11Y_ALLOW_EXAMPLE_STUDY=1`, which `docker-compose.yml` never passes, so a
+  server cannot run it. On a development machine:
+
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.example-study.yml up --build
+  ```
+
+* CI's accessibility job opens the example through the same file and checks the panel
   before sign-in, choosing a set and running a session, and the participant page
   waiting for a code and in a session.
 * `STUDIES_DB_DIR` and `STUDIES_LOG_DIR` move where studies keep their data; the

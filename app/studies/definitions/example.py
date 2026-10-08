@@ -6,15 +6,15 @@ questionnaire step tied to a task, viewer defaults and prompts. Its tasks are
 single objects to explore rather than pairs to compare, to show the engine is
 not tied to the comparison study's design.
 
-It is a draft, so no server runs it. ``CAD_A11Y_OPEN_STUDIES=example`` runs it on
-a development machine, and CI runs it that way for the accessibility check.
-
-Its panel token is ``example-panel-token``, published here and in
-docs/STUDIES.md so the example works out of the box. That makes it a token
-anyone knows, so the registry refuses to serve any other study whose hash
-matches it: copying this file without making a new token fails at load rather
-than opening a study with a public password. ``python -m app.studies token``
-makes a new one.
+It is a draft, so no server runs it. Its panel token is ``example-panel-token``,
+published here and in docs/STUDIES.md so the example works out of the box. That
+makes it a token anyone knows, so two things guard it. The registry refuses to
+serve any other study whose hash matches it: copying this file without making a
+new token fails at load rather than opening a study with a public password.
+And this study itself runs only where ``CAD_A11Y_OPEN_STUDIES=example`` comes
+with ``CAD_A11Y_ALLOW_EXAMPLE_STUDY=1``, which docker-compose.yml never passes:
+``docker-compose.example-study.yml`` sets both, for a development machine and
+for CI's accessibility check. ``python -m app.studies token`` makes a new token.
 
 To start a new study from this file:
 

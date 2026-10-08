@@ -408,3 +408,116 @@ def test_two_open_studies_keep_separate_sessions(tmp_path, client):
 def test_comparison_definition_is_still_known_to_the_command_line():
     """Retired is not deleted: the export reads it by slug."""
     assert registry.find_definition("comparison-2026") is comparison_2026.STUDY
+
+
+# ---------------------------------------------------------------------------
+# From the review of #258
+# ---------------------------------------------------------------------------
+
+
+def test_the_example_study_is_not_opened_by_naming_it_alone():
+    """Its panel token is in the repository. CAD_A11Y_OPEN_STUDIES=example on a
+    real server would have let anyone sign in to its panel and write sessions
+    into that server's volume."""
+    messages = registry.load(environ={registry.OPEN_STUDIES_ENV: "example"})
+    assert registry.runtime("example") is None
+    assert any(registry.ALLOW_EXAMPLE_ENV in message for message in messages)
+
+
+def test_the_example_study_runs_where_it_is_also_allowed(tmp_path):
+    storage = Storage(db_path=tmp_path / "example.db", log_dir=tmp_path / "logs")
+    study = dataclasses.replace(example.STUDY, storage=lambda: storage)
+    registry.load(
+        [study], environ={registry.OPEN_STUDIES_ENV: "example", registry.ALLOW_EXAMPLE_ENV: "1"}
+    )
+    assert registry.runtime("example") is not None
+
+
+def test_a_database_that_cannot_be_prepared_refuses_that_study_alone(tmp_path, monkeypatch):
+    """It raised at import and stopped the whole viewer starting."""
+    broken = _definition(tmp_path, "broken-db", Status.OPEN)
+    fine = _definition(tmp_path, "fine-db", Status.OPEN)
+    real_init = StudyStore.init_db
+
+    def init_db(self):
+        if "broken-db" in str(self.db_path):
+            raise sqlite3.OperationalError("unable to open database file")
+        return real_init(self)
+
+    monkeypatch.setattr(StudyStore, "init_db", init_db)
+    messages = registry.load([broken, fine], environ={})
+    assert registry.runtime("broken-db") is None
+    assert registry.runtime("fine-db") is not None
+    assert any("broken-db" in message and "could not be prepared" in message for message in messages)
+
+
+CLOSED_DATA_ROUTES = [
+    "/control/state",
+    "/control/stream",
+    "/control/sessions",
+    "/control/export/long.csv",
+    "/control/export/checks.json",
+    "/control/export/archive.zip",
+    "/control/export/sessions/1.json",
+]
+
+
+@pytest.mark.parametrize("path", CLOSED_DATA_ROUTES)
+def test_every_data_route_of_a_closed_study_with_no_data_says_so(tmp_path, client, path):
+    """Two of these answered 500, and all of them made an empty database, with
+    its -wal and -shm, where a restore would put the real one; the archive then
+    held that empty database with a correct checksum (#258 review)."""
+    registry.load([_definition(tmp_path, "elsewhere", Status.CLOSED)], environ={})
+    response = client.get(f"/studies/elsewhere{path}", headers=AUTH)
+    assert response.status_code == 404
+    assert response.get_json()["message"] == "This server has no data for this study."
+    assert not (tmp_path / "db").exists(), "nothing is made where a restore would put the database"
+
+
+def test_a_closed_studys_panel_knows_there_is_no_data(tmp_path, client):
+    registry.load([_definition(tmp_path, "elsewhere", Status.CLOSED)], environ={})
+    assert client.get("/studies/elsewhere/control/config", headers=AUTH).get_json()["has_data"] is False
+
+
+def test_a_closed_studys_database_is_only_read(tmp_path, client):
+    _seed(tmp_path, "finished")
+    db_path = tmp_path / "db" / "finished.db"
+    registry.load([_definition(tmp_path, "finished", Status.CLOSED)], environ={})
+    store = registry.runtime("finished").store
+    assert store.read_only
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        store.connection().execute("INSERT INTO participants (code) VALUES ('X')")
+
+    before = db_path.read_bytes()
+    for path in CLOSED_DATA_ROUTES:
+        if path != "/control/stream":
+            client.get(f"/studies/finished{path}", headers=AUTH)
+    assert db_path.read_bytes() == before
+
+
+def test_a_closed_study_leaves_its_sessions_as_they_were(tmp_path, client):
+    """A closed study runs no idle sweep: a session it left active stays active,
+    and the archive puts its rows in long_incomplete.csv rather than nowhere."""
+    seeded = StudyStore(tmp_path / "db" / "paused.db", tmp_path / "logs" / "paused")
+    seeded.init_db()
+    _, session = seeded.enroll(
+        code=None, session_number=1, choose_task_order=lambda _: ["chair", "washer", "cube"],
+        protocol_version="1",
+    )
+    seeded.record_event(int(session["id"]), "keyboard", event_data={"key": "r"})
+    seeded.connection().execute(
+        "UPDATE study_events SET created_at = '2026-01-01T00:00:00.000Z'"
+    )
+    seeded.connection().execute(
+        "UPDATE study_sessions SET started_at = '2026-01-01T00:00:00.000Z', step_started_at = '2026-01-01T00:00:00.000Z'"
+    )
+    seeded.connection().commit()
+    seeded._local.__dict__.clear()
+
+    registry.load([_definition(tmp_path, "paused", Status.CLOSED)], environ={})
+    response = client.get("/studies/paused/control/export/archive.zip", headers=AUTH)
+    with zipfile.ZipFile(io.BytesIO(response.get_data())) as bundle:
+        incomplete = list(csv.DictReader(io.StringIO(bundle.read("long_incomplete.csv").decode("utf-8"))))
+        sessions = list(csv.DictReader(io.StringIO(bundle.read("sessions.csv").decode("utf-8"))))
+    assert sessions[0]["status"] == "active"
+    assert "keyboard" in {row["event_type"] for row in incomplete}

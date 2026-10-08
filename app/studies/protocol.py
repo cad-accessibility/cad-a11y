@@ -362,6 +362,11 @@ def protocol_hash(study: Study) -> str:
         "tasks_per_session": study.tasks_per_session,
         "viewer_defaults": study.viewer_defaults,
         "model_labels": study.model_labels,
+        # What the experimenter is given to say is part of what a session does,
+        # so editing it changes the fingerprint too (#258 review). The title and
+        # summary describe the study, and do not.
+        "facilitator_prompts": study.facilitator_prompts,
+        "strategy_prompts": study.strategy_prompts,
     }
     encoded = json.dumps(content, sort_keys=True, default=str, ensure_ascii=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]

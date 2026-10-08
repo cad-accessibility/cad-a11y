@@ -74,8 +74,8 @@ import io
 import json
 import logging
 import math
-import os
 import queue as _queue_module
+import sqlite3
 import time
 from collections.abc import Callable
 from functools import wraps
@@ -94,7 +94,7 @@ from flask import (
 
 from . import export, protocol, registry, tokens
 from .registry import StudyRuntime
-from .store import now
+from .store import idle_timeout_seconds, now
 from .version import app_version
 
 logger = logging.getLogger(__name__)
@@ -179,6 +179,25 @@ def require_open(view):
     def wrapper(*args, **kwargs):
         if not _runtime().is_open:
             return _not_found()
+        return view(*args, **kwargs)
+
+    return wrapper
+
+
+NO_DATA_MESSAGE = "This server has no data for this study."
+
+
+def require_data(view):
+    """Anything the panel reads from the study's database. A closed study's
+    database is only ever read, so when this server does not have it there is
+    nothing to read, and saying so is the answer: it used to be created empty,
+    and the exports then handed over an empty study with a correct checksum
+    (#258 review). An open study's database is made when the server starts."""
+
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not _runtime().store.db_path.is_file():
+            return jsonify({"status": "error", "message": NO_DATA_MESSAGE}), 404
         return view(*args, **kwargs)
 
     return wrapper
@@ -495,6 +514,7 @@ def _participant_state(runtime: StudyRuntime, session: dict[str, Any] | None) ->
         }
     steps = _steps_for(runtime, session)
     step = _current_step(runtime, session)
+    model = _participant_model(runtime, step)
     return {
         "active": session.get("status") == "active",
         "study_session_id": session.get("id"),
@@ -515,7 +535,12 @@ def _participant_state(runtime: StudyRuntime, session: dict[str, Any] | None) ->
         "part_title": (step or {}).get("part_title"),
         "title": (step or {}).get("title"),
         "text": (step or {}).get("participant_text"),
-        "model": _participant_model(runtime, step),
+        "model": model,
+        # A step whose object the server does not have. The page says so, rather
+        # than leaving the last object on the display under text that tells the
+        # participant to explore it (#258 review). That it is missing, never
+        # which object it was.
+        "model_unavailable": bool((step or {}).get("model")) and model is None,
         "viewer_defaults": defaults,
     }
 
@@ -675,7 +700,6 @@ def _record_render(
     if not session or session.get("status") != "active":
         return
 
-    step = _current_step(runtime, session)
     orientation = params.get("orientation")
     runtime.store.record_render(
         int(session["id"]),
@@ -691,9 +715,11 @@ def _record_render(
         input_source=str(params.get("input_source") or "") or None,
         cache_hit=cache_hit,
         orientation=orientation if isinstance(orientation, dict) else None,
-        part_id=(step or {}).get("part_id"),
-        step_id=(step or {}).get("id"),
-        step_index=(step or {}).get("index"),
+        # Worked out under the store's lock, from the same read as the step
+        # clock, so a render racing a step change is filed under one step with
+        # that step's clock (#258 review).
+        resolve_step=lambda current: _current_step(runtime, current),
+        only_if_active=True,
         **_axis_fields(params),
     )
 
@@ -757,6 +783,9 @@ def study_config():
     payload["app_version"] = app_version()
     payload["missing_models"] = _missing_models(runtime)
     payload["logging"] = runtime.store.logging_health()
+    # Whether there is anything to download. A closed study's database is never
+    # created here, so on a server without it the panel says so up front.
+    payload["has_data"] = runtime.store.db_path.is_file()
     return jsonify(payload), 200
 
 
@@ -776,24 +805,13 @@ def study_config():
 # otherwise every poll of the panel would re-scan.
 # ---------------------------------------------------------------------------
 
-# Twelve hours. A session is an hour or two and produces events throughout, so
-# this is far beyond any real gap; the point is to catch the abandoned ones by
-# the next working day, not to reclaim them promptly.
-_DEFAULT_IDLE_HOURS = 12.0
+# How long counts as gone is store.idle_timeout_seconds, twelve hours unless
+# STUDY_SESSION_IDLE_HOURS says otherwise; the export reads the same number.
+#
+# Only while a study is open. A closed one answers none of the routes that run
+# the sweep, and its database is only read, so a session it left active stays
+# active; the archive puts those in long_incomplete.csv (#258 review).
 _SWEEP_INTERVAL_SECONDS = 300
-
-
-def idle_timeout_seconds() -> int:
-    """How long an active session may go quiet before it is treated as gone."""
-    raw = os.getenv("STUDY_SESSION_IDLE_HOURS", "").strip()
-    try:
-        hours = float(raw) if raw else _DEFAULT_IDLE_HOURS
-    except ValueError:
-        hours = _DEFAULT_IDLE_HOURS
-    # Zero or negative would close sessions the moment they were created.
-    if hours <= 0:
-        hours = _DEFAULT_IDLE_HOURS
-    return int(hours * 3600)
 
 
 def sweep_idle_sessions(runtime: StudyRuntime, *, force: bool = False) -> list[dict[str, Any]]:
@@ -901,6 +919,7 @@ def study_state():
 
 @studies_bp.route("/studies/<slug>/control/state", methods=["GET"])
 @require_panel
+@require_data
 def study_control_state():
     runtime = _runtime()
     try:
@@ -988,8 +1007,21 @@ def study_session_start():
             protocol_hash=protocol.protocol_hash(study),
             app_version=app_version(),
         )
-    except Exception as error:  # noqa: BLE001 - reported to the experimenter, not swallowed
-        return jsonify({"status": "error", "message": f"Could not start session: {error}"}), 409
+    except sqlite3.IntegrityError as error:
+        # Said in the panel's words. The database's own text, "UNIQUE constraint
+        # failed: ...", used to be shown to the experimenter as it was.
+        logger.warning("study %s: session not started: %s", runtime.slug, error)
+        if "session_number" in str(error):
+            message = (
+                f"{code or 'This participant'} already has a session {session_number}. "
+                "Start it with the next session number."
+            )
+        else:
+            message = "That participant code is already in use."
+        return jsonify({"status": "error", "message": f"Could not start the session. {message}"}), 409
+    except Exception as error:  # reported to the experimenter, not swallowed
+        logger.exception("study %s: session not started", runtime.slug)
+        return jsonify({"status": "error", "message": f"Could not start the session: {error}"}), 409
 
     runtime.store.record_event(
         int(session["id"]),
@@ -1024,15 +1056,31 @@ def study_session_end():
     if not session:
         return jsonify({"status": "error", "message": "No active session"}), 404
     data = request.get_json(silent=True) or {}
-    status = str(data.get("status") or "completed")
-    if status not in ("completed", "abandoned"):
-        status = "completed"
+    steps = _steps_for(runtime, session)
+    index = _clamped_index(session, steps)
+    step = steps[index] if steps else None
+    on_last_step = bool(steps) and index >= len(steps) - 1
+    # Completed only from the last step. End used to record 'completed' at any
+    # step, so a session stopped at step 3 of 22 went into long.csv and counted
+    # as having used its task set (#258 review). Ended before the last step it
+    # is abandoned: the set stays available, and the rows go to
+    # long_incomplete.csv. A request may ask for 'abandoned' on the last step
+    # too, and can never make an early end 'completed'.
+    status = "completed" if on_last_step and data.get("status") != "abandoned" else "abandoned"
+    reason = (
+        "ended by the experimenter on the last step"
+        if on_last_step
+        else f"ended by the experimenter at step {index + 1} of {len(steps)}"
+    )
     session_id = int(session["id"])
     ended = runtime.store.end_session(
         session_id,
         status=status,
         source="experimenter",
-        step_index=int(session.get("step_index") or 0),
+        event_data={"reason": reason},
+        part_id=(step or {}).get("part_id"),
+        step_id=(step or {}).get("id"),
+        step_index=index,
     )
     runtime.ready_signals.pop(session_id, None)
     _broadcast(runtime, runtime.store.get_study_session(session_id))
@@ -1042,7 +1090,17 @@ def study_session_end():
         return jsonify(
             {"status": "error", "message": "That session has already ended."}
         ), 409
-    return jsonify({"status": "success"}), 200
+    return jsonify({"status": "success", "session_status": status}), 200
+
+
+def _optional_index(value: Any) -> int | None:
+    """A step index a page sent, or None when it sent none, or nonsense."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _advance(
@@ -1065,37 +1123,40 @@ def _advance(
         # an advance from a step to itself puts a move in the log that never
         # happened, and "how many steps did this session take" then counts it.
         return store.get_study_session(session_id)
-    store.set_step_index(session_id, target)
     step = steps[target]
-    store.record_event(
-        session_id,
-        "step_advance",
-        source=source,
-        event_data={
-            "from_index": current,
-            "from_step_id": steps[current]["id"],
-            "to_index": target,
-            "to_step_id": step["id"],
-        },
-        part_id=step.get("part_id"),
-        step_id=step.get("id"),
-        step_index=target,
-    )
-    if step.get("model"):
+    # One lock over the move and what it logs, so no render lands between the
+    # step changing and the step_advance that says it did.
+    with store.write_lock:
+        store.set_step_index(session_id, target)
         store.record_event(
             session_id,
-            "model_autoload",
-            source="server",
+            "step_advance",
+            source=source,
             event_data={
-                "model": (step.get("model") or {}).get("model"),
-                "task_key": step.get("task_key"),
-                "version": (step.get("model") or {}).get("version"),
-                "available": _model_index((step.get("model") or {}).get("model")) is not None,
+                "from_index": current,
+                "from_step_id": steps[current]["id"],
+                "to_index": target,
+                "to_step_id": step["id"],
             },
             part_id=step.get("part_id"),
             step_id=step.get("id"),
             step_index=target,
         )
+        if step.get("model"):
+            store.record_event(
+                session_id,
+                "model_autoload",
+                source="server",
+                event_data={
+                    "model": (step.get("model") or {}).get("model"),
+                    "task_key": step.get("task_key"),
+                    "version": (step.get("model") or {}).get("version"),
+                    "available": _model_index((step.get("model") or {}).get("model")) is not None,
+                },
+                part_id=step.get("part_id"),
+                step_id=step.get("id"),
+                step_index=target,
+            )
     runtime.ready_signals.pop(session_id, None)
     return store.get_study_session(session_id)
 
@@ -1158,21 +1219,56 @@ def study_step_advance():
         return jsonify({"status": "error", "message": "Protocol has no steps"}), 500
 
     data = request.get_json(silent=True) or {}
-    current = _clamped_index(session, steps)
-    if data.get("step_index") is not None:
+    # The step the panel was showing when the press was made. Next and Back are
+    # relative, so a double click, a held key or a second panel on the same
+    # session each moved one step further than anyone meant, and the server
+    # could not tell (#258 review). A press made against a step the session has
+    # already left is refused, with the state as it now is.
+    expected = data.get("from_index")
+    if expected is not None:
         try:
-            target = int(data["step_index"])
+            expected = int(expected)
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "from_index must be a number"}), 400
+    requested = data.get("step_index")
+    if requested is not None:
+        try:
+            requested = int(requested)
         except (TypeError, ValueError):
             return jsonify({"status": "error", "message": "step_index must be a number"}), 400
-    elif str(data.get("direction") or "next") == "previous":
-        target = current - 1
-    else:
-        target = current + 1
-    refreshed = _advance(runtime, session, target, source="experimenter")
+
+    # Read, checked and moved under one lock, so two presses arriving together
+    # cannot both pass the check against the same step.
+    with runtime.store.write_lock:
+        session = runtime.store.get_study_session(int(session["id"])) or session
+        if session.get("status") != "active":
+            return jsonify({"status": "error", "message": "No active session"}), 404
+        current = _clamped_index(session, steps)
+        if expected is not None and expected != current:
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": f"Not moved: the session is on step {current + 1} now, not step {expected + 1}.",
+                    "state": _experimenter_state(runtime, session),
+                }
+            ), 409
+        if requested is not None:
+            target = requested
+        elif str(data.get("direction") or "next") == "previous":
+            target = current - 1
+        else:
+            target = current + 1
+        refreshed = _advance(runtime, session, target, source="experimenter")
     if refreshed is None:
         return jsonify({"status": "error", "message": "Protocol has no steps"}), 500
     _broadcast(runtime, refreshed)
-    return jsonify({"status": "success", "state": _experimenter_state(runtime, refreshed)}), 200
+    return jsonify(
+        {
+            "status": "success",
+            "moved": int(refreshed.get("step_index") or 0) != current,
+            "state": _experimenter_state(runtime, refreshed),
+        }
+    ), 200
 
 
 @studies_bp.route("/studies/<slug>/step/ready", methods=["POST"])
@@ -1213,29 +1309,39 @@ def study_step_ready():
         # run from a panel -- the difference is who pressed the button, not what
         # was written down.
         steps = _steps_for(runtime, session)
-        current = _clamped_index(session, steps)
+        expected = _optional_index(data.get("from_index"))
+        with store.write_lock:
+            # Read again under the lock, and checked against the step the page
+            # was on: a second press for a step already left must not move the
+            # session on a second time (#258 review).
+            session = store.get_study_session(session_id) or session
+            current = _clamped_index(session, steps)
+            if session.get("status") != "active" or (expected is not None and expected != current):
+                return jsonify({"status": "success", "advanced": False, "finished": False}), 200
 
-        if current >= len(steps) - 1:
-            # The last step, and no panel to close the session from. Without
-            # this the session simply stopped: everything was recorded, but it
-            # stayed open with no session_end and no completed_at, and the page
-            # told the participant to keep exploring until an experimenter moved
-            # them on.
-            store.end_session(
-                session_id,
-                status="completed",
-                source="participant",
-                event_data={"reason": "finished the last step"},
-                part_id=(step or {}).get("part_id"),
-                step_id=(step or {}).get("id"),
-                step_index=current,
-            )
+            if current >= len(steps) - 1:
+                # The last step, and no panel to close the session from. Without
+                # this the session simply stopped: everything was recorded, but it
+                # stayed open with no session_end and no completed_at, and the page
+                # told the participant to keep exploring until an experimenter moved
+                # them on.
+                store.end_session(
+                    session_id,
+                    status="completed",
+                    source="participant",
+                    event_data={"reason": "finished the last step"},
+                    part_id=(step or {}).get("part_id"),
+                    step_id=(step or {}).get("id"),
+                    step_index=current,
+                )
+                refreshed = None
+            else:
+                refreshed = _advance(runtime, session, current + 1, source="participant")
+        if refreshed is None:
             runtime.ready_signals.pop(session_id, None)
             _broadcast(runtime, store.get_study_session(session_id))
             return jsonify({"status": "success", "advanced": False, "finished": True}), 200
-
-        refreshed = _advance(runtime, session, current + 1, source="participant")
-        _broadcast(runtime, refreshed or session)
+        _broadcast(runtime, refreshed)
         return jsonify({"status": "success", "advanced": True, "finished": False}), 200
 
     runtime.ready_signals[session_id] = {
@@ -1268,12 +1374,23 @@ def study_step_back():
     if not steps:
         return jsonify({"status": "error", "message": "Protocol has no steps"}), 500
 
-    current = _clamped_index(session, steps)
-    refreshed = _advance(runtime, session, current - 1, source="participant")
+    data = request.get_json(silent=True) or {}
+    expected = _optional_index(data.get("from_index"))
+    with runtime.store.write_lock:
+        # As the ready button's: read again, and refused for a step already left.
+        session = runtime.store.get_study_session(int(session["id"])) or session
+        current = _clamped_index(session, steps)
+        if session.get("status") != "active" or (expected is not None and expected != current):
+            return jsonify({"status": "success", "moved": False, "reason": "moved_on"}), 200
+        if current == 0:
+            # Said back to the page, which tells the participant: B on the first
+            # step used to do nothing at all (#258 review).
+            return jsonify({"status": "success", "moved": False, "reason": "first_step"}), 200
+        refreshed = _advance(runtime, session, current - 1, source="participant")
     if refreshed is None:
         return jsonify({"status": "error", "message": "Protocol has no steps"}), 500
     _broadcast(runtime, refreshed)
-    return jsonify({"status": "success", "moved": current > 0}), 200
+    return jsonify({"status": "success", "moved": True}), 200
 
 
 # Events the participant's viewer may report. An allowlist, so a stray or
@@ -1392,6 +1509,7 @@ def study_stream():
 
 @studies_bp.route("/studies/<slug>/control/stream", methods=["GET"])
 @require_panel
+@require_data
 def study_control_stream():
     runtime = _runtime()
     try:
@@ -1410,12 +1528,14 @@ def study_control_stream():
 
 @studies_bp.route("/studies/<slug>/control/sessions", methods=["GET"])
 @require_panel
+@require_data
 def study_sessions():
     return jsonify({"sessions": _runtime().store.list_sessions()}), 200
 
 
 @studies_bp.route("/studies/<slug>/control/export/sessions/<int:study_session_id>.json", methods=["GET"])
 @require_panel
+@require_data
 def study_session_export(study_session_id: int):
     """Everything recorded for one session as a single JSON document, whatever
     its status. The right thing to use when the question is about one session
@@ -1428,6 +1548,7 @@ def study_session_export(study_session_id: int):
 
 @studies_bp.route("/studies/<slug>/control/export/long.csv", methods=["GET"])
 @require_panel
+@require_data
 def study_export_long_csv():
     """Every completed session as one long-format CSV, one row per interaction.
 
@@ -1455,19 +1576,33 @@ def study_export_long_csv():
         if session.get("status") != "completed":
             # 409 rather than 404: the session is real, and saying so is what tells
             # the experimenter the difference between a typo and a session that
-            # nobody finished.
+            # nobody finished. And where its rows are.
             return jsonify(
                 {
                     "status": "error",
                     "message": (
-                        f"Session {study_session_id} is {session.get('status')}, and the "
-                        "export covers completed sessions only."
+                        f"Session {study_session_id} is {session.get('status')}, and long.csv "
+                        "covers completed sessions only. Its rows are in long_incomplete.csv in "
+                        "the archive once nothing is writing to it, and in this session's JSON "
+                        "export at any time."
                     ),
                 }
             ), 409
 
     buffer = io.StringIO()
-    export.write_long_csv(buffer, store.export_long_rows(study_session_id))
+    try:
+        export.write_long_csv(buffer, store.export_long_rows(study_session_id))
+    except Exception as error:  # said, rather than a file missing a session
+        logger.exception("study %s: long.csv failed", _runtime().slug)
+        return jsonify(
+            {
+                "status": "error",
+                "message": (
+                    f"A session could not be read, so long.csv was not made: {type(error).__name__}: "
+                    f"{error}. The archive lists which session in checks.json."
+                ),
+            }
+        ), 500
     slug = _runtime().slug
     filename = (
         f"{slug}_long_session_{study_session_id}.csv" if study_session_id else f"{slug}_long.csv"
@@ -1485,21 +1620,20 @@ def study_export_long_csv():
 
 @studies_bp.route("/studies/<slug>/control/export/checks.json", methods=["GET"])
 @require_panel
+@require_data
 def study_export_checks():
-    return jsonify(export.run_checks(_runtime().store)), 200
+    runtime = _runtime()
+    return jsonify(export.run_checks(runtime.store, study=runtime.study)), 200
 
 
 @studies_bp.route("/studies/<slug>/control/export/archive.zip", methods=["GET"])
 @require_panel
+@require_data
 def study_export_archive():
     """Everything, as one file: a consistent copy of the database, every
     session log, the long CSV with its codebook, the data checks, and a manifest
     with a checksum for each. What the IRB's storage location should receive."""
     runtime = _runtime()
-    if not runtime.store.db_path.is_file():
-        return jsonify(
-            {"status": "error", "message": "This server has no data for this study."}
-        ), 404
     archive = export.build_archive(runtime.study, runtime.store.db_path, runtime.store.log_dir)
     filename = f"{runtime.slug}_{export.timestamp_for_filename()}.zip"
     return send_file(

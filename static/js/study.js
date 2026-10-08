@@ -67,34 +67,6 @@
     // current step without keeping its own separate copy of the same fields.
     let lastState = null;
 
-    // Whether the step change about to arrive over SSE is a consequence of a
-    // request this browser just made (N or B), as opposed to the experimenter
-    // changing it from the panel. There is no id to correlate a broadcast with
-    // the request that caused it, so this is a short-lived guess instead: set
-    // just before sending the request, and it expires on its own if nothing
-    // moved (the paired-mode ready signal is advisory and never does).
-    let expectingOwnStepChange = false;
-    let expectingOwnStepChangeTimer = null;
-
-    function expectOwnStepChange() {
-        expectingOwnStepChange = true;
-        if (expectingOwnStepChangeTimer) clearTimeout(expectingOwnStepChangeTimer);
-        expectingOwnStepChangeTimer = setTimeout(function () {
-            expectingOwnStepChange = false;
-        }, 4000);
-    }
-
-    /** Consume the flag: true at most once per request that set it. */
-    function consumeExpectingOwnStepChange() {
-        const value = expectingOwnStepChange;
-        expectingOwnStepChange = false;
-        if (expectingOwnStepChangeTimer) {
-            clearTimeout(expectingOwnStepChangeTimer);
-            expectingOwnStepChangeTimer = null;
-        }
-        return value;
-    }
-
     // How this session is being run, remembered across reloads. In 'solo' the
     // experimenter and the participant share this laptop, so there is no second
     // person at another screen to refer them to -- "your experimenter will give
@@ -236,10 +208,21 @@
      * is what made the announcement inconsistent: the heading, the step
      * counter and the step text used to update independently, and the step
      * text was not a live region at all, so it was never read out). */
+    // A step whose object the server does not have (#258 review). The last
+    // object stays on the display, so the step's own text, which tells the
+    // participant to explore what is there, would be wrong.
+    const MODEL_UNAVAILABLE_TEXT =
+        'The object for this step is not available, so the display still shows the last one. '
+        + 'Please tell your experimenter.';
+
+    function stepTextFor(state) {
+        return state.model_unavailable ? MODEL_UNAVAILABLE_TEXT : (state.text || '');
+    }
+
     function stepAnnouncement(state) {
         const stepNumber = `Step ${(state.step_index || 0) + 1} of ${state.step_count || 1}`;
         const title = state.title || 'Study step';
-        const text = state.text || '';
+        const text = stepTextFor(state);
         return text ? `${stepNumber}: ${text}` : `${stepNumber}: ${title}.`;
     }
 
@@ -312,7 +295,7 @@
             progressText.textContent =
                 `Step ${(state.step_index || 0) + 1} of ${state.step_count || 1}`;
         }
-        if (stepText) stepText.textContent = state.text || '';
+        if (stepText) stepText.textContent = stepTextFor(state);
         if (readyBtn) readyBtn.disabled = false;
         if (readyStatus && stepChanged) readyStatus.textContent = '';
 
@@ -348,15 +331,11 @@
             // used to each be their own live region, which read the title,
             // then the step count, then this announcement repeating both plus
             // the instructions -- the same content three times over. This is
-            // the one thing actually read out, as a single utterance. Full
-            // title-and-content on first joining a session or when this
-            // browser just asked to move on (N/B) -- both are the
-            // participant's own action, and they need the content
-            // immediately. Step-and-title only when the experimenter changed
-            // it: that was not asked for, so the full instructions would be
-            // unwelcome on top of whatever the participant was doing. Press C
-            // for the full announcement either way.
-            const ownStepChange = consumeExpectingOwnStepChange();
+            // the one thing actually read out, as a single utterance: the
+            // step and its instructions, whoever moved it. C reads it again.
+            // (This comment used to promise a shorter announcement when the
+            // experimenter moved the step; the code never made one, and the
+            // comparison study ran with the full one throughout.)
             if (window.cadStudy.announce) {
                 window.cadStudy.announce(stepAnnouncement(state));
             }
@@ -385,9 +364,6 @@
     function signalReady() {
         if (!sessionActive || (readyBtn && readyBtn.disabled)) return;
         if (readyBtn) readyBtn.disabled = true;
-        // Only actually moves the step in a solo session; in a paired one this
-        // is advisory and the flag simply expires unused a few seconds from now.
-        expectOwnStepChange();
         fetch(withKey(api('step/ready')), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -396,6 +372,10 @@
                 client_time: new Date().toISOString(),
                 viewer_state: window.cadStudy.snapshot(),
                 participant_key: participantKey || undefined,
+                // The step this page is on. In a one-device session, where this
+                // moves the session on, a press for a step already left does
+                // nothing rather than moving it on twice (#258 review).
+                from_index: lastState ? lastState.step_index : undefined,
             }),
         }).then(function (res) {
             return res.ok ? res.json().catch(function () { return {}; }) : null;
@@ -413,9 +393,11 @@
                 readyStatus.textContent = participantCode
                     ? `Session ${participantCode} is complete and has been recorded.`
                     : 'The session is complete and has been recorded.';
-            } else if (body.advanced) {
+            } else if (body.advanced || isSolo()) {
                 // The new step is already announced by applyState (stepAnnouncement);
-                // a second message here would be read out on top of it.
+                // a second message here would be read out on top of it. In a
+                // one-device session nothing else is possible: a press that did
+                // not move was one for a step already left.
                 readyStatus.textContent = '';
             } else {
                 readyStatus.textContent =
@@ -444,7 +426,6 @@
             window.cadStudy.announce('Only your experimenter can move back a step.');
             return;
         }
-        expectOwnStepChange();
         fetch(withKey(api('step/back')), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -452,7 +433,18 @@
                 client_id: clientId,
                 client_time: new Date().toISOString(),
                 participant_key: participantKey || undefined,
+                from_index: lastState ? lastState.step_index : undefined,
             }),
+        }).then(function (res) {
+            return res.json().catch(function () { return {}; }).then(function (body) {
+                // B used to say nothing when it did nothing (#258 review). A
+                // move is announced by the step change itself.
+                if (!res.ok) {
+                    window.cadStudy.announce('Could not go back. Please try again.');
+                } else if (body.moved === false && body.reason === 'first_step') {
+                    window.cadStudy.announce('This is the first step. There is nothing to go back to.');
+                }
+            });
         }).catch(function () {
             window.cadStudy.announce('Could not go back. Please try again.');
         });
@@ -485,10 +477,11 @@
         const key = String(e.key || '').toLowerCase();
         if (key === 'n') {
             e.preventDefault();
-            signalReady();
+            // A held key repeats; one press is one signal (#258 review).
+            if (!e.repeat) signalReady();
         } else if (key === 'b') {
             e.preventDefault();
-            goBack();
+            if (!e.repeat) goBack();
         } else if (key === 'c') {
             e.preventDefault();
             repeatStep();

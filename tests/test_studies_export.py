@@ -15,14 +15,18 @@ import json
 import sqlite3
 import zipfile
 
+import dataclasses
+
 import pytest
 
-from app.studies import export, tokens
+from app.studies import export, protocol, tokens
 from app.studies.__main__ import main as cli
+from app.studies.definition import Status
 from app.studies.definitions import example
 from app.studies.store import LONG_EXPORT_COLUMNS, StudyStore
 
 STUDY = example.STUDY
+CLOSED = dataclasses.replace(STUDY, status=Status.CLOSED)
 
 
 @pytest.fixture()
@@ -380,8 +384,10 @@ def test_export_writes_a_zip_and_will_not_overwrite_one(tmp_path):
     _legacy_database(db_path)
     out = tmp_path / "out.zip"
     args = ["export", "comparison-2026", "--db", str(db_path), "--logs", str(tmp_path), "--out", str(out)]
-    assert cli(args) == 0
+    # 1, as check says for the same data: the session's log was not restored.
+    assert cli(args) == 1
     assert zipfile.is_zipfile(out)
+    assert not list(tmp_path.glob("*.partial")), "nothing half-written is left behind"
     before = out.read_bytes()
     assert cli(args) == 2, "a second export must not replace the first"
     assert out.read_bytes() == before
@@ -393,3 +399,196 @@ def test_an_unknown_study_or_missing_database_is_said_plainly(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "No study called no-such-study" in err
     assert "No database at" in err
+
+
+# ---------------------------------------------------------------------------
+# From the review of #258
+# ---------------------------------------------------------------------------
+
+
+def _rows(bundle, name):
+    return list(csv.DictReader(io.StringIO(bundle.read(name).decode("utf-8"))))
+
+
+def test_the_sessions_long_csv_leaves_out_are_kept_apart_not_lost(store):
+    """long.csv stays completed-only. An abandoned session's rows were in no file
+    but study.db and the logs; they are in long_incomplete.csv, in the same
+    columns."""
+    done = _session(store, code="P-DONE")
+    store.record_event(done, "keyboard")
+    _complete(store, done)
+    left = _session(store, code="P-LEFT")
+    store.record_event(left, "keyboard")
+    assert store.end_session(left, status="abandoned", source="experimenter")
+    running = _session(store, code="P-RUN")
+    store.record_event(running, "keyboard")
+
+    with _archive(store) as bundle:
+        assert {row["participant_code"] for row in _rows(bundle, "long.csv")} == {"P-DONE"}
+        assert {row["participant_code"] for row in _rows(bundle, "long_incomplete.csv")} == {"P-LEFT"}, (
+            "an open study's running session is still being written to"
+        )
+        header = bundle.read("long_incomplete.csv").decode("utf-8").splitlines()[0]
+        assert header.split(",") == list(LONG_EXPORT_COLUMNS)
+        manifest = json.loads(bundle.read("manifest.json"))
+        assert manifest["counts"]["long_incomplete_csv_rows"] == len(_rows(bundle, "long_incomplete.csv"))
+        assert "long_incomplete.csv" in bundle.read("README.txt").decode("utf-8")
+
+
+def test_a_closed_studys_sessions_left_active_are_kept_too(store):
+    """Nothing ends them once a study is closed: it runs no idle sweep, and its
+    database is only read. The comparison study had 12 of its 14 sessions still
+    active (#258 review)."""
+    left_open = _session(store, code="P-OPEN")
+    store.record_event(left_open, "keyboard")
+    target = io.BytesIO()
+    export.build_archive(CLOSED, store.db_path, store.log_dir, target=target)
+    with zipfile.ZipFile(io.BytesIO(target.getvalue())) as bundle:
+        assert {row["participant_code"] for row in _rows(bundle, "long_incomplete.csv")} == {"P-OPEN"}
+        checks = json.loads(bundle.read("checks.json"))
+    explanation = _finding(checks, "still_active")["explanation"]
+    assert "nothing will end them now" in explanation
+    assert "twelve hours" not in explanation
+
+
+def test_an_open_studys_running_sessions_are_explained_with_the_servers_timeout(store, monkeypatch):
+    monkeypatch.setenv("STUDY_SESSION_IDLE_HOURS", "3")
+    _session(store)
+    assert "after 3 hours" in _finding(export.run_checks(store, study=STUDY), "still_active")["explanation"]
+
+
+def test_an_export_that_cannot_read_a_session_says_so(store, monkeypatch):
+    """It used to leave the session out and look whole (#258 review)."""
+    good = _session(store, code="P-GOOD")
+    _complete(store, good)
+    bad = _session(store, code="P-BAD")
+    _complete(store, bad)
+    real = StudyStore._long_rows_for_session
+
+    def unreadable(self, session):
+        if session["participant_code"] == "P-BAD":
+            raise sqlite3.DatabaseError("database disk image is malformed")
+        return real(self, session)
+
+    monkeypatch.setattr(StudyStore, "_long_rows_for_session", unreadable)
+    with pytest.raises(sqlite3.DatabaseError):
+        store.export_long_rows()
+    with _archive(store) as bundle:
+        assert {row["participant_code"] for row in _rows(bundle, "long.csv")} == {"P-GOOD"}
+        checks = json.loads(bundle.read("checks.json"))
+        manifest = json.loads(bundle.read("manifest.json"))
+    assert [item["participant_code"] for item in _finding(checks, "export_failed")["items"]] == ["P-BAD"]
+    assert manifest["counts"]["sessions_not_exported"] == 1
+    assert checks["problems"] >= 1
+
+
+def _seen_from(store, session_id, view, forward):
+    _render(store, session_id, view=view, orientation={"scheme": "basis-v1", "forward": forward})
+
+
+def test_sessions_from_before_the_orientation_fix_are_named_and_explained(store):
+    """Someone holding only the archive read their depths backwards (#258 review)."""
+    before = _session(store, code="P-OLD")
+    _seen_from(store, before, "y-", [0, 1, 0])
+    _complete(store, before)
+    after = _session(store, code="P-NEW")
+    _seen_from(store, after, "y-", [0, -1, 0])
+    _complete(store, after)
+    neither = _session(store, code="P-TOP")
+    _seen_from(store, neither, "z+", [0, 0, 1])
+    _complete(store, neither)
+
+    report = export.run_checks(store)
+    items = _finding(report, "before_view_fix")["items"]
+    assert [(item["participant_code"], item["recorded"]) for item in items] == [("P-OLD", "before #185")]
+    assert report["problems"] == 0, "a caveat about the data, not a fault in it"
+
+    with _archive(store) as bundle:
+        conventions = {row["participant_code"]: row["view_convention"] for row in _rows(bundle, "sessions.csv")}
+        codebook = json.loads(bundle.read("long.json"))
+        readme = bundle.read("README.txt").decode("utf-8")
+    assert conventions == {"P-OLD": "before #185", "P-NEW": "after #185", "P-TOP": ""}
+    assert "100 minus" in codebook["depth"]["Description"]
+    assert "100 minus" in codebook["orientation_x"]["Description"]
+    assert "100 minus" in readme
+
+
+def test_data_all_from_after_the_fix_carries_no_caveat(store):
+    session_id = _session(store)
+    _seen_from(store, session_id, "y-", [0, -1, 0])
+    _complete(store, session_id)
+    with _archive(store) as bundle:
+        assert "100 minus" not in json.loads(bundle.read("long.json"))["depth"]["Description"]
+        assert "100 minus" not in bundle.read("README.txt").decode("utf-8")
+
+
+def _first_model_step(order=("chair", "washer", "cube")):
+    return next(step for step in protocol.resolve_steps(STUDY, list(order)) if (step.get("model") or {}).get("model"))
+
+
+def test_a_step_whose_object_never_reached_the_display_is_found(store):
+    """The step's model was missing, so the last object stayed on the display and
+    its renders were filed under the new step (#258 review)."""
+    step = _first_model_step()
+    session_id = _session(store, code="P-STUCK")
+    _render(store, session_id, model="something_else", part_id=step.get("part_id"),
+            step_id=step["id"], step_index=step["index"])
+    _complete(store, session_id)
+    items = _finding(export.run_checks(store, study=STUDY), "step_model_never_shown")["items"]
+    assert items == [{
+        "study_session_id": session_id, "participant_code": "P-STUCK", "step_id": step["id"],
+        "expected_model": step["model"]["model"], "models_shown": ["something_else"],
+    }]
+
+
+def test_the_last_object_lingering_into_a_step_is_not_a_problem(store):
+    """Normal just after a step change, before the new object has loaded."""
+    step = _first_model_step()
+    session_id = _session(store)
+    for model in ("something_else", step["model"]["model"]):
+        _render(store, session_id, model=model, part_id=step.get("part_id"),
+                step_id=step["id"], step_index=step["index"])
+    _complete(store, session_id)
+    assert _finding(export.run_checks(store, study=STUDY), "step_model_never_shown")["count"] == 0
+
+
+def test_a_log_folder_that_is_not_there_is_refused(tmp_path, capsys):
+    """A mistyped --logs made an archive with no logs, said only by one finding."""
+    db_path = tmp_path / "restored.db"
+    _legacy_database(db_path)
+    out = tmp_path / "out.zip"
+    args = ["export", "comparison-2026", "--db", str(db_path), "--logs", str(tmp_path / "typo"), "--out", str(out)]
+    assert cli(args) == 2
+    assert "No log folder at" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_a_failed_export_leaves_nothing_in_the_way_of_the_next(tmp_path, monkeypatch):
+    """The zip used to be opened before it was built, so a failure left a
+    partial file that every later run refused to overwrite."""
+    db_path = tmp_path / "restored.db"
+    _legacy_database(db_path)
+    out = tmp_path / "out.zip"
+    args = ["export", "comparison-2026", "--db", str(db_path), "--logs", str(tmp_path), "--out", str(out)]
+
+    def broken(*_args, **_kwargs):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(export, "build_archive", broken)
+    with pytest.raises(OSError):
+        cli(args)
+    assert not out.exists()
+    assert not [path for path in tmp_path.iterdir() if path.name.endswith(".partial")]
+    monkeypatch.undo()
+    assert cli(args) == 1
+    assert zipfile.is_zipfile(out)
+
+
+def test_export_prints_the_checks_it_saved(tmp_path, capsys):
+    db_path = tmp_path / "restored.db"
+    _legacy_database(db_path)
+    out = tmp_path / "out.zip"
+    cli(["export", "comparison-2026", "--db", str(db_path), "--logs", str(tmp_path), "--out", str(out)])
+    with zipfile.ZipFile(out) as bundle:
+        saved = json.loads(bundle.read("checks.json"))
+    assert export.summarise_checks(saved) in capsys.readouterr().out

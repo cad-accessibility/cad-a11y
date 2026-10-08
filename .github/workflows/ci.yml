@@ -47,6 +47,12 @@ jobs:
 
   axe-accessibility:
     runs-on: ubuntu-latest
+    # Every compose command in this job reads both files. The second opens the
+    # example study, a draft no server runs, so its pages go through the same
+    # checks as the viewer; its token is published, which is why only this job
+    # and a development machine pass the variable that allows it.
+    env:
+      COMPOSE_FILE: docker-compose.yml:docker-compose.example-study.yml
 
     steps:
       - name: Checkout
@@ -58,10 +64,6 @@ jobs:
           sudo chown -R 48:48 data/db data/renders data/logs
 
       - name: Start app with Docker Compose
-        # The example study is a draft, so no server runs it; this opens it here
-        # so its pages go through the same checks as the viewer.
-        env:
-          CAD_A11Y_OPEN_STUDIES: example
         run: docker compose up -d --build
 
       - name: Wait for app to be ready

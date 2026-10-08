@@ -62,8 +62,13 @@ def _start(client):
 
 
 def _end(client, session_id):
+    # From the last step, where End records 'completed' (#258 review).
+    headers = {"X-Study-Token": TOKEN}
+    state = client.get(f"{CONTROL}/state?study_session_id={session_id}", headers=headers).get_json()
+    client.post(f"{CONTROL}/step/advance",
+                json={"study_session_id": session_id, "step_index": state["step_count"] - 1}, headers=headers)
     client.post(f"{CONTROL}/session/end", json={"study_session_id": session_id, "status": "completed"},
-                headers={"X-Study-Token": TOKEN})
+                headers=headers)
 
 
 def _rows():

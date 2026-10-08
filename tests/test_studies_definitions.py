@@ -222,6 +222,14 @@ def test_the_protocol_fingerprint_follows_what_a_session_runs():
     )
 
 
+def test_the_fingerprint_covers_what_the_experimenter_is_given_to_say():
+    """Editing the prompts left it unchanged (#258 review), though they are part
+    of what a session does."""
+    base = protocol.protocol_hash(example.STUDY)
+    assert protocol.protocol_hash(_broken(facilitator_prompts=["Something else."])) != base
+    assert protocol.protocol_hash(_broken(strategy_prompts=["Something else."])) != base
+
+
 # ---------------------------------------------------------------------------
 # Tokens
 # ---------------------------------------------------------------------------

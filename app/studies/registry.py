@@ -11,7 +11,14 @@ A study is refused, and logged as refused, when it
 * has no ``token_hash``, or one that cannot be checked. An open panel is what
   this replaced, so there is no such thing as a study served without a token;
 * uses the example's published token. Copying ``example.py`` without making a
-  new token would otherwise open a study whose password is in the repository.
+  new token would otherwise open a study whose password is in the repository;
+* is the example itself, opened by ``CAD_A11Y_OPEN_STUDIES`` without
+  ``CAD_A11Y_ALLOW_EXAMPLE_STUDY=1`` beside it. Its token is published, so on a
+  real server anyone could sign in to its panel and write sessions into that
+  server's volume (#258 review). docker-compose.yml passes the first variable
+  through and never the second, so only a development machine or CI can run it;
+* has a database that cannot be prepared. That refuses the one study rather
+  than stopping the viewer from starting.
 """
 
 from __future__ import annotations
@@ -30,6 +37,7 @@ from .definitions import ALL, example
 from .store import StudyStore
 
 OPEN_STUDIES_ENV = "CAD_A11Y_OPEN_STUDIES"
+ALLOW_EXAMPLE_ENV = "CAD_A11Y_ALLOW_EXAMPLE_STUDY"
 
 # How long one sign-in to a panel lasts. A working day of sessions, so an
 # experimenter signs in once in the morning rather than once per participant.
@@ -117,8 +125,19 @@ def serving_status(study: Study, opened: set[str]) -> Status | None:
     return None
 
 
-def refusal(study: Study) -> str | None:
+def example_allowed(environ: dict[str, str] | None = None) -> bool:
+    """Whether this machine said, separately from naming it, that it may run the
+    example study: a development machine or CI, never a server."""
+    return (environ if environ is not None else os.environ).get(ALLOW_EXAMPLE_ENV, "").strip() == "1"
+
+
+def refusal(study: Study, environ: dict[str, str] | None = None) -> str | None:
     """Why a study cannot be served, or None when it can."""
+    if study.slug == example.STUDY.slug and not example_allowed(environ):
+        return (
+            f"its panel token is published. Set {ALLOW_EXAMPLE_ENV}=1 as well to run it on a "
+            "development machine; docker-compose.yml never passes it"
+        )
     problems = validate(study)
     if problems:
         return "; ".join(problems)
@@ -162,14 +181,25 @@ def load(
         served_as = serving_status(study, opened)
         if served_as is None:
             continue
-        problem = refusal(study)
+        problem = refusal(study, environ)
         if problem:
             messages.append(f"Study {study.slug} ({study.status.value}) is not served: {problem}")
             continue
         storage = study.resolve_storage()
-        store = StudyStore(storage.db_path, storage.log_dir)
+        # A closed study's database is only read, and never created: see StudyStore.
+        store = StudyStore(storage.db_path, storage.log_dir, read_only=served_as is Status.CLOSED)
         if served_as is Status.OPEN:
-            store.init_db()
+            # Guarded like the refusals above: an unwritable folder or a failed
+            # migration used to raise here, at import, and stop the whole viewer
+            # starting over one study (#258 review).
+            try:
+                store.init_db()
+            except Exception as error:  # noqa: BLE001 - logged, and the study not served
+                messages.append(
+                    f"Study {study.slug} ({study.status.value}) is not served: its database at "
+                    f"{storage.db_path} could not be prepared: {type(error).__name__}: {error}"
+                )
+                continue
         loaded[study.slug] = StudyRuntime(study=study, store=store, served_as=served_as)
         how = "open" if served_as is Status.OPEN else "closed: panel and exports only"
         if study.status is Status.DRAFT:

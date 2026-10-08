@@ -329,8 +329,15 @@ class TestStudyModeBehaviour:
         js = STUDY_JS.read_text(encoding="utf-8")
         step_fn = js[js.index("function stepAnnouncement("):]
         step_fn = step_fn[:step_fn.index("\n    }")]
-        assert "state.text" in step_fn
+        assert "stepTextFor(state)" in step_fn
         assert "state.title" in step_fn
+        text_fn = js[js.index("function stepTextFor("):]
+        text_fn = text_fn[:text_fn.index("\n    }")]
+        assert "state.text" in text_fn
+        # A step whose object is missing says so instead (#258 review).
+        assert "state.model_unavailable ? MODEL_UNAVAILABLE_TEXT" in text_fn
+        # The guess at who moved the step was computed and never used.
+        assert "ownStepChange" not in js
 
     def test_the_bridge_exposes_a_polite_announcer(self):
         js = VIEWER_JS.read_text(encoding="utf-8")
@@ -604,8 +611,8 @@ class TestControlPanelBehaviour:
         assert "strategyDialogController.open();" in js
         assert "jumpDialogController.open();" in js
         assert "helpDialogController.open();" in js
-        assert "advance({ direction: 'next' });" in js
-        assert "advance({ direction: 'previous' });" in js
+        assert "advance({ direction: 'next' })" in js
+        assert "advance({ direction: 'previous' })" in js
         assert "el('run-here-btn')?.click();" in js
         assert "el('end-session-btn')?.click();" in js
 
@@ -632,7 +639,10 @@ class TestControlPanelBehaviour:
         js = CONTROL_JS.read_text(encoding="utf-8")
         assert "function nextOrFinish()" in js
         assert "function onLastStep()" in js
-        assert "endSession('That was the last step" in js
+        assert "That was the last step." in js
+        next_fn = js[js.index("function nextOrFinish()"):]
+        next_fn = next_fn[:next_fn.index("\n    }")]
+        assert "if (onLastStep()) {\n            endSession();" in next_fn
         # The keyboard route must not be the one that leaves sessions open.
         assert "nextOrFinish();" in js
         assert "advance({ direction: key === 'n' ? 'next' : 'previous' });" not in js
@@ -756,10 +766,16 @@ class TestFocusIsMovedOnlyByWhoeverCausedTheChange:
         ], "advance() itself must not show a popup -- callers decide that"
 
         next_btn = js[js.index("el('next-step-btn')"):js.index("el('previous-step-btn')")]
-        assert "currentStepDialogController.open();" in next_btn
+        assert ".then(showCurrentStepAfterMove)" in next_btn
 
         previous_btn = js[js.index("el('previous-step-btn')"):js.index("el('run-here-btn')")]
-        assert "currentStepDialogController.open();" in previous_btn
+        assert ".then(showCurrentStepAfterMove)" in previous_btn
+
+        # Only once the move has happened: opening it as the key was pressed
+        # put the old step's script in front of a screen reader (#258 review).
+        show = js[js.index("function showCurrentStepAfterMove("):]
+        show = show[:show.index("\n    }\n")]
+        assert show.index("if (!moved) return;") < show.index("currentStepDialogController.open();")
 
     def test_opening_a_dialog_moves_focus_to_its_own_heading(self):
         """Same ARIA APG pattern as the viewer's Help/About/Settings dialogs:
@@ -787,7 +803,14 @@ class TestBothStudyPagesAreCheckedByAxe:
         """On the example study, which CI opens for the purpose: no server runs
         a draft."""
         ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        assert "CAD_A11Y_OPEN_STUDIES: example" in ci
+        override = (ROOT / "docker-compose.example-study.yml").read_text(encoding="utf-8")
+        # Opened through an override only this job uses: the example's token is
+        # published, so docker-compose.yml alone must never let it run (#258 review).
+        assert "COMPOSE_FILE: docker-compose.yml:docker-compose.example-study.yml" in ci
+        assert "CAD_A11Y_OPEN_STUDIES: example" in override
+        assert 'CAD_A11Y_ALLOW_EXAMPLE_STUDY: "1"' in override
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        assert not re.search(r"^\s*CAD_A11Y_ALLOW_EXAMPLE_STUDY:", compose, re.M)
         assert "/studies/example (in a session)" in ci
         assert "/studies/example (waiting for a code)" in ci
 
@@ -820,3 +843,49 @@ class TestBothStudyPagesAreCheckedByAxe:
         js = CONTROL_JS.read_text(encoding="utf-8")
         boot = js[js.index("    function boot() {"):js.index("    function start(body) {")]
         assert boot.index("${API}/signed-in") < boot.index("api('config')")
+
+
+
+class TestTheReviewOf258:
+    """Step keys that count once, focus that waits for the move, End that says
+    how it will be recorded, and a participant page that says when nothing
+    happened (#258 review)."""
+
+    def test_the_panel_says_which_step_it_was_on(self):
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        advance = js[js.index("function advance(payload)"):]
+        advance = advance[:advance.index("\n    }\n")]
+        assert "from_index: state ? (state.step_index || 0) : 0" in advance
+        assert "if (moving) return Promise.resolve(false);" in advance
+        assert "error.body.state" in advance, "a refused press shows where the session really is"
+
+    def test_a_held_step_key_moves_one_step(self):
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        handler = js[js.index("if (isStepMoveKey) {"):]
+        handler = handler[:handler.index("switch (key)")]
+        assert handler.index("if (e.repeat) return;") < handler.index("nextOrFinish();")
+
+    def test_end_says_how_the_session_will_be_recorded(self):
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        end = js[js.index("function endSession()"):]
+        end = end[:end.index("\n    }\n")]
+        assert "recorded as completed" in end
+        assert "recorded as not finished (abandoned)" in end
+        assert "status: 'completed'" not in end, "the server decides, from the step"
+
+    def test_a_closed_study_with_no_data_says_so_rather_than_offering_downloads(self):
+        js = CONTROL_JS.read_text(encoding="utf-8")
+        assert "this server has no data for this study" in js
+        assert "if (config.has_data !== false) showDataSection();" in js
+
+    def test_the_participants_keys_count_once_and_say_when_nothing_happened(self):
+        js = STUDY_JS.read_text(encoding="utf-8")
+        assert "if (!e.repeat) signalReady();" in js
+        assert "if (!e.repeat) goBack();" in js
+        back = js[js.index("function goBack()"):]
+        back = back[:back.index("\n    }\n")]
+        assert "from_index: lastState ? lastState.step_index : undefined" in back
+        assert "body.reason === 'first_step'" in back
+        ready = js[js.index("function signalReady()"):]
+        ready = ready[:ready.index("\n    }\n")]
+        assert "from_index: lastState ? lastState.step_index : undefined" in ready

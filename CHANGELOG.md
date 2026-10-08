@@ -16,16 +16,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Added
 *   Studies are defined in the repository and run at `/studies/<name>`, with the control panel at `/studies/<name>/control`. Each has a status (draft, open, closed or retired), and a server serves exactly what that status allows. Several can be open at once, each with its own database, logs, participant numbers and join codes. `docs/STUDIES.md` is the guide, and `app/studies/definitions/example.py` is a short study to copy.
 *   Each study's control panel needs that study's token. It is typed once into a sign-in form and lasts the working day in that browser, and it is never part of an address, so it ends up in no browser history and no server log. A study without a token is not served.
-*   A closed study keeps its control panel's downloads after collection ends, so its data can come off a server without shell access.
-*   A study's data downloads as one zip: a consistent copy of the database, every session log, the long spreadsheet with a codebook for every column, a table of sessions, a report of known data problems, and a checksum for every file. `python -m app.studies export` makes the same zip from a server or a restored backup, and `scripts/download_study_data.sh` downloads it.
-*   The data checks look for the problems the review of the study code found (#183), sessions ended twice and participant numbers issued with no session, and also for sessions still running, sessions with no recorded end, rows recorded after the end, and logs that disagree with the database.
-*   Every session records the version of the app and a fingerprint of the protocol it ran, so sessions from either side of a change can be told apart from the data.
+*   A closed study keeps its control panel's downloads after collection ends, so its data can come off a server without shell access. Its database is only read, never created or changed: a server without it says "This server has no data for this study." rather than handing over an empty one.
+*   A study's data downloads as one zip: a consistent copy of the database, every session log, the long spreadsheet of completed sessions with a codebook for every column, a second one in the same columns for abandoned sessions and for those a closed study left running, a table of sessions, a report of known data problems, and a checksum for every file. `python -m app.studies export` makes the same zip from a server or a restored backup, and `scripts/download_study_data.sh` downloads it.
+*   The data checks look for the problems the review of the study code found (#183), sessions ended twice and participant numbers issued with no session, and also for sessions still running, sessions with no recorded end, rows recorded after the end, logs that disagree with the database, steps whose object never reached the display, and sessions an export could not read. They also name the sessions recorded before the orientation fix (#185), whose depths in the front, back and bottom views read the other way round, and the codebook and README in the zip say so when there are any.
+*   Every session records the version of the app and a fingerprint of the protocol it ran, prompts included, so sessions from either side of a change can be told apart from the data.
 *   Latin square and balanced Latin square helpers for a study's counterbalancing.
+*   The example study, whose panel token is published, runs only where `CAD_A11Y_ALLOW_EXAMPLE_STUDY=1` is set beside `CAD_A11Y_OPEN_STUDIES=example`. `docker-compose.yml` never passes it; `docker-compose.example-study.yml` does, for CI and development.
+
+#### Changed
+*   Ending a session before its last step records it as not finished (abandoned): its task set stays available, and its rows are kept apart from the completed sessions'. End used to record every session as completed, even one stopped at step 3 of 22, which counted its task set as run. The panel says which it will be before it asks.
 
 #### Fixed
 *   Closing idle sessions could end a session an experimenter had just ended, adding a second end to its record and changing it from completed to abandoned. A session now ends once, and ending it again says so (#183).
 *   A refused request to start a session could still issue a participant number, leaving a number with no session and moving everyone after it one place along the rotation. It now issues nothing (#183).
 *   A render could be recorded against any running session by naming its number, which counts up from 1. Renders are now matched to a session by its join code.
+*   A double click on Next, a held N key, or a second panel on the same session could each skip a step the participant never reached. A step press now counts once, and one made against a step the session has already left is refused. The same holds for the participant's own keys in a one-device session.
+*   N and B opened the current step's script before the step had changed, so a screen reader could read the old step out as the new one. The script opens once the move has happened.
+*   B in a one-device session said nothing when there was nowhere to go back to. It says so now.
+*   A step whose model is missing left the previous object on the participant's display, under text telling them to explore it. The page now says the object is not available and asks them to tell the experimenter.
+*   A participant code typed for a new participant could match one the server would give out later, and every enrolment after that failed. The automatic code steps aside now (P02b), and a refused start says why in plain words.
+*   Elapsed times in the study data were a millisecond short about once in every 150 values, and a row written while the step changed could carry an earlier time than the row before it.
+
 *   On a Mac, the server aborted as it stopped ("Python quit unexpectedly"), and so did anything else that loaded the renderer, because of the order two mesh libraries load in. It exits cleanly now, and the test of what a demo station serves passes there.
 
 #### Security

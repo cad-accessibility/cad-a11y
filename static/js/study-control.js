@@ -91,7 +91,14 @@
         return fetch(`${API}/${path}`, opts).then(function (res) {
             return res.json().catch(function () { return {}; }).then(function (body) {
                 if (res.status === 401) throw new SignedOut(body.message || 'Signed out');
-                if (!res.ok) throw new Error(body.message || `Request failed (${res.status})`);
+                if (!res.ok) {
+                    // The answer travels with the error: a refused step change
+                    // carries the state the session is really in.
+                    const error = new Error(body.message || `Request failed (${res.status})`);
+                    error.status = res.status;
+                    error.body = body;
+                    throw error;
+                }
                 return body;
             });
         });
@@ -624,14 +631,49 @@
         });
     }
 
+    // Set while a step change is on its way. A press made meanwhile is dropped
+    // rather than queued: it was made against a step that is about to change.
+    let moving = false;
+
     /** Move to another step. No confirmation: N/B/P/J act immediately, on the
      * theory that pressing N/B/P or picking a step in the Jump dialog is
-     * already the deliberate action. Callers that want the Current Step
-     * dialog to follow the move do that themselves after calling this. */
+     * already the deliberate action.
+     *
+     * The server is told which step this panel is showing, and refuses a press
+     * made against a step the session has already left. Next and Back are
+     * relative, so a double click, a held key or a second panel on the same
+     * session used to skip a step the participant never reached (#258 review).
+     * Resolves true when the session moved. */
     function advance(payload) {
-        api('step/advance', { method: 'POST', body: JSON.stringify(payload) })
-            .then(function (body) { applyState(body.state); })
-            .catch(function (error) { announce(`Could not move step. ${error.message}`); });
+        if (moving) return Promise.resolve(false);
+        moving = true;
+        const body = Object.assign({ from_index: state ? (state.step_index || 0) : 0 }, payload);
+        return api('step/advance', { method: 'POST', body: JSON.stringify(body) })
+            .then(function (answer) {
+                applyState(answer.state);
+                return answer.moved !== false;
+            })
+            .catch(function (error) {
+                if (error instanceof SignedOut) { showSignIn(); return false; }
+                if (error.body && error.body.state) applyState(error.body.state);
+                announce(error.status === 409 ? error.message : `Could not move step. ${error.message}`);
+                return false;
+            })
+            .finally(function () { moving = false; });
+    }
+
+    /** The Current Step dialog, once a move has happened. Opening it as the
+     * key was pressed put focus on the old step's script before the answer
+     * came back, and a screen reader read it out as the new step (#258
+     * review). A refused move leaves focus where it was. */
+    function showCurrentStepAfterMove(moved) {
+        if (!moved) return;
+        if (currentStepDialog && currentStepDialog.open) {
+            // Already open, and its content just replaced: back to its top.
+            el('current-step-heading')?.focus({ preventScroll: true });
+        } else {
+            currentStepDialogController.open();
+        }
     }
 
     /** True when the session is sitting on the last step of the protocol. */
@@ -651,17 +693,15 @@
      */
     function nextOrFinish() {
         if (onLastStep()) {
-            endSession('That was the last step. End the session and close the record?');
+            endSession();
             return;
         }
-        advance({ direction: 'next' });
-        currentStepDialogController.open();
+        advance({ direction: 'next' }).then(showCurrentStepAfterMove);
     }
 
     el('next-step-btn')?.addEventListener('click', nextOrFinish);
     el('previous-step-btn')?.addEventListener('click', function () {
-        advance({ direction: 'previous' });
-        currentStepDialogController.open();
+        advance({ direction: 'previous' }).then(showCurrentStepAfterMove);
     });
 
     el('run-here-btn')?.addEventListener('click', function () {
@@ -679,19 +719,28 @@
             .catch(function (error) { announce(`Could not switch modes. ${error.message}`); });
     });
 
-    function endSession(prompt) {
+    /** End the session. The server decides how it is recorded: completed from
+     * the last step, abandoned before it. End used to record every session as
+     * completed, so one stopped at step 3 of 22 went into long.csv and used up
+     * its task set (#258 review). The question says which this will be. */
+    function endSession() {
+        const prompt = onLastStep()
+            ? 'That was the last step. End the session and close the record? It is recorded as completed.'
+            : `End the session at step ${(state.step_index || 0) + 1} of ${state.step_count}? `
+              + 'It has not reached the last step, so it is recorded as not finished (abandoned), '
+              + 'and its task set stays available for another participant. The record cannot be reopened.';
         if (!window.confirm(prompt)) return;
-        api('session/end', { method: 'POST', body: JSON.stringify({ status: 'completed' }) })
-            .then(function () {
-                announce('Session ended and recorded.');
+        api('session/end', { method: 'POST', body: JSON.stringify({}) })
+            .then(function (answer) {
+                announce(answer.session_status === 'abandoned'
+                    ? 'Session ended before the last step and recorded as not finished.'
+                    : 'Session ended and recorded as completed.');
                 refreshOnce();
             })
             .catch(function (error) { announce(`Could not end the session. ${error.message}`); });
     }
 
-    el('end-session-btn')?.addEventListener('click', function () {
-        endSession('End this session? The record is closed and cannot be reopened.');
-    });
+    el('end-session-btn')?.addEventListener('click', endSession);
 
     // -----------------------------------------------------------------------
     // Keyboard commands — C (current step), S (strategy prompts), J (jump to a
@@ -736,6 +785,9 @@
 
         if (isStepMoveKey) {
             e.preventDefault();
+            // A held key repeats, and each repeat used to move another step
+            // (#258 review). One press, one move.
+            if (e.repeat) return;
             // Close whatever else is open first -- Current Step is the "next
             // appropriate dialogue" for a step change, not an additional one
             // stacked on top. Already-open Current Step is left alone; its
@@ -748,8 +800,7 @@
                 nextOrFinish();
                 return;
             }
-            advance({ direction: 'previous' });
-            currentStepDialogController.open();
+            advance({ direction: 'previous' }).then(showCurrentStepAfterMove);
             return;
         }
 
@@ -978,9 +1029,11 @@
             const note = el('starting-error');
             if (note) {
                 note.hidden = false;
-                note.textContent = 'No new sessions can start. Download its data below.';
+                note.textContent = config.has_data === false
+                    ? 'No new sessions can start, and this server has no data for this study.'
+                    : 'No new sessions can start. Download its data below.';
             }
-            showDataSection();
+            if (config.has_data !== false) showDataSection();
             return;
         }
 

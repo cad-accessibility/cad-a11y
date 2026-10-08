@@ -17,8 +17,14 @@ in its data was asked to do, step by step. Its data stays where it was written,
 in ``data/db/study.db`` and ``data/logs/study/``, from before studies had
 directories of their own.
 
-Nothing below has been edited since it ran beyond what moving it here needed.
-What a step may carry and how the references resolve is in ``protocol.py``.
+Nothing below has been edited since it ran beyond what moving it here needed,
+with one addition: ``VIEWER_DEFAULTS`` names Turn as the axis mode, the only
+mode there was when it ran. Two things this file cannot settle. The code that
+served it read ``data/study/protocol.json`` instead of its built-in protocol
+when that file existed, and whether either server had one is not known. And
+its sessions carry no ``protocol_hash``, which came later, so the data cannot
+say which protocol they ran. What a step may carry and how the references
+resolve is in ``protocol.py``.
 
 Counterbalancing
 ----------------

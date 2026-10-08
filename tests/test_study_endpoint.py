@@ -716,6 +716,7 @@ class TestDataIsRecoverableFromTheFilesAlone:
             client.post(f"{CONTROL}/step/advance", json={"direction": "next"}, headers=_auth())
             client.post(f"{BASE}/event?s={state['participant_key']}",
                         json={"event_type": "keyboard", "event_data": {"key": "arrowup"}})
+        _to_last_step(client, state["study_session_id"])
         client.post(f"{CONTROL}/session/end", json={}, headers=_auth())
 
         live = store.export_session(1)
@@ -823,6 +824,7 @@ class TestModelSets:
 
     def _finish(self, client, **payload):
         state = _start(client, **payload).get_json()["state"]
+        _to_last_step(client, state["study_session_id"])
         client.post(
             f"{CONTROL}/session/end",
             json={"study_session_id": state["study_session_id"], "status": "completed"},
@@ -1231,6 +1233,7 @@ class TestConcurrentSessions:
 
     def test_ending_one_session_leaves_the_other_running(self, two):
         client, first, second = two
+        _to_last_step(client, first["study_session_id"])
         client.post(
             f"{CONTROL}/session/end",
             json={"study_session_id": first["study_session_id"]},
@@ -1705,6 +1708,7 @@ class TestIdentityIsAllocatedByTheDatabase:
             client.post(f"{BASE}/event?s={state['participant_key']}",
                         json={"event_type": "keyboard",
                               "event_data": {"src": state["participant_code"]}})
+            _to_last_step(client, state["study_session_id"])
 
         barrier = threading.Barrier(count)
 
@@ -2288,6 +2292,7 @@ class TestReconnectingToAFinishedSession:
             json={"mode": "solo", "study_session_id": session_id},
             headers=_auth(),
         )
+        _to_last_step(client, session_id)
         client.post(f"{CONTROL}/session/end", json={"study_session_id": session_id}, headers=_auth())
 
         direct = client.get(f"{BASE}/state?s={state['participant_key']}").get_json()
@@ -2326,7 +2331,20 @@ def _render(session_id, **overrides):
     return store.record_render(session_id, **params)
 
 
+def _to_last_step(client, session_id):
+    """Jump to the protocol's last step. End records 'completed' only from
+    there, and 'abandoned' before it (#258 review)."""
+    state = client.get(f"{CONTROL}/state?study_session_id={session_id}", headers=_auth()).get_json()
+    client.post(
+        f"{CONTROL}/step/advance",
+        json={"study_session_id": session_id, "step_index": state["step_count"] - 1},
+        headers=_auth(),
+    )
+
+
 def _end(client, session_id, status="completed"):
+    if status == "completed":
+        _to_last_step(client, session_id)
     return client.post(
         f"{CONTROL}/session/end",
         json={"study_session_id": session_id, "status": status},
@@ -2863,3 +2881,215 @@ class TestWhatRanIsRecorded:
         config = client.get(f"{CONTROL}/config", headers=_auth()).get_json()
         assert config["app_version"] == "v9.9.9-test"
         assert config["protocol_hash"] == protocol.protocol_hash(STUDY)
+
+
+# ---------------------------------------------------------------------------
+# From the review of #258
+# ---------------------------------------------------------------------------
+
+
+def _events(session_id, event_type):
+    return [e for e in store.export_session(session_id)["events"] if e["event_type"] == event_type]
+
+
+class TestEndingEarlyIsNotCompleting:
+    """End recorded 'completed' at any step, so a session stopped at step 3 of 22
+    went into long.csv and used up its task set (#258 review)."""
+
+    def test_ending_before_the_last_step_records_abandoned(self, client):
+        state = _start(client, task_order=["cane_tip", "lego"]).get_json()["state"]
+        session_id = state["study_session_id"]
+        response = client.post(
+            f"{CONTROL}/session/end",
+            json={"study_session_id": session_id, "status": "completed"},
+            headers=_auth(),
+        )
+        assert response.get_json()["session_status"] == "abandoned", "a request cannot make an early end complete"
+        assert store.get_study_session(session_id)["status"] == "abandoned"
+        (end,) = _events(session_id, "session_end")
+        assert end["event_data"]["reason"] == f"ended by the experimenter at step 1 of {state['step_count']}"
+        sets = {entry["id"]: entry for entry in client.get(f"{CONTROL}/sets", headers=_auth()).get_json()["sets"]}
+        assert sets["cane_tip+lego"]["used"] is False, "its task set is still there to run"
+
+    def test_ending_on_the_last_step_records_completed(self, client):
+        state = _start(client).get_json()["state"]
+        assert _end(client, state["study_session_id"]).get_json()["session_status"] == "completed"
+        assert store.get_study_session(state["study_session_id"])["status"] == "completed"
+
+    def test_the_last_step_can_still_be_ended_as_not_finished(self, client):
+        state = _start(client).get_json()["state"]
+        _end(client, state["study_session_id"], status="abandoned")
+        assert store.get_study_session(state["study_session_id"])["status"] == "abandoned"
+
+
+class TestAStepPressCountsOnce:
+    """Next and Back are relative, so a double click, a held key or a second
+    panel on the same session each moved one step further than anyone meant,
+    and the server could not tell (#258 review)."""
+
+    def _next(self, client, session_id, **extra):
+        return client.post(
+            f"{CONTROL}/step/advance",
+            json={"study_session_id": session_id, "direction": "next", **extra},
+            headers=_auth(),
+        )
+
+    def test_a_press_for_a_step_already_left_is_refused(self, client):
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        first = self._next(client, session_id, from_index=0)
+        assert first.status_code == 200 and first.get_json()["moved"] is True
+        again = self._next(client, session_id, from_index=0)
+        assert again.status_code == 409
+        assert "step 2 now" in again.get_json()["message"]
+        assert again.get_json()["state"]["step_index"] == 1, "the refusal says where the session is"
+        assert store.get_study_session(session_id)["step_index"] == 1
+        assert len(_events(session_id, "step_advance")) == 1
+
+    def test_presses_arriving_together_move_one_step(self, client):
+        import threading
+
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        barrier = threading.Barrier(4)
+
+        def press():
+            with flask_app.test_client() as own:
+                barrier.wait()
+                self._next(own, session_id, from_index=0)
+
+        threads = [threading.Thread(target=press) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert store.get_study_session(session_id)["step_index"] == 1
+        assert len(_events(session_id, "step_advance")) == 1
+
+    def test_a_request_that_names_no_step_still_moves(self, client):
+        """A script driving the panel's API, or a panel from before this."""
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        assert self._next(client, session_id).get_json()["moved"] is True
+        assert store.get_study_session(session_id)["step_index"] == 1
+
+
+class TestTheParticipantsOwnStepKeys:
+    """In a one-device session the participant's N and B move the session, so
+    the same double press applies to them; and B said nothing when it did
+    nothing (#258 review)."""
+
+    def _solo(self, client):
+        state = _start(client).get_json()["state"]
+        client.post(
+            f"{CONTROL}/session/mode",
+            json={"mode": "solo", "study_session_id": state["study_session_id"]},
+            headers=_auth(),
+        )
+        return state
+
+    def test_back_on_the_first_step_says_why_nothing_happened(self, client):
+        state = self._solo(client)
+        body = client.post(f"{BASE}/step/back?s={state['participant_key']}", json={"from_index": 0}).get_json()
+        assert body == {"status": "success", "moved": False, "reason": "first_step"}
+
+    def test_a_second_ready_for_a_step_already_left_does_not_move_it_again(self, client):
+        state = self._solo(client)
+        key = state["participant_key"]
+        first = client.post(f"{BASE}/step/ready?s={key}", json={"from_index": 0}).get_json()
+        second = client.post(f"{BASE}/step/ready?s={key}", json={"from_index": 0}).get_json()
+        assert first["advanced"] is True
+        assert second["advanced"] is False and second["finished"] is False
+        assert store.get_study_session(state["study_session_id"])["step_index"] == 1
+        assert len(_events(state["study_session_id"], "step_advance")) == 1
+
+    def test_back_for_a_step_already_left_does_nothing(self, client):
+        state = self._solo(client)
+        key = state["participant_key"]
+        client.post(f"{BASE}/step/ready?s={key}", json={"from_index": 0})
+        client.post(f"{BASE}/step/ready?s={key}", json={"from_index": 1})
+        body = client.post(f"{BASE}/step/back?s={key}", json={"from_index": 1}).get_json()
+        assert body["moved"] is False and body["reason"] == "moved_on"
+        assert store.get_study_session(state["study_session_id"])["step_index"] == 2
+
+
+class TestParticipantCodesDoNotCollide:
+    def test_a_typed_code_does_not_block_the_generated_ones(self, client):
+        """Enrolling participant 1 as P02 made the next automatic code P02 as
+        well: that enrolment failed on the UNIQUE constraint, and since the id
+        was reused after the rollback, so did every one after it (#258 review)."""
+        assert _start(client, participant_code="P02").get_json()["state"]["participant_code"] == "P02"
+        second = _start(client).get_json()
+        assert second["status"] == "success"
+        assert second["state"]["participant_code"] == "P02b", "the label steps aside; the id keeps its place"
+        assert _start(client).get_json()["state"]["participant_code"] == "P03"
+
+    def test_a_refused_start_is_said_in_the_panels_words(self, client):
+        _start(client, participant_code="P01", session_number=1)
+        body = _start(client, participant_code="P01", session_number=1).get_json()
+        assert "UNIQUE" not in body["message"]
+        assert "P01 already has a session 1" in body["message"]
+
+
+class TestAStepWhoseObjectIsMissing:
+    def test_the_participant_is_told_rather_than_left_with_the_last_object(self, client, monkeypatch):
+        """The page loaded nothing, and the step's text told the participant to
+        explore what was on the display: the previous step's object (#258 review)."""
+        state = _start(client, participant_code="P01").get_json()["state"]
+        _advance_to(client, "task1.a.virtual")
+        monkeypatch.setattr(engine, "_model_list", lambda: ["something_else"])
+        payload = client.get(f"{BASE}/state?s={state['participant_key']}").get_json()
+        assert payload["model"] is None
+        assert payload["model_unavailable"] is True
+        assert "lego" not in json.dumps(payload), "that it is missing, never which object"
+
+    def test_a_step_with_no_object_is_not_called_missing(self, client):
+        state = _start(client, participant_code="P01").get_json()["state"]
+        payload = client.get(f"{BASE}/state?s={state['participant_key']}").get_json()
+        assert payload["model"] is None
+        assert payload["model_unavailable"] is False
+
+
+class TestClocksFollowTheOrder:
+    def test_rows_written_at_once_keep_their_time_and_step_in_seq_order(self, client):
+        """A row's time and step clock came from a read made before the write
+        lock, so a row could carry an earlier time than one with a lower seq, and
+        the previous step's clock (#258 review)."""
+        import threading
+
+        session_id = _start(client).get_json()["state"]["study_session_id"]
+        stop = threading.Event()
+
+        def render():
+            while not stop.is_set():
+                store.record_render(
+                    session_id, model="lego_2x4", view="x-", render_mode="Cut", layout_mode="single",
+                    depth=50, zoom=0, input_source="keyboard", cache_hit=False,
+                    resolve_step=lambda session: engine._current_step(runtime, session),
+                )
+
+        writers = [threading.Thread(target=render) for _ in range(3)]
+        for writer in writers:
+            writer.start()
+        for target in range(1, 6):
+            engine._advance(runtime, store.get_study_session(session_id), target, source="experimenter")
+        stop.set()
+        for writer in writers:
+            writer.join()
+
+        recorded = store.export_session(session_id)
+        rows = sorted(recorded["events"] + recorded["renders"], key=lambda row: row["seq"])
+        times = [row["created_at"] for row in rows]
+        assert times == sorted(times)
+        step = 0
+        for row in rows:
+            if row.get("event_type") == "step_advance":
+                step = row["step_index"]
+            elif "model" in row:
+                assert row["step_index"] == step, "a render filed under a step the session had left"
+
+
+def test_elapsed_time_is_exact_to_the_millisecond():
+    """It went through a float and truncated: 1001 ms came out as 1000."""
+    start = "2026-10-06T10:00:00.000Z"
+    for second in range(3):
+        for millisecond in range(1000):
+            end = f"2026-10-06T10:00:{second:02d}.{millisecond:03d}Z"
+            assert store_module._elapsed_ms(start, end) == second * 1000 + millisecond
