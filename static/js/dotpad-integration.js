@@ -478,7 +478,9 @@ async function sendHexToDotPad(renderParams) {
     try {
         const resp = await fetch(`${SERVER_URL}/render/dotpad-hex`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            // viewer.js's, so the server lets this tab render its own upload.
+            headers: window.uploadSessionHeaders?.({ 'Content-Type': 'application/json' })
+                ?? { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ...renderParams, dotpad_cols: dotpadCols, dotpad_rows: dotpadRows }),
             mode: 'cors',
         });

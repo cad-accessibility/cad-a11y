@@ -52,18 +52,37 @@ if (demoMode && window.__CAD_DEMO_SEALED__ !== true) {
     throw new Error('demo mode is not sealed; refusing to start the viewer');
 }
 
+// The tab's upload id is what lets the server show this tab its own uploads and
+// nobody else's (#237), so it has to be unguessable. getRandomValues rather than
+// randomUUID, which only exists on HTTPS.
+function newUploadSessionId() {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return 'tab-' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+let volatileUploadSessionId = null;
+
 function getUploadSessionId() {
     try {
         let sessionId = window.sessionStorage.getItem(UPLOAD_SESSION_STORAGE_KEY);
         if (!sessionId) {
-            sessionId = `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+            sessionId = newUploadSessionId();
             window.sessionStorage.setItem(UPLOAD_SESSION_STORAGE_KEY, sessionId);
         }
         return sessionId;
     } catch (_) {
-        // If sessionStorage is unavailable, still provide a best-effort volatile id.
-        return `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        // If sessionStorage is unavailable, keep one id in memory for this page.
+        // A fresh one per call would lose the tab its own uploads.
+        if (!volatileUploadSessionId) volatileUploadSessionId = newUploadSessionId();
+        return volatileUploadSessionId;
     }
+}
+
+// Every request that names a model, or asks which models there are, carries the
+// tab's upload id. The server answers with the built-ins and this tab's uploads.
+function uploadSessionHeaders(headers = {}) {
+    return { ...headers, 'X-Upload-Session': getUploadSessionId() };
 }
 
 // Drag-to-resize columns
@@ -171,9 +190,9 @@ function requestHighFidelityPreview(state) {
 
     fetch(`${SERVER_URL}/render/preview`, {
         method: 'POST',
-        headers: {
+        headers: uploadSessionHeaders({
             'Content-Type': 'application/json',
-        },
+        }),
         body: JSON.stringify(state),
         mode: 'cors',
         signal: previewAbortController.signal,
@@ -375,7 +394,7 @@ async function sendStateToServer() {
         // The study session is sent as a header rather than in the body so the
         // render parameters -- and with them the render cache key -- are byte for
         // byte what the ordinary viewer sends.
-        const renderHeaders = { 'Content-Type': 'application/json' };
+        const renderHeaders = uploadSessionHeaders({ 'Content-Type': 'application/json' });
         if (studySessionId) renderHeaders['X-Study-Session'] = String(studySessionId);
 
         fetch(`${SERVER_URL}/render`, {
@@ -567,7 +586,6 @@ const representationModes = [
 ];
 viewerState.currentModel = null;   // the model this window is showing, by name
 let sessionOwnedModels = new Set(); // filenames (with extension) owned by the current cookie session
-let builtinModelStems = null;       // stems from MODEL_DIR; null = not yet received, show all
 // On /demo only: the stems the chooser is limited to, from GET /demo/status.
 // null until it arrives, and null means show everything, so a slow or failed
 // answer leaves the ordinary list rather than an empty one.
@@ -1238,7 +1256,7 @@ function scheduleSliceGraphStatusCheck() {
         try {
             const res = await fetch(`${SERVER_URL}/render/status`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: uploadSessionHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({ current_model: viewerState.currentModel }),
             });
             const statusData = await res.json();
@@ -1769,9 +1787,9 @@ async function exportCurrentSliceAsPng() {
 
         const response = await fetch(`${SERVER_URL}/render/export-source`, {
             method: 'POST',
-            headers: {
+            headers: uploadSessionHeaders({
                 'Content-Type': 'application/json',
-            },
+            }),
             body: JSON.stringify(fetchExportSourceState()),
             mode: 'cors'
         });
@@ -2142,11 +2160,9 @@ function updateBoundingBox(bbox) {
 }
 
 function _visibleModelEntries(model_list) {
-    // Before builtinModelStems arrives, show the full list unfiltered.
-    if (!builtinModelStems) {
-        return model_list.map((stem, i) => ({ stem, i }));
-    }
-    const builtinSet = new Set(builtinModelStems);
+    // The server sends only the built-ins and this tab's own uploads (#237), so
+    // there is nothing here to hide. This used to be the only filter, and it
+    // showed everyone's uploads until the list of built-ins arrived.
     const ownedStems = new Set([...sessionOwnedModels].map(fn => fn.replace(/\.[^.]+$/, '')));
     // The demo offers the study's own objects rather than everything on the
     // server. Narrows what is listed and nothing else: the models are loaded from
@@ -2155,7 +2171,6 @@ function _visibleModelEntries(model_list) {
     const demoSet = demoMode && demoModelStems ? new Set(demoModelStems) : null;
     return model_list
         .map((stem, i) => ({ stem, i }))
-        .filter(({ stem }) => builtinSet.has(stem) || ownedStems.has(stem))
         .filter(({ stem }) => !demoSet || demoSet.has(stem) || ownedStems.has(stem));
 }
 
@@ -2328,9 +2343,13 @@ document.getElementById('delete-model-btn').addEventListener('click', async func
         } else {
             const errData = await resp.json().catch(() => ({}));
             statusEl.textContent = `Delete failed: ${errData.message || resp.status}`;
+            // Said as well as shown: the status line is not a live region, so a
+            // refused delete was silent to a screen reader (#243 review).
+            announceAlert(statusEl.textContent);
         }
     } catch (err) {
         statusEl.textContent = `Delete error: ${err.message}`;
+        announceAlert(statusEl.textContent);
     } finally {
         this.disabled = false;
     }
@@ -2355,6 +2374,7 @@ document.getElementById('upload-model-input').addEventListener('change', async f
     try {
         const resp = await fetch(`${SERVER_URL}/upload`, {
             method: 'POST',
+            headers: uploadSessionHeaders(),
             body: formData,
             mode: 'cors',
         });
@@ -2411,12 +2431,6 @@ document.getElementById('upload-model-input').addEventListener('change', async f
 // message to one window: the client registry is a list of queues with nothing
 // attached to say who is who.
 function applyServerState(data) {
-    if (Array.isArray(data.builtin_model_stems) && data.builtin_model_stems.length && !builtinModelStems) {
-        builtinModelStems = data.builtin_model_stems;
-        // Force a rebuild now that the filter is known.
-        lastModelListSignature = null;
-        if (lastFullModelList.length > 0) updateModelList(lastFullModelList);
-    }
     const modelDropdown = document.getElementById("model-list-dropdown");
     const dropdownFocused = document.activeElement === modelDropdown;
     if (data.model_list && !dropdownFocused) {
@@ -2442,6 +2456,10 @@ function applyServerState(data) {
 // SSE: server pushes hardware state changes (WitMotion IMU, Slider) immediately
 // instead of the client polling every second — reduces latency from ~1000 ms to ~10 ms.
 (function connectSSE() {
+    // No tab id: EventSource cannot set a header, and the id grants access to this
+    // tab's uploads, so it must not sit in an address that ends up in access logs
+    // (#243 review). The stream carries nothing that depends on who is asking; the
+    // model list comes from /get_data and /render, which send the id in a header.
     const evtSource = new EventSource(`${SERVER_URL}/events`);
     evtSource.onmessage = function(event) {
         try {
@@ -2475,9 +2493,10 @@ const POLL_FAIL_THRESHOLD = 2;
 
 // Slow fallback poll: the sole authority for serverConnected state changes.
 // Keeps model list and bbox in sync for state that isn't pushed over SSE
-// (e.g. model uploads). Runs every 5 s.
-setInterval(() => {
-    fetch(`${SERVER_URL}/get_data`)
+// (e.g. model uploads). Runs once at load, since the event stream no longer
+// sends the list, and every 5 s after that.
+function pollServerState() {
+    fetch(`${SERVER_URL}/get_data`, { headers: uploadSessionHeaders() })
         .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
         .then(data => {
             pollFailCount = 0;
@@ -2497,7 +2516,9 @@ setInterval(() => {
                 announceAlert('Server unavailable — rendering paused.');
             }
         });
-}, 5000);
+}
+pollServerState();
+setInterval(pollServerState, 5000);
 
 // Update zoom information
 function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
@@ -2557,7 +2578,7 @@ async function fitCurrentViewToDevice() {
 
     const response = await fetch(`${SERVER_URL}/render/fit-view`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: uploadSessionHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(payload),
     });
 

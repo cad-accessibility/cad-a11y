@@ -676,18 +676,30 @@
         <h2 id="consent-dialog-title">Welcome to CAD A11y</h2>
         <p id="consent-dialog-desc">
             We store a cookie to remember your visit and any models you upload.
-            You can optionally allow anonymous usage analytics to help us improve the
-            tool, and optionally share your email to receive project updates.
+            You can optionally allow usage analytics to help us improve the tool, and
+            optionally share your email to receive project updates. Your email is kept
+            in a separate list that is not linked to your usage data.
             Analytics and email are independent, and the viewer is fully usable without either.
         </p>
         <form method="dialog" id="consent-form" novalidate>
             <div class="consent-field">
                 <label for="consent-email">Email address (optional)</label>
+                <!--
+                    type="text" with inputmode="email" rather than type="email": the
+                    browser's own email check refuses an address like josé@example.es
+                    before it is sent, and the server accepts it. The server's check is
+                    the only one (app/email_address.py), and its message lands in the
+                    alert below.
+                -->
                 <input
-                    type="email"
+                    type="text"
+                    inputmode="email"
                     id="consent-email"
                     name="email"
                     autocomplete="email"
+                    autocapitalize="off"
+                    spellcheck="false"
+                    maxlength="254"
                     placeholder="you@example.com"
                     aria-describedby="consent-email-hint"
                 >
@@ -827,11 +839,8 @@
                 if (action !== 'accept' && action !== 'decline') return;
 
                 const email = (emailInput?.value || '').trim();
-                // Lightweight client-side check; the server re-validates authoritatively.
-                if (email && emailInput && !emailInput.checkValidity()) {
-                    showError('Please enter a valid email address, or leave the field blank.');
-                    return;
-                }
+                // No check here: the server's is the one that counts, and its message
+                // says whether the address is too long or not an address at all.
                 clearError();
 
                 fetch('/session/identify', {
@@ -856,9 +865,6 @@
                             main.setAttribute('tabindex', '-1');
                             main.focus();
                         }
-                        // Email may link this session to prior uploads on other devices;
-                        // refresh the model list so those files appear immediately.
-                        initSessionModels();
                         return;
                     }
                     return res.json().catch(function () { return {}; }).then(function (body) {

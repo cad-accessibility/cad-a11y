@@ -18,14 +18,25 @@ import pytest
 
 import app.cad_comparison_lib as cad_lib
 import app.server
+from app import db
 from app.server import app as flask_app
 
 
 @pytest.fixture()
-def client():
+def client(tmp_path, monkeypatch):
+    # A database of its own, set up as the server sets one up at start. An upload
+    # is recorded against the browser that sent it (#237), and CI starts with no
+    # database at all; these passed locally only because data/db/usage.db was
+    # already there.
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "usage.db")
+    db._local.__dict__.clear()
+    db._contacts_local.__dict__.clear()
+    db.init_db()
     flask_app.config["TESTING"] = True
     with flask_app.test_client() as c:
         yield c
+    db._local.__dict__.clear()
+    db._contacts_local.__dict__.clear()
 
 
 def _params(**overrides):
@@ -310,12 +321,12 @@ def test_a_numeric_model_is_ambiguous_by_position_unlike_a_name(monkeypatch):
     risk explicitly, so nobody reads more protection into the numeric path than
     the by-name fix actually gives it. A name is immune, shown here alongside.
     """
-    import pathlib
-
     import app.server as server
 
-    before = [pathlib.Path("/m/beta.stl"), pathlib.Path("/m/mug.stl")]
-    after = [pathlib.Path("/m/aaa.stl"), pathlib.Path("/m/beta.stl"), pathlib.Path("/m/mug.stl")]
+    # Built-ins, so ownership (#237) plays no part: they are visible to everyone.
+    models = server.MODEL_DIR
+    before = [models / "beta.stl", models / "mug.stl"]
+    after = [models / "aaa.stl", models / "beta.stl", models / "mug.stl"]
 
     monkeypatch.setattr(server, "AVAILABLE_MODELS", before)
     assert server._resolve_model_stem("0") == "beta"
