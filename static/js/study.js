@@ -198,10 +198,17 @@
     // Reporting
     // -----------------------------------------------------------------------
 
+    // The event types the study log has always recorded. The viewer now also
+    // reports dialogs opening and closing, the export button and devices
+    // connecting, for the tutorial; the server would take them (ui_action and
+    // device are on its allowlist), so they are kept out here and the study data
+    // stays what it was (#245 review).
+    const STUDY_EVENT_TYPES = new Set(['keyboard', 'announcement', 'model_loaded', 'page_load', 'page_unload', 'error']);
+
     /** Fire and forget. A logging request must never block or fail a keypress:
      * the participant is mid-exploration and a stalled fetch would be felt. */
     function report(eventType, eventData, viewerState) {
-        if (!sessionActive) return;
+        if (!sessionActive || !STUDY_EVENT_TYPES.has(eventType)) return;
         try {
             fetch(withKey('/study/event'), {
                 method: 'POST',

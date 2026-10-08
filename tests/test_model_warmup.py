@@ -49,6 +49,14 @@ def test_warming_up_does_not_make_the_server_unhealthy(client, monkeypatch):
     assert response.get_json()["checks"]["warmup"]["complete"] is False
 
 
+def _startup_order():
+    """The order startup warms in: the tutorial mug first, because a first
+    visit opens the tutorial on it, then every other model as discovered."""
+    models = list(server.AVAILABLE_MODELS)
+    mug = [p for p in models if p.stem == "tutorial_mug"]
+    return mug + [p for p in models if p not in mug]
+
+
 def test_only_the_startup_limit_is_queued_at_startup(monkeypatch):
     queued = []
     monkeypatch.setattr(server, "enqueue_model_for_warmup", queued.append)
@@ -60,7 +68,7 @@ def test_only_the_startup_limit_is_queued_at_startup(monkeypatch):
     assert len(server.AVAILABLE_MODELS) > 2, "test needs more models than the limit to be meaningful"
 
     server.start_model_warmup()
-    assert queued == list(server.AVAILABLE_MODELS)[:2], "startup queued something other than the first 2"
+    assert queued == _startup_order()[:2], "startup queued something other than the first 2"
 
 
 def test_startup_limit_of_one_leaves_the_rest_to_build_on_demand(monkeypatch):
@@ -74,7 +82,7 @@ def test_startup_limit_of_one_leaves_the_rest_to_build_on_demand(monkeypatch):
     monkeypatch.setattr(server, "STARTUP_WARMUP_LIMIT", 1)
 
     server.start_model_warmup()
-    assert queued == list(server.AVAILABLE_MODELS)[:1]
+    assert queued == _startup_order()[:1]
 
 
 def test_starting_twice_does_not_queue_everything_again(monkeypatch):

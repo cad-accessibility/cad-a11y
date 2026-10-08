@@ -119,8 +119,34 @@ jobs:
             // its states are checked: the picker, and the running session
             // reached by choosing a set from it. Checking only the first would
             // leave the whole of the in-session panel unexamined.
+            // The tutorial opens by itself on a first visit to /viewer, once the
+            // consent dialog is answered, so both of its views are checked here:
+            // a lesson, and the lesson list. The second load finds consent
+            // already decided and the tutorial already under way, so it resumes
+            // without a dialog to answer.
+            const answerConsent = async () => {
+              if (await page.isVisible('#consent-decline')) await page.click('#consent-decline');
+              await page.waitForSelector('#tutorial-region:not([hidden])');
+            };
             const pages = [
               { name: '/viewer', url: `${base}/viewer` },
+              {
+                name: '/viewer (tutorial lesson)',
+                url: `${base}/viewer`,
+                after: async () => {
+                  await answerConsent();
+                  await page.waitForSelector('#tutorial-lesson-view:not([hidden])');
+                },
+              },
+              {
+                name: '/viewer (tutorial lesson list)',
+                url: `${base}/viewer`,
+                after: async () => {
+                  await answerConsent();
+                  await page.click('#tutorial-lessons-btn');
+                  await page.waitForSelector('#tutorial-menu-view:not([hidden])');
+                },
+              },
               { name: '/study (waiting for a code)', url: `${base}/study` },
               { name: '/study (in a session)', url: `${base}/study?s=${started.participant_key}` },
               { name: '/study/control (choosing a model set)', url: `${base}/study/control` },

@@ -100,6 +100,43 @@ Reset puts the slice plane at 50% in Turn mode, and at the model's origin in XYZ
 mode, which is also where a model starts there, so every axis reads 0%. An origin
 beyond the object is reached only as far as its nearest face.
 
+## The tutorial
+
+The first time someone opens `/viewer` in a browser, a tutorial starts in a region at the top of
+the page, after the consent dialog. It teaches every feature on a practice mug in 16 lessons
+(setup, core, optional and wrap-up), using the real viewer controls. Exit tutorial is on every
+step and pauses it: the viewer is then yours, and the Tutorial button in the main menu (or the
+top of the keyboard shortcuts list) resumes at the same lesson and step, starts over, or opens
+any lesson from a list. Someone who used the viewer before the tutorial existed hears one line
+saying it is there, and it does not start by itself for them.
+
+Where it starts by itself is one table, `TUTORIAL_ROUTES` in `static/js/tutorial.js`:
+
+| Path | Starts by itself | Offered from the menu | Can resume |
+|---|---|---|---|
+| `/viewer` | yes | yes | yes |
+| `/demo` | no | yes | no (demo storage resets on every load) |
+| `/workshop`, `?ui=simple` | no | no | no |
+| `/study` | no | no | no (it has its own onboarding) |
+
+`?tutorial=start` starts it on any path that offers it (a facilitator at a demo station, for
+one), and `?tutorial=off` keeps it closed for one load. Progress is kept in this browser's
+`localStorage` (`cadA11yTutorial`), never on the server. With analytics allowed, only coarse
+progress is recorded (loaded, lesson finished or skipped, exited, completed); never keys.
+
+The pieces:
+
+- `static/js/tutorial.js` runs it: the lesson state machine, the checks, speech, locks and Key
+  help mode.
+- `app/tutorial_lessons.py` holds the lessons as data, and the key names they use, in one
+  table checked against the viewer by `tests/test_tutorial_lessons.py`.
+- `app/tutorial.py` serves the lessons, a display test pattern, where the handle is on the
+  display (`/tutorial/locate`), and the printable mug and slice plaques
+  (`/tutorial/prints.zip`).
+- `builtin_models/tutorial_mug.stl` and `app/tutorial_mug.landmarks.json` are generated from
+  `builtin_models/mug.stl` by `python scripts/build_tutorial_mug.py`. Rerun it after changing
+  the band descriptions in that script; `tests/test_tutorial_mug.py` fails until you do.
+
 ## Hardware setup
 
 The viewer works without any hardware. Connect devices for full tactile and braille output.
@@ -276,11 +313,10 @@ missing, the viewer does not start rather than starting without it.
 
 ### What people can do in a demo session
 
-* **Switch between models freely.** The ordinary model chooser, with the models
-  the server has. Nothing is preselected and nothing is hidden: the demo is the
-  viewer with recording off, not a different set of objects. The mug is the
-  quickest thing to reach for when showing somebody what slicing does to a shape,
-  and the LEGO brick, pencil holder and cane tip are all there.
+* **Switch between the study's models.** The model chooser offers the study's
+  six objects: the two cane tips, the two pencil holders and the two LEGO
+  bricks. The study's onboarding mug is left out on purpose (#198). The
+  tutorial, opened from the Tutorial button, brings its own practice mug.
 * **Bring their own model.** The **Upload model...** control takes an STL or STEP
   file. It is reachable by keyboard and labelled for a screen reader. No record
   of the upload is written: on the demo path the row that would normally be
@@ -312,14 +348,13 @@ works on theirs.
 
 | Page | Who uses it | What they need |
 | --- | --- | --- |
-| `/study/control` | The experimenter | Nothing — opening it starts a session |
+| `/study/control` | The experimenter | A choice of one of the six model sets |
 | `/study` | The participant | The four-character code from the panel |
 
 ### Running one
 
-1. Open **`/study/control`**. That starts a session — there is nothing to fill in
-   first, because the participant id, the model pairs and the session number are
-   all decided by the protocol.
+1. Open **`/study/control`** and choose one of the six model sets; the picker
+   shows which have been used. That starts the session.
 2. The panel shows two things to read out: the address `/study`, and a
    four-character code.
 3. The participant opens `/study` in Chrome — Chrome specifically, because the
@@ -329,9 +364,9 @@ works on theirs.
    key for that pair. "Next step" advances both views and loads the next model.
 5. End the session when you reach the last step. That closes the record.
 
-The participant sees a practice round with the Lego brick, then two of the three
-model pairs, assigned by a Latin square so they stay balanced across
-participants. The panel shows the assignment.
+The participant first learns the system on the mug (the onboarding steps), then
+explores two of the three model pairs, assigned by a Latin square so they stay
+balanced across participants. The panel shows the assignment.
 
 ### If you only have one computer
 
