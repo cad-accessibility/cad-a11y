@@ -75,9 +75,9 @@ XYZ rows if someone changed the setting mid-session.
 | `i`, `k` | pitch up, pitch down |
 | `j`, `l` | yaw left, yaw right |
 | `u`, `o` | roll counterclockwise, roll clockwise |
-| `arrowup`, `arrowdown` | depth by 1% (XYZ mode: the cut by 1% of the object along its axis, always toward the axis's highest value for `arrowup`) |
-| `pageup`, `pagedown` | depth by a larger step (XYZ mode: 10%) |
-| `home`, `end` | depth to the surface or the far side (XYZ mode: the object's lowest or highest coordinate on the axis) |
+| `arrowup`, `arrowdown` | depth by 1%, deeper for `arrowup`, in both axis modes |
+| `pageup`, `pagedown` | depth by 10%, in both axis modes |
+| `home`, `end` | depth to the surface or the far side, in both axis modes |
 | `x`, `y`, `z` | XYZ mode: cut along that axis, from the right, the front or above; the same key again, from the other side (see `cut_side`). In Turn mode: nothing but a message saying so |
 | `,` | where the origin is, in both modes (XYZ names its coordinate on the axis) |
 | `2`, `3` | zoom out, zoom in |

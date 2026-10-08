@@ -1804,22 +1804,6 @@ def fit_render_view():
     return jsonify({"status": "success", **fit}), 200
 
 
-@app.route("/render/origin", methods=["POST"])
-def render_origin():
-    """Where a model's origin lies along each axis, as a fraction of the object's
-    extent, without rendering it: the same numbers every render sends.
-
-    XYZ mode starts a model with the cut at its origin (#235 review), and the
-    viewer asks this before the model's first render so that render is already
-    there, rather than at 50% with a second one to follow. Builds the renderer if
-    nobody has rendered the model yet, which that render would have done anyway.
-    """
-    data = request.get_json(silent=True) or {}
-    model_stem = _resolve_model_stem(data.get("model", data.get("current_model")))
-    engine = get_or_create_renderer(model_stem)
-    origin_fraction = engine.origin_fraction() if hasattr(engine, "origin_fraction") else None
-    return jsonify({"status": "success", "origin_fraction": origin_fraction}), 200
-
 @app.route("/models", methods=["GET"])
 def models_endpoint():
     """List the models on disk.
