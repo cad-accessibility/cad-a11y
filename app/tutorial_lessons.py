@@ -41,11 +41,11 @@ They appear only in a step's ``text``.
 What the lessons must not promise
 ---------------------------------
 - A direction in percent. ``cut_percent``, what the checks and the bands use,
-  is 0 at the axis minimum and 100 at its maximum. What XYZ mode says is the
-  same position measured from the model's origin, which on the mug is the
-  middle of its base (#235). Either way deeper means away from the reader, and
-  from X plus, Y plus or Z plus that lowers the number. Lessons say deeper and
-  shallower, and name a direction only for a view the lesson has set.
+  is 0 at the axis minimum and 100 at its maximum. What the viewer says is
+  depth, percent in from the surface nearest the reader, in both axis modes
+  (#263), so from X plus, Y plus or Z plus going deeper lowers ``cut_percent``.
+  Lessons say deeper and shallower, and name a direction only for a view the
+  lesson has set.
 - Anything visual. The people this is for are blind, so the words are find,
   feel, press and choose.
 """
@@ -834,11 +834,11 @@ LESSONS: list[dict[str, Any]] = [
                 "For some views (like fill, outline and x-ray), direction matters. "
                 "If you view the mug from above, fill shows everything below the slice plane. "
                 "If you view it from below, fill shows everything above the slice plane. To switch, "
-                "press the same axis key twice. Slice depth is always a percentage from 0 on any "
-                "axis, regardless of the direction you are viewing from. Press Next (N) when ready.",
+                "press the same axis key twice. Depth works the same on every axis: a percentage in "
+                "from the surface nearest you, whichever side you view from. Press Next (N) when ready.",
                 sr="This lesson uses XYZ mode: you choose the axis to slice along, and the same key "
-                   "again gives the other side. The slice plane's number counts from the model's origin, "
-                   "the middle of the base. Press Next (N) when ready.",
+                   "again gives the other side. Depth still counts in from the surface nearest you. "
+                   "Press Next (N) when ready.",
                 braille="Press X Y or Z",
                 check=_manual(),
                 done="Next, slice along Z.",
@@ -858,8 +858,8 @@ LESSONS: list[dict[str, Any]] = [
                 sr="Press {key:axis_z} to slice along Z, across the mug, parallel to the table.",
                 braille="Slice along Z",
                 check=_state("cut_axis", equals="z"),
-                done="You are slicing along Z. The slice is a ring, the wall of the mug, with a small "
-                     "separate piece beside it, the handle.",
+                done="You are slicing along Z. The slice plane shows a ring, the wall of the mug, with "
+                     "a small separate piece beside it, the handle.",
                 hints=(
                     "Z is the axis that points up from the table.",
                     "The viewer says Z from plus when you select Z once.",
@@ -868,10 +868,12 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "origin",
-                "We call the place where the three axes meet the origin. At the origin, depth is 0 "
-                "along all axes. A 3D model has a position in space in XYZ mode. The mug base is "
-                "centered on the origin in X and Y. Press {key:origin} to hear where the origin is on the display: how far across from the left "
-                "edge, and how far up from the bottom. In XYZ mode the display also marks the origin with a small hollow square.",
+                "We call the place where the three axes meet the origin. It is the point the model's "
+                "coordinates are measured from. Whoever made the model chose where it is, and it can "
+                "lie outside the object. The mug's base is centered on the origin in X and Y. Press "
+                "{key:origin} to hear where the origin is on the display: how far across from the left "
+                "edge, and how far up from the bottom. In XYZ mode the display also marks the origin "
+                "with a small hollow square.",
                 braille="Press ,",
                 check=_key(","),
                 key_only=True,
@@ -885,10 +887,9 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "cut_x_handle",
-                "In XYZ mode the slice plane's position is measured from the origin, so 0 no longer "
-                "means the far side of the model. Press {key:where_am_i} at any time to check where "
-                "the slice plane is. Now press {key:axis_x} to slice along X. The slice plane starts "
-                "away from the handle, so press {key:depth_deeper_10} until you feel the handle loop.",
+                "Press {key:where_am_i} at any time to check where the slice plane is. Now press "
+                "{key:axis_x} to slice along X. The slice plane starts away from the handle, so press "
+                "{key:depth_deeper_10} until you feel the handle loop.",
                 sr="Press {key:axis_x} to slice along X, then {key:depth_deeper_10} until you feel the "
                    "handle loop.",
                 braille="Find handle on X",
@@ -1015,8 +1016,8 @@ LESSONS: list[dict[str, Any]] = [
             _step(
                 "reset",
                 "The tutorial has zoomed in and moved the mug off the middle. Press {key:reset} to "
-                "return to center, fit the mug to the display and move the slice plane back on every "
-                "axis (50% in Turn mode; the origin in XYZ mode).",
+                "return to center, fit the mug to the display and move the slice plane back to 50% "
+                "on every axis.",
                 sr="Press {key:reset} to return to center.",
                 braille="Press 0 to reset",
                 check=_all(_key("0"), _state("zoom", lte=0.001)),
@@ -1085,8 +1086,8 @@ LESSONS: list[dict[str, Any]] = [
                 done="Right.",
                 on_fail="Press {key:where_am_i} and listen to the first words.",
                 hints=(
-                    ("Rings mean a slice across the mug, parallel to the table. A U shape means a "
-                     "slice from the rim to the base."),
+                    ("Rings mean the slice plane crosses the mug parallel to the table. A U shape "
+                     "means it runs from the rim to the base."),
                     ("In XYZ mode, {key:where_am_i} names the axis first. In Turn mode it names the "
                      "side you face: from above or below means Z, from the front or the back means "
                      "Y, and from the right or the left means X."),
@@ -1118,21 +1119,21 @@ LESSONS: list[dict[str, Any]] = [
             _step(
                 "floor_top",
                 "Now slice across the mug from above, and find the ring just above the floor: going "
-                "down the mug, it is the last ring before the slice turns solid. Press Next (N) when "
-                "ready.",
+                "down the mug, it is the last ring before the slice plane shows a solid disc. Press "
+                "Next (N) when ready.",
                 braille="Ring above the floor",
                 check=_mark_band("z", "above_floor"),
                 requires=("display",),
                 done="That is just above the floor. A little deeper, and the floor is solid.",
                 on_fail="Not there yet. You want the last ring before the solid floor.",
                 hints=(
-                    ("Near the bottom of the mug the slice is a solid disc: the floor. Just above "
-                     "it, the middle is hollow and you feel a ring."),
+                    ("Near the bottom of the mug the slice plane shows a solid disc: the floor. Just "
+                     "above it, the middle is hollow and you feel a ring."),
                     ("In XYZ mode, press {key:axis_z} until you hear Z from plus. In Turn mode, "
                      "press {key:turn_pitch_down} until {key:where_am_i} says View from above."),
-                    ("From above, press {key:depth_deeper_10} until the slice turns solid, then "
-                     "{key:depth_shallower_1} one step at a time until it is a ring again, and "
-                     "press Next."),
+                    ("From above, press {key:depth_deeper_10} until the slice plane shows a solid "
+                     "disc, then {key:depth_shallower_1} one step at a time until it shows a ring "
+                     "again, and press Next."),
                 ),
             ),
             _step(
@@ -1281,9 +1282,11 @@ LESSONS: list[dict[str, Any]] = [
                 narrate={
                     "single": "Single: one slice, with scrollbars along the bottom and right edges "
                               "when you are zoomed in.",
-                    "side-by-side": "Side-by-Side: your slice on the right, and on the left the whole "
-                                    "mug from another side, with a line where the slice plane passes.",
-                    "slice-graph": "Slice Graph: your slice, with a graph along the bottom rows.",
+                    "side-by-side": "Side-by-Side: what your slice plane shows, on the right, and on "
+                                    "the left the whole mug from another side, with a line where the "
+                                    "slice plane passes.",
+                    "slice-graph": "Slice Graph: what your slice plane shows, with a graph along the "
+                                   "bottom rows.",
                 },
                 done="This is the Slice Graph layout.",
                 hints=(

@@ -1011,9 +1011,9 @@ def _inside(position: float, band: tuple[float, float], margin: float = 0.0) -> 
 
 def test_lesson_8_starts_away_from_the_handle_and_its_hints_land_in_it():
     """The X and Y steps do not pass on the axis key alone, the presses their
-    last hint gives reach the band and one press fewer does not. XYZ mode
-    rounds to a whole percent before it steps, so a landing has to be a
-    percent inside the band."""
+    last hint gives reach the band and one press fewer does not. A landing has
+    to be a percent inside the band, so a step rounded to a whole percent still
+    lands in it."""
     lesson = _lesson("axes")
     steps = {step["id"]: step for step in lesson["steps"]}
     pose = lesson["pose"]
