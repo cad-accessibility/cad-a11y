@@ -243,3 +243,57 @@ def test_wire_depth_is_measured_in_from_the_readers_surface(view, wire_depth):
     assert along == pytest.approx(expected), (
         f"{view} at {wire_depth}%: the plane should be {wire_depth}% in from the reader's surface"
     )
+
+
+@pytest.fixture(scope="module")
+def tee(tmp_path_factory):
+    """A T standing on its stem, one body: a 10 mm wide stem under a 40 mm bar,
+    30 mm deep, built up from the origin as OpenSCAD models are. From above, the
+    whole of it covers the bar; its footprint is only the stem's foot."""
+    import meshlib.mrmeshpy as mrmeshpy
+
+    from src.converter.plane_intersection_utils import meshlib_to_trimesh_fast, trimesh_to_meshlib_fast
+
+    # The stem reaches into the bar, so the union has no faces that merely touch.
+    stem = trimesh.creation.box(bounds=[[15.0, 0.0, 0.0], [25.0, 30.0, 11.0]])
+    bar = trimesh.creation.box(bounds=[[0.0, 0.0, 10.0], [40.0, 30.0, 20.0]])
+    mesh = meshlib_to_trimesh_fast(mrmeshpy.boolean(
+        trimesh_to_meshlib_fast(stem), trimesh_to_meshlib_fast(bar), mrmeshpy.BooleanOperation.Union,
+    ).mesh)
+    path = tmp_path_factory.mktemp("far_face") / "tee.stl"
+    path.write_text(trimesh.exchange.stl.export_stl_ascii(mesh))
+    return mesh, path
+
+
+def test_a_cut_on_the_far_face_keeps_a_slab_of_the_object_not_all_of_it(tee):
+    """Nothing is left behind a plane on the far face, and the cut used to hand
+    back the whole model instead (#252). It keeps the thinnest slab at that face
+    now, and the plane stays where it was asked for."""
+    mesh, _ = tee
+    shape, origin = depth_peeling_single_depth_with_bbox(
+        mesh.copy(), np.array([0.0, 0.0, 1.0]), depth=0.0, bbox=mesh.bounds.flatten()
+    )
+    assert origin[2] == pytest.approx(0.0, abs=1e-6)
+    assert shape.bounds[1][2] < 0.01 * 20.0
+    assert shape.bounds[1][0] - shape.bounds[0][0] == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize("render_mode,projection", [
+    ("Filled", "orthographic"), ("Outline", "silhouette"), ("x-ray", "x-ray"),
+])
+def test_100_percent_draws_the_far_end_not_the_whole_model(tee, render_mode, projection):
+    """From above, 100% is the T's foot, next to the 99% slice, rather than the
+    whole bar that 0% shows (#252). XYZ mode lands there whenever a model's
+    origin is on its far face."""
+    _, path = tee
+    renderer = CADComparisonRenderer(str(path), str(path))
+
+    def pins(depth):
+        image = renderer.render({"view": "z+", "depth": depth, "renderMode": render_mode,
+                                 "projectionMode": projection, "mode": "single", "zoom": 0},
+                                screen_size=[96, 40]).image
+        return int((image[..., 0] < 128).sum())
+
+    whole, last_slice, far_end = pins(0), pins(99), pins(100)
+    assert far_end < whole
+    assert far_end == pytest.approx(last_slice, rel=0.1)

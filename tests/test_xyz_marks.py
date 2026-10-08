@@ -166,6 +166,21 @@ def test_every_render_tells_the_viewer_where_the_origin_is():
     assert all(value is None or isinstance(value, float) for value in body["origin_fraction"])
 
 
+def test_the_origin_can_be_asked_for_before_the_first_render():
+    """XYZ mode starts a model with the cut at its origin (#235 review) and asks
+    where that is before rendering, so the first frame is already there. The
+    answer is the one the render gives."""
+    flask_app.config["TESTING"] = True
+    with flask_app.test_client() as client:
+        asked = client.post("/render/origin", json={"current_model": 0}).get_json()
+        rendered = client.post("/render", json={
+            "view": "z+", "renderMode": "Cut", "mode": "single", "depth": 50, "zoom": 0,
+            "current_model": 0, "target_pixel_width": 96, "target_pixel_height": 40,
+        }).get_json()
+    assert asked["status"] == "success"
+    assert asked["origin_fraction"] == rendered["origin_fraction"]
+
+
 def test_the_origin_s_place_on_the_display_is_where_the_marker_goes(plate, far_plate):
     """What "," and "." read (#235 review): across from the left edge and up from
     the bottom, as fractions of the display, so the pin the marker is drawn on

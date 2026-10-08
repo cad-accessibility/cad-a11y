@@ -921,20 +921,21 @@ function setOrientationFromView(viewToken) {
 // "Position reset" (the 0 shortcut and the Reset Position button) means the
 // whole framing, not just pan: undo any roll/pitch/yaw back to the straight-on
 // basis for whatever view is currently selected, zoom back out to 0, and
-// bring the slice plane back to the middle (50%) of every axis -- otherwise a
-// rotated, zoomed-in, or deeply-sliced view came back centred on itself
+// bring the slice plane back on every axis, to the middle (50%) in Turn mode
+// and to the model's origin in XYZ mode (resetSlicePlanesForMode) -- otherwise
+// a rotated, zoomed-in, or deeply-sliced view came back centred on itself
 // rather than on the object. Does not touch which named view is selected, or
 // send anything to the server itself -- callers still own
 // clearCameraCenterState(), setting currentMoveCamera = "reset", and the
 // single sendStateToServer() call, same as before.
 function resetOrientationZoomAndDepth() {
     setOrientationFromView(viewerState.currentView);
-    resetSlicePlanes();
+    resetSlicePlanesForMode();
     // Undoing a pitch/yaw can change which physical axis is "depth" (see
     // activeSliceAxis) -- re-derive the displayed slice percentage for
     // whichever axis is active now, the same as updateView does after a
-    // real view switch. With every plane just reset to 0.5 this always
-    // settles on 50% regardless of which axis that turns out to be.
+    // real view switch. Every plane was just reset, so this settles on 50% in
+    // Turn mode and on the origin in XYZ mode, whichever axis that is.
     syncSliceDepthFromPlanes();
     updateZoom(0, false, false);
 }
@@ -1075,6 +1076,22 @@ function resetSlicePlanes() {
     viewerState.slicePlanes = { x: 0.5, y: 0.5, z: 0.5 };
 }
 
+/** Where a reset puts the cut on all three axes, and where a model starts (#235
+ * review). Turn mode: the middle, 50%. XYZ mode: the model's origin, which reads
+ * 0% there on every axis of every model, or the nearest face when the origin lies
+ * beyond the object, since the cut stays inside it. Until something has said
+ * where this model's origin is, XYZ mode gets the middle as well; a model's first
+ * render asks for the origin first (placeNewModelAtOrigin), so that only happens
+ * to a reset pressed while a model is loading. */
+function resetSlicePlanesForMode() {
+    resetSlicePlanes();
+    if (!isXyzMode()) return;
+    for (const axis of ['x', 'y', 'z']) {
+        const origin = originFraction(axis);
+        if (origin !== null) viewerState.slicePlanes[axis] = Math.min(1, Math.max(0, origin));
+    }
+}
+
 // Re-derive viewerState.currentSliceDepth from the persisted planes after the active axis
 // may have changed (any pitch/yaw, or picking a different named view). Roll
 // never changes the active axis, so this is a harmless no-op there. Does not
@@ -1142,6 +1159,67 @@ function originFraction(axis) {
     if (!origin || origin.model !== viewerState.currentModel) return null;
     const value = origin.fraction[axis];
     return Number.isFinite(value) ? value : null;
+}
+
+function originKnown(model = viewerState.currentModel) {
+    return Boolean(viewerState.modelOrigin && viewerState.modelOrigin.model === model);
+}
+
+/** Ask the server where a model's origin is, without rendering it. True once it
+ * is known; false if the server could not say, and the model then starts in the
+ * middle until its first render answers. */
+async function fetchModelOrigin(model) {
+    try {
+        const response = await fetch(`${SERVER_URL}/render/origin`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model, current_model: model }),
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        if (!Array.isArray(data.origin_fraction)) return false;
+        setModelOrigin(data.origin_fraction, model);
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+/** Before a model's first render, in XYZ mode, put the cut at its origin, where
+ * a reset puts it, so the first view and a reset agree (#235 review). The origin
+ * is asked for first, so the first frame on the display is already there rather
+ * than at 50% with a second frame after it. A cut the reader moved while the
+ * answer was on its way stays where they put it. False when another model has
+ * replaced this one meanwhile: that one renders itself, so the caller sends
+ * nothing. */
+async function placeNewModelAtOrigin() {
+    if (!isXyzMode() || originKnown()) return true;
+    const model = viewerState.currentModel;
+    const before = { ...viewerState.slicePlanes };
+    const known = await fetchModelOrigin(model);
+    if (model !== viewerState.currentModel) return false;
+    const untouched = ['x', 'y', 'z'].every(axis => viewerState.slicePlanes[axis] === before[axis]);
+    if (known && untouched && isXyzMode()) {
+        resetSlicePlanesForMode();
+        syncSliceDepthFromPlanes();
+        refreshViewInfoSummary();
+    }
+    return true;
+}
+
+/** What reset says (#235 review). In XYZ mode, where the cut went: the origin,
+ * or how near it got when the origin lies beyond the object along the axis being
+ * cut. Turn mode's reset always lands on 50%, so it says what it always said. */
+function announcePositionReset(emit = announceAlert) {
+    const percent = isXyzMode() ? cutPercent() : null;
+    if (percent === null) {
+        emit('Position reset');
+    } else if (percent === 0) {
+        emit('Position reset. Slice plane at the origin.', { braille: 'Reset. Cut at origin' });
+    } else {
+        const readout = cutReadout();
+        emit(`Position reset. Slice plane at ${readout.spoken}.`, { braille: `Reset. Cut ${readout.short}` });
+    }
 }
 
 // Where the origin landed on the frame now on the display, in whole percent:
@@ -1533,6 +1611,9 @@ function syncAxisModeUI() {
     }
     if (turnShortcutsSection) turnShortcutsSection.hidden = xyz;
     if (xyzShortcutsSection) xyzShortcutsSection.hidden = !xyz;
+    // Where 0 puts the slice plane, in the shortcuts list (#235 review).
+    const resetPlaneHelp = document.getElementById('reset-plane-help');
+    if (resetPlaneHelp) resetPlaneHelp.textContent = xyz ? 'the origin' : '50%';
     refreshDepthControls();
 }
 
@@ -2909,12 +2990,13 @@ document.getElementById("model-list-dropdown").addEventListener("input", functio
     refreshDeleteButton();
 });
 
-document.getElementById("model-list-dropdown").addEventListener("change", function() {
+document.getElementById("model-list-dropdown").addEventListener("change", async function() {
     const selectedItem = this.value;
     viewerState.currentModel = selectedItem;
     clearCameraCenterState();
     // A new model gets its own default view: straight-on orientation, zoom 0
-    // (fit longest_3d_dim along the shortest display dimension), and slice depth back to 50% -- not
+    // (fit longest_3d_dim along the shortest display dimension), and the cut
+    // where a reset puts it, 50% in Turn mode and the origin in XYZ mode -- not
     // whatever the previous model was left at.
     // Likewise the render mode: back to the app default rather than carrying
     // over e.g. xray or superposition from the previous model.
@@ -2926,8 +3008,9 @@ document.getElementById("model-list-dropdown").addEventListener("change", functi
         sbModel.textContent = this.options[this.selectedIndex].text;
     }
     beginModelLoadAnnouncement(selectedLabel, 'selection');
-    pendingInputSource = 'ui';
     refreshDeleteButton();
+    if (!(await placeNewModelAtOrigin())) return;
+    pendingInputSource = 'ui';
     if (isSliceGraphRepresentationMode()) {
         autoRefreshSliceGraph({ updateAnchor: false });
     } else {
@@ -2986,7 +3069,14 @@ document.getElementById('delete-model-btn').addEventListener('click', async func
             if (dropdown.options.length > 0) {
                 dropdown.selectedIndex = 0;
                 viewerState.currentModel = dropdown.value;
-                sendStateToServer();
+                // The model now showing starts with the cut where a reset puts
+                // it, like one chosen from the list, not where the removed one
+                // was left.
+                resetSlicePlanesForMode();
+                syncSliceDepthFromPlanes();
+                placeNewModelAtOrigin().then(ready => {
+                    if (ready) sendStateToServer();
+                });
             }
             refreshDeleteButton();
             statusEl.textContent = `✓ ${stem} removed`;
@@ -3049,9 +3139,14 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             statusEl.textContent = `✓ ${data.filename} uploaded`;
             announce(`Model ${data.filename} uploaded.`);
             beginModelLoadAnnouncement(selectedLabel, 'upload');
-            pendingInputSource = 'upload';
             refreshDeleteButton();
-            sendStateToServer();
+            // Not awaited, so the upload control comes back now rather than
+            // once the model has loaded.
+            placeNewModelAtOrigin().then(ready => {
+                if (!ready) return;
+                pendingInputSource = 'upload';
+                sendStateToServer();
+            });
         } else {
             statusEl.textContent = `Upload failed: ${data.message}`;
             announceAlert(`Upload failed: ${data.message}`);
@@ -3099,9 +3194,15 @@ function applyServerState(data) {
             viewerState.currentModel = data.load_model;
             refreshStatusBar();
             clearCameraCenterState();
-            resetSlicePlanes();
-            pendingInputSource = 'ingest';
-            sendStateToServer();
+            resetSlicePlanesForMode();
+            // The planes alone are not what a render sends: the depth read off
+            // them is, and it used to keep the previous model's.
+            syncSliceDepthFromPlanes();
+            placeNewModelAtOrigin().then(ready => {
+                if (!ready) return;
+                pendingInputSource = 'ingest';
+                sendStateToServer();
+            });
         }
     }
 }
@@ -3786,7 +3887,7 @@ if (resetPositionBtn) {
         // once actually consumed -- see the '0' case in the keydown handler.
         viewerState.currentMoveCamera = "reset";
         sendStateToServer();
-        announce('Position reset');
+        announcePositionReset(announce);
     });
 }
 
@@ -4294,7 +4395,7 @@ document.addEventListener('keydown', function(e) {
             // returns before consuming it), silently dropping the reset.
             viewerState.currentMoveCamera = "reset";
             sendStateToServer();
-            announceAlert('Position reset');
+            announcePositionReset(announceAlert);
             break;
 
         default:
@@ -4493,7 +4594,9 @@ document.addEventListener('DOMContentLoaded', async function() {
     // nothing.
     if (studyMode) return;
 
-    // Send initial state to server
+    // Send initial state to server, in XYZ mode with the cut at the model's
+    // origin, which has to be asked for first.
+    if (!(await placeNewModelAtOrigin())) return;
     pendingInputSource = 'init';
     sendStateToServer();
 
