@@ -18,14 +18,25 @@ import pytest
 
 import app.cad_comparison_lib as cad_lib
 import app.server
+from app import db
 from app.server import app as flask_app
 
 
 @pytest.fixture()
-def client():
+def client(tmp_path, monkeypatch):
+    # A database of its own, set up as the server sets one up at start. An upload
+    # is recorded against the browser that sent it (#237), and CI starts with no
+    # database at all; these passed locally only because data/db/usage.db was
+    # already there.
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "usage.db")
+    db._local.__dict__.clear()
+    db._contacts_local.__dict__.clear()
+    db.init_db()
     flask_app.config["TESTING"] = True
     with flask_app.test_client() as c:
         yield c
+    db._local.__dict__.clear()
+    db._contacts_local.__dict__.clear()
 
 
 def _params(**overrides):
