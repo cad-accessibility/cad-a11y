@@ -177,7 +177,7 @@ class TestRegion:
         labels = {
             # "Next (N)": Continue was not obvious for N (#245 review).
             "tutorial-continue-btn": "Next (N)",
-            "tutorial-show-me-btn": "Show me",
+            "tutorial-show-me-btn": "Show me (M)",
             "tutorial-back-btn": "Back (B)",
             "tutorial-repeat-btn": "Repeat (C)",
             "tutorial-hint-btn": "Hint 1 of 3",
@@ -608,7 +608,9 @@ class TestReviewRegressions:
         assert "!(cadTutorial.running && runner.view === 'lesson')" in source
 
     def test_the_heading_and_so_the_region_says_tutorial(self):
-        assert "`Tutorial, lesson ${runner.lessonIndex + 1} of ${lessons().length}: ${lesson.title}`" in _js()
+        heading = _function(_js(), "function headingText(")
+        assert ("const where = `lesson ${runner.lessonIndex + 1} of ${lessons().length}: "
+                "${lesson.title} (Tutorial)`;") in heading
 
     def test_the_dialogs_tutorial_buttons_are_a_labelled_group(self):
         html = VIEWER_HTML.read_text(encoding="utf-8")
@@ -760,3 +762,63 @@ class TestSecondReview:
         assert ("const STUDY_EVENT_TYPES = new Set(['keyboard', 'announcement', 'model_loaded', "
                 "'page_load', 'page_unload', 'error']);") in study
         assert "if (!sessionActive || !STUDY_EVENT_TYPES.has(eventType)) return;" in study
+
+
+class TestThirdReview:
+    """The second pass of the #245 review (head 992b69b), each pinned where it
+    was fixed. Checked in a browser as well."""
+
+    def test_the_display_chosen_in_lesson_1_is_kept_as_the_output_device(self):
+        stored = _function(_js(), "function useStoredAnswer(")
+        assert "window.setOutputDevicePreference(device);" in stored
+        viewer = _js(VIEWER_JS)
+        assert "saveOutputDevice(device);" in _function(viewer, "function setOutputDevicePreference(")
+        assert "localStorage.setItem(SETTINGS_OUTPUT_DEVICE_KEY, device)" in _function(viewer, "function saveOutputDevice(")
+        assert "window.setOutputDevicePreference = setOutputDevicePreference;" in viewer
+        assert "initializeOutputDevice();" in _function(viewer, "document.addEventListener('DOMContentLoaded'")
+        # A choice made in Settings is kept the same way.
+        assert "saveOutputDevice(targetDevice);" in _function(viewer, "function switchOutputDevice(")
+
+    def test_the_heading_changes_with_every_step(self):
+        heading = _function(_js(), "function headingText(")
+        assert "return `${stepNumberText()}, ${where}`;" in heading
+        assert "if (runner.phase === 'done')" in heading and "if (runner.phase === 'blocked')" in heading
+
+    def test_m_is_show_me(self):
+        js = _js()
+        handler = js[js.index("document.addEventListener('keydown', function (e) {"):]
+        assert "if (key !== 'n' && key !== 'b' && key !== 'c' && key !== 'm') return;" in handler
+        assert "else if (key === 'm') showMe();" in handler
+        html = _html()
+        section = html[html.index('id="tutorial-shortcuts-section"'):]
+        section = section[:section.index("</ul>")]
+        assert "<li><kbd>M</kbd> Show me" in section
+
+    def test_a_viewer_key_on_a_step_that_waits_says_how_to_move_on_once(self):
+        js = _js()
+        note = _function(js, "function noteWaiting(")
+        assert "say('Move on by pressing Next (N) or exit tutorial if done.');" in note
+        assert "if (runner.waitNoted ||" in note and "runner.waitNoted = true;" in note
+        assert "currentCheck().type === 'manual'" in note and "runner.phase === 'done'" in note
+        assert "runner.waitNoted = false;" in _function(js, "function leaveStep(")
+        handle = _function(js, "function handleEvent(")
+        assert handle.index("if (ev.serial !== runner.stepSerial) return;") < handle.index("noteWaiting(ev)")
+
+    def test_the_end_of_a_lesson_ends_like_a_step_that_waits(self):
+        js = _js()
+        assert "const WAIT_SENTENCE = 'Press Next (N) when ready.';" in js
+        assert _function(js, "function lessonDoneText(").count("${WAIT_SENTENCE}") == 3
+
+    def test_step_links_come_after_the_text(self):
+        region = _region_markup()
+        assert region.index('id="tutorial-step-text"') < region.index('id="tutorial-step-links"')
+        assert 'id="tutorial-prints"' not in _html() and "el.prints" not in _js()
+        links = _function(_js(), "function renderLinks(")
+        for part in ("anchor.target = '_blank';", "anchor.rel = 'noopener noreferrer';",
+                     "(opens in a new tab)", "anchor.setAttribute('download', '');"):
+            assert part in links
+
+    def test_the_turn_mode_steps_still_slice_through_the_middle(self):
+        """Lesson 8's pose starts X away from the handle, so the Turn-mode steps,
+        which ask where the handle goes, put every slice plane back in the middle."""
+        assert "axis_mode: 'turn', depth: 50" in _function(_js(), "function useStoredAnswer(")

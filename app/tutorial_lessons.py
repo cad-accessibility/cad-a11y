@@ -197,6 +197,8 @@ KEYS: dict[str, dict[str, Any]] = {
     "tutorial_continue": _k("N", "n", "goes on to the next step or lesson. Tutorial only"),
     "tutorial_back": _k("B", "b", "goes back one step. Tutorial only"),
     "tutorial_repeat": _k("C", "c", "repeats the current step. Tutorial only"),
+    # "show Me". X, the other obvious letter, is the viewer's X axis.
+    "tutorial_show_me": _k("M", "m", "shows how to do the current step, where it can. Tutorial only"),
 }
 
 # The command names the runner's captureDeviceKey hook reports for a Monarch or
@@ -315,14 +317,34 @@ def _answers(*pairs: tuple[str, str]) -> list[dict[str, str]]:
     return [{"label": label, "value": value} for label, value in pairs]
 
 
+# The printable mug and its ten slice plaques. They are to move to a repository
+# of their own in the cad-accessibility organization, which can hold a written
+# tutorial later (#245 review); until it exists, this is the zip the app serves.
+PRINT_FILES_LINK = {"label": "Printable tutorial mug and slice plaques (zip file)", "href": "/tutorial/prints.zip"}
+
+# The guides for building the two controls the last two extras use, in the
+# tangible-controls repository: written to be read with a screen reader.
+BUILD_GUIDE_LINKS = [
+    {
+        "label": "How to make and use the orientation cube",
+        "href": "https://github.com/cad-accessibility/tangible-controls/blob/master/docs/cube.md",
+    },
+    {
+        "label": "How to make and use the slider",
+        "href": "https://github.com/cad-accessibility/tangible-controls/blob/master/docs/slider.md",
+    },
+]
+
+
 def _step(step_id: str, text: str, *, braille: str, check: dict[str, Any], done: str,
           hints: tuple[str, str, str], sr: str | None = None, on_fail: str | None = None,
           answers: list[dict[str, str]] | None = None, narrate: dict[str, str] | None = None,
           demo: dict[str, Any] | None = None, key_only: bool = False,
           when: dict[str, str] | None = None, store: str | None = None,
-          requires: tuple[str, ...] = ()) -> dict[str, Any]:
+          requires: tuple[str, ...] = (), links: list[dict[str, str]] | None = None) -> dict[str, Any]:
     """Every step carries every field, so the runner never has to ask whether one
-    is there."""
+    is there. ``links`` are shown after the step's text, as links: the text
+    itself is plain."""
     return {
         "id": step_id,
         "text": text,
@@ -339,6 +361,7 @@ def _step(step_id: str, text: str, *, braille: str, check: dict[str, Any], done:
         "when": when,
         "store": store,
         "requires": list(requires),
+        "links": copy.deepcopy(links),
     }
 
 
@@ -374,7 +397,11 @@ DEFAULT_POSE: dict[str, Any] = {
     "reset_pan": True,
 }
 
-XYZ_POSE: dict[str, Any] = {**DEFAULT_POSE, "axis_mode": "xyz"}
+# Lesson 8 starts in XYZ mode with the slice plane 20% in from the right, away
+# from the handle. From the middle, pressing X was already inside the handle
+# loop, and passed the step that asks for it before anyone had found it (#245
+# review).
+XYZ_POSE: dict[str, Any] = {**DEFAULT_POSE, "axis_mode": "xyz", "depth": 20}
 
 # The six places the handle can be after a turn, as answer buttons.
 _HANDLE_ANSWERS = _answers(
@@ -426,38 +453,48 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "printed_mug",
-                "Do you have the printed tutorial mug nearby? It is optional "
-                "but can help with some lessons. The files to print it "
-                "come at the end of the tutorial.",
+                "The printed mug is optional. It is a 3D print of the practice mug, and it can help "
+                "with some lessons. You can download and print it from the link after this text. "
+                "Press Next (N) when ready.",
+                sr="The printed mug is optional. The link after this text has the files to print it. "
+                   "Press Next (N) when ready.",
                 braille="Optional printed mug",
-                check=_answer(None),
-                answers=_answers(("Yes", "yes"), ("No", "no")),
-                store="has_print",
-                done="Noted.",
+                check=_manual(),
+                links=[PRINT_FILES_LINK],
+                done="Next, check that the keys work.",
                 hints=(
-                    ("The printed mug is a 3D print of the same mug the lessons use. Most people "
-                     "do not have one."),
-                    "Your answer only changes a few sentences in later lessons.",
-                    "Choose Yes if you are have the printed mug handy, otherwise choose No.",
+                    ("The files are a zip with the mug, ten flat plaques, each one slice across the "
+                     "mug's height, and a short text file that says what each one is."),
+                    "Most people do not have a printed mug. Every lesson works without one.",
+                    "Press Next, or {key:tutorial_continue}, to go on.",
                 ),
             ),
             _step(
                 "keys_reach",
-                "This tutorial will focus on teaching you key commands and concepts."
-                "You can use help (?) at any time to learn about CadA11y key commands."
-                "In addition, this tutorial introduces three commands:"
-                "{key:tutorial_continue} is the same as Next, {key:tutorial_back} is Back "
-                "and {key:tutorial_repeat} is Repeat."
-                "Since key commands can conflict with some screen readers in browse mode"
-                "Switch to focus or forms mode, then confirm by pressing {key:where_am_i} now. "
-                "If nothing happens, choose Keys aren't working.",
+                "This tutorial teaches key commands and concepts. You can press "
+                "{key:shortcuts_question} at any time for a list of every key command. The tutorial "
+                "has four commands of its own: {key:tutorial_continue} is Next, {key:tutorial_back} "
+                "is Back, {key:tutorial_repeat} is Repeat and {key:tutorial_show_me} is Show me. "
+                "Some steps move forward by themselves when you complete them. Some wait for you to "
+                "press Next (N). They always end with the sentence 'Press Next (N) when ready'. "
+                "When a step moves forward by itself, the tutorial says what you did, then reads "
+                "the next step. Key commands can conflict with a screen reader in browse mode, so "
+                "switch to focus or forms mode, then press {key:where_am_i} now. If nothing "
+                "happens, choose Keys aren't working.",
+                sr="The tutorial's own keys are {key:tutorial_continue} for Next, {key:tutorial_back} "
+                   "for Back, {key:tutorial_repeat} for Repeat and {key:tutorial_show_me} for Show me. "
+                   "Some steps move forward by themselves when you complete them. Some wait for you "
+                   "to press Next (N). They always end with the sentence 'Press Next (N) when ready'. "
+                   "When a step moves forward by itself, the tutorial says what you did, then the "
+                   "next step. Switch your screen reader to focus or forms mode, then press "
+                   "{key:where_am_i}.",
                 braille="Press period",
                 check=_key("."),
                 key_only=True,
-                done="The keypress worked. From now on "
-                     "{key:tutorial_continue} is the same as Next, {key:tutorial_back} is Back "
-                     "and {key:tutorial_repeat} is Repeat.",
-                on_fail="They keypress worked, but you didn't press {key:where_am_i}. ",
+                done="The keypress worked. From now on {key:tutorial_continue} is Next, "
+                     "{key:tutorial_back} is Back, {key:tutorial_repeat} is Repeat and "
+                     "{key:tutorial_show_me} is Show me.",
+                on_fail="The keys work, but that was a different key. Press {key:where_am_i}.",
                 hints=(
                     ("Your screen reader may be in browse mode, where it uses single keys to move "
                      "around the page. Switch it to focus mode or forms mode, then press "
@@ -541,14 +578,14 @@ LESSONS: list[dict[str, Any]] = [
                 "slice plane touches the rim and "
                 "the base, through the middle of the mug. If you have the printed mug, hold it "
                 "upright with the handle to your left. Press Next (N) when ready.",
-                sr="The display shows one slice through the mug, as if you sliced it and felt the cut "
-                   "face. It is scaled to fit the display. Press Next (N) when ready.",
+                sr="The display shows one slice through the mug, as if you sliced it with a knife. "
+                   "It is scaled to fit the display. Press Next (N) when ready.",
                 braille="Mug slice. N: next.",
                 check=_manual(),
                 done="Next, find the handle.",
                 hints=(
-                    ("Feel the whole display slowly, edge to edge. The cut face of the mug is "
-                     "the raised area in the middle."),
+                    ("Feel the whole display slowly, edge to edge. The slice of the mug is the "
+                     "raised area in the middle."),
                     ("The slice plane goes through the middle of the mug, so you feel two walls, the base "
                      "joining them, and the handle on one side."),
                     "Press Next, or {key:tutorial_continue}, to go on.",
@@ -594,7 +631,7 @@ LESSONS: list[dict[str, Any]] = [
                 "reset",
                 "Reset moves the slice plane to 50%, zooms out to fit the mug "
                 "to screen and centres the mug. Use it whenever you get lost. Try {key:reset} now.",
-                sr="Reset fits the mug to screen, centers, and moves the slice plane to 50%"
+                sr="Reset fits the mug to screen, centers, and moves the slice plane to 50%. "
                    "Try {key:reset} now.",
                 braille="Reset pos: 0",
                 check=_key("0"),
@@ -617,7 +654,8 @@ LESSONS: list[dict[str, Any]] = [
                 "worked_example",
                 "First, a worked example. Each time you press Next, the tutorial moves the "
                 "slice plane for you, from near the far side of the mug to near the side closest to you. "
-                "Feel each slice and listen to what it is. This demo visits five depths",
+                "Feel each slice and listen to what it is. This demo visits five depths. "
+                "Press Next (N) when ready.",
                 braille="N demos traverse",
                 check=_manual(),
                 demo={"frames": [
@@ -670,8 +708,8 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "mark_handle",
-                "Now find the handle. Press {key:depth_shallower_10} until you "
-                "feel the handle loop on the left, then press Next.",
+                "Now find the handle. Press {key:depth_shallower_10} until you feel the handle "
+                "loop on the left. Press Next (N) when ready.",
                 braille="Find the handle",
                 check=_mark_band("x", "handle_loop"),
                 done="That is the handle. It is present in the middle part of the mug.",
@@ -754,8 +792,8 @@ LESSONS: list[dict[str, Any]] = [
                 "centre_handle",
                 "To pan the mug, press {key:pan_up}, {key:pan_left}, {key:pan_down} or "
                 "{key:pan_right}: up, left, down or right, a quarter of the display at a time. "
-                "The handle is on the {handle_side} side of the mug. Press {pan_toward_handle} to move"
-                "it to the center.",
+                "The handle is on the {handle_side} side of the mug. To bring it to the center, "
+                "press {pan_toward_handle}.",
                 sr="Move the mug with {key:pan_up}, {key:pan_left}, {key:pan_down} and "
                    "{key:pan_right} until the tutorial says the handle is in the middle.",
                 braille="Handle to center",
@@ -771,14 +809,14 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "zoom_out",
-                "Now zoom out. Press {key:zoom_out_10} (10%) or  {key:zoom_out_1} (1%) repeatedly or press {key:reset}.",
+                "Now zoom out. Press {key:zoom_out_10} (10%) or {key:zoom_out_1} (1%) repeatedly or press {key:reset}.",
                 sr="Press {key:zoom_out_10} repeatedly or {key:reset} until the zoom is 0.",
                 braille="Zoom out to 0",
                 check=_state("zoom", lte=0.001),
                 done="Zoom is 0.",
                 hints=(
                     "Zoom cannot go below 0, so extra presses do no harm.",
-                    "You zoomed in twice, so  press {key:zoom_out_10} twice.",
+                    "You zoomed in twice, so press {key:zoom_out_10} twice.",
                     "Press {key:zoom_out_10} twice, or press {key:reset} once.",
                 ),
             ),
@@ -797,13 +835,13 @@ LESSONS: list[dict[str, Any]] = [
                 "If you view the mug from above, fill shows everything below the slice plane. "
                 "If you view it from below, fill shows everything above the slice plane. To switch, "
                 "press the same axis key twice. Slice depth is always a percentage from 0 on any "
-                "axis, regardless of the direction you are viewing from.",
-                sr="This lesson uses XYZ mode: you choose the axis to cut along, and the same key "
+                "axis, regardless of the direction you are viewing from. Press Next (N) when ready.",
+                sr="This lesson uses XYZ mode: you choose the axis to slice along, and the same key "
                    "again gives the other side. The slice plane's number counts from the model's origin, "
                    "the middle of the base. Press Next (N) when ready.",
                 braille="Press X Y or Z",
                 check=_manual(),
-                done="Next, cut along Z.",
+                done="Next, slice along Z.",
                 hints=(
                     ("Z is up. The base of the mug is at the low end of Z, and the rim at the "
                      "high end."),
@@ -817,10 +855,10 @@ LESSONS: list[dict[str, Any]] = [
                 "the viewer says Z from plus, X right, Y up: you are above the mug, facing down. "
                 "On your display, X increases to the right and Y increases up the display. "
                 "This is indicated with a braille X at the display's right and a braille Y at its top.",
-                sr="Press {key:axis_z} to cut along Z, across the mug, parallel to the table.",
-                braille="Cut along Z",
+                sr="Press {key:axis_z} to slice along Z, across the mug, parallel to the table.",
+                braille="Slice along Z",
                 check=_state("cut_axis", equals="z"),
-                done="You are cutting along Z. the slice plane is a ring, the wall of the mug, with a small "
+                done="You are slicing along Z. The slice is a ring, the wall of the mug, with a small "
                      "separate piece beside it, the handle.",
                 hints=(
                     "Z is the axis that points up from the table.",
@@ -830,9 +868,9 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "origin",
-                "We call the place where the three axes meet the origin. At the origin, depth is 0 along all axes."
-                "A 3D model has a position in space in XYZ mode. The mug base is centered on the origin in X and Y"
-                "Press {key:origin} to hear where the origin is on the display: how far across from the left "
+                "We call the place where the three axes meet the origin. At the origin, depth is 0 "
+                "along all axes. A 3D model has a position in space in XYZ mode. The mug base is "
+                "centered on the origin in X and Y. Press {key:origin} to hear where the origin is on the display: how far across from the left "
                 "edge, and how far up from the bottom. In XYZ mode the display also marks the origin with a small hollow square.",
                 braille="Press ,",
                 check=_key(","),
@@ -841,31 +879,34 @@ LESSONS: list[dict[str, Any]] = [
                 on_fail="That was a different key. Press {key:origin}.",
                 hints=(
                     "The origin is the point every coordinate is measured from.",
-                    "Feel for the hollow square to check its position",
+                    "Feel for the hollow square to check its position.",
                     "Press {key:origin}.",
                 ),
             ),
             _step(
                 "cut_x_handle",
-                "The slice plane position is relative to the origin in XYZ mode. 0 no longer means"
-                "at the far side of the model. Pess {key:where_am_i} to check the axis slice plane position."
-                "Now move the slice plane {key:axis_x} until the handle is on screen.",
+                "In XYZ mode the slice plane's position is measured from the origin, so 0 no longer "
+                "means the far side of the model. Press {key:where_am_i} at any time to check where "
+                "the slice plane is. Now press {key:axis_x} to slice along X. The slice plane starts "
+                "away from the handle, so press {key:depth_deeper_10} until you feel the handle loop.",
+                sr="Press {key:axis_x} to slice along X, then {key:depth_deeper_10} until you feel the "
+                   "handle loop.",
                 braille="Find handle on X",
                 check=_all(_state("cut_axis", equals="x"), _in_band("x", "handle_loop")),
-                done="The handle is on screen.",
+                done="That is the handle loop.",
                 hints=(
-                    "From the X axis, the slice plane divides the mug vertically across the handle",
-                    ("If you moved the slice plane earlier, bring it back toward the middle until the "
-                     "handle is on screen."),
-                    ("Press {key:axis_x}. If you do not feel the handle, press {key:reset} to bring "
-                     "the slice plane back to the middle."),
+                    "From the X axis, the slice plane divides the mug vertically across the handle.",
+                    ("Each press moves the slice plane a tenth of the way through the mug, and the "
+                     "handle is in the middle."),
+                    ("Press {key:axis_x} until the viewer says X from plus, then press "
+                     "{key:depth_deeper_10} three times."),
                 ),
             ),
             _step(
                 "cut_y_arms",
                 "Press {key:axis_y}. If the viewer says Y from minus you are facing the mug from the front, "
                 "with the handle pointing at you. Press {key:depth_shallower_10} to move the slice plane "
-                "toward you until you feel two small separate pieces. The slice plane is intersecting the handle  "
+                "toward you until you feel two small separate pieces. The slice plane is intersecting the handle "
                 "in two places because it curves outward (crossing the plane) and then back (crossing it again).",
                 sr="Press {key:axis_y}, then {key:depth_shallower_10} until you feel two small "
                    "separate pieces, the arms of the handle.",
@@ -909,7 +950,7 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "keep_mode",
-                "You can stay XYZ mode, or use Turn mode (pitch, roll and yaw). You can change again "
+                "You can stay in XYZ mode, or use Turn mode (pitch, roll and yaw). You can change again "
                 "in Settings (main menu), under Axis Mode. Which do you prefer?",
                 sr="Keep XYZ mode, or use Turn mode, which turns the model with pitch, roll and "
                    "yaw? Change in Settings (main menu) at any time.",
@@ -973,9 +1014,9 @@ LESSONS: list[dict[str, Any]] = [
         steps=[
             _step(
                 "reset",
-                "The tutorial has zoomed in and moved the mug off the middle."
-                "Press {key:reset} to return to center, fit the mug to"
-                "the display, and move reset slice depth on every axis (50% in Turn mode; the origin in XYZ mode)",
+                "The tutorial has zoomed in and moved the mug off the middle. Press {key:reset} to "
+                "return to center, fit the mug to the display and move the slice plane back on every "
+                "axis (50% in Turn mode; the origin in XYZ mode).",
                 sr="Press {key:reset} to return to center.",
                 braille="Press 0 to reset",
                 check=_all(_key("0"), _state("zoom", lte=0.001)),
@@ -991,7 +1032,7 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "fit",
-                "Fit is similar to reset, but for the current slice."
+                "Fit is similar to reset, but for the current slice. "
                 "It adjusts the zoom and pans so the current slice fills the display. Press "
                 "{key:fit}.",
                 braille="Press F to fit",
@@ -1044,8 +1085,8 @@ LESSONS: list[dict[str, Any]] = [
                 done="Right.",
                 on_fail="Press {key:where_am_i} and listen to the first words.",
                 hints=(
-                    ("Rings mean a cut across the mug, parallel to the table. A U shape means a "
-                     "cut from the rim to the base."),
+                    ("Rings mean a slice across the mug, parallel to the table. A U shape means a "
+                     "slice from the rim to the base."),
                     ("In XYZ mode, {key:where_am_i} names the axis first. In Turn mode it names the "
                      "side you face: from above or below means Z, from the front or the back means "
                      "Y, and from the right or the left means X."),
@@ -1058,11 +1099,12 @@ LESSONS: list[dict[str, Any]] = [
                 "back_to_handle",
                 # The setup never leaves the slice plane inside the loop, so there is always
                 # something to find (#245 review).
-                "Now find the handle in the view that shows the whole curve.",
+                "Now find the handle in the view that shows the whole curve. Press Next (N) when "
+                "ready.",
                 braille="Back to the loop",
                 check=_mark_band("x", "handle_loop"),
                 done="Found it.",
-                on_fail="Not there yet. You need a cut along X, through the middle of the mug.",
+                on_fail="Not there yet. You need to slice along X, through the middle of the mug.",
                 hints=(
                     "The handle loop is there only when you slice along X through the middle.",
                     ("In XYZ mode, {key:axis_x} views along X. In Turn mode, a yaw turns the mug "
@@ -1075,19 +1117,20 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "floor_top",
-                "Now switch  find the ring just above the floor: going down the mug, it is "
-                "the last ring before the slice plane turns solid. Press Next there.",
+                "Now slice across the mug from above, and find the ring just above the floor: going "
+                "down the mug, it is the last ring before the slice turns solid. Press Next (N) when "
+                "ready.",
                 braille="Ring above the floor",
                 check=_mark_band("z", "above_floor"),
                 requires=("display",),
                 done="That is just above the floor. A little deeper, and the floor is solid.",
                 on_fail="Not there yet. You want the last ring before the solid floor.",
                 hints=(
-                    ("Near the bottom of the mug the slice plane is a solid disc: the floor. Just above "
+                    ("Near the bottom of the mug the slice is a solid disc: the floor. Just above "
                      "it, the middle is hollow and you feel a ring."),
                     ("In XYZ mode, press {key:axis_z} until you hear Z from plus. In Turn mode, "
                      "press {key:turn_pitch_down} until {key:where_am_i} says View from above."),
-                    ("From above, press {key:depth_deeper_10} until the slice plane turns solid, then "
+                    ("From above, press {key:depth_deeper_10} until the slice turns solid, then "
                      "{key:depth_shallower_1} one step at a time until it is a ring again, and "
                      "press Next."),
                 ),
@@ -1127,7 +1170,7 @@ LESSONS: list[dict[str, Any]] = [
                 hints=(
                     ("Along Z, the handle is a separate piece in the middle of the mug. Notice "
                      "where it stops being separate."),
-                    ("Cut along X through the middle, as in the depth lesson: the loop meets the "
+                    ("Slice along X through the middle, as in the depth lesson: the loop meets the "
                      "wall of the U in two places."),
                     "It joins at the top and at the bottom. Choose Two places.",
                 ),
@@ -1137,11 +1180,11 @@ LESSONS: list[dict[str, Any]] = [
     # The model chooser and upload are what this lesson teaches, so it unlocks
     # them.
     _lesson(
-        "your_own_model", "wrapup", "Your own model", minutes=4, lock=False,
+        "your_own_model", "wrapup", "Your own model", minutes=5, lock=False,
         steps=[
             _step(
                 "pick_model",
-                "Choose a model from the Model list, or upload an STL or STEP file of your own."
+                "Choose a model from the Model list, or upload an STL or STEP file of your own. "
                 "An upload lasts until this tab closes or reloads.",
                 braille="Pick a model",
                 check=_model_changed(),
@@ -1167,20 +1210,48 @@ LESSONS: list[dict[str, Any]] = [
                     "Choose the Export Current View as Image button.",
                 ),
             ),
+            # Open to everyone, so that someone without the cube or the slider
+            # knows where the guides to making them are, and that the two extras
+            # for them can be skipped (#245 review).
+            _step(
+                "build_controls",
+                "Two of the extras after the main tutorial use controls you build yourself: an "
+                "orientation cube, which changes the view when you turn it, and a slider, which "
+                "moves the slice plane. The guides to making them are on GitHub, in the "
+                "tangible-controls repository, at the links after this text, and they are written to "
+                "be read with a screen reader. The cube's guide has its parts list, the print files "
+                "on each release, how to put it together and how to connect it. The slider's guide "
+                "has its parts list and how to set it up and connect it. If you do not have them, "
+                "you can skip those two extras. Press Next (N) when ready.",
+                sr="Two extras use a cube and a slider you build yourself, and the links after this "
+                   "text are the guides to making them. Without them, you can skip those two "
+                   "extras. Press Next (N) when ready.",
+                braille="Guides: cube, slider",
+                check=_manual(),
+                links=BUILD_GUIDE_LINKS,
+                done="Next, the end of the main tutorial.",
+                hints=(
+                    ("The cube needs a 3D printer and a WitMotion motion sensor. The slider is an "
+                     "Adafruit Slider Trinkey, a small board with a USB plug."),
+                    "Both need Chrome or Edge, which can reach Bluetooth and serial devices.",
+                    "Press Next, or {key:tutorial_continue}, to go on.",
+                ),
+            ),
             _step(
                 "props_and_end",
-                "One last thing: if you want the printed mug, the tutorial area has a link to the files "
-                "for a 3D printer. That is the end of the main tutorial. If you keep going, you will "
-                "learn about a physical axis control and depth control that you have to print and "
-                "buy parts for, then assemble. Exit tutorial if you prefer to use the interface. "
-                "To return or redo any lesson, choose the Tutorial button in the main menu and pick "
-                "it from the list of lessons, or use Choose a lesson in the keyboard shortcuts list; "
-                "Start over runs the whole tutorial again.",
+                "One last thing: if you want the printed mug, the link after this text has the files "
+                "for a 3D printer. That is the end of the main tutorial. Three extra lessons follow, "
+                "on the slice graph, the cube and the slider: Next starts them, and Exit tutorial "
+                "leaves them for another time. To return or redo any lesson, choose the Tutorial "
+                "button in the main menu and pick it from the list of lessons, or use Choose a "
+                "lesson in the keyboard shortcuts list; Start over runs the whole tutorial again. "
+                "Press Next (N) when ready.",
                 sr="That is the end of the tutorial. Three extra lessons follow: Next starts them, "
                    "and Exit tutorial leaves them. To redo any lesson, choose the Tutorial button in "
-                   "the main menu.",
+                   "the main menu. Press Next (N) when ready.",
                 braille="Tutorial complete",
                 check=_manual(),
+                links=[PRINT_FILES_LINK],
                 done="Exit tutorial (button) to leave",
                 hints=(
                     ("The files are a zip with the mug, ten flat plaques, each one slice across the "
@@ -1210,9 +1281,9 @@ LESSONS: list[dict[str, Any]] = [
                 narrate={
                     "single": "Single: one slice, with scrollbars along the bottom and right edges "
                               "when you are zoomed in.",
-                    "side-by-side": "Side-by-Side: your cut on the right, and on the left the whole "
+                    "side-by-side": "Side-by-Side: your slice on the right, and on the left the whole "
                                     "mug from another side, with a line where the slice plane passes.",
-                    "slice-graph": "Slice Graph: your cut, with a graph along the bottom rows.",
+                    "slice-graph": "Slice Graph: your slice, with a graph along the bottom rows.",
                 },
                 done="This is the Slice Graph layout.",
                 hints=(
@@ -1244,10 +1315,10 @@ LESSONS: list[dict[str, Any]] = [
                 "you to the far side, one percentage point for each depth. It compares every slice with one "
                 "anchor slice, the slice plane you had when you came into Slice Graph: where the line is "
                 "high, the slice at that depth is very different from the anchor, and where it is "
-                "low, much the same. The single upright line across the graph is where your cut is "
-                "now. Find it, then press Next.",
+                "low, much the same. The single upright line across the graph is where your slice "
+                "plane is now. Find it. Press Next (N) when ready.",
                 sr="The bottom rows are the graph: left is the side nearest you, right the far side, "
-                   "and the upright line is your cut. Press Next when you have found it.",
+                   "and the upright line is your slice plane. Press Next (N) when ready.",
                 braille="Feel the graph",
                 check=_manual(),
                 done="That upright line shows the position of your slice plane.",
@@ -1364,7 +1435,7 @@ LESSONS: list[dict[str, Any]] = [
                    "the new view.",
                 braille="Turn Y face up",
                 check=_state("cut_axis", equals="y"),
-                # the slice plane stays where the lesson put it, the middle, which along Y is
+                # The slice plane stays where the lesson put it, the middle, which along Y is
                 # the walls and the base: the handle is further toward minus Y (#245
                 # review).
                 done="The slice plane cuts along the Y axis from the rim to the base through both walls of "
@@ -1411,11 +1482,11 @@ LESSONS: list[dict[str, Any]] = [
                 check=_sweep("x", 10, 90),
                 narrate={"handle_loop": "The handle loop, in the middle."},
                 done="That was the whole mug, from one side to the other.",
-                on_fail="the slice plane is no longer along X. Press {key:reset}, then slide from one end "
-                        "to the other.",
+                on_fail="The slice plane is no longer along X. Press {key:reset}, then slide from one "
+                        "end to the other.",
                 hints=(
                     "Move the slider slowly; the display follows it.",
-                    "the slice plane has to reach near both sides of the mug.",
+                    "The slice plane has to reach near both sides of the mug.",
                     "Push the slider all the way to one end, then all the way to the other.",
                 ),
             ),

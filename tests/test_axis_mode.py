@@ -503,8 +503,9 @@ def test_where_am_i_is_short_and_names_the_model_on_display():
     xyz = _code_only(_function("xyzDescription"))
     assert "View from ${side.speech}, ${axes.speech}. ${cut.speech}." in xyz
     cut = _code_only(_function("cutPlanePhrase"))
-    assert "speech: `Cut plane: ${letter}=${signedPercent(percent)}%`" in cut
-    assert "braille: `Cut: ${percent}%`" in cut
+    # "Slice plane", not "Cut plane": Cut is also a render mode (#245 review).
+    assert "speech: `Slice plane: ${letter}=${signedPercent(percent)}%`" in cut
+    assert "braille: `Slice: ${percent}%`" in cut
     label = _code_only(_function("modelLabel"))
     assert "viewerState.currentModel" in label
     assert "sbModel.textContent = modelLabel();" in _function("refreshStatusBar")

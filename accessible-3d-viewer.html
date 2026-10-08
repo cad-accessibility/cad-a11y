@@ -226,6 +226,8 @@
                 <div id="tutorial-lesson-view">
                     <p id="tutorial-progress" class="tutorial-progress">Step 1 of 1</p>
                     <p id="tutorial-step-text" class="tutorial-step-text"></p>
+                    <!-- A step's links: its text is plain, so they come after it. -->
+                    <ul id="tutorial-step-links" class="tutorial-step-links" aria-label="Links for this step" hidden></ul>
                     <p id="tutorial-note" class="tutorial-note" hidden></p>
                     <p id="tutorial-last" class="tutorial-last">Last thing said: <span id="tutorial-last-text">nothing yet.</span></p>
                     <div id="tutorial-answers" role="group" aria-labelledby="tutorial-answers-label" hidden>
@@ -243,7 +245,7 @@
                         <button type="button" id="tutorial-back-btn">Back (B)</button>
                         <button type="button" id="tutorial-repeat-btn">Repeat (C)</button>
                         <button type="button" id="tutorial-hint-btn">Hint 1 of 3</button>
-                        <button type="button" id="tutorial-show-me-btn" hidden>Show me</button>
+                        <button type="button" id="tutorial-show-me-btn" hidden>Show me (M)</button>
                         <button type="button" id="tutorial-restart-lesson-btn">Return to lesson start</button>
                         <button type="button" id="tutorial-keyhelp-btn" aria-pressed="false">Key help</button>
                         <button type="button" id="tutorial-lessons-btn">Lessons</button>
@@ -258,9 +260,6 @@
                         <h3 id="tutorial-keys-help-heading">When keys do nothing</h3>
                         <ul id="tutorial-keys-help-list"></ul>
                     </div>
-                    <p id="tutorial-prints" hidden>
-                        <a href="/tutorial/prints.zip" download>Printable tutorial mug and slice plaques (zip file)</a>
-                    </p>
                 </div>
 
                 <div id="tutorial-menu-view" hidden>
@@ -321,7 +320,7 @@
                      marked current. -->
                 <div id="xyz-controls">
                     <div id="xyz-help" class="help-text">
-                        Cut along X, Y or Z, as in OpenSCAD. Plus or minus is the
+                        Slice along X, Y or Z, as in OpenSCAD. Plus or minus is the
                         side you look from.
                     </div>
                     <div class="button-group" aria-describedby="xyz-help">
@@ -360,13 +359,13 @@
                     aria-valuetext="50 percent depth"
                     aria-describedby="slice-help"
                 >
-                <div id="slice-help" class="help-text sr-only">In Turn mode, 0% is the surface nearest you and 100% the far side, whichever way the model is facing. Keys: Up deeper 1%, Down shallower 1%, Page Up deeper 10%, Page Down shallower 10%, Home the surface, End the far side. In XYZ mode, the cut's position along its axis, in percent of the object's size with 0% at the model's origin. The slider runs from the object's lowest coordinate to its highest; on it Up and Page Up move toward the highest, while elsewhere they go deeper.</div>
+                <div id="slice-help" class="help-text sr-only">In Turn mode, 0% is the surface nearest you and 100% the far side, whichever way the model is facing. Keys: Up deeper 1%, Down shallower 1%, Page Up deeper 10%, Page Down shallower 10%, Home the surface, End the far side. In XYZ mode, the slice plane's position along its axis, in percent of the object's size with 0% at the model's origin. The slider runs from the object's lowest coordinate to its highest; on it Up and Page Up move toward the highest, while elsewhere they go deeper.</div>
                 <div class="button-group">
                     <button type="button" id="deeper-btn" aria-describedby="deeper-help">Deeper: 50%</button>
                     <button type="button" id="shallower-btn" aria-describedby="shallower-help">Shallower: 50%</button>
                 </div>
-                <div id="deeper-help" class="sr-only">Moves the cut 10% further from you.</div>
-                <div id="shallower-help" class="sr-only">Moves the cut 10% nearer to you.</div>
+                <div id="deeper-help" class="sr-only">Moves the slice plane 10% further from you.</div>
+                <div id="shallower-help" class="sr-only">Moves the slice plane 10% nearer to you.</div>
             </section>
 
             <!-- 1c. Render mode -->
@@ -640,6 +639,7 @@
                 <li><kbd>N</kbd> Next, while the tutorial is running</li>
                 <li><kbd>B</kbd> Back a step</li>
                 <li><kbd>C</kbd> Repeat the step</li>
+                <li><kbd>M</kbd> Show me, on a step the tutorial can show you how to do</li>
             </ul>
         </div>
 
@@ -667,12 +667,12 @@
                 <li><kbd>J</kbd> Yaw left (90°): rotate around vertical axis. </li>
                 <li><kbd>L</kbd> Yaw right (90°): rotate around vertical axis</li>
             </ul>
-            <p class="help-text">Other axis mode: XYZ, which cuts along X, Y or Z as in OpenSCAD. Change it in Settings.</p>
+            <p class="help-text">Other axis mode: XYZ, which slices along X, Y or Z as in OpenSCAD. Change it in Settings.</p>
         </div>
         <div id="xyz-shortcuts-section">
             <h3>Axes (XYZ mode)</h3>
             <ul class="shortcuts-list">
-                <li><kbd>X</kbd>, <kbd>Y</kbd>, <kbd>Z</kbd> Cut along that axis: X from plus, Y from minus, Z from plus, the side you look from</li>
+                <li><kbd>X</kbd>, <kbd>Y</kbd>, <kbd>Z</kbd> Slice along that axis: X from plus, Y from minus, Z from plus, the side you look from</li>
                 <li><kbd>X</kbd>, <kbd>Y</kbd> or <kbd>Z</kbd> again The same axis from the other side</li>
             </ul>
             <p class="help-text">Other axis mode: Turn, which turns the model with pitch, roll and yaw. Change it in Settings.</p>
@@ -687,7 +687,7 @@
             <li><kbd>Home</kbd> The surface nearest you</li>
             <li><kbd>End</kbd> The far side</li>
         </ul>
-        <p class="help-text">The same in both axis modes. In XYZ mode the cut is read out as its position along the axis, with 0% at the model's origin, so from X plus, Y plus or Z plus, going deeper lowers the number.</p>
+        <p class="help-text">The same in both axis modes. In XYZ mode the slice plane is read out as its position along the axis, with 0% at the model's origin, so from X plus, Y plus or Z plus, going deeper lowers the number.</p>
 
         <h3>Zoom</h3>
         <ul class="shortcuts-list">
@@ -702,7 +702,7 @@
             <li><kbd>R</kbd> Cycle render mode</li>
             <li><kbd>T</kbd> Cycle view mode</li>
             <li><kbd>F</kbd> Fit current slice to tactile display</li>
-            <li><kbd>.</kbd> Where am I: the view, the cut, the origin, render, zoom and model</li>
+            <li><kbd>.</kbd> Where am I: the view, the slice plane, the origin, render, zoom and model</li>
             <li><kbd>,</kbd> Where the model's origin is on the display, across from the left edge and up from the bottom</li>
         </ul>
 
@@ -776,7 +776,7 @@
             </label>
             <label>
                 <input type="radio" name="axis-mode" id="axis-mode-xyz" value="xyz" checked>
-                XYZ: cut along X, Y or Z, as in OpenSCAD
+                XYZ: slice along X, Y or Z, as in OpenSCAD
             </label>
         </fieldset>
         <div class="button-group settings-checkbox-group">

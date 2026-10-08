@@ -310,7 +310,7 @@ const CHECKS = {
         connectMonarchBtn: $('tutorial-connect-monarch-btn'),
         connectDotpadBtn: $('tutorial-connect-dotpad-btn'),
         exitBtn: $('tutorial-exit-btn'),
-        prints: $('tutorial-prints'),
+        links: $('tutorial-step-links'),
         menuResume: $('tutorial-menu-resume'),
         resumeBtn: $('tutorial-resume-btn'),
         menuGroups: $('tutorial-menu-groups'),
@@ -720,6 +720,7 @@ const CHECKS = {
         // again (#245 review).
         passed: new Set(),
         showMeFrame: 0,        // which band Show me is on, in a sweep
+        waitNoted: false,      // this wait has said how to move on (noteWaiting)
         // Bumped whenever a step opens or closes. An event counts only for the
         // step that was open when it happened, so the tail of the action that
         // passed one step cannot pass the next.
@@ -758,10 +759,15 @@ const CHECKS = {
     }
 
     // The heading names the region too (aria-labelledby), so it says what the
-    // region is: "Tutorial, lesson 4 of 15: Meet the mug". A landmark list or
-    // a first focus that said only "Lesson 4 of 15" never said "tutorial".
+    // region is: "Step 1 of 3, lesson 4 of 15: Meet the mug (Tutorial)". A
+    // landmark list or a first focus that said only "Lesson 4 of 15" never said
+    // "tutorial". It changes with every step, since the same heading page after
+    // page is not good practice (#245 review).
     function headingText(lesson) {
-        return `Tutorial, lesson ${runner.lessonIndex + 1} of ${lessons().length}: ${lesson.title}`;
+        const where = `lesson ${runner.lessonIndex + 1} of ${lessons().length}: ${lesson.title} (Tutorial)`;
+        if (runner.phase === 'done') return `Done, ${where}`;
+        if (runner.phase === 'blocked') return `Cannot start yet, ${where}`;
+        return `${stepNumberText()}, ${where}`;
     }
 
     function stepNumberText() {
@@ -924,7 +930,7 @@ const CHECKS = {
         const letter = String(axis).toUpperCase();
         if (!target) return '';
         if (state.cut_axis !== axis) {
-            return `You are cutting along ${String(state.cut_axis || '').toUpperCase()}; the ${bandLabel(target)} is along ${letter}.`;
+            return `You are slicing along ${String(state.cut_axis || '').toUpperCase()}; the ${bandLabel(target)} is along ${letter}.`;
         }
         const percent = Number(state.cut_percent);
         // Turn mode speaks depth from the reader, which from the right, the back
@@ -1136,7 +1142,7 @@ const CHECKS = {
                 ? (Math.random() < 0.5 ? 25 : 65) + Math.floor(Math.random() * 11)
                 : 30 + Math.floor(Math.random() * 41);
             applyPose(lesson.pose, { force: true, overrides: { view: views[axis], depth } });
-            return 'The tutorial has picked an axis and a cut for you, without saying which.';
+            return 'The tutorial has picked an axis and a place for the slice plane, without saying which.';
         },
         // "Pose default, then the runner zooms to 0.3 and pans once, and says so."
         reset_and_fit: (lesson) => {
@@ -1270,7 +1276,7 @@ const CHECKS = {
             // called optional (#245 review).
             el.skipLessonBtn.hidden = !(runner.phase === 'blocked' || runner.phase === 'step');
             el.showMeBtn.hidden = !(runner.phase === 'step' && showMeMoves(step, lesson));
-            el.prints.hidden = lesson.id !== 'your_own_model';
+            renderLinks(runner.phase === 'step' ? step : null);
             updateHintButton(step);
         });
     }
@@ -1287,7 +1293,7 @@ const CHECKS = {
             const frame = frames[runner.demoFrame - 1];
             notes.push(`Example ${runner.demoFrame} of ${frames.length}: ${resolveText(frame.say)}`);
         } else if (frames.length) {
-            notes.push(`Next shows the example, one cut at a time (${frames.length} in all).`);
+            notes.push(`Next shows the example, one slice at a time (${frames.length} in all).`);
         }
         return notes.map(sentence).join(' ');
     }
@@ -1316,6 +1322,29 @@ const CHECKS = {
             return button;
         }));
         el.answers.hidden = choices.length === 0;
+    }
+
+    /** A step's links, after its text, which is plain text (#245 review). A
+     * link to another site opens in a new tab and says so, so the lesson is
+     * still there to come back to; a file on this server downloads. */
+    function renderLinks(step) {
+        const links = step && Array.isArray(step.links) ? step.links : [];
+        el.links.replaceChildren(...links.map((link) => {
+            const item = document.createElement('li');
+            const anchor = document.createElement('a');
+            anchor.href = link.href;
+            if (/^https?:/i.test(link.href)) {
+                anchor.target = '_blank';
+                anchor.rel = 'noopener noreferrer';
+                anchor.textContent = `${link.label} (opens in a new tab)`;
+            } else {
+                anchor.setAttribute('download', '');
+                anchor.textContent = link.label;
+            }
+            item.appendChild(anchor);
+            return item;
+        }));
+        el.links.hidden = links.length === 0;
     }
 
     function renderHints(step) {
@@ -1398,6 +1427,7 @@ const CHECKS = {
         runner.checkState = null;
         runner.stepSerial += 1;
         runner.showMeFrame = 0;
+        runner.waitNoted = false;
         // A /tutorial/locate answer still on its way is for the step being left:
         // it used to be spoken in whatever lesson came next (#245 review).
         locateSeq += 1;
@@ -1431,16 +1461,21 @@ const CHECKS = {
         if (impl && impl.atEntry) queueEvent({ type: 'entry', data: {} });
     }
 
+    // What every step that waits for Next ends with, and so the end of a lesson
+    // too (#245 review, Jen's words). Lesson 1 says that it means "waiting".
+    const WAIT_SENTENCE = 'Press Next (N) when ready.';
+
     function lessonDoneText() {
         const lesson = currentLesson();
         const next = lessons()[runner.lessonIndex + 1];
-        if (!next) return 'That was the last lesson. Next (N) finishes the tutorial.';
+        if (!next) return `That was the last lesson, and Next finishes the tutorial. ${WAIT_SENTENCE}`;
         if (next.part === 'extras' && lesson && lesson.part !== 'extras') {
             const extras = lessons().filter(l => l.part === 'extras').map(l => l.title).join(', ');
-            return `${lessonNumberText()} is done, and that is the end of the tutorial. Next (N) goes on to `
-                + `the extras: ${extras}. Exit tutorial leaves them for another time; they are in the list of lessons.`;
+            return `${lessonNumberText()} is done, and that is the end of the tutorial. Next goes on to `
+                + `the extras: ${extras}. Exit tutorial leaves them for another time; they are in the list of `
+                + `lessons. ${WAIT_SENTENCE}`;
         }
-        return `${lessonNumberText()} is done. Next (N) goes on to lesson ${runner.lessonIndex + 2}, ${next.title}.`;
+        return `${lessonNumberText()} is done. Next is lesson ${runner.lessonIndex + 2}, ${next.title}. ${WAIT_SENTENCE}`;
     }
 
     function passStep(lead = null) {
@@ -1667,8 +1702,9 @@ const CHECKS = {
     }
 
     function showMe() {
-        if (runner.view !== 'lesson' || runner.phase !== 'step') return;
-        const step = currentStep();
+        if (runner.view !== 'lesson') return;
+        // M answers at the end of a lesson too, where there is nothing to show.
+        const step = runner.phase === 'step' ? currentStep() : null;
         const moves = showMeMoves(step);
         if (!moves) {
             say('Show me has nothing to show on this step.');
@@ -1866,6 +1902,13 @@ const CHECKS = {
     /** Answers that change what the tutorial does next. */
     function useStoredAnswer(name, value) {
         if (name === 'display') {
+            // The person's own choice, so it becomes their Output device setting
+            // and is kept for their next visit, like the axis mode below. The
+            // main Connect button follows that setting (#245 review).
+            const device = norm(value);
+            if ((device === 'monarch' || device === 'dotpad') && typeof window.setOutputDevicePreference === 'function') {
+                window.setOutputDevicePreference(device);
+            }
             // The lesson text names keys for the display chosen, so fetch it
             // again for that display. The lessons are the same; only words change.
             ensurePayload().then(refreshTexts)
@@ -1882,9 +1925,13 @@ const CHECKS = {
             // The Turn-mode steps ask where the handle goes after a turn, so the
             // cut has to go through it. Each axis keeps its own cut, and the
             // earlier steps leave Z at the rim, so a pitch would otherwise land
-            // on an empty slice. Keep the view; put every cut back in the middle.
+            // on an empty slice. Keep the view; put every cut back in the middle,
+            // which the lesson's own pose does not (it starts X away from the
+            // handle).
             if (mode === 'turn') {
-                applyPose(currentLesson().pose, { force: true, overrides: { view: getState().view, axis_mode: 'turn' } });
+                applyPose(currentLesson().pose, {
+                    force: true, overrides: { view: getState().view, axis_mode: 'turn', depth: 50 },
+                });
             }
         }
     }
@@ -2050,7 +2097,7 @@ const CHECKS = {
             const mark = data.landmarks && data.landmarks.handle;
             say(mark && mark.present !== false && mark.side
                 ? `Handle: ${SIDE_WORDS[mark.side] || mark.side}${handleAgainstBody(mark, data.landmarks.body)}.`
-                : 'Handle: not in this cut.');
+                : 'Handle: not in this slice.');
         }
         refreshStepText();
         queueEvent({ type: 'locate', data: {} });
@@ -2083,8 +2130,25 @@ const CHECKS = {
             return;
         }
         if (ev.type === 'render') onRender(ev);
-        if (runner.phase !== 'step' || ev.serial !== runner.stepSerial) return;
+        if (ev.serial !== runner.stepSerial) return;
+        if (ev.type === 'keyboard') noteWaiting(ev);
+        if (runner.phase !== 'step') return;
         evaluate(ev);
+    }
+
+    // The keys that open help or leave a control, which are not a try at the
+    // step.
+    const NOT_AN_ACTION = new Set(['h', '?', 'escape']);
+
+    /** A viewer key on a step that waits for Next, or at the end of a lesson,
+     * does nothing for the tutorial. The first one says how to move on; the key
+     * has already said what it did (#245 review). */
+    function noteWaiting(ev) {
+        if (runner.waitNoted || NOT_AN_ACTION.has(String(ev.data.key))) return;
+        const waiting = runner.phase === 'done' || (runner.phase === 'step' && currentCheck().type === 'manual');
+        if (!waiting) return;
+        runner.waitNoted = true;
+        say('Move on by pressing Next (N) or exit tutorial if done.');
     }
 
     function onRender(ev) {
@@ -2665,7 +2729,7 @@ const CHECKS = {
     }
     syncDialogSection();
 
-    // N, B and C while a lesson is showing. Not in any form control but a
+    // N, B, C and M while a lesson is showing. Not in any form control but a
     // button: a focused list takes letters to jump to an option, and the last lesson
     // asks for the model list, where N, B and C used to go to the tutorial
     // instead (#245 review). Not under a dialog, not with Ctrl, Alt or Cmd, and
@@ -2685,7 +2749,7 @@ const CHECKS = {
         if (document.querySelector('dialog[open]')) return;
         if (e.metaKey || e.ctrlKey || e.altKey) return;
         const key = String(e.key || '').toLowerCase();
-        if (key !== 'n' && key !== 'b' && key !== 'c') return;
+        if (key !== 'n' && key !== 'b' && key !== 'c' && key !== 'm') return;
         // Key help describes them even with single-key shortcuts off, as the
         // viewer does its own keys (#245 review), once per press.
         if (cadTutorial.keyHelpActive) {
@@ -2698,6 +2762,7 @@ const CHECKS = {
         if (e.repeat) return;
         if (key === 'n') continueAction();
         else if (key === 'b') back();
+        else if (key === 'm') showMe();
         else repeat();
     });
 })();

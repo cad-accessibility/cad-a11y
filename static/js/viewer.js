@@ -840,7 +840,7 @@ function viewName(viewToken = viewerState.currentView) {
 // label is what the Settings radio reads; short is what is said ("XYZ mode").
 const AXIS_MODES = [
     { key: 'turn', label: 'Turn: pitch, roll and yaw', short: 'Turn' },
-    { key: 'xyz', label: 'XYZ: cut along X, Y or Z, as in OpenSCAD', short: 'XYZ' },
+    { key: 'xyz', label: 'XYZ: slice along X, Y or Z, as in OpenSCAD', short: 'XYZ' },
 ];
 
 // The keys that belong to exactly one mode. tests/test_axis_mode.py holds the
@@ -1246,10 +1246,10 @@ function announcePositionReset(emit = announceAlert) {
     if (percent === null) {
         emit('Position reset');
     } else if (percent === 0) {
-        emit('Position reset. Slice plane at the origin.', { braille: 'Reset. Cut at origin' });
+        emit('Position reset. Slice plane at the origin.', { braille: 'Reset. Slice: origin' });
     } else {
         const readout = cutReadout();
-        emit(`Position reset. Slice plane at ${readout.spoken}.`, { braille: `Reset. Cut ${readout.short}` });
+        emit(`Position reset. Slice plane at ${readout.spoken}.`, { braille: `Reset. Slice ${readout.short}` });
     }
 }
 
@@ -1326,15 +1326,17 @@ function axisSide(viewToken = viewerState.currentView) {
     return { letter, word, speech: `${letter} ${word}`, braille: `${letter}${sign > 0 ? '+' : '-'}` };
 }
 
-/** "Cut plane: X=0%" for "." and the line under the view buttons, and "Cut: 0%"
- * on the braille line, where the view line before it has named the axis. */
+/** "Slice plane: X=0%" for "." and the line under the view buttons, and
+ * "Slice: 0%" on the braille line, where the view line before it has named the
+ * axis. It said "Cut plane", but Cut is also a render mode, and one word for
+ * both was confusing (#245 review). */
 function cutPlanePhrase(axis = currentCutAxis()) {
     const letter = axisLetter(axis);
     const percent = cutPercent(axis);
     if (percent === null) {
-        return { speech: `Cut plane: ${letter}, position not known yet`, braille: 'Cut: not known yet' };
+        return { speech: `Slice plane: ${letter}, position not known yet`, braille: 'Slice: not known yet' };
     }
-    return { speech: `Cut plane: ${letter}=${signedPercent(percent)}%`, braille: `Cut: ${percent}%` };
+    return { speech: `Slice plane: ${letter}=${signedPercent(percent)}%`, braille: `Slice: ${percent}%` };
 }
 
 /** The cut in a few characters, "X 31%", for the status bar and the slider's
@@ -1565,7 +1567,7 @@ function setAxisMode(mode, { announce: shouldAnnounce = true, persist = true, re
 /** A key from the other mode does nothing but say whose it is. */
 function announceWrongModeKey(key, keyMode, emit = announceAlert) {
     const label = key.toUpperCase();
-    const does = keyMode === 'turn' ? `${label} turns the model` : `${label} cuts along ${label}`;
+    const does = keyMode === 'turn' ? `${label} turns the model` : `${label} slices along ${label}`;
     // Z was the reset key until Reset moved to 0, and hands remember.
     const reset = key === 'z' ? ' Reset is now 0.' : '';
     emit(`${does} in ${axisModeLabel(keyMode)} mode. You're in ${axisModeLabel()} mode; change it in Settings.${reset}`, {
@@ -1574,7 +1576,7 @@ function announceWrongModeKey(key, keyMode, emit = announceAlert) {
 }
 
 /** ".": where am I, in either mode, in as few words as the #235 review asked:
- * "View from X plus, Y right, Z up. Cut plane: X=0%. Origin: H: 42% V: 42%.
+ * "View from X plus, Y right, Z up. Slice plane: X=0%. Origin: H: 42% V: 42%.
  * Render: Outline. Zoom: 0.0. Model: mug." Layout and the DotPad are left to the
  * status bar. The braille display gets one short line for each, view first; its
  * text line is 20 cells, so the view line has no "View:" in front of it. This is
@@ -1669,7 +1671,7 @@ function refreshDepthControls() {
     if (slicePercentage) {
         slicePercentage.textContent = xyz ? cutReadout(axis).short : `${viewerState.currentSliceDepth}%`;
     }
-    if (sliceHeading) sliceHeading.textContent = xyz ? 'Cut' : 'Depth';
+    if (sliceHeading) sliceHeading.textContent = xyz ? 'Slice plane' : 'Depth';
     if (xyzPosition) {
         xyzPosition.textContent = xyz
             ? `View from ${axisSide().speech}, ${displayAxesPhrase().speech}. ${cutPlanePhrase(axis).speech}.`
@@ -1797,7 +1799,7 @@ function refreshStatusBar() {
     const xyz = isXyzMode();
     if (sbView) sbView.textContent = xyz ? axisSide().speech : viewName();
     if (sbDepth) sbDepth.textContent = xyz ? cutReadout().short : viewerState.currentSliceDepth + '%';
-    if (sbDepthLabel) sbDepthLabel.textContent = xyz ? 'Cut' : 'Depth';
+    if (sbDepthLabel) sbDepthLabel.textContent = xyz ? 'Slice plane' : 'Depth';
     if (sbRenderMode) sbRenderMode.textContent = renderModeLabel();
     if (sbZoom) sbZoom.textContent = Number(viewerState.currentZoom).toFixed(1);
     if (sbViewMode) sbViewMode.textContent = representationModeLabel();
@@ -1887,8 +1889,8 @@ function refreshViewInfoSummary() {
 function updateButtonLabels() {
     deeperBtn.textContent = `Deeper 10%`;
     shallowerBtn.textContent = `Shallower 10%`;
-    if (deeperHelp) deeperHelp.textContent = 'Moves the cut 10% further from you.';
-    if (shallowerHelp) shallowerHelp.textContent = 'Moves the cut 10% nearer to you.';
+    if (deeperHelp) deeperHelp.textContent = 'Moves the slice plane 10% further from you.';
+    if (shallowerHelp) shallowerHelp.textContent = 'Moves the slice plane 10% nearer to you.';
 }
 
 function updateSliceGraphLockUI() {
@@ -2773,6 +2775,7 @@ window.setTactileDisplay = setTactileDisplay;
 window.activeTactileGrid = activeTactileGrid;
 
 function switchOutputDevice(targetDevice) {
+    saveOutputDevice(targetDevice);
     if (viewerState.currentOutputDevice === targetDevice) {
         announce(`already using ${targetDevice}`);
         return;
@@ -2784,6 +2787,47 @@ function switchOutputDevice(targetDevice) {
     sendStateToServer();
     return true;
 }
+
+// The display someone chose, kept for their next visit. The viewer used to
+// start on DotPad every time, and the main Connect button follows this setting,
+// so a Monarch user had to change it on every visit (#245 review).
+const SETTINGS_OUTPUT_DEVICE_KEY = 'settingsOutputDevice';
+const OUTPUT_DEVICES = ['monarch', 'dotpad'];
+
+function saveOutputDevice(device) {
+    if (!OUTPUT_DEVICES.includes(device)) return;
+    try {
+        window.localStorage.setItem(SETTINGS_OUTPUT_DEVICE_KEY, device);
+    } catch (_) {
+        // Ignore localStorage failures (e.g., privacy mode, or /demo's shim).
+    }
+}
+
+function initializeOutputDevice() {
+    let stored = null;
+    try {
+        stored = window.localStorage.getItem(SETTINGS_OUTPUT_DEVICE_KEY);
+    } catch (_) {
+        stored = null;
+    }
+    if (OUTPUT_DEVICES.includes(stored)) viewerState.currentOutputDevice = stored;
+    syncRadios();
+}
+
+/** The tutorial's first question is which display someone uses. The answer is
+ * their setting from then on, saved as a choice made in Settings is, and not
+ * put back when the tutorial ends (#245 review). Quiet: the tutorial says what
+ * it noted. */
+function setOutputDevicePreference(device) {
+    if (!OUTPUT_DEVICES.includes(device)) return false;
+    saveOutputDevice(device);
+    if (viewerState.currentOutputDevice === device) return false;
+    viewerState.currentOutputDevice = device;
+    syncRadios();
+    sendStateToServer();
+    return true;
+}
+window.setOutputDevicePreference = setOutputDevicePreference;
 
 // Helper to update viewerState.composeScrollbar and viewerState.composeSliceGraph based on view mode
 function updateDisplayOptions() {
@@ -2870,7 +2914,7 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
 /** What either preview shows, in words, for its alt text. */
 function previewDescription() {
     if (isXyzMode()) {
-        return `View from ${axisSide().speech}, cut at ${cutReadout().spoken}, ${renderModeLabel()}`;
+        return `View from ${axisSide().speech}, slice plane at ${cutReadout().spoken}, ${renderModeLabel()}`;
     }
     return `${viewName()} view, ${viewerState.currentSliceDepth}% depth, ${renderModeLabel()}`;
 }
@@ -4774,6 +4818,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     initializeOptionalSectionVisibility();
     initializeSliceGraphMode();
     initializeAxisSettings();
+    initializeOutputDevice();
     updateGenericDeviceConnectUI();
 
     // Pre-select a model when opened via /workshop?model=<stem> or ?model=<stem>.
@@ -4793,6 +4838,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     // nothing.
     if (studyMode) return;
 
+    // Send initial state to server
     // The page is set up. The tutorial waits for this before it applies a
     // lesson's view, since everything above would otherwise overwrite it.
     document.dispatchEvent(new CustomEvent('cad:viewer-ready'));
@@ -4800,8 +4846,8 @@ document.addEventListener('DOMContentLoaded', async function() {
     // so the default model never reaches the display first. The tutorial always
     // hands this back, rendering itself if it decides not to start.
     if (window.cadTutorial && window.cadTutorial.ownsFirstRender) return;
-    // Send initial state to server, in XYZ mode with the cut at the model's
-    // origin, which has to be asked for first.
+    // In XYZ mode the cut starts at the model's origin, which has to be asked
+    // for first.
     if (!(await placeNewModelAtOrigin())) return;
     pendingInputSource = 'init';
     sendStateToServer();

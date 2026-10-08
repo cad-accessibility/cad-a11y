@@ -90,7 +90,7 @@ ON_FAIL_TYPES = {"sweep", "edge", "mark_band", "answer", "key", "keys"}
 
 STEP_FIELDS = {
     "id", "text", "sr", "braille", "check", "done", "hints", "on_fail", "answers", "narrate",
-    "demo", "key_only", "when", "store", "requires",
+    "demo", "key_only", "when", "store", "requires", "links",
 }
 LESSON_FIELDS = {"id", "part", "title", "minutes", "requires", "pose", "lock", "steps"}
 POSE_FIELDS = {
@@ -106,7 +106,7 @@ REQUIRED_KEY_NAMES = {
     "pan_down", "pan_right", "scrollbar_overlay", "graph_overlay", "graph_refresh", "graph_lock",
     "shortcuts", "cursor_mode", "cursor_move", "turn_pitch_up", "turn_pitch_down",
     "turn_yaw_left", "turn_yaw_right", "turn_roll_ccw", "turn_roll_cw", "tutorial_continue",
-    "tutorial_back", "tutorial_repeat",
+    "tutorial_back", "tutorial_repeat", "tutorial_show_me",
 }
 
 # The command names the runner's captureDeviceKey hook reports (contract section 5).
@@ -116,16 +116,20 @@ CAPTURE_NAMES = {
 }
 
 # Handled by tutorial.js rather than the viewer.
-TUTORIAL_KEY_NAMES = {"tutorial_continue", "tutorial_back", "tutorial_repeat"}
+TUTORIAL_KEY_NAMES = {"tutorial_continue", "tutorial_back", "tutorial_repeat", "tutorial_show_me"}
 
 # Words that assume sight. "Seen from" is allowed: it is the viewer's own phrase
-# for which side a view is from, and a lesson has to quote what people hear.
+# for which side a view is from, and a lesson has to quote what people hear. The
+# same goes for "Visual previews", the name of the page's region that holds
+# Export, which a screen reader reads out among the landmarks.
 VISUAL_WORDS = re.compile(
     r"\b(see|sees|seeing|saw|look|looks|looked|looking|click|clicks|clicked|clicking|watch|"
-    r"watches|watching|glance|glances|visible|invisible|highlighted)\b",
+    r"watches|watching|glance|glances|visible|visibly|visibility|invisible|visual|visually|"
+    r"highlighted)\b",
     re.IGNORECASE,
 )
 SEEN_NOT_FROM = re.compile(r"\bseen\b(?!\s+from)", re.IGNORECASE)
+PAGE_NAMES = ("Visual previews",)
 DASHES = ("\u2014", "\u2013", " -- ")
 
 KEY_PLACEHOLDER = re.compile(r"\{key:([a-z0-9_]+)\}")
@@ -163,6 +167,8 @@ def _step_strings(step: dict) -> Iterator[tuple[str, str]]:
         yield f"narrate[{value}]", line
     for i, frame in enumerate((step["demo"] or {}).get("frames", [])):
         yield f"demo.frames[{i}].say", frame["say"]
+    for i, link in enumerate(step["links"] or []):
+        yield f"links[{i}].label", link["label"]
 
 
 def _lesson_strings(lesson: dict) -> Iterator[tuple[str, str]]:
@@ -759,7 +765,10 @@ def test_default_pose_is_the_study_defaults_on_the_tutorial_mug():
     for field in ("view", "depth", "render_mode", "representation_mode", "compose_scrollbar",
                   "zoom", "reset_pan"):
         assert tl.DEFAULT_POSE[field] == study_protocol.VIEWER_DEFAULTS[field], field
-    assert tl.XYZ_POSE == {**tl.DEFAULT_POSE, "axis_mode": "xyz"}
+    # Lesson 8's differs only in the mode and where the slice plane starts,
+    # which test_lesson_8_starts_away_from_the_handle_and_its_hints_land_in_it
+    # holds against the mug.
+    assert tl.XYZ_POSE == {**tl.DEFAULT_POSE, "axis_mode": "xyz", "depth": tl.XYZ_POSE["depth"]}
     assert _lesson("axes")["pose"] == tl.XYZ_POSE
 
 
@@ -802,6 +811,8 @@ def test_no_dashes_and_no_words_that_assume_sight():
     for where, text in _all_user_strings():
         for dash in DASHES:
             assert dash not in text, f"{where} has a dash: {text!r}"
+        for name in PAGE_NAMES:
+            text = text.replace(name, "")
         found = VISUAL_WORDS.search(text) or SEEN_NOT_FROM.search(text)
         assert not found, f"{where} says {found.group(0)!r}: {text!r}"
 
@@ -843,6 +854,226 @@ def test_no_sentence_starts_with_a_key_name():
     opens a sentence."""
     for where, text in _all_user_strings():
         assert not re.search(r"(?:^|[.!?]\s+)\{key:", text), f"{where}: {text!r}"
+
+
+# What a step that waits for Next ends with, and the rule lesson 1 gives for
+# it (#245 review, Jen's words).
+WAIT_SENTENCE = "Press Next (N) when ready."
+WAIT_RULE = ("Some steps move forward by themselves when you complete them. Some wait for you to "
+             "press Next (N). They always end with the sentence 'Press Next (N) when ready'.")
+
+
+def _waits_for_next(step: dict) -> bool:
+    """Whether only Next moves the step on: something to read or feel, or a
+    place the person says they have reached."""
+    return any(check["type"] in ("manual", "mark_band") for check in _checks(step["check"]))
+
+
+def test_every_step_that_waits_for_next_ends_by_saying_so():
+    for lesson, step in _steps():
+        where = f"{lesson['id']}.{step['id']}"
+        spoken = [("text", step["text"])] + ([("sr", step["sr"])] if step["sr"] is not None else [])
+        for field, words in spoken:
+            if _waits_for_next(step):
+                assert words.endswith(" " + WAIT_SENTENCE), f"{where}.{field} does not end with it"
+                assert words.count(WAIT_SENTENCE) == 1, f"{where}.{field} says it twice"
+            else:
+                # Said only where it is true, or it stops meaning anything.
+                assert WAIT_SENTENCE not in words, f"{where}.{field} moves on by itself"
+
+
+def test_lesson_1_says_once_which_steps_wait():
+    found = [(lesson["id"], step["id"], where)
+             for lesson, step in _steps() for where, words in _step_strings(step) if WAIT_RULE in words]
+    assert found == [("before_you_start", "keys_reach", "text"), ("before_you_start", "keys_reach", "sr")]
+    keys_reach = next(s for s in _lesson("before_you_start")["steps"] if s["id"] == "keys_reach")
+    # And what a step that moves on by itself does, said once too.
+    assert "the tutorial says what you did" in keys_reach["text"]
+    assert "the tutorial says what you did" in keys_reach["sr"]
+    assert "{key:tutorial_show_me}" in keys_reach["text"] and "{key:tutorial_show_me}" in keys_reach["sr"]
+
+
+def test_the_printed_mug_is_information_only():
+    step = next(s for s in _lesson("before_you_start")["steps"] if s["id"] == "printed_mug")
+    assert step["check"] == {"type": "manual"}
+    assert step["answers"] is None and step["store"] is None
+    assert "optional" in step["text"] and "optional" in step["sr"]
+
+
+def test_step_links_are_the_print_files_and_the_build_guides():
+    """Step text is plain, so a step's links come with it as data (#245
+    review). The print files are the zip this app serves until they have a
+    repository of their own; the build guides are in tangible-controls."""
+    linked = {}
+    for lesson, step in _steps():
+        links = step["links"]
+        if links is None:
+            continue
+        where = f"{lesson['id']}.{step['id']}"
+        assert links, f"{where} has an empty list of links"
+        for link in links:
+            assert set(link) == {"label", "href"}, where
+            assert link["label"].strip() and "{" not in link["label"], where
+            assert link["href"] == "/tutorial/prints.zip" or link["href"].startswith(
+                "https://github.com/cad-accessibility/"), f"{where}: {link['href']}"
+        # The words say where the links are.
+        assert "after this text" in step["text"], where
+        linked[step["id"]] = links
+    assert linked == {
+        "printed_mug": [tl.PRINT_FILES_LINK],
+        "build_controls": tl.BUILD_GUIDE_LINKS,
+        "props_and_end": [tl.PRINT_FILES_LINK],
+    }
+    assert [link["href"] for link in tl.BUILD_GUIDE_LINKS] == [
+        "https://github.com/cad-accessibility/tangible-controls/blob/master/docs/cube.md",
+        "https://github.com/cad-accessibility/tangible-controls/blob/master/docs/slider.md",
+    ]
+
+
+def test_everyone_hears_where_the_build_guides_are_before_the_end():
+    """Someone without the cube or the slider learns where the guides to making
+    them are, and that the two extras can be skipped, before the main tutorial
+    ends (#245 review)."""
+    steps = _lesson("your_own_model")["steps"]
+    assert [step["id"] for step in steps][-2:] == ["build_controls", "props_and_end"]
+    step = steps[-2]
+    assert step["requires"] == [] and step["when"] is None
+    assert "skip those two extras" in step["text"] and "skip those two extras" in step["sr"]
+    for part in ("parts list", "print files", "put it together", "set it up"):
+        assert part in step["text"], part
+
+
+# ---------------------------------------------------------------------------
+# Lesson 8 against the mug. Its starting place, its hints and its answers are
+# worked out here from the landmarks and the viewer's views (#245 review: the X
+# step passed the moment X was pressed, because the slice plane started inside
+# the handle loop). Positions are fractions along the object from its lowest
+# coordinate, as the bands are, so they hold however the viewer counts the
+# percentages it says.
+# ---------------------------------------------------------------------------
+
+
+def _landmarks() -> dict:
+    return json.loads((ROOT / "app" / "tutorial_mug.landmarks.json").read_text())
+
+
+def _band(axis: str, name: str) -> tuple[float, float]:
+    for band in _landmarks()["axes"][axis]:
+        if re.sub(r"^[xyz]\.", "", band["name"]) == name:
+            return band["from"] / 100, band["to"] / 100
+    raise AssertionError(f"no {axis}.{name} in the landmarks")
+
+
+def _view_bases() -> dict[str, dict[str, list[int]]]:
+    block = re.search(r"const VIEW_BASIS = \{(.*?)\n\};", _viewer_js(), re.DOTALL)
+    assert block, "VIEW_BASIS not found in viewer.js"
+    found = re.findall(
+        r"'([^']+)':\s*\{\s*right:\s*(\[[^\]]*\]),\s*up:\s*(\[[^\]]*\]),\s*depth:\s*(\[[^\]]*\])",
+        block.group(1),
+    )
+    return {view: {"right": json.loads(r), "up": json.loads(u), "depth": json.loads(d)}
+            for view, r, u, d in found}
+
+
+def _home_views() -> dict[str, str]:
+    """The view each axis key goes to first (XYZ_AXES, the first of its views)."""
+    block = re.search(r"const XYZ_AXES = \{(.*?)\n\};", _viewer_js(), re.DOTALL)
+    assert block, "XYZ_AXES not found in viewer.js"
+    return dict(re.findall(r"(\w):\s*\{[^}]*views:\s*\['([^']+)'", block.group(1)))
+
+
+def _reader_side(view: str) -> tuple[str, int]:
+    """The axis a view slices along, and the reader's side of it: 1 for the
+    plus side, where depth 0 is the axis maximum (depthFromPlanePosition)."""
+    depth = _view_bases()[view]["depth"]
+    index = next(i for i, value in enumerate(depth) if value)
+    return "xyz"[index], 1 if depth[index] > 0 else -1
+
+
+def _after_presses(position: float, side: int, presses: int, deeper: bool) -> float:
+    """Where a 10% key takes the slice plane: a tenth of the object a press,
+    deeper running away from the reader."""
+    return position + side * (-0.1 if deeper else 0.1) * presses
+
+
+PRESS_COUNTS = {"once": 1, "twice": 2, "three times": 3, "four times": 4}
+
+
+def _presses_in(hint: str) -> tuple[bool, int]:
+    match = re.search(r"\{key:depth_(deeper|shallower)_10\} (once|twice|three times|four times)", hint)
+    assert match, f"no count of presses in {hint!r}"
+    return match.group(1) == "deeper", PRESS_COUNTS[match.group(2)]
+
+
+def _inside(position: float, band: tuple[float, float], margin: float = 0.0) -> bool:
+    return band[0] + margin <= position <= band[1] - margin
+
+
+def test_lesson_8_starts_away_from_the_handle_and_its_hints_land_in_it():
+    """The X and Y steps do not pass on the axis key alone, the presses their
+    last hint gives reach the band and one press fewer does not. XYZ mode
+    rounds to a whole percent before it steps, so a landing has to be a
+    percent inside the band."""
+    lesson = _lesson("axes")
+    steps = {step["id"]: step for step in lesson["steps"]}
+    pose = lesson["pose"]
+    homes = _home_views()
+    # The pose puts its view's axis at its depth and the others in the middle
+    # (viewer.js, applyStudyDefaults).
+    axis, side = _reader_side(pose["view"])
+    planes = {"x": 0.5, "y": 0.5, "z": 0.5}
+    planes[axis] = 1 - pose["depth"] / 100 if side > 0 else pose["depth"] / 100
+
+    # Along Z from the middle: the ring with the handle beside it, as cut_z says.
+    assert steps["cut_z"]["check"] == {"type": "state", "field": "cut_axis", "equals": "z"}
+    assert _inside(planes["z"], _band("z", "handle_beside_ring"), 0.01)
+    assert "ring" in steps["cut_z"]["done"] and "handle" in steps["cut_z"]["done"]
+
+    for step_id, axis, band in (("cut_x_handle", "x", "handle_loop"), ("cut_y_arms", "y", "handle_arms")):
+        step = steps[step_id]
+        assert step["check"] == {"type": "all", "checks": [
+            {"type": "state", "field": "cut_axis", "equals": axis},
+            {"type": "in_band", "axis": axis, "band": band},
+        ]}, step_id
+        target = _band(axis, band)
+        assert not _inside(planes[axis], target), f"{step_id} passes on the axis key alone"
+        # The hint names the side the axis key gives first.
+        view_axis, view_side = _reader_side(homes[axis])
+        assert view_axis == axis
+        side_words = f"{axis.upper()} from {'plus' if view_side > 0 else 'minus'}"
+        assert side_words in step["hints"][2], f"{step_id} does not name {side_words}"
+        deeper, presses = _presses_in(step["hints"][2])
+        landed = _after_presses(planes[axis], view_side, presses, deeper)
+        assert _inside(landed, target, 0.01), f"{step_id}: {presses} presses land at {landed:.2f}"
+        short = _after_presses(planes[axis], view_side, presses - 1, deeper)
+        assert not _inside(short, target), f"{step_id}: {presses - 1} presses are already enough"
+        planes[axis] = landed
+
+
+def test_lesson_8_answers_follow_from_the_mug():
+    landmarks = _landmarks()
+    handle = landmarks["handle_direction"]
+    steps = {step["id"]: step for step in _lesson("axes")["steps"]}
+    # The handle lies across Y and Z, so a slice along X shows its whole curve.
+    assert handle[0] == 0 and steps["which_axis_loop"]["check"]["correct"] == "x"
+    assert steps["handle_sign"]["check"]["correct"] == ("negative" if handle[1] < 0 else "positive")
+    # "Viewing from X plus, the viewer said Y right, and the handle was on the
+    # left."
+    right = _view_bases()[_home_views()["x"]]["right"]
+    assert right == [0, 1, 0] and sum(h * r for h, r in zip(handle, right)) < 0
+    assert "X plus, the viewer said Y right, and the handle was on the left" in steps["handle_sign"]["hints"][1]
+    # "The mug base is centered on the origin in X and Y": the body reaches as
+    # far each way along X, and as far along plus Y, and its base is at Z 0.
+    box = landmarks["bbox_mm"]
+    assert box["x"][0] == -box["x"][1] and box["y"][1] == box["x"][1] and box["z"][0] == 0
+    assert "centered on the origin in X and Y" in steps["origin"]["text"]
+
+
+def test_the_slider_sweep_crosses_the_handle_it_narrates():
+    step = next(s for s in _lesson("slider")["steps"] if s["id"] == "slide_sweep")
+    low, high = _band("x", "handle_loop")
+    assert step["check"]["from"] / 100 < low and step["check"]["to"] / 100 > high
+    assert set(step["narrate"]) == {"handle_loop"}
 
 
 # ---------------------------------------------------------------------------
