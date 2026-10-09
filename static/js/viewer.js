@@ -340,11 +340,7 @@ async function sendStateToServer() {
             compose_scrollbar: viewerState.composeScrollbar,
             compose_slicegraph: viewerState.composeSliceGraph,
             show_view_info_box: viewerState.showViewInfoBox,
-            // XYZ mode's marks on the pins: where the origin is, and which way
-            // the display's two axes run. Off in Turn mode, whatever Settings
-            // says, so nothing about what a Turn-mode reader feels changes.
             show_origin_marker: isXyzMode() && viewerState.showOriginMarker,
-        show_axis_letters: viewerState.showAxisLetters,
             show_axis_letters: viewerState.showAxisLetters,
             output_device: getEffectiveOutputDevice(),
             slicegraph_locked: viewerState.sliceGraphLocked,
