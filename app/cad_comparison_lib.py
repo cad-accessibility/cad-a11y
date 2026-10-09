@@ -290,6 +290,12 @@ def _decimate_for_display(mesh):
 _AXIS_LETTER_DOTS = {"x": [1, 3, 4, 6], "y": [1, 3, 4, 5, 6], "z": [1, 3, 5, 6]}
 _CAPITAL_SIGN_DOTS = [6]
 
+# The view label's sign: dots 346 for a plus and 36 for a minus. How far the label
+# sits from the top left corner of the display, in pins, which keeps the origin
+# marker's blank patch and #266's corner marks clear of it.
+_VIEW_SIGN_DOTS = {True: [3, 4, 6], False: [3, 6]}
+_VIEW_LABEL_OFFSET = 3
+
 
 class CADComparisonRenderer:
     """
@@ -1144,21 +1150,69 @@ class CADComparisonRenderer:
         self._draw_axis_label(img_array, left_axis, left_x, y)
         self._draw_axis_label(img_array, right_axis, right_x, y)
 
-    def _overlay_view_info_box(self, img_array, axis_text):
-        """Overlay a compact 7x5 top-left info box naming the axis coming out of
-        the display, e.g. ⠠⠵ for Z."""
-        if img_array is None or len(img_array.shape) != 3:
-            return
-        h, w = img_array.shape[0], img_array.shape[1]
-        if h < 5 or w < 7:
+    def _overlay_view_info_box(self, img_array, right_axis, up_axis, toward_reader,
+                               drawable_size, show_axes=True):
+        """The view info box, now the view label (#267): the axis you are looking down
+        and the side you look from, as a braille letter and sign. In Turn mode, and
+        in XYZ mode with the edge letters off, it also says which way the display's
+        two axes run. XYZ mode's edge letters say that already, so with them drawn
+        (show_axes False) the label is just the letter and sign.
+
+        The label is a 6x5 box (a lowercase letter, a gap, a plus or minus sign,
+        and a blank pin around them). With show_axes there is one extra column and
+        one extra row outside it, 7x6 in all. The column goes on the side the
+        display's horizontal axis increases toward and holds one, two or three pins
+        for X, Y or Z; the row goes on the side the vertical axis increases toward
+        and says the same of that axis. Both start next to the corner they share,
+        which stays blank. 
+
+        It sits at a fixed offset from the top left corner, which leaves room for
+        the origin direction marker when the origin lands in that corner. """
+        w, h = int(drawable_size[0]), int(drawable_size[1])
+        offset = _VIEW_LABEL_OFFSET
+        label_w, label_h = (7, 6) if show_axes else (6, 5)
+        if w < offset + label_w + 1 or h < offset + label_h + 1:
             return
 
-        # Fixed size requested by user. White background only (no outline).
-        box_w = min(w, 7)
-        box_h = min(h, 5)
-        self._clear_box(img_array, 0, 0, box_w, box_h)
-        # Layout inside 7x5 box: [margin][capital sign][gap][letter][margin].
-        self._draw_axis_label(img_array, (axis_text or "x")[:1], 1, 1)
+        def signed(vec):
+            index = int(np.argmax(np.abs(vec)))
+            return index, float(np.sign(vec[index]))
+
+        look_index, look_sign = signed(toward_reader)
+        across_index, across_sign = signed(right_axis)
+        vertical_index, vertical_sign = signed(up_axis)
+
+        column_right = across_sign > 0 or not show_axes
+        row_above = vertical_sign > 0 or not show_axes
+        x0 = y0 = offset
+        self._clear_box(img_array, x0, y0, label_w, label_h)
+
+        # The 6x5 box sits inside the footprint, away from the extra column and
+        # row; its blank pin on the column's side stays between the two.
+        box_x = x0 if column_right else x0 + 1
+        box_y = y0 + 1 if row_above and show_axes else y0
+        letter_x = box_x if column_right else box_x + 1
+        sign_x = letter_x + 3
+        cell_y = box_y + 1
+        self._draw_braille_cell(img_array, letter_x, cell_y, _AXIS_LETTER_DOTS["xyz"[look_index]])
+        self._draw_braille_cell(img_array, sign_x, cell_y, _VIEW_SIGN_DOTS[look_sign > 0])
+        if not show_axes:
+            return
+
+        def mark(px, py):
+            if 0 <= px < w and 0 <= py < h:
+                img_array[py, px, 0:3] = 0
+                if img_array.shape[2] > 3:
+                    img_array[py, px, 3] = 255
+
+        # The column describes the horizontal axis and the row the vertical one,
+        # one pin more for each of X, Y, Z, counted from the shared corner.
+        column_x = x0 + label_w - 1 if column_right else x0
+        row_y = y0 if row_above else y0 + label_h - 1
+        for step in range(across_index + 1):
+            mark(column_x, row_y + 1 + step if row_above else row_y - 1 - step)
+        for step in range(vertical_index + 1):
+            mark(column_x - 1 - step if column_right else column_x + 1 + step, row_y)
 
     def _overlay_axis_letters(self, img_array, right_axis, up_axis, drawable_size):
         """XYZ mode's edge letters: each display axis labelled at the middle of
@@ -1739,11 +1793,6 @@ class CADComparisonRenderer:
         if comparison_mode == "side-by-side":
             self._overlay_side_by_side_view_labels(img_array, view_legend, view_cut)
 
-        show_view_info_box = bool(params.get("show_view_info_box", False))
-        if show_view_info_box and comparison_mode in ["single", "slice-graph"]:
-            axis_text = params.get("view", "top").lower()
-            self._overlay_view_info_box(img_array, axis_text)
-
         # XYZ mode's marks (#185): where the model's origin is, and which way the
         # display's two axes run. The viewer asks for them only in XYZ mode. In
         # the single view only, and not over a slice graph, which owns the bottom
@@ -1753,14 +1802,28 @@ class CADComparisonRenderer:
         show_origin_marker = bool(params.get("show_origin_marker", False))
         show_axis_letters = bool(params.get("show_axis_letters", False))
         origin_display = None
+        right_axis, up_axis, toward_reader = _get_view_basis(
+            view_name, orientation_basis=params.get("orientation"))
         if comparison_mode == "single" and not compose_slice_graph:
-            right_axis, up_axis, _ = _get_view_basis(view_name, orientation_basis=params.get("orientation"))
             origin_display = self.origin_display_fraction(right_axis, up_axis, imposed_zoom_ax_limits)
             if show_origin_marker:
                 self._overlay_origin_marker(img_array, right_axis, up_axis,
                                             imposed_zoom_ax_limits, render_screen_size)
-            if show_axis_letters:
-                self._overlay_axis_letters(img_array, right_axis, up_axis, render_screen_size)
+
+        # The edge letters and the view label (#267) are drawn after the origin
+        # marker, which they win over, and in every layout but side by side, whose
+        # two frames neither could name. With a slice graph the letters keep to the
+        # rows above it, which it owns from its divider down. The label leaves out
+        # which way the axes run where the edge letters already say.
+        edge_letters = show_axis_letters and comparison_mode != "side-by-side"
+        if edge_letters:
+            drawable_size = list(render_screen_size)
+            if compose_slice_graph:
+                drawable_size[1] = max(0, img_array.shape[0] - graph_height_px - 1)
+            self._overlay_axis_letters(img_array, right_axis, up_axis, drawable_size)
+        if params.get("show_view_info_box") and comparison_mode != "side-by-side":
+            self._overlay_view_info_box(img_array, right_axis, up_axis, toward_reader,
+                                        render_screen_size, show_axes=not edge_letters)
 
         return RenderResult(
             img_array,
