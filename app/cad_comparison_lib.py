@@ -285,8 +285,7 @@ def _decimate_for_display(mesh):
     return simplified if len(simplified.faces) > 0 else mesh
 
 
-# Six-dot computer braille: see
-# _draw_axis_label.
+# Six-dot computer braille: see _draw_axis_label.
 _AXIS_LETTER_DOTS = {"x": [1, 3, 4, 6], "y": [1, 3, 4, 5, 6], "z": [1, 3, 5, 6]}
 
 # The view label's sign: dots 346 for a plus and 36 for a minus. How far the label
