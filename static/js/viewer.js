@@ -340,11 +340,8 @@ async function sendStateToServer() {
             compose_scrollbar: viewerState.composeScrollbar,
             compose_slicegraph: viewerState.composeSliceGraph,
             show_view_info_box: viewerState.showViewInfoBox,
-            // XYZ mode's marks on the pins: where the origin is, and which way
-            // the display's two axes run. Off in Turn mode, whatever Settings
-            // says, so nothing about what a Turn-mode reader feels changes.
             show_origin_marker: isXyzMode() && viewerState.showOriginMarker,
-            show_axis_letters: isXyzMode() && viewerState.showAxisLetters,
+            show_axis_letters: viewerState.showAxisLetters,
             output_device: getEffectiveOutputDevice(),
             slicegraph_locked: viewerState.sliceGraphLocked,
             slicegraph_view: requestedGraphView,
@@ -587,7 +584,6 @@ let demoModelStems = null;
 let lastFullModelList = [];         // unfiltered server model_list for re-filtering on state change
 viewerState.composeScrollbar = true;
 viewerState.composeSliceGraph = false;
-viewerState.showViewInfoBox = false;
 viewerState.sliceGraphLocked = true;
 viewerState.sliceGraphAnchorView = 'y-';
 viewerState.sliceGraphAnchorDepth = 50;
@@ -1083,13 +1079,17 @@ function syncSliceDepthFromPlanes() {
 
 const SETTINGS_AXIS_MODE_KEY = 'settingsAxisMode';
 const SETTINGS_AXIS_LETTERS_KEY = 'settingsAxisLetters';
+const SETTINGS_VIEW_INFO_BOX_KEY = 'settingsViewInfoBox';
 const SETTINGS_ORIGIN_MARKER_KEY = 'settingsOriginMarker';
 const SETTINGS_SINGLE_KEY_SHORTCUTS_KEY = 'settingsSingleKeyShortcuts';
 
-// Settings that shape what XYZ mode draws, both drawn only in XYZ mode and both
-// on unless turned off: the axis letters at the display edges, and the origin.
+// Settings that shape what the pins draw, on unless turned off: the view label
+// (the "view info box" setting) and the axis letters at the display edges, both
+// in either axis mode, and the origin marker, in XYZ mode only. With the axis
+// letters drawn the label leaves out which way the axes run.
 // Single-key shortcuts are on too, with a way to turn them off (WCAG 2.1.4).
 viewerState.showAxisLetters = true;
+viewerState.showViewInfoBox = true;
 viewerState.showOriginMarker = true;
 viewerState.singleKeyShortcuts = true;
 
@@ -2226,7 +2226,7 @@ function fetchExportSourceState() {
         compose_slicegraph: viewerState.composeSliceGraph,
         show_view_info_box: viewerState.showViewInfoBox,
         show_origin_marker: isXyzMode() && viewerState.showOriginMarker,
-        show_axis_letters: isXyzMode() && viewerState.showAxisLetters,
+        show_axis_letters: viewerState.showAxisLetters,
         output_device: viewerState.currentOutputDevice,
         slicegraph_locked: viewerState.sliceGraphLocked,
         slicegraph_view: requestedGraphView,
@@ -3373,6 +3373,9 @@ function applyStudyDefaults(defaults) {
         writeDisplayDepthToPlanes(viewerState.currentSliceDepth);
     }
     if (renderModeByKey(wanted.render_mode)) viewerState.currentRenderMode = wanted.render_mode;
+    // The protocol may turn the view label on or off for a study. Like the axis
+    // mode it is the study's choice, so it is not saved.
+    if (typeof wanted.view_info_box === 'boolean') viewerState.showViewInfoBox = wanted.view_info_box;
     if (representationModeByKey(wanted.representation_mode)) {
         viewerState.currentRepresentationMode = wanted.representation_mode;
     }
@@ -3580,6 +3583,7 @@ zoomInBtn.addEventListener('click', function() {
 
 showViewInfoBoxCheckbox.addEventListener('change', function() {
     viewerState.showViewInfoBox = this.checked;
+    persistSetting(SETTINGS_VIEW_INFO_BOX_KEY, this.checked);
     pendingInputSource = 'ui';
     sendStateToServer();
 });
@@ -3689,7 +3693,7 @@ if (settingsAxisLettersCheckbox) {
     settingsAxisLettersCheckbox.addEventListener('change', function() {
         viewerState.showAxisLetters = this.checked;
         persistSetting(SETTINGS_AXIS_LETTERS_KEY, this.checked);
-        if (isXyzMode()) sendStateToServer();
+        sendStateToServer();
     });
 }
 if (settingsOriginMarkerCheckbox) {
@@ -3718,9 +3722,11 @@ function initializeAxisSettings() {
         }
     };
     viewerState.showAxisLetters = read(SETTINGS_AXIS_LETTERS_KEY) !== '0';
+    viewerState.showViewInfoBox = read(SETTINGS_VIEW_INFO_BOX_KEY) !== '0';
     viewerState.showOriginMarker = read(SETTINGS_ORIGIN_MARKER_KEY) !== '0';
     viewerState.singleKeyShortcuts = read(SETTINGS_SINGLE_KEY_SHORTCUTS_KEY) !== '0';
     if (settingsAxisLettersCheckbox) settingsAxisLettersCheckbox.checked = viewerState.showAxisLetters;
+    if (showViewInfoBoxCheckbox) showViewInfoBoxCheckbox.checked = viewerState.showViewInfoBox;
     if (settingsOriginMarkerCheckbox) settingsOriginMarkerCheckbox.checked = viewerState.showOriginMarker;
     if (settingsSingleKeyCheckbox) settingsSingleKeyCheckbox.checked = viewerState.singleKeyShortcuts;
     // XYZ unless Turn was chosen (#235 review). In study mode the protocol owns

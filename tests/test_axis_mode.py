@@ -276,20 +276,25 @@ def test_xyz_is_the_default_and_turn_is_kept_when_chosen():
     assert study_protocol.VIEWER_DEFAULTS["axis_mode"] == "turn"
 
 
-def test_xyz_mode_marks_the_edges_and_the_origin_unless_turned_off():
-    """Both drawn only in XYZ mode, and both on by default: a stored "0" is the
-    only thing that turns either off."""
+def test_the_view_label_and_xyz_marks_are_on_unless_turned_off():
+    """The label and the edge letters are drawn in either mode, the origin only in
+    XYZ mode, and all are on by default: a stored "0" is the only thing that turns
+    any off."""
     js = _js()
+    assert "viewerState.showViewInfoBox = true;" in js
     assert "viewerState.showAxisLetters = true;" in js
     assert "viewerState.showOriginMarker = true;" in js
     init = js[js.index("function initializeAxisSettings()"):]
     init = init[:init.index("\n}\n")]
+    assert "read(SETTINGS_VIEW_INFO_BOX_KEY) !== '0'" in init
     assert "read(SETTINGS_AXIS_LETTERS_KEY) !== '0'" in init
     assert "read(SETTINGS_ORIGIN_MARKER_KEY) !== '0'" in init
     html = _html()
+    assert 'id="show-view-info-box" checked' in html
     assert 'id="settings-axis-letters" checked' in html
     assert 'id="settings-origin-marker" checked' in html
-    assert "show_axis_letters: isXyzMode() && viewerState.showAxisLetters" in js
+    assert "show_view_info_box: viewerState.showViewInfoBox" in js
+    assert "show_axis_letters: viewerState.showAxisLetters" in js
 
 
 def test_there_is_no_millimetre_mode_left():

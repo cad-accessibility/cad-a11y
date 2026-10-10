@@ -1,13 +1,12 @@
 """What XYZ mode puts on the pins (#185), and the label that replaced "x+".
 
-* The view info box names the axis coming out of the display with one cell of
-  computer braille, e.g. ⠵ for Z, with no capital sign (the viewer's help says
-  the labels are computer braille). It used to draw a lowercase letter and a
-  sign, and the pilot found those unreadable: a lone lowercase x is the word
-  "it" in contracted UEB, and dots 346 are Nemeth's plus but UEB's "ing". No
-  sign glyph is drawn anywhere now.
+* The view info box is the view label (#267): a computer braille letter and a sign
+  for the axis you look down, with an extra column and row for the display's two
+  axes; there is no capital sign. Before that it drew a capital letter, and before
+  that a lowercase letter and a sign, which the pilot found unreadable (a lone
+  lowercase x is the word "it" in contracted UEB, and dots 346 are Nemeth's plus
+  but UEB's "ing").
 * The origin marker, a hollow 3x3 square, sits where the model's origin is.
-* The edge letters label each display axis at the edge it increases toward.
 
 These render through the real renderer and read the pins back.
 """
@@ -69,31 +68,6 @@ LETTERS = {"x": [1, 3, 4, 6], "y": [1, 3, 4, 5, 6], "z": [1, 3, 5, 6]}
 
 
 # --- The info box ----------------------------------------------------------------
-
-
-@pytest.mark.parametrize("token", ["z+", "z-", "y-", "y+", "x-", "x+"])
-def test_the_info_box_is_one_computer_braille_letter_and_no_sign(plate, token):
-    raised = _raised(plate, view=token, show_view_info_box=True)
-    box = raised[0:5, 0:4]
-    expected = np.zeros((5, 4), dtype=bool)
-    expected[1:5, 1:3] = _cell(LETTERS[token[0]])   # the letter, no capital sign
-    assert np.array_equal(box, expected), (
-        f"{token}: expected the letter {token[0]} alone, got\n{box.astype(int)}"
-    )
-
-
-def test_both_sides_of_an_axis_get_the_same_label(plate):
-    """The side is said in speech and braille; no pin says plus or minus."""
-    top = _raised(plate, view="z+", show_view_info_box=True)[0:5, 0:4]
-    bottom = _raised(plate, view="z-", show_view_info_box=True)[0:5, 0:4]
-    assert np.array_equal(top, bottom)
-
-
-def test_no_sign_glyph_is_left_to_draw():
-    with open(cad_lib.__file__, encoding="utf-8") as fp:
-        source = fp.read()
-    assert '"+": [3, 4, 6]' not in source and '"-": [3, 6]' not in source
-    assert "_draw_braille_text" not in source
 
 
 # --- The origin marker ------------------------------------------------------------
@@ -203,6 +177,116 @@ def test_no_marks_unless_asked(plate):
     )
 
 
+# --- The view label ---------------------------------------------------------------
+
+# 7 wide and 6 tall, 3 pins in from the top left corner (_VIEW_LABEL_OFFSET).
+LABEL_X, LABEL_Y, LABEL_W, LABEL_H = 3, 3, 7, 6
+PLUS, MINUS = [3, 4, 6], [3, 6]
+
+
+def _footprint(raised):
+    return raised[LABEL_Y:LABEL_Y + LABEL_H, LABEL_X:LABEL_X + LABEL_W]
+
+
+def _read_label(raised, column_right, row_above):
+    """Read the label back the way a reader would: the letter and sign cells
+    inside the 6x5 box, and the pins in the extra column and row."""
+    box = _footprint(raised)
+    corner = box[0 if row_above else -1, -1 if column_right else 0]
+    column = box[:, -1 if column_right else 0].copy()
+    row = box[0 if row_above else -1, :].copy()
+    column[0 if row_above else -1] = False  # the shared corner is read separately
+    row[-1 if column_right else 0] = False
+    # The cells: three rows tall, in the box's middle rows.
+    cell_top = 2 if row_above else 1
+    letter_left = 0 if column_right else 2
+    letter = box[cell_top:cell_top + 3, letter_left:letter_left + 2]
+    sign = box[cell_top:cell_top + 3, letter_left + 3:letter_left + 5]
+    return corner, int(column.sum()), int(row.sum()), letter, sign
+
+
+def _cell3(dots):
+    return _cell(dots)[:3]
+
+
+@pytest.mark.parametrize("token,look,sign,column_right,row_above,across,vertical", [
+    ("z+", "z", PLUS, True, True, 1, 2),    # Top: from above, X right, Y up
+    ("z-", "z", MINUS, True, False, 1, 2),  # Bottom: Y increases toward the bottom
+    ("y-", "y", MINUS, True, True, 1, 3),   # Front: X right, Z up
+    ("y+", "y", PLUS, False, True, 1, 3),   # Back: X increases to the left
+    ("x-", "x", PLUS, True, True, 2, 3),    # Right view, from +X: Y right, Z up
+    ("x+", "x", MINUS, False, True, 2, 3),  # Left view, from -X: Y increases left
+])
+def test_the_view_label_names_the_view_and_where_the_axes_increase(
+        plate, token, look, sign, column_right, row_above, across, vertical):
+    raised = _raised(plate, view=token, show_view_info_box=True)
+    corner, column_pins, row_pins, letter, sign_cell = _read_label(raised, column_right, row_above)
+    assert np.array_equal(letter, _cell3(LETTERS[look]))
+    assert np.array_equal(sign_cell, _cell3(sign))
+    assert (column_pins, row_pins) == (across, vertical)
+    assert not corner
+
+
+def test_the_view_label_leaves_a_blank_pin_between_its_extra_column_and_the_letter(plate):
+    for token, column_right in (("z+", True), ("y+", False)):
+        box = _footprint(_raised(plate, view=token, show_view_info_box=True))
+        beside_column = box[1:, 5 if column_right else 1]
+        assert not beside_column.any()
+
+
+def test_the_view_label_wins_over_the_model_and_the_origin_marker(plate):
+    """The plate's origin is at its corner, which lands near the top left or
+    bottom left, and the label is drawn last."""
+    with_label = _raised(plate, show_view_info_box=True)
+    both = _raised(plate, show_view_info_box=True, show_origin_marker=True)
+    assert np.array_equal(_footprint(with_label), _footprint(both))
+
+
+def test_the_view_label_is_drawn_whatever_the_origin_marker_setting(plate):
+    assert _footprint(_raised(plate, show_view_info_box=True)).any()
+    assert not np.array_equal(_raised(plate), _raised(plate, show_view_info_box=True))
+
+
+@pytest.mark.parametrize("token", ["z+", "z-", "y-", "y+", "x-", "x+"])
+def test_with_the_edge_letters_the_label_is_only_the_letter_and_sign(plate, token):
+    """The edge letters say which way the axes run, so the label leaves out its
+    extra column and row, and the letter and sign sit where they do with them."""
+    look = {"z+": "z", "z-": "z", "y-": "y", "y+": "y", "x-": "x", "x+": "x"}[token]
+    sign = PLUS if token in ("z+", "y+", "x-") else MINUS
+    raised = _raised(plate, view=token, show_view_info_box=True, show_axis_letters=True)
+    box = raised[LABEL_Y:LABEL_Y + 5, LABEL_X:LABEL_X + 6]
+    expected = np.zeros((5, 6), dtype=bool)
+    expected[1:4, 0:2] = _cell3(LETTERS[look])
+    expected[1:4, 3:5] = _cell3(sign)
+    assert np.array_equal(box, expected)
+    # Nothing else of the label: the pins beside and above the box are blank.
+    assert not raised[LABEL_Y - 1:LABEL_Y + 6, LABEL_X + 6:LABEL_X + 7].any()
+    assert not raised[LABEL_Y + 5:LABEL_Y + 6, LABEL_X:LABEL_X + 7].any()
+
+
+@pytest.mark.parametrize("token", ["z+", "z-"])
+def test_the_edge_letters_keep_clear_of_a_slice_graph(plate, token):
+    """They are drawn over a slice graph's layout too, but only above its divider."""
+    plain = _raised(plate, view=token, compose_slicegraph=True, compose_scrollbar=False)
+    lettered = _raised(plate, view=token, compose_slicegraph=True, compose_scrollbar=False,
+                       show_axis_letters=True)
+    graph_rows = 11  # the graph's 10 rows and its divider
+    assert not np.array_equal(plain[:-graph_rows], lettered[:-graph_rows])
+    assert np.array_equal(plain[-graph_rows:], lettered[-graph_rows:])
+
+
+def test_the_edge_letters_are_not_drawn_side_by_side(plate):
+    assert np.array_equal(
+        _raised(plate, mode="side-by-side"), _raised(plate, mode="side-by-side", show_axis_letters=True)
+    )
+
+
+def test_the_view_label_is_not_drawn_side_by_side(plate):
+    assert np.array_equal(
+        _raised(plate, mode="side-by-side"), _raised(plate, mode="side-by-side", show_view_info_box=True)
+    )
+
+
 # --- The edge letters --------------------------------------------------------------
 
 
@@ -244,7 +328,7 @@ def test_each_axis_letter_sits_at_the_edge_it_increases_toward(plate, token, exp
 # --- The render cache keys the marks --------------------------------------------------
 
 
-@pytest.mark.parametrize("flag", ["show_origin_marker", "show_axis_letters"])
+@pytest.mark.parametrize("flag", ["show_origin_marker", "show_axis_letters", "show_view_info_box"])
 def test_a_mark_changes_the_render_key(flag):
     """Drawn onto the image, so a key without it serves a render with the mark
     to a window that turned it off, and the other way round."""

@@ -77,6 +77,9 @@ key: a key from the other mode only says which mode it belongs to.
   views, named by the side you look from: Z is Top, from Z plus, and Z again
   Bottom, from Z minus; Y is Front, from Y minus, and Y again Back; X is Right,
   from X plus, and X again Left.
+  On the display, you can choose to have additional context -- an origin
+  marker, a view label showing all three axes, or axis markers at the positive end of
+  each axis.
 - **Turn**: U/O roll, I/K pitch and J/L yaw the model a quarter turn at a time.
   Left, right, up and down are as they are on the display, whichever way the
   model faces. The study ran in Turn mode, and /study still does.
