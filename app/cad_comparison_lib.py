@@ -285,10 +285,8 @@ def _decimate_for_display(mesh):
     return simplified if len(simplified.faces) > 0 else mesh
 
 
-# Six-dot braille for the only letters ever drawn onto the pins, and the capital
-# sign that goes before each: see _draw_axis_label.
+# Six-dot computer braille: see _draw_axis_label.
 _AXIS_LETTER_DOTS = {"x": [1, 3, 4, 6], "y": [1, 3, 4, 5, 6], "z": [1, 3, 5, 6]}
-_CAPITAL_SIGN_DOTS = [6]
 
 # The view label's sign: dots 346 for a plus and 36 for a minus. How far the label
 # sits from the top left corner of the display, in pins, which keeps the origin
@@ -1108,20 +1106,12 @@ class CADComparisonRenderer:
                     img_array[py, px, 3] = 255
 
     def _draw_axis_label(self, img_array, axis_letter, x, y):
-        """Draw a two-cell capital axis label, e.g. ⠠⠭ for X, with its top-left
-        at (x, y): 5 pixels wide and 4 tall.
-
-        The capital sign and then the letter, the way BANA's guidelines write a
-        diagram label. These used to be a lowercase letter and a sign glyph,
-        "x+" drawn as dots 1346 and 346, and the pilot found them unreadable: a
-        lone lowercase x is the word "it" in contracted UEB, and dots 346 are
-        Nemeth's plus but UEB's "ing". No sign is drawn anywhere now; which side
-        a view is seen from is said in speech and braille instead."""
+        """Draw an axis label, one braille cell, with its top-left at (x, y):
+        2 pixels wide and 4 tall."""
         dots = _AXIS_LETTER_DOTS.get(str(axis_letter or "").lower()[:1])
         if dots is None:
             return
-        self._draw_braille_cell(img_array, x, y, _CAPITAL_SIGN_DOTS)
-        self._draw_braille_cell(img_array, x + 3, y, dots)
+        self._draw_braille_cell(img_array, x, y, dots)
 
     @staticmethod
     def _clear_box(img_array, x0, y0, box_w, box_h):
@@ -1222,7 +1212,7 @@ class CADComparisonRenderer:
         sits shows the direction without a sign. Projecting targets onto the
         edges helped blind users with layout (Kane et al., Access Overlays)."""
         w, h = int(drawable_size[0]), int(drawable_size[1])
-        box_w, box_h = 7, 6  # a 5x4 label and a one-pin blank margin
+        box_w, box_h = 4, 6  # a 2x4 label and a one-pin blank margin
         if w < 2 * box_w + 2 or h < 2 * box_h + 2:
             return
 
@@ -1832,23 +1822,27 @@ class CADComparisonRenderer:
         origin_display = None
         right_axis, up_axis, toward_reader = _get_view_basis(
             view_name, orientation_basis=params.get("orientation"))
-        if comparison_mode == "single" and not compose_slice_graph:
+        marker_shown = comparison_mode == "single" and not compose_slice_graph
+        if marker_shown:
             origin_display = self.origin_display_fraction(right_axis, up_axis, imposed_zoom_ax_limits)
-            if show_origin_marker:
-                self._overlay_origin_marker(img_array, right_axis, up_axis,
-                                            imposed_zoom_ax_limits, render_screen_size)
 
-        # The edge letters and the view label (#267) are drawn after the origin
-        # marker, which they win over, and in every layout but side by side, whose
-        # two frames neither could name. With a slice graph the letters keep to the
-        # rows above it, which it owns from its divider down. The label leaves out
-        # which way the axes run where the edge letters already say.
+        # The edge letters, then the origin marker, then the view label (#267),
+        # each drawn over the one before: the marker over the letters, since
+        # finding the origin is what someone turned it on for, and the label over
+        # the marker, which keeps clear of it by the label's offset from the
+        # corner. The letters and label are drawn in every layout but side by
+        # side, whose two frames neither could name. With a slice graph the
+        # letters keep to the rows above it, which it owns from its divider down.
+        # The label leaves out which way the axes run where the letters say.
         edge_letters = show_axis_letters and comparison_mode != "side-by-side"
         if edge_letters:
             drawable_size = list(render_screen_size)
             if compose_slice_graph:
                 drawable_size[1] = max(0, img_array.shape[0] - graph_height_px - 1)
             self._overlay_axis_letters(img_array, right_axis, up_axis, drawable_size)
+        if marker_shown and show_origin_marker:
+            self._overlay_origin_marker(img_array, right_axis, up_axis,
+                                        imposed_zoom_ax_limits, render_screen_size)
         if params.get("show_view_info_box") and comparison_mode != "side-by-side":
             self._overlay_view_info_box(img_array, right_axis, up_axis, toward_reader,
                                         render_screen_size, show_axes=not edge_letters)

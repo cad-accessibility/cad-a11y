@@ -630,7 +630,7 @@ def _record_render_for_request(params: dict[str, Any], *, model_stem: str, cache
 
 
 def _axis_fields(params: dict[str, Any]) -> dict[str, Any]:
-    """The axis mode and where the cut was along its axis, as the viewer reported
+    """The axis mode and where the slice was along its axis, as the viewer reported
     them with the render (#185), each checked against what it can be. Anything
     else is left blank rather than stored: a column is only worth grouping on if
     its values are the ones the viewer can actually send."""

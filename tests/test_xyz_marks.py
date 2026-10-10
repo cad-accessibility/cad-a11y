@@ -1,10 +1,11 @@
 """What XYZ mode puts on the pins (#185), and the label that replaced "x+".
 
-* The view info box is the view label (#267): a braille letter and sign for the
-  axis you look down, with an extra column and row for the display's two axes.
-  Before that it drew a capital letter with no sign, and before that a lowercase
-  letter and a sign, which the pilot found unreadable (a lone lowercase x is the
-  word "it" in contracted UEB, and dots 346 are Nemeth's plus but UEB's "ing").
+* The view info box is the view label (#267): a computer braille letter and a sign
+  for the axis you look down, with an extra column and row for the display's two
+  axes; there is no capital sign. Before that it drew a capital letter, and before
+  that a lowercase letter and a sign, which the pilot found unreadable (a lone
+  lowercase x is the word "it" in contracted UEB, and dots 346 are Nemeth's plus
+  but UEB's "ing").
 * The origin marker sits where the model's origin is: a plus on the display, a T
   on the edge it is beyond, a square of four pins in the corner it is beyond both
   edges of (#266).
@@ -156,6 +157,19 @@ def test_origin_beyond_one_edge_is_a_t_with_its_stem_at_that_edge(tmp_path_facto
     in_patch = {(c, r) for r in range(y0, y0 + ph) for c in range(x0, x0 + pw) if marked[r, c]}
     assert in_patch == pins
     assert len(pins) == 4
+
+
+def test_the_origin_marker_is_drawn_over_the_edge_letters(tmp_path_factory):
+    """With the origin level with the middle of the right edge, the T lands where
+    the edge letter X is. The marker wins: its pins are all raised and the patch
+    around them holds nothing of the letter."""
+    renderer = _plate_at(tmp_path_factory, -80.0, -15.0, "over_letters")
+    pins, (x0, y0, pw, ph) = _expected_marker(renderer, "right")
+    letters_only = _raised(renderer, renderMode="Outline", show_axis_letters=True)
+    assert letters_only[y0:y0 + ph, x0:x0 + pw].any(), "the letter is not under the marker here"
+    both = _raised(renderer, renderMode="Outline", show_axis_letters=True, show_origin_marker=True)
+    in_patch = {(c, r) for r in range(y0, y0 + ph) for c in range(x0, x0 + pw) if both[r, c]}
+    assert in_patch == pins
 
 
 def test_the_marker_is_not_drawn_unless_asked(far_plate):
@@ -334,11 +348,8 @@ def test_the_view_label_is_not_drawn_side_by_side(plate):
 
 
 def _label_at(raised, x, y):
-    """Which axis letter, if any, is drawn as a capital label with its top-left at (x, y)."""
-    sign = raised[y:y + 4, x:x + 2]
-    letter = raised[y:y + 4, x + 3:x + 5]
-    if not np.array_equal(sign, _cell([6])):
-        return None
+    """Which axis letter, if any, is drawn with its top-left at (x, y)."""
+    letter = raised[y:y + 4, x:x + 2]
     for name, dots in LETTERS.items():
         if np.array_equal(letter, _cell(dots)):
             return name
@@ -348,7 +359,7 @@ def _label_at(raised, x, y):
 def _edges(raised):
     """The letter at the middle of each edge, where _overlay_axis_letters puts them."""
     width, height = GRID
-    box_w, box_h = 7, 6
+    box_w, box_h = 4, 6
     return {
         "right": _label_at(raised, width - box_w + 1, (height - box_h) // 2 + 1),
         "left": _label_at(raised, 1, (height - box_h) // 2 + 1),

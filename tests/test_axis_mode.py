@@ -675,3 +675,10 @@ def test_the_origin_marker_key_is_in_the_shortcuts_list_and_the_export_notes():
     assert "<kbd>M</kbd>" in _html()
     notes = (Path(__file__).resolve().parent.parent / "docs" / "STUDY_DATA_EXPORT.md").read_text()
     assert "| `m` |" in notes
+
+
+def test_the_help_says_the_axis_labels_are_computer_braille():
+    """The labels are one cell with no capital sign (#235 review), which a reader
+    of contracted braille would not expect, so the help and the README say so."""
+    assert "computer braille" in _html()
+    assert "computer braille" in (ROOT / "README.md").read_text()
