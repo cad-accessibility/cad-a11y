@@ -81,8 +81,13 @@
     }
 
     // Returns the face name (e.g. "x+") whose normal, rotated into the world
-    // frame, most aligns with the world-up direction. Direct port of Python
-    // _orientation_to_view().
+    // frame, most aligns with the world-up direction, and how well it aligns
+    // (1 = straight up). Direct port of Python _orientation_to_view().
+    //
+    // The face-to-view table above predates the views being made to match
+    // OpenSCAD's (#185). "z+" face up still gives the Top view; whether each
+    // side face of the printed cube gives the view its label promises has not
+    // been checked on the hardware since.
     function orientationToView(rollDeg, pitchDeg, yawDeg) {
         const R = eulerToRotationMatrix(rollDeg, pitchDeg, yawDeg);
         let bestIdx = 0;
@@ -92,8 +97,17 @@
             const d = dot3(worldNormal, WORLD_UP);
             if (d > bestDot) { bestDot = d; bestIdx = i; }
         }
-        return FACE_NAMES[bestIdx];
+        return { view: FACE_NAMES[bestIdx], alignment: bestDot };
     }
+
+    // Near 45 degrees two faces are almost equally "up" and the reading flickers
+    // between them, and every flicker used to redraw the display and interrupt
+    // with an announcement. A face now has to be clearly up, within about 35
+    // degrees of vertical, and stay up for a moment before it counts.
+    const FACE_UP_MIN_ALIGNMENT = Math.cos(35 * Math.PI / 180);
+    const FACE_SETTLE_MS = 300;
+    let candidateView = null;
+    let candidateSince = 0;
 
     // ---- BLE packet parsing -------------------------------------------------
 
@@ -262,20 +276,34 @@
         if (!result) return;
 
         const { roll, pitch, yaw } = result;
-        const view = orientationToView(roll, pitch, yaw);
+        const { view, alignment } = orientationToView(roll, pitch, yaw);
 
         if (anglesEl) {
             anglesEl.textContent =
                 `R ${roll.toFixed(1)}° P ${pitch.toFixed(1)}° Y ${yaw.toFixed(1)}°`;
         }
 
-        if (view !== lastView) {
-            lastView = view;
-            if (viewValueEl) viewValueEl.textContent = view;
-            if (typeof updateView === 'function') {
-                window.pendingInputSource = 'witmotion';
-                updateView(view);
-            }
+        if (view === lastView || alignment < FACE_UP_MIN_ALIGNMENT) {
+            candidateView = null;
+            return;
+        }
+        const now = Date.now();
+        if (view !== candidateView) {
+            candidateView = view;
+            candidateSince = now;
+            return;
+        }
+        if (now - candidateSince < FACE_SETTLE_MS) return;
+
+        candidateView = null;
+        lastView = view;
+        if (viewValueEl) viewValueEl.textContent = view;
+        // Through the viewer, which knows the axis mode and says what changed.
+        // updateView is the fallback for a page that predates it.
+        if (typeof window.selectViewFromCube === 'function') {
+            window.selectViewFromCube(view);
+        } else if (typeof updateView === 'function') {
+            updateView(view);
         }
     }
 })();

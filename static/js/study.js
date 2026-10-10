@@ -483,9 +483,6 @@
         } else if (key === 'b') {
             e.preventDefault();
             goBack();
-        } else if (key === 'p') {
-            e.preventDefault();
-            goBack();
         } else if (key === 'c') {
             e.preventDefault();
             repeatStep();

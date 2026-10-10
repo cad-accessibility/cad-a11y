@@ -13,38 +13,70 @@ import trimesh
 from .render_low_res import get_outlines
 from .plane_intersection_utils import depth_peeling_single_depth_with_bbox, faces_on_plane_fast
 
-views = {
-    "top": {
-        "eye": np.array([0, 0, -1000.0]),
-        "dir": np.array([0, 0, 1.0])
-    },
-    "front": {
-        "eye": np.array([0, -1000, 0.0]),
-        "dir": np.array([0, 1, 0.0])
-    },
-    "left": {
-        "eye": np.array([-1000.0, 0, 0]),
-        "dir": np.array([1.0, 0, 0])
-    },
-    "bottom": {
-        "eye": np.array([0, 0, 1000.0]),
-        "dir": np.array([0, 0, -1.0])
-    },
-    "back": {
-        "eye": np.array([0, 1000.0, 0]),
-        "dir": np.array([0, -1.0, 0])
-    },
-    "right": {
-        "eye": np.array([1000.0, 0, 0]),
-        "dir": np.array([-1.0, 0, 0])
-    }
+# The six standard views, each as (right, up, depth): the model directions that
+# point to the display's right, to its top edge, and out of it at the reader.
+#
+# One convention for all six. depth = right x up, so every view is right-handed
+# and the reader always sits on the +depth side. The cut removes the half on that
+# side, which is what makes 0% the surface nearest the reader in every view, and
+# the picture is what OpenSCAD shows for the view of the same name (checked
+# against its presets, src/gui/MainWindow.cc:2817-2862 at openscad@0e6cc0b).
+#
+# This used to be two conventions applied view by view: top, left and right had
+# right x up = +depth, while front, back and bottom had -depth, so those three cut
+# from the far side, and bottom was top turned 180 degrees rather than a view from
+# below. The turn keys were written for the far-side three, which is why pitch and
+# yaw ran backwards from the viewer's default view (#185).
+#
+# "left" and "right" were also the wrong way round: the basis filed under "left"
+# looked at the model from +X, which is OpenSCAD's Right view. The keys now name
+# the view they hold. The viewer's wire tokens are unchanged (x- is still the view
+# from +X) and _map_view_name translates them.
+VIEW_BASES = {
+    "top": (
+        np.array([1.0, 0.0, 0.0]),
+        np.array([0.0, 1.0, 0.0]),
+        np.array([0.0, 0.0, 1.0]),
+    ),
+    "bottom": (
+        np.array([1.0, 0.0, 0.0]),
+        np.array([0.0, -1.0, 0.0]),
+        np.array([0.0, 0.0, -1.0]),
+    ),
+    "front": (
+        np.array([1.0, 0.0, 0.0]),
+        np.array([0.0, 0.0, 1.0]),
+        np.array([0.0, -1.0, 0.0]),
+    ),
+    "back": (
+        np.array([-1.0, 0.0, 0.0]),
+        np.array([0.0, 0.0, 1.0]),
+        np.array([0.0, 1.0, 0.0]),
+    ),
+    "right": (
+        np.array([0.0, 1.0, 0.0]),
+        np.array([0.0, 0.0, 1.0]),
+        np.array([1.0, 0.0, 0.0]),
+    ),
+    "left": (
+        np.array([0.0, -1.0, 0.0]),
+        np.array([0.0, 0.0, 1.0]),
+        np.array([-1.0, 0.0, 0.0]),
+    ),
 }
 
-def get_cut_faces(shape, view_key, cut_depth, bbox):
-    normal_dir = views[view_key]["dir"]
+
+def get_cut_faces(shape, view_key, cut_depth, bbox, orientation_basis=None):
+    """The faces lying on the cut plane, for this view at this orientation.
+
+    The normal comes from the same basis the picture is drawn with, so a caller
+    that fits or measures a slice cuts where the render cuts. It used to come from
+    a separate table of eye positions that disagreed with the bases, and ignored
+    the orientation entirely, so fitting a turned model measured some other slice.
+    """
+    normal_dir = _get_view_basis(view_key, orientation_basis=orientation_basis)[2]
     shape_cut, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
     shape_faces = faces_on_plane_fast(shape_cut, plane_origin, normal_dir)
-    #print(shape_cut.area, shape_faces.area, plane_origin, bbox)
     return shape_faces
 
 def _safe_unit(vec):
@@ -63,24 +95,24 @@ def _resolve_orientation_basis(orientation_basis):
     """Return an orthonormal (right, up, depth) basis from orientation metadata.
 
     Accepted keys:
-    - depth or forward: viewing direction
-    - up: camera-up axis
-    - right: camera-right axis
+    - forward (or depth): the model direction pointing out of the display, at
+      the reader. The wire has always called it "forward"; it is the same
+      vector the viewer calls depth, and the cut removes the half it points to.
+      It is not the direction the camera looks, which is its opposite.
+    - up: the model direction pointing to the display's top edge
+    - right: the model direction pointing to the display's right edge
 
     All three are used as given when all three are present and mutually
-    perpendicular (either handedness accepted). That matters because the six
-    named views below are not consistently handed: front, back and bottom
-    have right x up = -depth where top, left and right have +depth. Deriving
-    one axis from the other two therefore mirrors half the views, which is why
-    the caller sends a complete basis rather than a hint.
+    perpendicular. Every basis the viewer sends is right-handed (forward =
+    right x up); a left-handed one is still drawn as given rather than
+    corrected, because correcting it would mean guessing which of the three the
+    sender got wrong.
 
     A complete but skewed basis (not mutually perpendicular) falls through to
     the same derivation used for a partial one, rather than being used as
     given -- projecting onto non-orthogonal axes would silently skew the
-    picture instead of just mirroring it.
-
-    Deriving is kept only as a fallback for a partial or skewed basis, where a
-    mirrored image beats no image.
+    picture instead of just mirroring it. The derivation keeps the basis
+    right-handed.
     """
     if not isinstance(orientation_basis, dict):
         return None
@@ -122,40 +154,7 @@ def _get_view_basis(view_key, orientation_basis=None):
     custom_basis = _resolve_orientation_basis(orientation_basis)
     if custom_basis is not None:
         return custom_basis
-
-    basis = {
-        "top": (
-            np.array([1.0, 0.0, 0.0]),
-            np.array([0.0, 1.0, 0.0]),
-            np.array([0.0, 0.0, 1.0]),
-        ),
-        "front": (
-            np.array([1.0, 0.0, 0.0]),
-            np.array([0.0, 0.0, 1.0]),
-            np.array([0.0, 1.0, 0.0]),
-        ),
-        "left": (
-            np.array([0.0, 1.0, 0.0]),
-            np.array([0.0, 0.0, 1.0]),
-            np.array([1.0, 0.0, 0.0]),
-        ),
-        "bottom": (
-            np.array([-1.0, 0.0, 0.0]),
-            np.array([0.0, -1.0, 0.0]),
-            np.array([0.0, 0.0, -1.0]),
-        ),
-        "back": (
-            np.array([-1.0, 0.0, 0.0]),
-            np.array([0.0, 0.0, 1.0]),
-            np.array([0.0, -1.0, 0.0]),
-        ),
-        "right": (
-            np.array([0.0, -1.0, 0.0]),
-            np.array([0.0, 0.0, 1.0]),
-            np.array([-1.0, 0.0, 0.0]),
-        ),
-    }
-    return basis.get(view_key, basis["top"])
+    return VIEW_BASES.get(view_key, VIEW_BASES["top"])
 
 
 def project_vertices(vertices, view_key, projection_mode="orthographic", orientation_basis=None):
@@ -195,8 +194,11 @@ def _collect_feature_edges(shape, view_key, projection_mode="orthographic", xray
         return []
 
     face_normals = np.asarray(shape.face_normals)
-    _, _, view_dir = _get_view_basis(view_key, orientation_basis=orientation_basis)
-    front_facing = (face_normals @ view_dir) < -1e-6
+    # depth points at the reader, so a face the reader can see has a normal
+    # along +depth. This read "< -1e-6" while half the views had depth pointing
+    # away; it was right for those three and inside out for the other three.
+    _, _, toward_reader = _get_view_basis(view_key, orientation_basis=orientation_basis)
+    front_facing = (face_normals @ toward_reader) > 1e-6
 
     edge_to_faces = [[] for _ in range(len(unique_edges))]
     for face_idx, edge_ids in enumerate(shape.faces_unique_edges):
@@ -255,10 +257,9 @@ def get_single_view(shape, bbox, cut_depth=0.9, view_key="top", rendering_mode="
     print("get_single_view", rendering_mode)
 
     shape = copy(shape)
-    # Cut along whichever way the viewer is actually looking. For the six named
-    # views this is the same vector views[view_key]["dir"] gave; under a rotated
-    # orientation it is the only one that slices into the screen rather than
-    # along a fixed model axis.
+    # Cut along whichever way the viewer is actually looking, removing the half
+    # on the reader's side. Under a rotated orientation this is the only normal
+    # that slices into the screen rather than along a fixed model axis.
     normal_dir = _get_view_basis(view_key, orientation_basis=orientation_basis)[2]
     shape, plane_origin = depth_peeling_single_depth_with_bbox(shape, normal_dir, depth=cut_depth, bbox=bbox)
     if rendering_mode == "cut":

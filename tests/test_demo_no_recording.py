@@ -489,7 +489,7 @@ def test_a_demo_station_process_records_nothing_whatever_the_request_says(monkey
     assert recording.recording_here() is False
 
 
-def test_a_demo_station_does_not_register_the_study_routes(tmp_path):
+def test_a_demo_station_does_not_register_the_study_routes(tmp_path, data_env):
     """Checked by running the import the way a station launches it, because the
     routes are decided at import and a monkeypatch afterwards proves nothing."""
     import subprocess
@@ -501,9 +501,10 @@ def test_a_demo_station_does_not_register_the_study_routes(tmp_path):
          "print([str(r) for r in app.url_map.iter_rules() if str(r).startswith('/study')])"],
         cwd=ROOT,
         # HOME points at a temp directory: matplotlib writes a font cache into it
-        # on first import, and the repo is not the place for that.
+        # on first import, and the repo is not the place for that. data_env does
+        # the same for the app's own folders (tests/conftest.py).
         env={"CAD_A11Y_DEMO": "1", "PATH": "/usr/bin:/bin", "HOME": str(tmp_path),
-             "MPLBACKEND": "Agg"},
+             "MPLBACKEND": "Agg", **data_env},
         capture_output=True,
         text=True,
     )

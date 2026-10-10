@@ -215,14 +215,20 @@ def latin_square_preview() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Viewer state every model auto-load starts from (issue #163).
 #
-# view "x-" is 180 degrees of yaw from the viewer's own x+ default, which is what
-# puts the mug upright with the handle to the right and matches the orientation of
-# the 3D print the participant is holding. Cut mode and 50% depth are what the
-# pilot found people actually used; a fresh load in Filled at some other depth
-# cost minutes of the session before anything could be felt.
+# view "x-" is 180 degrees of yaw from the viewer's own x+ default. It is OpenSCAD's
+# Right view, seen from +X, so Y increases to the right and Z up: the mug stands
+# upright, and its handle, which points toward -Y in mug.stl, is at the LEFT edge.
+# This comment used to say the right edge, which the geometry never supported;
+# check the printed mug in the participant's hand against a display before any
+# script names a side. Cut mode and 50% depth are what the pilot found people
+# actually used; a fresh load in Filled at some other depth cost minutes of the
+# session before anything could be felt.
 # ---------------------------------------------------------------------------
 
 VIEWER_DEFAULTS: dict[str, Any] = {
+    # Turn mode (pitch, roll, yaw), the mode the protocol was written for. XYZ
+    # mode (#185) stays out of the study until it has been piloted.
+    "axis_mode": "turn",
     "view": "x-",
     "depth": 50,
     "render_mode": "cut",
