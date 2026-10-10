@@ -1,10 +1,11 @@
 """What XYZ mode puts on the pins (#185), and the label that replaced "x+".
 
-* The view info box is the view label (#267): a braille letter and sign for the
-  axis you look down, with an extra column and row for the display's two axes.
-  Before that it drew a capital letter with no sign, and before that a lowercase
-  letter and a sign, which the pilot found unreadable (a lone lowercase x is the
-  word "it" in contracted UEB, and dots 346 are Nemeth's plus but UEB's "ing").
+* The view info box is the view label (#267): a computer braille letter and a sign
+  for the axis you look down, with an extra column and row for the display's two
+  axes; there is no capital sign. Before that it drew a capital letter, and before
+  that a lowercase letter and a sign, which the pilot found unreadable (a lone
+  lowercase x is the word "it" in contracted UEB, and dots 346 are Nemeth's plus
+  but UEB's "ing").
 * The origin marker, a hollow 3x3 square, sits where the model's origin is.
 
 These render through the real renderer and read the pins back.
@@ -290,11 +291,8 @@ def test_the_view_label_is_not_drawn_side_by_side(plate):
 
 
 def _label_at(raised, x, y):
-    """Which axis letter, if any, is drawn as a capital label with its top-left at (x, y)."""
-    sign = raised[y:y + 4, x:x + 2]
-    letter = raised[y:y + 4, x + 3:x + 5]
-    if not np.array_equal(sign, _cell([6])):
-        return None
+    """Which axis letter, if any, is drawn with its top-left at (x, y)."""
+    letter = raised[y:y + 4, x:x + 2]
     for name, dots in LETTERS.items():
         if np.array_equal(letter, _cell(dots)):
             return name
@@ -304,7 +302,7 @@ def _label_at(raised, x, y):
 def _edges(raised):
     """The letter at the middle of each edge, where _overlay_axis_letters puts them."""
     width, height = GRID
-    box_w, box_h = 7, 6
+    box_w, box_h = 4, 6
     return {
         "right": _label_at(raised, width - box_w + 1, (height - box_h) // 2 + 1),
         "left": _label_at(raised, 1, (height - box_h) // 2 + 1),
