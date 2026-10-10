@@ -229,13 +229,13 @@
                         <button type="button" id="roll-cw-btn">Roll clockwise</button>
                     </div>
                 </div>
-                <!-- XYZ mode: cut along X, Y or Z, each seen as one of OpenSCAD's
+                <!-- XYZ mode: slice along X, Y or Z, each seen as one of OpenSCAD's
                      standard views. One button per axis and side, the side being
                      where the reader looks from (#235 review); the one showing is
                      marked current. -->
                 <div id="xyz-controls">
                     <div id="xyz-help" class="help-text">
-                        Cut along X, Y or Z, as in OpenSCAD. Plus or minus is the
+                        Slice along X, Y or Z, as in OpenSCAD. Plus or minus is the
                         side you look from.
                     </div>
                     <div class="button-group" aria-describedby="xyz-help">
@@ -279,8 +279,8 @@
                     <button type="button" id="deeper-btn" aria-describedby="deeper-help">Deeper: 50%</button>
                     <button type="button" id="shallower-btn" aria-describedby="shallower-help">Shallower: 50%</button>
                 </div>
-                <div id="deeper-help" class="sr-only">Moves the cut 10% further from you.</div>
-                <div id="shallower-help" class="sr-only">Moves the cut 10% nearer to you.</div>
+                <div id="deeper-help" class="sr-only">Moves the slice 10% further from you.</div>
+                <div id="shallower-help" class="sr-only">Moves the slice 10% nearer to you.</div>
             </section>
 
             <!-- 1c. Render mode -->
@@ -548,12 +548,12 @@
                 <li><kbd>J</kbd> Yaw left (90°): rotate around vertical axis. </li>
                 <li><kbd>L</kbd> Yaw right (90°): rotate around vertical axis</li>
             </ul>
-            <p class="help-text">Other axis mode: XYZ, which cuts along X, Y or Z as in OpenSCAD. Change it in Settings.</p>
+            <p class="help-text">Other axis mode: XYZ, which slices along X, Y or Z as in OpenSCAD. Change it in Settings.</p>
         </div>
         <div id="xyz-shortcuts-section">
             <h3>Axes (XYZ mode)</h3>
             <ul class="shortcuts-list">
-                <li><kbd>X</kbd>, <kbd>Y</kbd>, <kbd>Z</kbd> Cut along that axis: X from plus, Y from minus, Z from plus, the side you look from</li>
+                <li><kbd>X</kbd>, <kbd>Y</kbd>, <kbd>Z</kbd> Slice along that axis: X from plus, Y from minus, Z from plus, the side you look from</li>
                 <li><kbd>X</kbd>, <kbd>Y</kbd> or <kbd>Z</kbd> again The same axis from the other side</li>
             </ul>
             <p class="help-text">Other axis mode: Turn, which turns the model with pitch, roll and yaw. Change it in Settings.</p>
@@ -662,7 +662,7 @@
             </label>
             <label>
                 <input type="radio" name="axis-mode" id="axis-mode-xyz" value="xyz" checked>
-                XYZ: cut along X, Y or Z, as in OpenSCAD
+                XYZ: slice along X, Y or Z, as in OpenSCAD
             </label>
         </fieldset>
         <div class="button-group settings-checkbox-group">

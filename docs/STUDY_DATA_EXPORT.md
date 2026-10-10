@@ -43,7 +43,7 @@ choose rather than baked into the file.
 | `input_source` | on render rows, what triggered the render |
 | `model`, `view`, `render_mode`, `layout_mode`, `depth`, `zoom`, `cache_hit` | the state of the viewer at that moment |
 | `orientation_x`, `orientation_y`, `orientation_z`, `orientation_basis` | how the object was turned. See below |
-| `axis_mode`, `cut_axis`, `cut_side`, `cut_percent` | the axis mode and where the cut was along its axis. See below |
+| `axis_mode`, `cut_axis`, `cut_side`, `cut_percent` | the axis mode and where the slice was along its axis. See below |
 
 Only `render` rows record viewer state directly. On every other row the state
 columns show the most recent render in the same session, meaning what was on the
@@ -55,7 +55,7 @@ session, and nothing carries across sessions.
 Count keypresses using `key`, not by diffing viewer state between renders.
 
 **In Turn mode there is no view-switching command.** The view label is derived
-from whichever axis the slices are currently cut along, so a rotation that moves
+from whichever axis the slices are currently taken along, so a rotation that moves
 that axis changes the view as a side effect. Rotations and "axis switches" are
 therefore not two things that happen to correlate; they are one thing counted
 twice. Pitch and yaw move the depth axis and take the view label with them, and
@@ -66,7 +66,7 @@ XYZ mode (`axis_mode` `xyz`, added for #185) is the exception: `x`, `y` and `z`
 pick the axis and the side directly, the letter alone for the view from the
 right, the front or above, and the same letter again for the other side. `key`
 reads the same for both presses, and `key_shift` does not tell them apart, so
-read the side off the row itself: `cut_side` says which side the cut was seen
+read the side off the row itself: `cut_side` says which side the slice was seen
 from. The study runs in Turn mode, so a study session will only contain
 XYZ rows if someone changed the setting mid-session.
 
@@ -78,14 +78,14 @@ XYZ rows if someone changed the setting mid-session.
 | `arrowup`, `arrowdown` | depth by 1%, deeper for `arrowup`, in both axis modes |
 | `pageup`, `pagedown` | depth by 10%, in both axis modes |
 | `home`, `end` | depth to the surface or the far side, in both axis modes |
-| `x`, `y`, `z` | XYZ mode: cut along that axis, from the right, the front or above; the same key again, from the other side (see `cut_side`). In Turn mode: nothing but a message saying so |
+| `x`, `y`, `z` | XYZ mode: slice along that axis, from the right, the front or above; the same key again, from the other side (see `cut_side`). In Turn mode: nothing but a message saying so |
 | `,` | where the origin is, in both modes (XYZ names its coordinate on the axis) |
 | `2`, `3` | zoom out, zoom in |
 | `4`, `5` | zoom out, zoom in, fine |
 | `w`, `a`, `s`, `d` | pan up, left, down, right |
 | `r` | cycle render mode |
 | `t` | cycle view mode (single, side-by-side, slice graph) |
-| `.` | where am I: which way the model faces, where the cut is, then the rest of the status bar |
+| `.` | where am I: which way the model faces, where the slice is, then the rest of the status bar |
 | `g`, `v` | slice-graph anchor, slice-graph lock |
 | `[`, `]` | toggle scrollbar, toggle slice graph |
 | `f` | fit to device |
@@ -129,15 +129,15 @@ after 21 seconds is included. Pull a specific one deliberately with
 session that is not completed returns 409 with its status rather than an empty
 file, so a participant cannot go quietly missing from the analysis.
 
-## Axis mode and the cut
+## Axis mode and the slice
 
-`axis_mode` is `turn` or `xyz`. The other three describe the cut, in either
+`axis_mode` is `turn` or `xyz`. The other three describe the slice, in either
 mode:
 
-* `cut_axis` is the model axis the slices are cut along, `x`, `y` or `z`.
+* `cut_axis` is the model axis the slices are taken along, `x`, `y` or `z`.
 * `cut_side` is the side it is seen from: `above` or `below` for Z, `front` or
   `back` for Y, `right` or `left` for X.
-* `cut_percent` is how far along the object the cut is, from its lowest
+* `cut_percent` is how far along the object the slice is, from its lowest
   coordinate on that axis (0) to its highest (100). Unlike `depth`, it does not
   change when the same plane is seen from the other side.
 

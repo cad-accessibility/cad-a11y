@@ -739,7 +739,7 @@ const FINE_ZOOM_STEP = 0.01;
 // view renders the same picture as naming the view does.
 //
 // One convention for all six: depth = right x up, so every view is right-handed,
-// the reader is always on the +depth side, and the cut removes that half. That is
+// the reader is always on the +depth side, and the slice removes that half. That is
 // what makes 0% the surface nearest the reader in every view, and it is what the
 // turn formulas in applyRelativeRotation assume. Each view is the OpenSCAD view
 // of the same name. Three of them used to have depth pointing away from the
@@ -774,7 +774,7 @@ function viewName(viewToken = viewerState.currentView) {
 // Axis mode (#185).
 //
 // Two ways to drive the same orientation model, chosen in Settings:
-//   xyz   the default (#235 review). Cut along X, Y or Z. X, Y and Z pick the
+//   xyz   the default (#235 review). Slice along X, Y or Z. X, Y and Z pick the
 //         axis and the same key again looks from the other side. Every view is
 //         one of OpenSCAD's standard views, so there are only two things to
 //         name, the axis and the side, and nothing to roll.
@@ -785,14 +785,14 @@ function viewName(viewToken = viewerState.currentView) {
 //
 // No key, button, chord or cube gesture does something in both. A key from the
 // other mode says which mode it belongs to and does nothing else, so a mode
-// error is heard rather than silently turning or cutting (Sellen et al. 1992).
-// The keys that move the cut (arrows, Page Up/Down, Home/End) are in both,
-// because both have a cut to move; each mode moves it in its own terms.
+// error is heard rather than silently turning or slicing (Sellen et al. 1992).
+// The keys that move the slice (arrows, Page Up/Down, Home/End) are in both,
+// because both have a slice to move; each mode moves it in its own terms.
 // ---------------------------------------------------------------------------
 // label is what the Settings radio reads; short is what is said ("XYZ mode").
 const AXIS_MODES = [
     { key: 'turn', label: 'Turn: pitch, roll and yaw', short: 'Turn' },
-    { key: 'xyz', label: 'XYZ: cut along X, Y or Z, as in OpenSCAD', short: 'XYZ' },
+    { key: 'xyz', label: 'XYZ: slice along X, Y or Z, as in OpenSCAD', short: 'XYZ' },
 ];
 
 // The keys that belong to exactly one mode. tests/test_axis_mode.py holds the
@@ -1074,10 +1074,10 @@ function syncSliceDepthFromPlanes() {
 // XYZ mode: the axis keys, the standard views and the marks on the display.
 //
 // Depth means the same in both modes, percent in from the surface nearest the
-// reader (#263). XYZ mode used to read the cut out as its position along the
+// reader (#263). XYZ mode used to read the slice out as its position along the
 // axis, measured from the model's origin, so the same key and the same number
 // meant different things in the two modes. Each axis keeps its own plane
-// (slicePlanes), so flipping to the other side keeps the cut where it is. The
+// (slicePlanes), so flipping to the other side keeps the slice where it is. The
 // distance from the origin is a readout of its own, #264.
 // ---------------------------------------------------------------------------
 
@@ -1093,7 +1093,7 @@ viewerState.showAxisLetters = true;
 viewerState.showOriginMarker = true;
 viewerState.singleKeyShortcuts = true;
 
-/** The model axis the current view cuts along: 'x', 'y' or 'z'. */
+/** The model axis the current view slices along: 'x', 'y' or 'z'. */
 function currentCutAxis() {
     return activeSliceAxis().axis;
 }
@@ -1185,7 +1185,7 @@ function originOnDisplayPhrase() {
 }
 
 /** The XYZ picture, for entering the mode and the start of ".": where the reader
- * looks from, how the display's axes run, and how deep the cut is, in the same
+ * looks from, how the display's axes run, and how deep the slice is, in the same
  * words as Turn mode (#263). */
 function xyzDescription({ lead = '' } = {}) {
     const side = axisSide();
@@ -1198,7 +1198,7 @@ function xyzDescription({ lead = '' } = {}) {
 }
 
 /** The Turn-mode picture, in the same shape: where the reader looks from, how
- * the display's axes run, and how deep the cut is. */
+ * the display's axes run, and how deep the slice is. */
 function turnDescription() {
     const axes = displayAxesPhrase();
     const depth = viewerState.currentSliceDepth;
@@ -1214,7 +1214,7 @@ function capitalize(text) {
 
 /** Put the plane along `axis` at a position from its lowest coordinate (0) to
  * its highest (1), render and, unless told not to, say the depth it is at. The
- * tutorial's landmarks are positions along the object, so it puts the cut on
+ * tutorial's landmarks are positions along the object, so it puts the slice on
  * one through this (#245). */
 function setCutPosition(axis, position, emit = announceAlert, { render = true, announce: shouldAnnounce = true } = {}) {
     const clamped = Math.min(1, Math.max(0, position));
@@ -1227,7 +1227,7 @@ function setCutPosition(axis, position, emit = announceAlert, { render = true, a
     return changed;
 }
 
-/** Move the cut deltaPercent deeper, away from the reader, or shallower when it
+/** Move the slice deltaPercent deeper, away from the reader, or shallower when it
  * is negative, and say where it landed. The depth keys, the step buttons, the
  * DotPad's depth dots and the Monarch's depth keys all come through here or
  * updateSliceDepth, and depth is measured the same way in both modes (#263). */
@@ -1253,7 +1253,7 @@ function goToSliceEnd(farSide, emit = announceAlert) {
 /** Show a standard view in XYZ mode and say it the way the #235 review asked:
  * the axis and the side it is seen from, then where the other two increase, "X
  * from plus, Y right, Z up", or "X+ Y right Z up" in braille. Plus means the
- * reader is on the +X side. Where the cut is along the axis is "."'s to say. */
+ * reader is on the +X side. Where the slice is along the axis is "."'s to say. */
 function showXyzView(viewToken, emit = announceAlert) {
     updateView(viewToken, false);
     syncAxisModeUI();
@@ -1271,11 +1271,11 @@ function viewFrom(axis, sign) {
     return Object.keys(VIEW_BASIS).find(token => Math.sign(VIEW_BASIS[token].depth[index]) === sign);
 }
 
-/** X, Y or Z: cut along that axis from its home view (Right, Front, Top), and
+/** X, Y or Z: slice along that axis from its home view (Right, Front, Top), and
  * the same letter again from the other side (Left, Back, Bottom). A letter always
  * names the axis, the way OpenSCAD's View menu and Blender's numpad do; which of
  * its two sides you get depends only on which one is showing, so a third press
- * comes back to the first. Each axis keeps its own cut position throughout. */
+ * comes back to the first. Each axis keeps its own slice position throughout. */
 function selectAxis(axis, emit = announceAlert) {
     if (!XYZ_AXES[axis]) return;
     const [home, other] = XYZ_AXES[axis].views;
@@ -1291,7 +1291,7 @@ function selectAxis(axis, emit = announceAlert) {
 }
 
 /** Change the axis mode. Entering XYZ squares the model up to the standard view
- * whose axis already faces the reader, so nothing turns away and the cut stays
+ * whose axis already faces the reader, so nothing turns away and the slice stays
  * where it was; leaving keeps the view as it is. */
 function setAxisMode(mode, { announce: shouldAnnounce = true, persist = true, render = true } = {}) {
     if (!AXIS_MODES.some(m => m.key === mode)) return false;
@@ -1332,7 +1332,7 @@ function setAxisMode(mode, { announce: shouldAnnounce = true, persist = true, re
 /** A key from the other mode does nothing but say whose it is. */
 function announceWrongModeKey(key, keyMode, emit = announceAlert) {
     const label = key.toUpperCase();
-    const does = keyMode === 'turn' ? `${label} turns the model` : `${label} cuts along ${label}`;
+    const does = keyMode === 'turn' ? `${label} turns the model` : `${label} slices along ${label}`;
     // Z was the reset key until Reset moved to 0, and hands remember.
     const reset = key === 'z' ? ' Reset is now 0.' : '';
     emit(`${does} in ${axisModeLabel(keyMode)} mode. You're in ${axisModeLabel()} mode; change it in Settings.${reset}`, {
@@ -1392,7 +1392,7 @@ function modelLabel() {
     return selected && selected.value === current ? selected.text : current;
 }
 
-/** Bring the axis-mode parts of the page in line with the mode and the cut. */
+/** Bring the axis-mode parts of the page in line with the mode and the slice. */
 function syncAxisModeUI() {
     syncRadioGroup(axisModeRadios(), viewerState.axisMode, 'axis-mode');
     const xyz = isXyzMode();
@@ -1637,8 +1637,8 @@ function refreshViewInfoSummary() {
 function updateButtonLabels() {
     deeperBtn.textContent = `Deeper 10%`;
     shallowerBtn.textContent = `Shallower 10%`;
-    if (deeperHelp) deeperHelp.textContent = 'Moves the cut 10% further from you.';
-    if (shallowerHelp) shallowerHelp.textContent = 'Moves the cut 10% nearer to you.';
+    if (deeperHelp) deeperHelp.textContent = 'Moves the slice 10% further from you.';
+    if (shallowerHelp) shallowerHelp.textContent = 'Moves the slice 10% nearer to you.';
 }
 
 function updateSliceGraphLockUI() {
@@ -2835,7 +2835,7 @@ document.getElementById('delete-model-btn').addEventListener('click', async func
             if (dropdown.options.length > 0) {
                 dropdown.selectedIndex = 0;
                 viewerState.currentModel = dropdown.value;
-                // The model now showing starts with the cut in the middle, like
+                // The model now showing starts with the slice in the middle, like
                 // one chosen from the list, not where the removed one was left.
                 resetSlicePlanes();
                 syncSliceDepthFromPlanes();
@@ -3226,7 +3226,7 @@ function cycleRepresentationMode(shouldAnnounce = true) {
 // `braille` is what the tactile display's text line shows instead of the
 // spoken message: a line (or lines, most important first) of 20 cells or fewer,
 // written for the fingers rather than cut from the speech, e.g. "Z 31%" for
-// "Z cut at 31 percent". Without it the display shows the start of the message,
+// "Z slice at 31 percent". Without it the display shows the start of the message,
 // as it always has.
 function emitAnnouncement(message, politeness, braille = null) {
     const normalizedMessage = String(message);
@@ -3296,7 +3296,7 @@ function setPendingInputSource(source) {
 
 /** The cube reporting which face is up. In Turn mode that named view, as it
  * always was. In XYZ mode the face pointing up is the axis coming out of the
- * display, so it picks the axis and the side and keeps that axis's cut. */
+ * display, so it picks the axis and the side and keeps that axis's slice. */
 function selectViewFromCube(viewToken) {
     if (!VIEW_BASIS[viewToken]) return;
     pendingInputSource = 'witmotion';
@@ -3424,8 +3424,8 @@ function loadStudyModel(stem, label, defaults) {
     return true;
 }
 
-/** The axis mode and where the cut is along its axis, for the study log: the
- * axis it cuts along, the side it is seen from, and how far along the object
+/** The axis mode and where the slice is along its axis, for the study log: the
+ * axis it slices along, the side it is seen from, and how far along the object
  * (percent from its lowest coordinate, the same from either side). Sent with
  * every render too, so the render rows and the CSV carry it. */
 function axisLogFields() {
@@ -3774,7 +3774,7 @@ document.addEventListener('keydown', function(e) {
     // Home and End move within the control, and screen reader users rely on that
     // to get to the first or last option, with no setting to get it back (#235
     // review). The depth slider is the exception, handled below: its keys move
-    // the cut the way the slider's own would, and say where it landed.
+    // the slice the way the slider's own would, and say where it landed.
     const NATIVE_NAVIGATION_KEYS = ['arrowup', 'arrowdown', 'pageup', 'pagedown', 'home', 'end'];
     const ownsNavigationKeys = Boolean(
         target && target !== sliceSlider && typeof target.closest === 'function' &&
@@ -3991,7 +3991,7 @@ document.addEventListener('keydown', function(e) {
             break;
 
         case '.':
-            // Where am I: which way the model faces and where the cut is, then
+            // Where am I: which way the model faces and where the slice is, then
             // the rest of the status bar.
             e.preventDefault();
             announceWhereAmI();
@@ -4099,7 +4099,7 @@ document.addEventListener('keydown', function(e) {
 
         case '0':
             // Reset, for everyone, in both modes. It was Z, which cannot mean
-            // "reset" in one mode and "cut along Z" in the other; 0 is what
+            // "reset" in one mode and "slice along Z" in the other; 0 is what
             // resets zoom in a browser (Ctrl+0).
             e.preventDefault();
             // Drop the remembered per-view centre so this request omits
