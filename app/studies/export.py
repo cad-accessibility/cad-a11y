@@ -204,9 +204,9 @@ LONG_COLUMN_DOCS: dict[str, dict[str, Any]] = {
         "Description": "The viewer's axis mode.",
         "Levels": {"turn": "Turn: pitch, roll and yaw", "xyz": "XYZ: pick an axis and a side"},
     },
-    "cut_axis": {"Description": "The model axis the slices are cut along.", "Levels": {"x": "X", "y": "Y", "z": "Z"}},
+    "cut_axis": {"Description": "The model axis the slices are taken along.", "Levels": {"x": "X", "y": "Y", "z": "Z"}},
     "cut_side": {
-        "Description": "The side the cut is seen from.",
+        "Description": "The side the slice is seen from.",
         "Levels": {
             "above": "Z, from above",
             "below": "Z, from below",
@@ -218,7 +218,7 @@ LONG_COLUMN_DOCS: dict[str, dict[str, Any]] = {
     },
     "cut_percent": {
         "Description": (
-            "How far along the object the cut is, from its lowest coordinate on the "
+            "How far along the object the slice is, from its lowest coordinate on the "
             "axis (0) to its highest (100). Unlike depth, it does not change when the "
             "same plane is seen from the other side."
         ),

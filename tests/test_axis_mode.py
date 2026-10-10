@@ -433,33 +433,23 @@ def test_the_cube_goes_through_the_viewer_and_waits_for_a_settled_face():
 # --- What the review of #235 turned up -------------------------------------------
 
 
-def test_the_hardware_depth_inputs_use_the_axis_scale_in_xyz_mode():
+def test_the_hardware_depth_inputs_use_depth_in_both_modes():
     """The Trinkey slider sets depth through window.updateSliceDepth, and
-    window.getCurrentSliceDepth reads it back. In XYZ mode those have to speak the
-    position along the cut axis, the number the on-screen slider shows.
-
-    Left on Turn mode's depth-from-the-reader they ran the other way: from the
-    default views the slider pushed to 30 put the plane at 1 - 0.30 and the
-    readout jumped to 70. (The DotPad's and the Monarch's depth keys step through
-    stepSliceDepth instead; see the next test.)
+    window.getCurrentSliceDepth reads it back. Depth from the reader is what the
+    on-screen slider and every readout use in both modes now (#263), so neither
+    has a branch of its own for XYZ mode. (The DotPad's and the Monarch's depth
+    keys step through stepSliceDepth instead; see the next tests.)
     """
     js = _js()
     setter = js[js.index("function updateSliceDepth("):]
     setter = setter[:setter.index("\nfunction ")]
-    assert "isXyzMode()" in setter, "updateSliceDepth still treats every mode as depth"
-    assert "setCutPosition(currentCutAxis()" in setter
-    assert setter.index("setCutPosition") < setter.index("writeDisplayDepthToPlanes"), (
-        "the XYZ branch must return before the depth-from-the-reader path"
-    )
+    assert "isXyzMode()" not in _code_only(setter)
+    assert "writeDisplayDepthToPlanes(viewerState.currentSliceDepth);" in setter
 
     getter = js[js.index("function getCurrentSliceDepth("):]
     getter = getter[:getter.index("\n}")]
-    assert "Math.round(viewerState.slicePlanes[currentCutAxis()] * 100)" in getter, (
-        "a device reads this, adds its step and hands it back, so it must be the "
-        "same scale updateSliceDepth expects, 0 to 100 across the object, not the "
-        "readout measured from the origin"
-    )
-    assert "position / 100" in setter
+    assert "isXyzMode()" not in getter
+    assert "return viewerState.currentSliceDepth;" in getter
 
 
 def test_asking_where_the_origin_is_works_in_both_modes():
@@ -494,38 +484,41 @@ def test_the_origin_is_said_as_where_it_is_on_the_display():
 
 
 def test_where_am_i_is_short_and_names_the_model_on_display():
-    """The #235 review's "." : view, cut plane, origin, render, zoom, model. No
+    """The #235 review's "." : view, depth, origin, render, zoom, model. No
     layout or DotPad, and the model is the one being rendered, not the status
-    bar's text, which kept the previous model's name after /ingest opened one."""
+    bar's text, which kept the previous model's name after /ingest opened one.
+    Depth is said the same way in both modes (#263)."""
     where = _code_only(_function("announceWhereAmI"))
     for part in ("Origin: ${origin.short}.", "Render: ${render}.", "Zoom: ${zoom}.", "Model: ${modelLabel()}."):
         assert part in where
     assert "Layout" not in where and "DotPad" not in where and "statusBarRest" not in _js()
     xyz = _code_only(_function("xyzDescription"))
-    assert "View from ${side.speech}, ${axes.speech}. ${cut.speech}." in xyz
-    cut = _code_only(_function("cutPlanePhrase"))
-    assert "speech: `Cut plane: ${letter}=${signedPercent(percent)}%`" in cut
-    assert "braille: `Cut: ${percent}%`" in cut
+    assert "View from ${side.speech}, ${axes.speech}. Depth: ${depth}%." in xyz
+    assert "Depth: ${depth}%." in _code_only(_function("turnDescription"))
     label = _code_only(_function("modelLabel"))
     assert "viewerState.currentModel" in label
     assert "sbModel.textContent = modelLabel();" in _function("refreshStatusBar")
 
 
-def test_the_cut_is_measured_from_the_origin():
-    """The #235 review: 0% is the model's origin, so a cube from -20 to +20 is cut
-    through its middle at 0%. The plane is still stored as a fraction of the
-    object, which is what the server and the Trinkey use."""
-    percent = _code_only(_function("cutPercent"))
-    assert "(viewerState.slicePlanes[axis] - origin) * 100" in percent
-    assert "if (origin === null) return null;" in percent
-    step = _code_only(_function("stepCut"))
-    assert "(viewerState.slicePlanes[axis] - origin) * 100" in step
-    assert "onGrid / 100 + origin" in step
-    announce = _code_only(_function("announceCutStep"))
-    assert "pendingCutAnnouncement = { axis, emit };" in announce, (
-        "a step made before the origin is known is said once it is, never on the "
-        "object's own scale"
-    )
+def test_depth_means_the_same_in_both_modes():
+    """Arun's review, through Jen (#263): XYZ mode read the cut out as its
+    position along the axis, measured from the model's origin, so the same key
+    and the same number meant different things in the two modes. Depth is percent
+    in from the surface nearest the reader in both now, and nothing that reads,
+    steps or shows it has a branch for XYZ mode."""
+    js = _code_only(_js())
+    for gone in ("function cutPercent(", "function cutPlanePhrase(", "function cutReadout(",
+                 "function stepCut(", "function announceCutStep(", "function xyzStepPercent(",
+                 "originFraction(", "pendingCutAnnouncement"):
+        assert gone not in js, f"{gone} is left over from the origin-based readout"
+    for name in ("stepSliceDepth", "goToSliceEnd", "announceDepthValue", "refreshDepthControls"):
+        body = _code_only(_function(name)).replace("const xyz = isXyzMode();", "")
+        assert "isXyzMode()" not in body, name
+    status = _code_only(_function("refreshStatusBar"))
+    assert "sbDepth.textContent = viewerState.currentSliceDepth + '%';" in status
+    assert "sbDepthLabel.textContent = 'Depth';" in status
+    slider = js[js.index("sliceSlider.addEventListener('input'"):]
+    assert "isXyzMode()" not in slider[:slider.index("});")]
 
 
 def _function(name: str) -> str:
@@ -556,27 +549,22 @@ def test_the_depth_keys_move_the_cut_the_same_way_in_both_modes():
     assert "goToSliceEnd(normalizedKey==='end');" in ends
 
 
-def test_deeper_is_away_from_the_reader_in_xyz_mode():
-    """The reader is on the +depth side of the cut axis, so deeper runs toward
-    -sign. From Top, Right and Back the reader is on the + side, so deeper lowers
-    the number read out; that is what the help and the README say."""
+def test_deeper_is_away_from_the_reader_in_both_modes():
+    """Deeper raises the depth, and Home and End go to the surface nearest the
+    reader and the far side, whichever mode and view (#263). The help says so."""
     step = _code_only(_function("stepSliceDepth"))
-    xyz = step[step.index("if (isXyzMode())"):]
-    xyz = xyz[:xyz.index("return stepCut(")+60]
-    assert "activeSliceAxis()" in xyz
-    assert "-sign * Math.sign(delta)" in xyz
-
-    lowers = {t for t, b in _view_basis().items() if b["depth"].sum() > 0}
-    assert lowers == {"z+", "x-", "y+"}, "the views where deeper lowers the number"
-    # Those are the plus sides: the reader is on the + side of the axis.
+    assert "previousDepth + delta" in step
+    ends = _code_only(_function("goToSliceEnd"))
+    assert "const nextDepth = farSide ? 100 : 0;" in ends
+    help_text = _html()[_html().index("<h3>Depth</h3>"):]
+    help_text = help_text[:help_text.index("<h3>Zoom</h3>")]
+    assert "The same in both axis modes: 0% is the surface nearest you and 100% the far side." in help_text
+    assert "origin" not in help_text
+    # Which side a view is seen from is still named by the axis that points at
+    # the reader.
     side = _code_only(_function("axisSide"))
     assert "const word = sign > 0 ? 'plus' : 'minus';" in side
     assert "signedAxisOf(basis ? basis.depth" in side
-    help_text = _html()[_html().index("<h3>Depth</h3>"):]
-    assert "from X plus, Y plus or Z plus, going deeper lowers the number" in help_text
-
-    ends = _code_only(_function("goToSliceEnd"))
-    assert "const nearest = sign > 0 ? 1 : 0;" in ends, "Home must be the surface nearest the reader"
 
 
 def test_the_device_depth_keys_step_like_the_arrow_keys():
@@ -592,15 +580,14 @@ def test_the_device_depth_keys_step_like_the_arrow_keys():
 
 
 def test_a_focused_depth_slider_keeps_the_slider_pattern():
-    """The slider shows the position along the axis in XYZ mode, and a focused
-    slider's Up has to raise the value it reports. So while it has focus the keys
-    step along the axis; everywhere else they go deeper."""
+    """The slider's value is depth in both modes, so Up raises the value it
+    reports and goes deeper, as the ARIA slider pattern and the other depth keys
+    both expect. XYZ mode no longer needs keys of its own for it."""
     handler = _code_only(_keydown_handler())
-    block = handler[handler.index("if (isXyzMode() && target === sliceSlider)"):]
-    block = block[:block.index("switch(normalizedKey)")]
-    assert "arrowup: () => stepCut(1," in block
-    assert "home: () => setCutPosition(currentCutAxis(), 0)" in block
-    assert handler.index("target === sliceSlider") < handler.index("switch(normalizedKey)")
+    assert "target === sliceSlider" not in handler
+    controls = _code_only(_function("refreshDepthControls"))
+    assert "sliceSlider.value = depth;" in controls
+    assert "`${depth} percent depth`" in controls
 
 
 def test_an_axis_key_says_the_axis_the_side_and_how_the_other_two_run():
@@ -621,15 +608,17 @@ def test_an_axis_key_says_the_axis_the_side_and_how_the_other_two_run():
 
 def test_the_step_buttons_say_deeper_and_shallower_in_both_modes():
     """In XYZ mode they read "X plus 10%", which would sit next to the "X plus"
-    view button and mean something else. They now go through stepSliceDepth like
-    Page Up and Page Down."""
+    view button and mean something else. They move the depth 10% in both modes."""
     labels = _code_only(_function("updateButtonLabels"))
     assert "isXyzMode" not in labels and "plus" not in labels
     js = _js()
     deeper = js[js.index("deeperBtn.addEventListener('click'"):]
-    assert "stepSliceDepth(xyzStepPercent(true))" in deeper[:deeper.index("});")]
+    deeper = deeper[:deeper.index("});")]
+    assert "updateSliceDepth(viewerState.currentSliceDepth + 10, true)" in deeper and "isXyzMode" not in deeper
     shallower = js[js.index("shallowerBtn.addEventListener('click'"):]
-    assert "stepSliceDepth(-xyzStepPercent(true))" in shallower[:shallower.index("});")]
+    shallower = shallower[:shallower.index("});")]
+    assert "updateSliceDepth(viewerState.currentSliceDepth - 10, true)" in shallower
+    assert "isXyzMode" not in shallower
 
 
 def test_a_focused_list_radio_or_slider_keeps_its_own_navigation_keys():
@@ -649,3 +638,10 @@ def test_a_focused_list_radio_or_slider_keeps_its_own_navigation_keys():
         "arrowup", "arrowdown", "pageup", "pagedown", "home", "end"}
     assert handler.index("const ownsNavigationKeys") < handler.index("switch(normalizedKey)")
     assert handler.index("const ownsNavigationKeys") < handler.index("reportStudyInteraction('keyboard'")
+
+
+def test_the_help_says_the_axis_labels_are_computer_braille():
+    """The labels are one cell with no capital sign (#235 review), which a reader
+    of contracted braille would not expect, so the help and the README say so."""
+    assert "computer braille" in _html()
+    assert "computer braille" in (ROOT / "README.md").read_text()

@@ -418,15 +418,7 @@ async function sendStateToServer() {
             if (data.bbox) {
                 updateBoundingBox(data.bbox);
             }
-            // Where the model's origin is: along each axis, which XYZ mode
-            // measures the cut from, and on this frame, which "," and "." read.
-            if (Array.isArray(data.origin_fraction)) {
-                setModelOrigin(data.origin_fraction, state.model);
-                if (isXyzMode()) refreshDepthControls();
-                const pendingCut = pendingCutAnnouncement;
-                pendingCutAnnouncement = null;
-                if (pendingCut && isXyzMode()) announceCutStep(pendingCut.axis, pendingCut.emit);
-            }
+            // Where the model's origin is on this frame, which "," and "." read.
             if (data.image_base64) setOriginDisplay(data.origin_display);
             if (data.model_list) {
                 updateModelList(data.model_list);
@@ -756,7 +748,7 @@ const FINE_ZOOM_STEP = 0.01;
 // view renders the same picture as naming the view does.
 //
 // One convention for all six: depth = right x up, so every view is right-handed,
-// the reader is always on the +depth side, and the cut removes that half. That is
+// the reader is always on the +depth side, and the slice removes that half. That is
 // what makes 0% the surface nearest the reader in every view, and it is what the
 // turn formulas in applyRelativeRotation assume. Each view is the OpenSCAD view
 // of the same name. Three of them used to have depth pointing away from the
@@ -791,7 +783,7 @@ function viewName(viewToken = viewerState.currentView) {
 // Axis mode (#185).
 //
 // Two ways to drive the same orientation model, chosen in Settings:
-//   xyz   the default (#235 review). Cut along X, Y or Z. X, Y and Z pick the
+//   xyz   the default (#235 review). Slice along X, Y or Z. X, Y and Z pick the
 //         axis and the same key again looks from the other side. Every view is
 //         one of OpenSCAD's standard views, so there are only two things to
 //         name, the axis and the side, and nothing to roll.
@@ -802,14 +794,14 @@ function viewName(viewToken = viewerState.currentView) {
 //
 // No key, button, chord or cube gesture does something in both. A key from the
 // other mode says which mode it belongs to and does nothing else, so a mode
-// error is heard rather than silently turning or cutting (Sellen et al. 1992).
-// The keys that move the cut (arrows, Page Up/Down, Home/End) are in both,
-// because both have a cut to move; each mode moves it in its own terms.
+// error is heard rather than silently turning or slicing (Sellen et al. 1992).
+// The keys that move the slice (arrows, Page Up/Down, Home/End) are in both,
+// because both have a slice to move; each mode moves it in its own terms.
 // ---------------------------------------------------------------------------
 // label is what the Settings radio reads; short is what is said ("XYZ mode").
 const AXIS_MODES = [
     { key: 'turn', label: 'Turn: pitch, roll and yaw', short: 'Turn' },
-    { key: 'xyz', label: 'XYZ: cut along X, Y or Z, as in OpenSCAD', short: 'XYZ' },
+    { key: 'xyz', label: 'XYZ: slice along X, Y or Z, as in OpenSCAD', short: 'XYZ' },
 ];
 
 // The keys that belong to exactly one mode. tests/test_axis_mode.py holds the
@@ -921,21 +913,20 @@ function setOrientationFromView(viewToken) {
 // "Position reset" (the 0 shortcut and the Reset Position button) means the
 // whole framing, not just pan: undo any roll/pitch/yaw back to the straight-on
 // basis for whatever view is currently selected, zoom back out to 0, and
-// bring the slice plane back on every axis, to the middle (50%) in Turn mode
-// and to the model's origin in XYZ mode (resetSlicePlanesForMode) -- otherwise
-// a rotated, zoomed-in, or deeply-sliced view came back centred on itself
-// rather than on the object. Does not touch which named view is selected, or
+// bring the slice plane back to the middle (50%) of every axis, in both axis
+// modes -- otherwise a rotated, zoomed-in, or deeply-sliced view came back
+// centred on itself rather than on the object. Does not touch which named view is selected, or
 // send anything to the server itself -- callers still own
 // clearCameraCenterState(), setting currentMoveCamera = "reset", and the
 // single sendStateToServer() call, same as before.
 function resetOrientationZoomAndDepth() {
     setOrientationFromView(viewerState.currentView);
-    resetSlicePlanesForMode();
+    resetSlicePlanes();
     // Undoing a pitch/yaw can change which physical axis is "depth" (see
     // activeSliceAxis) -- re-derive the displayed slice percentage for
     // whichever axis is active now, the same as updateView does after a
-    // real view switch. Every plane was just reset, so this settles on 50% in
-    // Turn mode and on the origin in XYZ mode, whichever axis that is.
+    // real view switch. With every plane just reset to 0.5 this always
+    // settles on 50% regardless of which axis that turns out to be.
     syncSliceDepthFromPlanes();
     updateZoom(0, false, false);
 }
@@ -1076,22 +1067,6 @@ function resetSlicePlanes() {
     viewerState.slicePlanes = { x: 0.5, y: 0.5, z: 0.5 };
 }
 
-/** Where a reset puts the cut on all three axes, and where a model starts (#235
- * review). Turn mode: the middle, 50%. XYZ mode: the model's origin, which reads
- * 0% there on every axis of every model, or the nearest face when the origin lies
- * beyond the object, since the cut stays inside it. Until something has said
- * where this model's origin is, XYZ mode gets the middle as well; a model's first
- * render asks for the origin first (placeNewModelAtOrigin), so that only happens
- * to a reset pressed while a model is loading. */
-function resetSlicePlanesForMode() {
-    resetSlicePlanes();
-    if (!isXyzMode()) return;
-    for (const axis of ['x', 'y', 'z']) {
-        const origin = originFraction(axis);
-        if (origin !== null) viewerState.slicePlanes[axis] = Math.min(1, Math.max(0, origin));
-    }
-}
-
 // Re-derive viewerState.currentSliceDepth from the persisted planes after the active axis
 // may have changed (any pitch/yaw, or picking a different named view). Roll
 // never changes the active axis, so this is a harmless no-op there. Does not
@@ -1105,13 +1080,14 @@ function syncSliceDepthFromPlanes() {
 }
 
 // ---------------------------------------------------------------------------
-// XYZ mode: the cut along its axis.
+// XYZ mode: the axis keys, the standard views and the marks on the display.
 //
-// The position along an axis is slicePlanes[axis], a fraction from the object's
-// lowest to its highest coordinate, and it is the same number from either side,
-// so flipping keeps the cut where it is. It is read and stepped in percent of the
-// object's extent along that axis. Reading it in millimetres needs the model's
-// real coordinates and a unit that can be trusted, which is #234.
+// Depth means the same in both modes, percent in from the surface nearest the
+// reader (#263). XYZ mode used to read the slice out as its position along the
+// axis, measured from the model's origin, so the same key and the same number
+// meant different things in the two modes. Each axis keeps its own plane
+// (slicePlanes), so flipping to the other side keeps the slice where it is. The
+// distance from the origin is a readout of its own, #264.
 // ---------------------------------------------------------------------------
 
 const SETTINGS_AXIS_MODE_KEY = 'settingsAxisMode';
@@ -1126,7 +1102,7 @@ viewerState.showAxisLetters = true;
 viewerState.showOriginMarker = true;
 viewerState.singleKeyShortcuts = true;
 
-/** The model axis the current view cuts along: 'x', 'y' or 'z'. */
+/** The model axis the current view slices along: 'x', 'y' or 'z'. */
 function currentCutAxis() {
     return activeSliceAxis().axis;
 }
@@ -1137,89 +1113,6 @@ function currentBasis() {
         up: viewerState.orientationUp,
         depth: viewerState.orientationDepth,
     };
-}
-
-// Where the model's origin lies along each axis, as a fraction of the object's
-// extent (0 at its lowest coordinate, 1 at its highest, outside that range when
-// the origin is beyond the object), and which model that was measured on. The
-// server sends it with every render; null until one answers.
-viewerState.modelOrigin = null;
-
-function setModelOrigin(fraction, model = viewerState.currentModel) {
-    if (!Array.isArray(fraction) || fraction.length !== 3) return;
-    const [x, y, z] = fraction.map(value => (value === null ? NaN : Number(value)));
-    viewerState.modelOrigin = { fraction: { x, y, z }, model };
-}
-
-/** The origin's fraction along an axis for the model on screen, or null. A switch
- * of model leaves the previous one's origin here until the next render answers,
- * and nothing may read it as the new one's. */
-function originFraction(axis) {
-    const origin = viewerState.modelOrigin;
-    if (!origin || origin.model !== viewerState.currentModel) return null;
-    const value = origin.fraction[axis];
-    return Number.isFinite(value) ? value : null;
-}
-
-function originKnown(model = viewerState.currentModel) {
-    return Boolean(viewerState.modelOrigin && viewerState.modelOrigin.model === model);
-}
-
-/** Ask the server where a model's origin is, without rendering it. True once it
- * is known; false if the server could not say, and the model then starts in the
- * middle until its first render answers. */
-async function fetchModelOrigin(model) {
-    try {
-        const response = await fetch(`${SERVER_URL}/render/origin`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model, current_model: model }),
-        });
-        if (!response.ok) return false;
-        const data = await response.json();
-        if (!Array.isArray(data.origin_fraction)) return false;
-        setModelOrigin(data.origin_fraction, model);
-        return true;
-    } catch (_) {
-        return false;
-    }
-}
-
-/** Before a model's first render, in XYZ mode, put the cut at its origin, where
- * a reset puts it, so the first view and a reset agree (#235 review). The origin
- * is asked for first, so the first frame on the display is already there rather
- * than at 50% with a second frame after it. A cut the reader moved while the
- * answer was on its way stays where they put it. False when another model has
- * replaced this one meanwhile: that one renders itself, so the caller sends
- * nothing. */
-async function placeNewModelAtOrigin() {
-    if (!isXyzMode() || originKnown()) return true;
-    const model = viewerState.currentModel;
-    const before = { ...viewerState.slicePlanes };
-    const known = await fetchModelOrigin(model);
-    if (model !== viewerState.currentModel) return false;
-    const untouched = ['x', 'y', 'z'].every(axis => viewerState.slicePlanes[axis] === before[axis]);
-    if (known && untouched && isXyzMode()) {
-        resetSlicePlanesForMode();
-        syncSliceDepthFromPlanes();
-        refreshViewInfoSummary();
-    }
-    return true;
-}
-
-/** What reset says (#235 review). In XYZ mode, where the cut went: the origin,
- * or how near it got when the origin lies beyond the object along the axis being
- * cut. Turn mode's reset always lands on 50%, so it says what it always said. */
-function announcePositionReset(emit = announceAlert) {
-    const percent = isXyzMode() ? cutPercent() : null;
-    if (percent === null) {
-        emit('Position reset');
-    } else if (percent === 0) {
-        emit('Position reset. Slice plane at the origin.', { braille: 'Reset. Cut at origin' });
-    } else {
-        const readout = cutReadout();
-        emit(`Position reset. Slice plane at ${readout.spoken}.`, { braille: `Reset. Cut ${readout.short}` });
-    }
 }
 
 // Where the origin landed on the frame now on the display, in whole percent:
@@ -1235,18 +1128,6 @@ function setOriginDisplay(position) {
     viewerState.originDisplay = Number.isFinite(across) && Number.isFinite(up)
         ? { across: Math.round(across * 100), up: Math.round(up * 100) }
         : null;
-}
-
-/** Where the cut is along an axis, in whole percent of the object's extent
- * measured from the model's origin, so a cube centred on the origin is cut
- * through its middle at 0% and has its faces at minus 50 and 50, and a model
- * built up from the origin reads 0 to 100 (#235 review). Null until a render has
- * said where this model's origin is. */
-function cutPercent(axis = currentCutAxis()) {
-    const origin = originFraction(axis);
-    if (origin === null) return null;
-    // + 0 turns a rounded -0 into 0.
-    return Math.round((viewerState.slicePlanes[axis] - origin) * 100) + 0;
 }
 
 /** A percentage for speech and braille. Signs are words ("minus 20"): a bare "-"
@@ -1295,26 +1176,6 @@ function axisSide(viewToken = viewerState.currentView) {
     return { letter, word, speech: `${letter} ${word}`, braille: `${letter}${sign > 0 ? '+' : '-'}` };
 }
 
-/** "Cut plane: X=0%" for "." and the line under the view buttons, and "Cut: 0%"
- * on the braille line, where the view line before it has named the axis. */
-function cutPlanePhrase(axis = currentCutAxis()) {
-    const letter = axisLetter(axis);
-    const percent = cutPercent(axis);
-    if (percent === null) {
-        return { speech: `Cut plane: ${letter}, position not known yet`, braille: 'Cut: not known yet' };
-    }
-    return { speech: `Cut plane: ${letter}=${signedPercent(percent)}%`, braille: `Cut: ${percent}%` };
-}
-
-/** The cut in a few characters, "X 31%", for the status bar and the slider's
- * label, and in words for the slider's value text. */
-function cutReadout(axis = currentCutAxis()) {
-    const letter = axisLetter(axis);
-    const percent = cutPercent(axis);
-    if (percent === null) return { short: `${letter} --`, spoken: `${letter}, position not known yet` };
-    return { short: `${letter} ${percent}%`, spoken: `${letter} ${signedPercent(percent)} percent` };
-}
-
 /** Where the origin is on the display, for "," and ".": "Horizontal: 42%,
  * Vertical: 42%" in full, "H: 42% V: 42%" short, and "(42%, 42%)" as a pair,
  * past 0 or 100 when it is off the display (#235 review). Null when no frame on
@@ -1333,19 +1194,20 @@ function originOnDisplayPhrase() {
 }
 
 /** The XYZ picture, for entering the mode and the start of ".": where the reader
- * looks from, how the display's axes run, and where the cut is. */
+ * looks from, how the display's axes run, and how deep the slice is, in the same
+ * words as Turn mode (#263). */
 function xyzDescription({ lead = '' } = {}) {
     const side = axisSide();
     const axes = displayAxesPhrase();
-    const cut = cutPlanePhrase();
+    const depth = viewerState.currentSliceDepth;
     return {
-        speech: `${lead}View from ${side.speech}, ${axes.speech}. ${cut.speech}.`,
-        braille: [...(lead ? ['XYZ mode'] : []), `${side.braille} ${axes.braille}`, cut.braille],
+        speech: `${lead}View from ${side.speech}, ${axes.speech}. Depth: ${depth}%.`,
+        braille: [...(lead ? ['XYZ mode'] : []), `${side.braille} ${axes.braille}`, `Depth: ${depth}%`],
     };
 }
 
 /** The Turn-mode picture, in the same shape: where the reader looks from, how
- * the display's axes run, and how deep the cut is. */
+ * the display's axes run, and how deep the slice is. */
 function turnDescription() {
     const axes = displayAxesPhrase();
     const depth = viewerState.currentSliceDepth;
@@ -1359,14 +1221,10 @@ function capitalize(text) {
     return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
 }
 
-/** How far one press moves the cut, in percent of the object's extent: 1 for the
- * Arrow keys and 10 for Page Up and Down, the ARIA slider pattern's steps. */
-function xyzStepPercent(coarse) {
-    return coarse ? 10 : 1;
-}
-
-/** Put the XYZ cut at a position along its axis (0 lowest, 1 highest), render
- * and, unless told not to, say where it landed. */
+/** Put the plane along `axis` at a position from its lowest coordinate (0) to
+ * its highest (1), render and, unless told not to, say the depth it is at. The
+ * tutorial's landmarks are positions along the object, so it puts the slice on
+ * one through this (#245). */
 function setCutPosition(axis, position, emit = announceAlert, { render = true, announce: shouldAnnounce = true } = {}) {
     const clamped = Math.min(1, Math.max(0, position));
     const changed = clamped !== viewerState.slicePlanes[axis];
@@ -1374,38 +1232,17 @@ function setCutPosition(axis, position, emit = announceAlert, { render = true, a
     syncSliceDepthFromPlanes();
     refreshViewInfoSummary();
     if (render && changed) sendStateToServer();
-    if (shouldAnnounce) announceCutStep(axis, emit);
+    if (shouldAnnounce) announceDepthValue(viewerState.currentSliceDepth, null, emit);
     return changed;
 }
 
-/** Move the XYZ cut `step` percent toward +axis (direction 1) or -axis (-1), onto
- * whole percents from the origin so a run of presses reads 31, 32, 33 whatever
- * position the cut started from. Before a render has placed the origin the steps
- * fall on the object's own grid, and what they reached is said once it has. */
-function stepCut(direction, step, emit = announceAlert) {
-    const axis = currentCutAxis();
-    const origin = originFraction(axis) ?? 0;
-    const percent = (viewerState.slicePlanes[axis] - origin) * 100;
-    const onGrid = direction > 0
-        ? Math.floor(percent + 1e-6) + step
-        : Math.ceil(percent - 1e-6) - step;
-    return setCutPosition(axis, onGrid / 100 + origin, emit);
-}
-
-/** Move the cut deltaPercent deeper, away from the reader, or shallower when it
- * is negative, and say where it landed. The depth keys, the DotPad's depth dots
- * and the Monarch's depth keys all come through here, so deeper means the same
- * in both modes (#235 review). XYZ mode still reads the cut out along its axis,
- * so from above, the right and the back, deeper lowers the number. */
+/** Move the slice deltaPercent deeper, away from the reader, or shallower when it
+ * is negative, and say where it landed. The depth keys, the step buttons, the
+ * DotPad's depth dots and the Monarch's depth keys all come through here or
+ * updateSliceDepth, and depth is measured the same way in both modes (#263). */
 function stepSliceDepth(deltaPercent, emit = announceAlert) {
     const delta = Number(deltaPercent);
     if (!Number.isFinite(delta) || delta === 0) return false;
-    if (isXyzMode()) {
-        // The reader is on the +depth side of the cut axis, so deeper runs
-        // toward -sign along it.
-        const { sign } = activeSliceAxis();
-        return stepCut(-sign * Math.sign(delta), Math.abs(delta), emit);
-    }
     const previousDepth = viewerState.currentSliceDepth;
     const nextDepth = Math.max(0, Math.min(100, previousDepth + delta));
     const changed = updateSliceDepth(nextDepth, false);
@@ -1415,11 +1252,6 @@ function stepSliceDepth(deltaPercent, emit = announceAlert) {
 
 /** Home and End: the surface nearest the reader, or the far side, in either mode. */
 function goToSliceEnd(farSide, emit = announceAlert) {
-    if (isXyzMode()) {
-        const { axis, sign } = activeSliceAxis();
-        const nearest = sign > 0 ? 1 : 0;
-        return setCutPosition(axis, farSide ? 1 - nearest : nearest, emit);
-    }
     const previousDepth = viewerState.currentSliceDepth;
     const nextDepth = farSide ? 100 : 0;
     const changed = updateSliceDepth(nextDepth, false);
@@ -1427,35 +1259,10 @@ function goToSliceEnd(farSide, emit = announceAlert) {
     return changed;
 }
 
-// A cut step made before a render had said where the model's origin is: said
-// when that render answers, so no number is ever read on the wrong scale.
-let pendingCutAnnouncement = null;
-
-/** "Z 32 percent" the first time, then just "32", like zoom and depth. The
- * braille line always carries the axis: a bare number under the fingers says
- * nothing. The ends are named, since a press there does nothing. */
-function announceCutStep(axis = currentCutAxis(), emit = announceAlert) {
-    const percent = cutPercent(axis);
-    if (percent === null) {
-        pendingCutAnnouncement = { axis, emit };
-        return;
-    }
-    pendingCutAnnouncement = null;
-    const letter = axisLetter(axis);
-    const position = viewerState.slicePlanes[axis];
-    const end = position >= 1 ? 'maximum' : position <= 0 ? 'minimum' : '';
-    const endSpoken = end ? `, ${end}` : '';
-    const endBraille = end ? ` ${end.slice(0, 3)}` : '';
-    const spoken = signedPercent(percent);
-    announceParameterValue(`cut-${axis}`, `${letter} ${spoken} percent${endSpoken}`, `${spoken}${endSpoken}`, emit, {
-        braille: `${letter} ${percent}%${endBraille}`,
-    });
-}
-
 /** Show a standard view in XYZ mode and say it the way the #235 review asked:
  * the axis and the side it is seen from, then where the other two increase, "X
  * from plus, Y right, Z up", or "X+ Y right Z up" in braille. Plus means the
- * reader is on the +X side. Where the cut is along the axis is "."'s to say. */
+ * reader is on the +X side. Where the slice is along the axis is "."'s to say. */
 function showXyzView(viewToken, emit = announceAlert) {
     updateView(viewToken, false);
     syncAxisModeUI();
@@ -1473,11 +1280,11 @@ function viewFrom(axis, sign) {
     return Object.keys(VIEW_BASIS).find(token => Math.sign(VIEW_BASIS[token].depth[index]) === sign);
 }
 
-/** X, Y or Z: cut along that axis from its home view (Right, Front, Top), and
+/** X, Y or Z: slice along that axis from its home view (Right, Front, Top), and
  * the same letter again from the other side (Left, Back, Bottom). A letter always
  * names the axis, the way OpenSCAD's View menu and Blender's numpad do; which of
  * its two sides you get depends only on which one is showing, so a third press
- * comes back to the first. Each axis keeps its own cut position throughout. */
+ * comes back to the first. Each axis keeps its own slice position throughout. */
 function selectAxis(axis, emit = announceAlert) {
     if (!XYZ_AXES[axis]) return;
     const [home, other] = XYZ_AXES[axis].views;
@@ -1493,7 +1300,7 @@ function selectAxis(axis, emit = announceAlert) {
 }
 
 /** Change the axis mode. Entering XYZ squares the model up to the standard view
- * whose axis already faces the reader, so nothing turns away and the cut stays
+ * whose axis already faces the reader, so nothing turns away and the slice stays
  * where it was; leaving keeps the view as it is. */
 function setAxisMode(mode, { announce: shouldAnnounce = true, persist = true, render = true } = {}) {
     if (!AXIS_MODES.some(m => m.key === mode)) return false;
@@ -1534,7 +1341,7 @@ function setAxisMode(mode, { announce: shouldAnnounce = true, persist = true, re
 /** A key from the other mode does nothing but say whose it is. */
 function announceWrongModeKey(key, keyMode, emit = announceAlert) {
     const label = key.toUpperCase();
-    const does = keyMode === 'turn' ? `${label} turns the model` : `${label} cuts along ${label}`;
+    const does = keyMode === 'turn' ? `${label} turns the model` : `${label} slices along ${label}`;
     // Z was the reset key until Reset moved to 0, and hands remember.
     const reset = key === 'z' ? ' Reset is now 0.' : '';
     emit(`${does} in ${axisModeLabel(keyMode)} mode. You're in ${axisModeLabel()} mode; change it in Settings.${reset}`, {
@@ -1543,8 +1350,8 @@ function announceWrongModeKey(key, keyMode, emit = announceAlert) {
 }
 
 /** ".": where am I, in either mode, in as few words as the #235 review asked:
- * "View from X plus, Y right, Z up. Cut plane: X=0%. Origin: H: 42% V: 42%.
- * Render: Outline. Zoom: 0.0. Model: mug." Layout and the DotPad are left to the
+ * "View from X plus, Y right, Z up. Depth: 50%. Origin: H: 42% V: 42%. Render:
+ * Outline. Zoom: 0.0. Model: mug." Layout and the DotPad are left to the
  * status bar. The braille display gets one short line for each, view first; its
  * text line is 20 cells, so the view line has no "View:" in front of it. This is
  * also #193's "which way am I facing": the first sentence answers it. */
@@ -1594,7 +1401,7 @@ function modelLabel() {
     return selected && selected.value === current ? selected.text : current;
 }
 
-/** Bring the axis-mode parts of the page in line with the mode and the cut. */
+/** Bring the axis-mode parts of the page in line with the mode and the slice. */
 function syncAxisModeUI() {
     syncRadioGroup(axisModeRadios(), viewerState.axisMode, 'axis-mode');
     const xyz = isXyzMode();
@@ -1611,37 +1418,25 @@ function syncAxisModeUI() {
     }
     if (turnShortcutsSection) turnShortcutsSection.hidden = xyz;
     if (xyzShortcutsSection) xyzShortcutsSection.hidden = !xyz;
-    // Where 0 puts the slice plane, in the shortcuts list (#235 review).
-    const resetPlaneHelp = document.getElementById('reset-plane-help');
-    if (resetPlaneHelp) resetPlaneHelp.textContent = xyz ? 'the origin' : '50%';
     refreshDepthControls();
 }
 
-/** The slider, its readout and the step buttons, in the current mode's terms.
- * In XYZ mode the slider runs along the whole object, 0 at its lowest coordinate
- * and 100 at its highest, which is also the Trinkey's scale, and says where the
- * cut is from the origin; in Turn mode it is depth in from the reader's side. Its
+/** The slider, its readout and the step buttons. The slider is depth in from
+ * the reader's side in both modes, which is also the Trinkey's scale (#263). Its
  * aria-valuetext used to stay at "50 percent depth" whatever it was set to. */
 function refreshDepthControls() {
     const xyz = isXyzMode();
-    const axis = currentCutAxis();
+    const depth = Math.round(viewerState.currentSliceDepth);
     if (sliceSlider) {
-        const value = xyz
-            ? Math.round(viewerState.slicePlanes[axis] * 100)
-            : Math.round(viewerState.currentSliceDepth);
-        sliceSlider.value = value;
-        sliceSlider.setAttribute('aria-valuenow', String(value));
-        sliceSlider.setAttribute('aria-valuetext', xyz
-            ? cutReadout(axis).spoken
-            : `${Math.round(viewerState.currentSliceDepth)} percent depth`);
+        sliceSlider.value = depth;
+        sliceSlider.setAttribute('aria-valuenow', String(depth));
+        sliceSlider.setAttribute('aria-valuetext', `${depth} percent depth`);
     }
-    if (slicePercentage) {
-        slicePercentage.textContent = xyz ? cutReadout(axis).short : `${viewerState.currentSliceDepth}%`;
-    }
-    if (sliceHeading) sliceHeading.textContent = xyz ? 'Cut' : 'Depth';
+    if (slicePercentage) slicePercentage.textContent = `${viewerState.currentSliceDepth}%`;
+    if (sliceHeading) sliceHeading.textContent = 'Depth';
     if (xyzPosition) {
         xyzPosition.textContent = xyz
-            ? `View from ${axisSide().speech}, ${displayAxesPhrase().speech}. ${cutPlanePhrase(axis).speech}.`
+            ? `View from ${axisSide().speech}, ${displayAxesPhrase().speech}. Depth: ${viewerState.currentSliceDepth}%.`
             : '';
     }
     if (typeof updateButtonLabels === 'function' && deeperBtn) updateButtonLabels();
@@ -1760,13 +1555,13 @@ function formatCenter2(value) {
 const announcementWindow = document.getElementById('announcement-window');
 const announcementWindowPolite = document.getElementById('announcement-window-polite');
 
-/** Update the top status bar to reflect current state. In XYZ mode it leads
- * with the side the view is from and the cut, the order the pilot asked for. */
+/** Update the top status bar to reflect current state. In XYZ mode the view is
+ * named by the side it is seen from; depth reads the same in both modes. */
 function refreshStatusBar() {
     const xyz = isXyzMode();
     if (sbView) sbView.textContent = xyz ? axisSide().speech : viewName();
-    if (sbDepth) sbDepth.textContent = xyz ? cutReadout().short : viewerState.currentSliceDepth + '%';
-    if (sbDepthLabel) sbDepthLabel.textContent = xyz ? 'Cut' : 'Depth';
+    if (sbDepth) sbDepth.textContent = viewerState.currentSliceDepth + '%';
+    if (sbDepthLabel) sbDepthLabel.textContent = 'Depth';
     if (sbRenderMode) sbRenderMode.textContent = renderModeLabel();
     if (sbZoom) sbZoom.textContent = Number(viewerState.currentZoom).toFixed(1);
     if (sbViewMode) sbViewMode.textContent = representationModeLabel();
@@ -1796,13 +1591,8 @@ function clampDepth(value) {
 // already interrupts and replaces whatever's currently being spoken
 
 function announceDepthValue(depthValue, previousDepth = null, emit = announceAlert) {
-    // The Trinkey slider and stepSliceDepth say where depth landed through this in
-    // both modes. In XYZ mode the same move is a cut along the axis, and it is
-    // said that way.
-    if (isXyzMode()) {
-        announceCutStep(currentCutAxis(), emit);
-        return;
-    }
+    // The Trinkey slider and stepSliceDepth say where depth landed through this,
+    // in the same words in both modes (#263).
     const to = clampDepth(depthValue);
     if (to === null) return;
     announceParameterValue("depth", `Depth ${to}%`, `${to}%`, emit);
@@ -1856,8 +1646,8 @@ function refreshViewInfoSummary() {
 function updateButtonLabels() {
     deeperBtn.textContent = `Deeper 10%`;
     shallowerBtn.textContent = `Shallower 10%`;
-    if (deeperHelp) deeperHelp.textContent = 'Moves the cut 10% further from you.';
-    if (shallowerHelp) shallowerHelp.textContent = 'Moves the cut 10% nearer to you.';
+    if (deeperHelp) deeperHelp.textContent = 'Moves the slice 10% further from you.';
+    if (shallowerHelp) shallowerHelp.textContent = 'Moves the slice 10% nearer to you.';
 }
 
 function updateSliceGraphLockUI() {
@@ -2527,17 +2317,8 @@ async function exportCurrentSliceAsPng() {
 
 // Update slice depth display and announce changes
 function updateSliceDepth(newDepth, shouldAnnounce = true) {
-    // In XYZ mode the number is a position along the cut axis -- the same 0-100
-    // the on-screen slider, the cut keys and the readout use -- not depth from
-    // the reader. The two run opposite ways from Top, Front and Right, so a
-    // device left on the depth scale moved the cut the other way from what the
-    // screen said and the announcement read out the complement (#235 review).
-    if (isXyzMode()) {
-        const position = Number(newDepth);
-        if (!Number.isFinite(position)) return false;
-        return setCutPosition(currentCutAxis(), position / 100, announceAlert, { announce: shouldAnnounce });
-    }
-
+    // Depth from the reader in both modes, as the on-screen slider, the keys and
+    // the readouts all are now (#263), so the Trinkey and the slider agree.
     const oldDepth = viewerState.currentSliceDepth;
     viewerState.currentSliceDepth = Math.max(0, Math.min(100, newDepth));
     writeDisplayDepthToPlanes(viewerState.currentSliceDepth);
@@ -2563,13 +2344,9 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
 }
 
 function getCurrentSliceDepth(){
-    // Paired with updateSliceDepth, so in XYZ mode it is the same position along
-    // the axis that updateSliceDepth expects: what the Trinkey slider sets, and
-    // what the on-screen slider's value is, 0 to 100 across the object. What is
-    // said is measured from the origin instead (cutPercent). The DotPad's and the
-    // Monarch's depth keys step through stepSliceDepth, so their "deeper" matches
-    // Arrow Up.
-    if (isXyzMode()) return Math.round(viewerState.slicePlanes[currentCutAxis()] * 100);
+    // Paired with updateSliceDepth: depth from the reader, in both modes. The
+    // DotPad's and the Monarch's depth keys step through stepSliceDepth, so
+    // their "deeper" matches Arrow Up.
     return viewerState.currentSliceDepth;
 }
 
@@ -2830,7 +2607,7 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
 /** What either preview shows, in words, for its alt text. */
 function previewDescription() {
     if (isXyzMode()) {
-        return `View from ${axisSide().speech}, cut at ${cutReadout().spoken}, ${renderModeLabel()}`;
+        return `View from ${axisSide().speech}, ${viewerState.currentSliceDepth}% depth, ${renderModeLabel()}`;
     }
     return `${viewName()} view, ${viewerState.currentSliceDepth}% depth, ${renderModeLabel()}`;
 }
@@ -2840,7 +2617,7 @@ function previewDescription() {
  * `shape` is [height, width], as numpy reports it. */
 function previewCaption(shape) {
     const parts = isXyzMode()
-        ? [axisSide().braille, cutReadout().short, renderModeLabel()]
+        ? [axisSide().braille, `${viewerState.currentSliceDepth}%`, renderModeLabel()]
         : [viewName(), `${viewerState.currentSliceDepth}%`, renderModeLabel()];
     if (shape && shape.length > 1) {
         parts.push(`${shape[1]}\u00d7${shape[0]}px`);
@@ -2990,13 +2767,12 @@ document.getElementById("model-list-dropdown").addEventListener("input", functio
     refreshDeleteButton();
 });
 
-document.getElementById("model-list-dropdown").addEventListener("change", async function() {
+document.getElementById("model-list-dropdown").addEventListener("change", function() {
     const selectedItem = this.value;
     viewerState.currentModel = selectedItem;
     clearCameraCenterState();
     // A new model gets its own default view: straight-on orientation, zoom 0
-    // (fit longest_3d_dim along the shortest display dimension), and the cut
-    // where a reset puts it, 50% in Turn mode and the origin in XYZ mode -- not
+    // (fit longest_3d_dim along the shortest display dimension), and slice depth back to 50% -- not
     // whatever the previous model was left at.
     // Likewise the render mode: back to the app default rather than carrying
     // over e.g. xray or superposition from the previous model.
@@ -3008,9 +2784,8 @@ document.getElementById("model-list-dropdown").addEventListener("change", async 
         sbModel.textContent = this.options[this.selectedIndex].text;
     }
     beginModelLoadAnnouncement(selectedLabel, 'selection');
-    refreshDeleteButton();
-    if (!(await placeNewModelAtOrigin())) return;
     pendingInputSource = 'ui';
+    refreshDeleteButton();
     if (isSliceGraphRepresentationMode()) {
         autoRefreshSliceGraph({ updateAnchor: false });
     } else {
@@ -3069,14 +2844,11 @@ document.getElementById('delete-model-btn').addEventListener('click', async func
             if (dropdown.options.length > 0) {
                 dropdown.selectedIndex = 0;
                 viewerState.currentModel = dropdown.value;
-                // The model now showing starts with the cut where a reset puts
-                // it, like one chosen from the list, not where the removed one
-                // was left.
-                resetSlicePlanesForMode();
+                // The model now showing starts with the slice in the middle, like
+                // one chosen from the list, not where the removed one was left.
+                resetSlicePlanes();
                 syncSliceDepthFromPlanes();
-                placeNewModelAtOrigin().then(ready => {
-                    if (ready) sendStateToServer();
-                });
+                sendStateToServer();
             }
             refreshDeleteButton();
             statusEl.textContent = `✓ ${stem} removed`;
@@ -3139,14 +2911,9 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             statusEl.textContent = `✓ ${data.filename} uploaded`;
             announce(`Model ${data.filename} uploaded.`);
             beginModelLoadAnnouncement(selectedLabel, 'upload');
+            pendingInputSource = 'upload';
             refreshDeleteButton();
-            // Not awaited, so the upload control comes back now rather than
-            // once the model has loaded.
-            placeNewModelAtOrigin().then(ready => {
-                if (!ready) return;
-                pendingInputSource = 'upload';
-                sendStateToServer();
-            });
+            sendStateToServer();
         } else {
             statusEl.textContent = `Upload failed: ${data.message}`;
             announceAlert(`Upload failed: ${data.message}`);
@@ -3194,15 +2961,12 @@ function applyServerState(data) {
             viewerState.currentModel = data.load_model;
             refreshStatusBar();
             clearCameraCenterState();
-            resetSlicePlanesForMode();
+            resetSlicePlanes();
             // The planes alone are not what a render sends: the depth read off
             // them is, and it used to keep the previous model's.
             syncSliceDepthFromPlanes();
-            placeNewModelAtOrigin().then(ready => {
-                if (!ready) return;
-                pendingInputSource = 'ingest';
-                sendStateToServer();
-            });
+            pendingInputSource = 'ingest';
+            sendStateToServer();
         }
     }
 }
@@ -3471,7 +3235,7 @@ function cycleRepresentationMode(shouldAnnounce = true) {
 // `braille` is what the tactile display's text line shows instead of the
 // spoken message: a line (or lines, most important first) of 20 cells or fewer,
 // written for the fingers rather than cut from the speech, e.g. "Z 31%" for
-// "Z cut at 31 percent". Without it the display shows the start of the message,
+// "Z slice at 31 percent". Without it the display shows the start of the message,
 // as it always has.
 function emitAnnouncement(message, politeness, braille = null) {
     const normalizedMessage = String(message);
@@ -3541,7 +3305,7 @@ function setPendingInputSource(source) {
 
 /** The cube reporting which face is up. In Turn mode that named view, as it
  * always was. In XYZ mode the face pointing up is the axis coming out of the
- * display, so it picks the axis and the side and keeps that axis's cut. */
+ * display, so it picks the axis and the side and keeps that axis's slice. */
 function selectViewFromCube(viewToken) {
     if (!VIEW_BASIS[viewToken]) return;
     pendingInputSource = 'witmotion';
@@ -3669,8 +3433,8 @@ function loadStudyModel(stem, label, defaults) {
     return true;
 }
 
-/** The axis mode and where the cut is along its axis, for the study log: the
- * axis it cuts along, the side it is seen from, and how far along the object
+/** The axis mode and where the slice is along its axis, for the study log: the
+ * axis it slices along, the side it is seen from, and how far along the object
  * (percent from its lowest coordinate, the same from either side). Sent with
  * every render too, so the render rows and the CSV carry it. */
 function axisLogFields() {
@@ -3749,10 +3513,6 @@ let sliderUpdateTimeout = null;
 sliceSlider.addEventListener('input', function() {
     const newValue = parseInt(this.value, 10);
     if (!Number.isFinite(newValue)) return;
-    if (isXyzMode()) {
-        setCutPosition(currentCutAxis(), newValue / 100, announceAlert, { render: false, announce: false });
-        return;
-    }
     viewerState.currentSliceDepth = Math.max(0, Math.min(100, newValue));
     writeDisplayDepthToPlanes(viewerState.currentSliceDepth);
     refreshDepthControls();
@@ -3838,19 +3598,11 @@ showViewInfoBoxCheckbox.addEventListener('change', function() {
 // Deeper and Shallower: Page Up and Page Down, in either mode.
 deeperBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
-    if (isXyzMode()) {
-        stepSliceDepth(xyzStepPercent(true));
-        return;
-    }
     updateSliceDepth(viewerState.currentSliceDepth + 10, true);
 });
 
 shallowerBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
-    if (isXyzMode()) {
-        stepSliceDepth(-xyzStepPercent(true));
-        return;
-    }
     updateSliceDepth(viewerState.currentSliceDepth - 10, true);
 });
 
@@ -3887,7 +3639,7 @@ if (resetPositionBtn) {
         // once actually consumed -- see the '0' case in the keydown handler.
         viewerState.currentMoveCamera = "reset";
         sendStateToServer();
-        announcePositionReset(announce);
+        announce('Position reset');
     });
 }
 
@@ -4033,7 +3785,7 @@ document.addEventListener('keydown', function(e) {
     // Home and End move within the control, and screen reader users rely on that
     // to get to the first or last option, with no setting to get it back (#235
     // review). The depth slider is the exception, handled below: its keys move
-    // the cut the way the slider's own would, and say where it landed.
+    // the slice the way the slider's own would, and say where it landed.
     const NATIVE_NAVIGATION_KEYS = ['arrowup', 'arrowdown', 'pageup', 'pagedown', 'home', 'end'];
     const ownsNavigationKeys = Boolean(
         target && target !== sliceSlider && typeof target.closest === 'function' &&
@@ -4130,26 +3882,6 @@ document.addEventListener('keydown', function(e) {
         e.preventDefault();
         announceWrongModeKey(normalizedKey, keyMode);
         return;
-    }
-
-    // The depth keys go deeper or shallower in both modes (the cases below). The
-    // one exception is the depth slider itself while it has focus: in XYZ mode it
-    // shows the position along the axis, and a focused slider's Up has to raise
-    // the value it reports (the ARIA slider pattern), so there they step along it.
-    if (isXyzMode() && target === sliceSlider) {
-        const sliderKeys = {
-            arrowup: () => stepCut(1, xyzStepPercent(false)),
-            arrowdown: () => stepCut(-1, xyzStepPercent(false)),
-            pageup: () => stepCut(1, xyzStepPercent(true)),
-            pagedown: () => stepCut(-1, xyzStepPercent(true)),
-            home: () => setCutPosition(currentCutAxis(), 0),
-            end: () => setCutPosition(currentCutAxis(), 1),
-        };
-        if (sliderKeys[normalizedKey]) {
-            e.preventDefault();
-            sliderKeys[normalizedKey]();
-            return;
-        }
     }
 
     switch(normalizedKey) {
@@ -4270,7 +4002,7 @@ document.addEventListener('keydown', function(e) {
             break;
 
         case '.':
-            // Where am I: which way the model faces and where the cut is, then
+            // Where am I: which way the model faces and where the slice is, then
             // the rest of the status bar.
             e.preventDefault();
             announceWhereAmI();
@@ -4378,7 +4110,7 @@ document.addEventListener('keydown', function(e) {
 
         case '0':
             // Reset, for everyone, in both modes. It was Z, which cannot mean
-            // "reset" in one mode and "cut along Z" in the other; 0 is what
+            // "reset" in one mode and "slice along Z" in the other; 0 is what
             // resets zoom in a browser (Ctrl+0).
             e.preventDefault();
             // Drop the remembered per-view centre so this request omits
@@ -4395,7 +4127,7 @@ document.addEventListener('keydown', function(e) {
             // returns before consuming it), silently dropping the reset.
             viewerState.currentMoveCamera = "reset";
             sendStateToServer();
-            announcePositionReset(announceAlert);
+            announceAlert('Position reset');
             break;
 
         default:
@@ -4594,9 +4326,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     // nothing.
     if (studyMode) return;
 
-    // Send initial state to server, in XYZ mode with the cut at the model's
-    // origin, which has to be asked for first.
-    if (!(await placeNewModelAtOrigin())) return;
+    // Send initial state to server
     pendingInputSource = 'init';
     sendStateToServer();
 

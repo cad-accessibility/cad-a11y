@@ -194,8 +194,8 @@ CREATE TABLE IF NOT EXISTS study_renders (
     created_at       DATETIME,
     elapsed_ms       INTEGER,
     step_elapsed_ms  INTEGER,
-    -- Which axis mode, and where the cut was along its axis (#185): the axis it
-    -- cut along, the side it was seen from, and how far along the object from its
+    -- Which axis mode, and where the slice was along its axis (#185): the axis it
+    -- sliced along, the side it was seen from, and how far along the object from its
     -- lowest coordinate. Blank for renders recorded before these existed.
     axis_mode        TEXT,
     cut_axis         TEXT,
@@ -321,7 +321,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if columns and name not in columns:
             conn.execute(f"ALTER TABLE study_sessions ADD COLUMN {name} TEXT")
 
-    # --- study_renders: the axis mode and the cut (#185) ----------------------
+    # --- study_renders: the axis mode and the slice (#185) ----------------------
     render_columns = {row["name"] for row in conn.execute("PRAGMA table_info(study_renders)")}
     for name, kind in AXIS_RENDER_COLUMNS:
         if render_columns and name not in render_columns:

@@ -129,7 +129,7 @@ _STEPS = [
         "title": "Practise with the keys",
         "script": [
             say(
-                "Here is an object to practise on. The arrow keys move the cut, and H "
+                "Here is an object to practise on. The arrow keys move the slice, and H "
                 "lists every command."
             ),
             note("Answer any question about the interface here, before the tasks."),
@@ -177,7 +177,7 @@ STUDY = Study(
         "Can you say more about that?",
     ],
     strategy_prompts=[
-        "You might try moving the cut; press the up or down arrow.",
+        "You might try moving the slice; press the up or down arrow.",
         "You might check where you are; press the period key.",
     ],
 )
