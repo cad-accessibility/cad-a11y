@@ -340,7 +340,7 @@ async function sendStateToServer() {
             compose_scrollbar: viewerState.composeScrollbar,
             compose_slicegraph: viewerState.composeSliceGraph,
             show_view_info_box: viewerState.showViewInfoBox,
-            show_origin_marker: isXyzMode() && viewerState.showOriginMarker,
+            show_origin_marker: viewerState.showOriginMarker,
             show_axis_letters: viewerState.showAxisLetters,
             output_device: getEffectiveOutputDevice(),
             slicegraph_locked: viewerState.sliceGraphLocked,
@@ -1080,17 +1080,19 @@ function syncSliceDepthFromPlanes() {
 const SETTINGS_AXIS_MODE_KEY = 'settingsAxisMode';
 const SETTINGS_AXIS_LETTERS_KEY = 'settingsAxisLetters';
 const SETTINGS_VIEW_INFO_BOX_KEY = 'settingsViewInfoBox';
-const SETTINGS_ORIGIN_MARKER_KEY = 'settingsOriginMarker';
 const SETTINGS_SINGLE_KEY_SHORTCUTS_KEY = 'settingsSingleKeyShortcuts';
 
 // Settings that shape what the pins draw, on unless turned off: the view label
 // (the "view info box" setting) and the axis letters at the display edges, both
-// in either axis mode, and the origin marker, in XYZ mode only. With the axis
-// letters drawn the label leaves out which way the axes run.
+// in either axis mode. With the axis letters drawn the label leaves out which
+// way the axes run. The origin marker is not a setting: the C key turns it on
+// and off, in either mode, and it starts off (#266).
 // Single-key shortcuts are on too, with a way to turn them off (WCAG 2.1.4).
 viewerState.showAxisLetters = true;
 viewerState.showViewInfoBox = true;
-viewerState.showOriginMarker = true;
+viewerState.showOriginMarker = false;
+// The render mode C found showing, to go back to when the marker is turned off.
+viewerState.renderModeBeforeOriginMarker = null;
 viewerState.singleKeyShortcuts = true;
 
 /** The model axis the current view cuts along: 'x', 'y' or 'z'. */
@@ -1378,6 +1380,46 @@ function announceOrigin(emit = announceAlert) {
         : 'Where the origin is on the display is given in the Single layout.');
 }
 
+/** "C": mark the origin on the display, or take the mark away (#266). Turning it
+ * on switches to Outline, where a small mark is easiest to find against the
+ * cut's outline rather than a filled model; turning it off goes back to the
+ * render mode that was showing, unless R has chosen another since. Says what ","
+ * says, from the frame on the display. */
+function toggleOriginMarker(emit = announceAlert) {
+    const on = !viewerState.showOriginMarker;
+    viewerState.showOriginMarker = on;
+    let changedMode = false;
+    if (on) {
+        if (viewerState.currentRenderMode !== 'outline') {
+            viewerState.renderModeBeforeOriginMarker = viewerState.currentRenderMode;
+            changedMode = switchToRenderMode('outline', false) === true;
+        } else {
+            viewerState.renderModeBeforeOriginMarker = null;
+        }
+    } else {
+        const before = viewerState.renderModeBeforeOriginMarker;
+        viewerState.renderModeBeforeOriginMarker = null;
+        if (before && viewerState.currentRenderMode === 'outline') {
+            changedMode = switchToRenderMode(before, false) === true;
+        }
+    }
+    // A change of mode has already sent the state with the marker's new setting.
+    if (!changedMode) sendStateToServer();
+    const origin = originOnDisplayPhrase();
+    const word = on ? 'on' : 'off';
+    const speech = [`Origin marker ${word}.`];
+    const braille = [`Origin marker ${word}`];
+    if (changedMode) {
+        speech.push(`${renderModeLabel()}.`);
+        braille.push(renderModeLabel());
+    }
+    if (on) {
+        speech.push(origin ? `${origin.speech}.` : 'Where the origin is on the display is not known yet.');
+        if (origin) braille.push(origin.braille);
+    }
+    emit(speech.join(' '), { braille });
+}
+
 /** The name of the model on display, for "." and the status bar: the study's
  * neutral label in study mode, the model list's wording when the list has this
  * model selected ("mug (your upload)"), and otherwise the name being rendered.
@@ -1456,7 +1498,6 @@ const turnShortcutsSection = document.getElementById('turn-shortcuts-section');
 const xyzShortcutsSection = document.getElementById('xyz-shortcuts-section');
 const axisModeRadios = () => document.querySelectorAll('input[name="axis-mode"]');
 const settingsAxisLettersCheckbox = document.getElementById('settings-axis-letters');
-const settingsOriginMarkerCheckbox = document.getElementById('settings-origin-marker');
 const settingsSingleKeyCheckbox = document.getElementById('settings-single-key-shortcuts');
 const zoomInput = document.getElementById('zoom-input');
 const zoomLevelValue = document.getElementById('zoom-level-value');
@@ -2225,7 +2266,7 @@ function fetchExportSourceState() {
         compose_scrollbar: viewerState.composeScrollbar,
         compose_slicegraph: viewerState.composeSliceGraph,
         show_view_info_box: viewerState.showViewInfoBox,
-        show_origin_marker: isXyzMode() && viewerState.showOriginMarker,
+        show_origin_marker: viewerState.showOriginMarker,
         show_axis_letters: viewerState.showAxisLetters,
         output_device: viewerState.currentOutputDevice,
         slicegraph_locked: viewerState.sliceGraphLocked,
@@ -3696,13 +3737,6 @@ if (settingsAxisLettersCheckbox) {
         sendStateToServer();
     });
 }
-if (settingsOriginMarkerCheckbox) {
-    settingsOriginMarkerCheckbox.addEventListener('change', function() {
-        viewerState.showOriginMarker = this.checked;
-        persistSetting(SETTINGS_ORIGIN_MARKER_KEY, this.checked);
-        if (isXyzMode()) sendStateToServer();
-    });
-}
 if (settingsSingleKeyCheckbox) {
     settingsSingleKeyCheckbox.addEventListener('change', function() {
         viewerState.singleKeyShortcuts = this.checked;
@@ -3712,7 +3746,7 @@ if (settingsSingleKeyCheckbox) {
 
 /** Read the axis settings back, before the first render so it draws in the
  * saved mode. Unset means the default: XYZ, with the edge letters and the
- * origin marked, and single-key shortcuts on. */
+ * view label, and single-key shortcuts on. */
 function initializeAxisSettings() {
     const read = (key) => {
         try {
@@ -3723,11 +3757,9 @@ function initializeAxisSettings() {
     };
     viewerState.showAxisLetters = read(SETTINGS_AXIS_LETTERS_KEY) !== '0';
     viewerState.showViewInfoBox = read(SETTINGS_VIEW_INFO_BOX_KEY) !== '0';
-    viewerState.showOriginMarker = read(SETTINGS_ORIGIN_MARKER_KEY) !== '0';
     viewerState.singleKeyShortcuts = read(SETTINGS_SINGLE_KEY_SHORTCUTS_KEY) !== '0';
     if (settingsAxisLettersCheckbox) settingsAxisLettersCheckbox.checked = viewerState.showAxisLetters;
     if (showViewInfoBoxCheckbox) showViewInfoBoxCheckbox.checked = viewerState.showViewInfoBox;
-    if (settingsOriginMarkerCheckbox) settingsOriginMarkerCheckbox.checked = viewerState.showOriginMarker;
     if (settingsSingleKeyCheckbox) settingsSingleKeyCheckbox.checked = viewerState.singleKeyShortcuts;
     // XYZ unless Turn was chosen (#235 review). In study mode the protocol owns
     // the axis mode (Turn, see VIEWER_DEFAULTS), and nothing may render before
@@ -3817,7 +3849,7 @@ document.addEventListener('keydown', function(e) {
         'arrowup', 'arrowdown', 'pageup', 'pagedown', 'home', 'end',
          '2', '3', 'q', 'e',
         'u', 'i', 'o', 'j', 'k', 'l',
-        'x', 'y', 'z', ',',
+        'x', 'y', 'z', ',', 'c',
         '4', '5', '0',
         'r', 't', 'g', 'v',
         'w', 'a', 's', 'd', '[', ']', 'h', '?', 'p', '.', 'escape', 'f'
@@ -3841,7 +3873,7 @@ document.addEventListener('keydown', function(e) {
     const repeatableShortcuts = new Set([
         'pageup', 'pagedown',
         'arrowup', 'arrowdown', '2', '3',
-        '4', '5', 'n', 'm'
+        '4', '5', 'n'
     ]);
     // R is not a continuous control, but a fast burst of real presses can reach
     // this handler flagged as repeat, and dropping those is the bug that leaves
@@ -3894,6 +3926,11 @@ document.addEventListener('keydown', function(e) {
         case ',':
             e.preventDefault();
             announceOrigin();
+            break;
+
+        case 'c':
+            e.preventDefault();
+            toggleOriginMarker();
             break;
 
         // The depth keys, the same in both modes (#235 review): Up and Page Up go

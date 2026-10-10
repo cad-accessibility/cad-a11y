@@ -80,6 +80,7 @@ XYZ rows if someone changed the setting mid-session.
 | `home`, `end` | depth to the surface or the far side, in both axis modes |
 | `x`, `y`, `z` | XYZ mode: cut along that axis, from the right, the front or above; the same key again, from the other side (see `cut_side`). In Turn mode: nothing but a message saying so |
 | `,` | where the origin is, in both modes (XYZ names its coordinate on the axis) |
+| `c` | toggle the origin (center) on the display; turning it on switches to Outline, and off goes back |
 | `2`, `3` | zoom out, zoom in |
 | `4`, `5` | zoom out, zoom in, fine |
 | `w`, `a`, `s`, `d` | pan up, left, down, right |

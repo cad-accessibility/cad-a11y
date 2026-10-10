@@ -82,9 +82,8 @@ key: a key from the other mode only says which mode it belongs to.
   to Z minus do the same with a pointer. Depth works and reads exactly as in
   Turn mode, in percent from the surface nearest you: Arrow Up/Down go 1% deeper
   or shallower, Page Up/Down 10%, Home to the surface nearest you and End to the
-  far side. On the display, you can choose to have additional context -- an origin
-  marker, a view label showing all three axes, or axis markers at the positive end of 
-  each axis. 
+  far side. You  can also choose to have additional context -- a view
+  label showing all three axes, or axis markers at the positive end of each axis.
 - **Turn**: U/O roll, I/K pitch and J/L yaw the model a quarter turn at a time.
   Left, right, up and down are as they are on the display, whichever way the
   model faces. The study ran in Turn mode, and /study still does.
@@ -96,6 +95,15 @@ and up from the bottom ("Horizontal: 42%, Vertical: 42%", or past 0 and 100 when
 it is off the display), and 0 resets the view (it was Z, which XYZ mode needs).
 Reset puts the slice plane at 50% on every axis in both modes, which is also
 where a model starts.
+
+C toggles the origin (Center) on the display. The toggle also switches
+to Outline, where a small mark is easiest to find, or back to the
+render mode that was showing (unless R has chosen another since). Turning C on
+also invokes ",". The origin is represented as a plus (+) of five
+pins. When it is off the display past one side, a T is shown on that 
+side: its bar runs along the edge, and its stem indicates the
+direction to the origin. If the origin is outside two sides
+at once, a square of four pins is drawn in that corner.
 
 ## Hardware setup
 
