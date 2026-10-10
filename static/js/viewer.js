@@ -1085,13 +1085,13 @@ const SETTINGS_SINGLE_KEY_SHORTCUTS_KEY = 'settingsSingleKeyShortcuts';
 // Settings that shape what the pins draw, on unless turned off: the view label
 // (the "view info box" setting) and the axis letters at the display edges, both
 // in either axis mode. With the axis letters drawn the label leaves out which
-// way the axes run. The origin marker is not a setting: the C key turns it on
+// way the axes run. The origin marker is not a setting: the M key turns it on
 // and off, in either mode, and it starts off (#266).
 // Single-key shortcuts are on too, with a way to turn them off (WCAG 2.1.4).
 viewerState.showAxisLetters = true;
 viewerState.showViewInfoBox = true;
 viewerState.showOriginMarker = false;
-// The render mode C found showing, to go back to when the marker is turned off.
+// The render mode M found showing, to go back to when the marker is turned off.
 viewerState.renderModeBeforeOriginMarker = null;
 viewerState.singleKeyShortcuts = true;
 
@@ -1380,7 +1380,7 @@ function announceOrigin(emit = announceAlert) {
         : 'Where the origin is on the display is given in the Single layout.');
 }
 
-/** "C": mark the origin on the display, or take the mark away (#266). Turning it
+/** "M": mark the origin on the display, or take the mark away (#266). Turning it
  * on switches to Outline, where a small mark is easiest to find against the
  * cut's outline rather than a filled model; turning it off goes back to the
  * render mode that was showing, unless R has chosen another since. Says what ","
@@ -3849,7 +3849,7 @@ document.addEventListener('keydown', function(e) {
         'arrowup', 'arrowdown', 'pageup', 'pagedown', 'home', 'end',
          '2', '3', 'q', 'e',
         'u', 'i', 'o', 'j', 'k', 'l',
-        'x', 'y', 'z', ',', 'c',
+        'x', 'y', 'z', ',', 'm',
         '4', '5', '0',
         'r', 't', 'g', 'v',
         'w', 'a', 's', 'd', '[', ']', 'h', '?', 'p', '.', 'escape', 'f'
@@ -3928,7 +3928,7 @@ document.addEventListener('keydown', function(e) {
             announceOrigin();
             break;
 
-        case 'c':
+        case 'm':
             e.preventDefault();
             toggleOriginMarker();
             break;

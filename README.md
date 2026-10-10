@@ -96,9 +96,9 @@ it is off the display), and 0 resets the view (it was Z, which XYZ mode needs).
 Reset puts the slice plane at 50% on every axis in both modes, which is also
 where a model starts.
 
-C toggles the origin (Center) on the display. The toggle also switches
+M toggles the origin mark on the display. The toggle also switches
 to Outline, where a small mark is easiest to find, or back to the
-render mode that was showing (unless R has chosen another since). Turning C on
+render mode that was showing (unless R has chosen another since). Turning the mark on
 also invokes ",". The origin is represented as a plus (+) of five
 pins. When it is off the display past one side, a T is shown on that 
 side: its bar runs along the edge, and its stem indicates the

@@ -279,7 +279,7 @@ def test_xyz_is_the_default_and_turn_is_kept_when_chosen():
 def test_the_view_label_and_xyz_marks_are_on_unless_turned_off():
     """The label and the edge letters are drawn in either mode and are on by
     default: a stored "0" is the only thing that turns either off. The origin
-    marker is not a setting: it starts off, and the C key turns it on (#266)."""
+    marker is not a setting: it starts off, and the M key turns it on (#266)."""
     js = _js()
     assert "viewerState.showViewInfoBox = true;" in js
     assert "viewerState.showAxisLetters = true;" in js
@@ -649,13 +649,13 @@ def test_a_focused_list_radio_or_slider_keeps_its_own_navigation_keys():
 
 def test_m_turns_the_origin_marker_on_and_off_in_either_mode():
     js = _js()
-    assert "case 'c':" in js and "toggleOriginMarker();" in js
-    assert "'x', 'y', 'z', ',', 'c'," in js, "C is a shortcut the handler accepts"
+    assert "case 'm':" in js and "toggleOriginMarker();" in js
+    assert "'x', 'y', 'z', ',', 'm'," in js, "M is a shortcut the handler accepts"
     keys = js[js.index("const AXIS_MODE_KEYS = {"):]
     keys = keys[:keys.index("};")]
-    assert "'c'" not in keys, "C belongs to both modes"
+    assert "'m'" not in keys, "M belongs to both modes"
     repeat = js[js.index("const repeatableShortcuts = new Set(["):]
-    assert "'c'" not in repeat[:repeat.index("]);")], "holding C must not toggle the marker over and over"
+    assert "'m'" not in repeat[:repeat.index("]);")], "holding M must not toggle the marker over and over"
     # The renders carry the setting in either mode, not only XYZ.
     assert js.count("show_origin_marker: viewerState.showOriginMarker,") == 2
     assert "isXyzMode() && viewerState.showOriginMarker" not in js
@@ -672,6 +672,6 @@ def test_the_origin_marker_goes_with_outline_and_back():
 
 
 def test_the_origin_marker_key_is_in_the_shortcuts_list_and_the_export_notes():
-    assert "<kbd>C</kbd>" in _html()
+    assert "<kbd>M</kbd>" in _html()
     notes = (Path(__file__).resolve().parent.parent / "docs" / "STUDY_DATA_EXPORT.md").read_text()
-    assert "| `c` |" in notes
+    assert "| `m` |" in notes
