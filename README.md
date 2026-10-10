@@ -89,6 +89,9 @@ it is off the display), and 0 resets the view (it was Z, which XYZ mode needs).
 Reset puts the slice plane at 50% on every axis in both modes, which is also
 where a model starts.
 
+Axis labels on the pins, the letters at the display edges and the view info box,
+are x, y and z in computer braille.
+
 ## Hardware setup
 
 The viewer works without any hardware. Connect devices for full tactile and braille output.

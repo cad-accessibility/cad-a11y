@@ -637,3 +637,10 @@ def test_a_focused_list_radio_or_slider_keeps_its_own_navigation_keys():
         "arrowup", "arrowdown", "pageup", "pagedown", "home", "end"}
     assert handler.index("const ownsNavigationKeys") < handler.index("switch(normalizedKey)")
     assert handler.index("const ownsNavigationKeys") < handler.index("reportStudyInteraction('keyboard'")
+
+
+def test_the_help_says_the_axis_labels_are_computer_braille():
+    """The labels are one cell with no capital sign (#235 review), which a reader
+    of contracted braille would not expect, so the help and the README say so."""
+    assert "computer braille" in _html()
+    assert "computer braille" in (ROOT / "README.md").read_text()
