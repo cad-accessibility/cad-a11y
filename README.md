@@ -82,7 +82,7 @@ key: a key from the other mode only says which mode it belongs to.
   to Z minus do the same with a pointer. Depth works and reads exactly as in
   Turn mode, in percent from the surface nearest you: Arrow Up/Down go 1% deeper
   or shallower, Page Up/Down 10%, Home to the surface nearest you and End to the
-  far side. You  can also choose to have additional context -- a view
+  far side. You can also choose to have additional context -- a view
   label showing all three axes, or axis markers at the positive end of each axis.
 - **Turn**: U/O roll, I/K pitch and J/L yaw the model a quarter turn at a time.
   Left, right, up and down are as they are on the display, whichever way the
