@@ -77,9 +77,8 @@ key: a key from the other mode only says which mode it belongs to.
   views, named by the side you look from: Z is Top, from Z plus, and Z again
   Bottom, from Z minus; Y is Front, from Y minus, and Y again Back; X is Right,
   from X plus, and X again Left.
-  On the display, you can choose to have additional context -- an origin
-  marker, a view label showing all three axes, or axis markers at the positive end of
-  each axis.
+  On the display, you can choose to have additional context -- a view
+  label showing all three axes, or axis markers at the positive end of each axis.
 - **Turn**: U/O roll, I/K pitch and J/L yaw the model a quarter turn at a time.
   Left, right, up and down are as they are on the display, whichever way the
   model faces. The study ran in Turn mode, and /study still does.
@@ -91,6 +90,15 @@ and up from the bottom ("Horizontal: 42%, Vertical: 42%", or past 0 and 100 when
 it is off the display), and 0 resets the view (it was Z, which XYZ mode needs).
 Reset puts the slice plane at 50% on every axis in both modes, which is also
 where a model starts.
+
+M toggles the origin mark on the display. The toggle also switches
+to Outline, where a small mark is easiest to find, or back to the
+render mode that was showing (unless R has chosen another since). Turning the mark on
+also invokes ",". The origin is represented as a plus (+) of five
+pins. When it is off the display past one side, a T is shown on that 
+side: its bar runs along the edge, and its stem indicates the
+direction to the origin. If the origin is outside two sides
+at once, a square of four pins is drawn in that corner.
 
 Axis labels on the pins, the letters at the display edges and the view info box,
 are x, y and z in computer braille.

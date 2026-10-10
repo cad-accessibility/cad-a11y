@@ -1266,27 +1266,55 @@ class CADComparisonRenderer:
             return None
         return col, row
 
-    def _overlay_origin_marker(self, img_array, right_axis, up_axis, limits, drawable_size):
-        """A hollow 3x3 square at the origin, on a blank 5x5 patch so it cannot
-        merge with the cut around it. Hollow outlines were the best recognised
-        marks on a pin display (Bellik & Clavel 2017). Nothing is drawn when the
-        origin is off the display; "," says where it is instead."""
-        where = self.origin_on_display(right_axis, up_axis, limits, drawable_size)
-        if where is None:
-            return
-        col, row = where
+    @staticmethod
+    def _raise_pin(img_array, col, row, drawable_size):
+        """Raise one pin, if it lies on the drawable area: the scrollbar and the
+        slice graph lie beyond it."""
         w, h = int(drawable_size[0]), int(drawable_size[1])
-        self._clear_box(img_array, col - 2, row - 2, 5, 5)
-        # Clip the blank patch to the drawable area: the scrollbar lies beyond it.
-        for dy in (-1, 0, 1):
-            for dx in (-1, 0, 1):
-                if dx == 0 and dy == 0:
-                    continue
-                px, py = col + dx, row + dy
-                if 0 <= px < w and 0 <= py < h:
-                    img_array[py, px, 0:3] = 0
-                    if img_array.shape[2] > 3:
-                        img_array[py, px, 3] = 255
+        if 0 <= col < w and 0 <= row < h:
+            img_array[row, col, 0:3] = 0
+            if img_array.shape[2] > 3:
+                img_array[row, col, 3] = 255
+
+    def _overlay_origin_marker(self, img_array, right_axis, up_axis, limits, drawable_size):
+        """Where the origin is, drawn so it can be found (#266).
+
+        On the display: a plus, +, of five pins, on a blank 5x5 patch so it
+        cannot merge with the cut around it. Off it past one side: a T whose bar
+        of three pins runs along that edge, one pin in, with its stem, one pin,
+        reaching the edge the origin lies beyond, level with the origin. Off it past two sides at once:
+        a square of four pins in that corner."""
+        fraction = self.origin_display_fraction(right_axis, up_axis, limits)
+        if fraction is None:
+            return
+        w, h = int(drawable_size[0]), int(drawable_size[1])
+        col = int(np.floor(fraction[0] * w))
+        row = int(np.floor((1.0 - fraction[1]) * h))
+        beyond_x = -1 if col < 1 else (1 if col > w - 2 else 0)
+        beyond_y = -1 if row < 1 else (1 if row > h - 2 else 0)
+        if beyond_x == 0 and beyond_y == 0:
+            self._clear_box(img_array, col - 2, row - 2, 5, 5)
+            pins = [(col, row), (col - 1, row), (col + 1, row), (col, row - 1), (col, row + 1)]
+        elif beyond_x and beyond_y:
+            x0 = 0 if beyond_x < 0 else w - 2
+            y0 = 0 if beyond_y < 0 else h - 2
+            self._clear_box(img_array, x0 - 1, y0 - 1, 4, 4)
+            pins = [(x0 + dx, y0 + dy) for dx in (0, 1) for dy in (0, 1)]
+        elif beyond_x:
+            # Level with the origin, kept clear of the corners.
+            centre = min(max(row, 1), h - 2)
+            bar_x = 1 if beyond_x < 0 else w - 2
+            stem_x = 0 if beyond_x < 0 else w - 1
+            self._clear_box(img_array, 0 if beyond_x < 0 else w - 3, centre - 2, 3, 5)
+            pins = [(bar_x, centre + d) for d in range(-1, 2)] + [(stem_x, centre)]
+        else:
+            centre = min(max(col, 1), w - 2)
+            bar_y = 1 if beyond_y < 0 else h - 2
+            stem_y = 0 if beyond_y < 0 else h - 1
+            self._clear_box(img_array, centre - 2, 0 if beyond_y < 0 else h - 3, 5, 3)
+            pins = [(centre + d, bar_y) for d in range(-1, 2)] + [(centre, stem_y)]
+        for pin_col, pin_row in pins:
+            self._raise_pin(img_array, pin_col, pin_row, drawable_size)
 
     def render(self, params, *, screen_size=None):
         """
@@ -1794,23 +1822,27 @@ class CADComparisonRenderer:
         origin_display = None
         right_axis, up_axis, toward_reader = _get_view_basis(
             view_name, orientation_basis=params.get("orientation"))
-        if comparison_mode == "single" and not compose_slice_graph:
+        marker_shown = comparison_mode == "single" and not compose_slice_graph
+        if marker_shown:
             origin_display = self.origin_display_fraction(right_axis, up_axis, imposed_zoom_ax_limits)
-            if show_origin_marker:
-                self._overlay_origin_marker(img_array, right_axis, up_axis,
-                                            imposed_zoom_ax_limits, render_screen_size)
 
-        # The edge letters and the view label (#267) are drawn after the origin
-        # marker, which they win over, and in every layout but side by side, whose
-        # two frames neither could name. With a slice graph the letters keep to the
-        # rows above it, which it owns from its divider down. The label leaves out
-        # which way the axes run where the edge letters already say.
+        # The edge letters, then the origin marker, then the view label (#267),
+        # each drawn over the one before: the marker over the letters, since
+        # finding the origin is what someone turned it on for, and the label over
+        # the marker, which keeps clear of it by the label's offset from the
+        # corner. The letters and label are drawn in every layout but side by
+        # side, whose two frames neither could name. With a slice graph the
+        # letters keep to the rows above it, which it owns from its divider down.
+        # The label leaves out which way the axes run where the letters say.
         edge_letters = show_axis_letters and comparison_mode != "side-by-side"
         if edge_letters:
             drawable_size = list(render_screen_size)
             if compose_slice_graph:
                 drawable_size[1] = max(0, img_array.shape[0] - graph_height_px - 1)
             self._overlay_axis_letters(img_array, right_axis, up_axis, drawable_size)
+        if marker_shown and show_origin_marker:
+            self._overlay_origin_marker(img_array, right_axis, up_axis,
+                                        imposed_zoom_ax_limits, render_screen_size)
         if params.get("show_view_info_box") and comparison_mode != "side-by-side":
             self._overlay_view_info_box(img_array, right_axis, up_axis, toward_reader,
                                         render_screen_size, show_axes=not edge_letters)

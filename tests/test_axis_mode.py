@@ -277,22 +277,22 @@ def test_xyz_is_the_default_and_turn_is_kept_when_chosen():
 
 
 def test_the_view_label_and_xyz_marks_are_on_unless_turned_off():
-    """The label and the edge letters are drawn in either mode, the origin only in
-    XYZ mode, and all are on by default: a stored "0" is the only thing that turns
-    any off."""
+    """The label and the edge letters are drawn in either mode and are on by
+    default: a stored "0" is the only thing that turns either off. The origin
+    marker is not a setting: it starts off, and the M key turns it on (#266)."""
     js = _js()
     assert "viewerState.showViewInfoBox = true;" in js
     assert "viewerState.showAxisLetters = true;" in js
-    assert "viewerState.showOriginMarker = true;" in js
+    assert "viewerState.showOriginMarker = false;" in js
+    assert "settings-origin-marker" not in js and "SETTINGS_ORIGIN_MARKER_KEY" not in js
     init = js[js.index("function initializeAxisSettings()"):]
     init = init[:init.index("\n}\n")]
     assert "read(SETTINGS_VIEW_INFO_BOX_KEY) !== '0'" in init
     assert "read(SETTINGS_AXIS_LETTERS_KEY) !== '0'" in init
-    assert "read(SETTINGS_ORIGIN_MARKER_KEY) !== '0'" in init
     html = _html()
     assert 'id="show-view-info-box" checked' in html
     assert 'id="settings-axis-letters" checked' in html
-    assert 'id="settings-origin-marker" checked' in html
+    assert "settings-origin-marker" not in html
     assert "show_view_info_box: viewerState.showViewInfoBox" in js
     assert "show_axis_letters: viewerState.showAxisLetters" in js
 
@@ -642,6 +642,39 @@ def test_a_focused_list_radio_or_slider_keeps_its_own_navigation_keys():
         "arrowup", "arrowdown", "pageup", "pagedown", "home", "end"}
     assert handler.index("const ownsNavigationKeys") < handler.index("switch(normalizedKey)")
     assert handler.index("const ownsNavigationKeys") < handler.index("reportStudyInteraction('keyboard'")
+
+
+# --- The origin marker key (#266) ---------------------------------------------------
+
+
+def test_m_turns_the_origin_marker_on_and_off_in_either_mode():
+    js = _js()
+    assert "case 'm':" in js and "toggleOriginMarker();" in js
+    assert "'x', 'y', 'z', ',', 'm'," in js, "M is a shortcut the handler accepts"
+    keys = js[js.index("const AXIS_MODE_KEYS = {"):]
+    keys = keys[:keys.index("};")]
+    assert "'m'" not in keys, "M belongs to both modes"
+    repeat = js[js.index("const repeatableShortcuts = new Set(["):]
+    assert "'m'" not in repeat[:repeat.index("]);")], "holding M must not toggle the marker over and over"
+    # The renders carry the setting in either mode, not only XYZ.
+    assert js.count("show_origin_marker: viewerState.showOriginMarker,") == 2
+    assert "isXyzMode() && viewerState.showOriginMarker" not in js
+
+
+def test_the_origin_marker_goes_with_outline_and_back():
+    body = _code_only(_function("toggleOriginMarker"))
+    assert "switchToRenderMode('outline', false)" in body
+    assert "renderModeBeforeOriginMarker" in body
+    # Back to the earlier mode only if R has not chosen another since.
+    assert "currentRenderMode === 'outline'" in body
+    # And it says what "," says.
+    assert "originOnDisplayPhrase()" in body
+
+
+def test_the_origin_marker_key_is_in_the_shortcuts_list_and_the_export_notes():
+    assert "<kbd>M</kbd>" in _html()
+    notes = (Path(__file__).resolve().parent.parent / "docs" / "STUDY_DATA_EXPORT.md").read_text()
+    assert "| `m` |" in notes
 
 
 def test_the_help_says_the_axis_labels_are_computer_braille():

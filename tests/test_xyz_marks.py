@@ -6,7 +6,9 @@
   that a lowercase letter and a sign, which the pilot found unreadable (a lone
   lowercase x is the word "it" in contracted UEB, and dots 346 are Nemeth's plus
   but UEB's "ing").
-* The origin marker, a hollow 3x3 square, sits where the model's origin is.
+* The origin marker sits where the model's origin is: a plus on the display, a T
+  on the edge it is beyond, a square of four pins in the corner it is beyond both
+  edges of (#266).
 
 These render through the real renderer and read the pins back.
 """
@@ -73,11 +75,10 @@ LETTERS = {"x": [1, 3, 4, 6], "y": [1, 3, 4, 5, 6], "z": [1, 3, 5, 6]}
 # --- The origin marker ------------------------------------------------------------
 
 
-def _hollow_square_at(raised, col, row):
+def _plus_at(raised, col, row):
     patch = raised[row - 1:row + 2, col - 1:col + 2]
-    ring = np.ones((3, 3), dtype=bool)
-    ring[1, 1] = False
-    return patch.shape == (3, 3) and np.array_equal(patch, ring)
+    plus = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=bool)
+    return patch.shape == (3, 3) and np.array_equal(patch, plus)
 
 
 def test_the_origin_marker_sits_at_the_models_origin(plate):
@@ -98,7 +99,7 @@ def test_the_origin_marker_sits_at_the_models_origin(plate):
     )
     right, up, _ = cad_lib._get_view_basis("top")
     where = plate.origin_on_display(right, up, _limits(plate, "z+"), GRID)
-    assert where is not None and _hollow_square_at(marked, *where)
+    assert where is not None and _plus_at(marked, *where)
 
 
 def _limits(renderer, token):
@@ -114,9 +115,65 @@ def _limits(renderer, token):
     )
 
 
-def test_no_marker_when_the_origin_is_off_the_display(far_plate):
-    """Nothing to feel there; "," says where it is instead."""
-    assert np.array_equal(_raised(far_plate), _raised(far_plate, show_origin_marker=True))
+def _plate_at(tmp_path_factory, x, y, name):
+    """The plate with its low corner at (x, y); the origin stays at (0, 0)."""
+    mesh = trimesh.creation.box(extents=(40.0, 30.0, 5.0))
+    mesh.apply_translation([x + 20.0, y + 15.0, 2.5])
+    path = _write_stl(tmp_path_factory.mktemp("marks") / f"{name}.stl", mesh)
+    return cad_lib.CADComparisonRenderer(str(path), str(path))
+
+
+def _expected_marker(renderer, side):
+    """The pins a T on `side` should raise, and the blank patch around them, with
+    the stem level with the origin, found from the origin's fraction of the display."""
+    right, up, _ = cad_lib._get_view_basis("top")
+    across, rise = renderer.origin_display_fraction(right, up, _limits(renderer, "z+"))
+    w, h = GRID
+    col, row = int(np.floor(across * w)), int(np.floor((1.0 - rise) * h))
+    if side in ("left", "right"):
+        centre = min(max(row, 1), h - 2)
+        bar_x, stem = (1, 0) if side == "left" else (w - 2, w - 1)
+        pins = {(bar_x, centre + d) for d in range(-1, 2)} | {(stem, centre)}
+        patch = (0 if side == "left" else w - 3, centre - 2, 3, 5)
+    else:
+        centre = min(max(col, 1), w - 2)
+        bar_y, stem = (1, 0) if side == "top" else (h - 2, h - 1)
+        pins = {(centre + d, bar_y) for d in range(-1, 2)} | {(centre, stem)}
+        patch = (centre - 2, 0 if side == "top" else h - 3, 5, 3)
+    return pins, patch
+
+
+@pytest.mark.parametrize("plate_at, side", [
+    ((-80.0, 0.0), "right"), ((100.0, 0.0), "left"),
+    ((0.0, -80.0), "top"), ((0.0, 100.0), "bottom"),
+])
+def test_origin_beyond_one_edge_is_a_t_with_its_stem_at_that_edge(tmp_path_factory, plate_at, side):
+    """A bar of three pins along the edge, one pin in, and a stem of one pin
+    from its middle to the edge the origin lies beyond, level with the origin.
+    The plate is moved away from its origin to put the origin off the display."""
+    renderer = _plate_at(tmp_path_factory, *plate_at, f"edge_{side}")
+    pins, (x0, y0, pw, ph) = _expected_marker(renderer, side)
+    marked = _raised(renderer, renderMode="Outline", show_origin_marker=True)
+    in_patch = {(c, r) for r in range(y0, y0 + ph) for c in range(x0, x0 + pw) if marked[r, c]}
+    assert in_patch == pins
+    assert len(pins) == 4
+
+
+def test_the_origin_marker_is_drawn_over_the_edge_letters(tmp_path_factory):
+    """With the origin level with the middle of the right edge, the T lands where
+    the edge letter X is. The marker wins: its pins are all raised and the patch
+    around them holds nothing of the letter."""
+    renderer = _plate_at(tmp_path_factory, -80.0, -15.0, "over_letters")
+    pins, (x0, y0, pw, ph) = _expected_marker(renderer, "right")
+    letters_only = _raised(renderer, renderMode="Outline", show_axis_letters=True)
+    assert letters_only[y0:y0 + ph, x0:x0 + pw].any(), "the letter is not under the marker here"
+    both = _raised(renderer, renderMode="Outline", show_axis_letters=True, show_origin_marker=True)
+    in_patch = {(c, r) for r in range(y0, y0 + ph) for c in range(x0, x0 + pw) if both[r, c]}
+    assert in_patch == pins
+
+
+def test_the_marker_is_not_drawn_unless_asked(far_plate):
+    assert np.array_equal(_raised(far_plate), _raised(far_plate, show_origin_marker=False))
 
 
 def test_the_origin_is_reported_as_a_fraction_of_the_object(plate, far_plate):
