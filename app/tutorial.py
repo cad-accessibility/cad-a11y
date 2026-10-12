@@ -11,7 +11,8 @@ from here is four things it cannot work out alone:
 * ``POST /tutorial/locate``: where the mug's handle and body sit on the pins for
   the render the viewer just asked for, so a lesson can tell whether the cursor
   is on the handle or the handle is centred.
-* ``GET /tutorial/prints.zip``: the mug and ten sliced plaques to 3D print.
+* ``GET /tutorial/prints.zip``: the mug, ten sliced plaques and a separate,
+  larger set of mug pieces to 3D print.
 
 None of them writes anything, to disk or to any recorder, and none of them
 knows who is asking. That is why the blueprint is registered on every server,
@@ -86,6 +87,28 @@ PATTERN_MAX_SIZE = 200
 
 PLAQUE_THICKNESS_MM = 3.0
 PLAQUE_PERCENTS = tuple(range(5, 100, 10))
+
+# Print files that go in the zip as they are, beside the mug and plaques made
+# here. They are a separate, larger set: the mug at 183 mm rather than 95, on
+# its own, on a plate, and cut along X, so nothing in it matches tutorial_mug.
+# Each one's line in the README, in the order it lists them.
+PRINTS_DIR = Path(__file__).resolve().with_name("tutorial_prints")
+FIXED_PRINTS: dict[str, str] = {
+    "mug_simple.stl": "The mug on its own, 183 mm tall, the shape of tutorial_mug.stl at about twice the size.",
+    "mug_full.stl": (
+        "The same mug standing against a 5 mm plate, with the mug's silhouette raised 2.5 mm on the "
+        "plate's other face."
+    ),
+    "mug_half_cut_model.stl": (
+        "The mug cut through the middle and through the handle, with a plate at the cut and the "
+        "silhouette of what is left raised on the plate's other face."
+    ),
+    "mug_half_cut_slice.stl": "A plate with the cross-section at that cut raised 2.5 mm on each face.",
+    "mug_quarter_cut_model.stl": (
+        "The same, cut about 27 mm to one side of the middle, where the cut misses the handle."
+    ),
+    "mug_quarter_cut_slice.stl": "A plate with the cross-section at that cut raised 2.5 mm on each face.",
+}
 
 # How far outside the body's wall a point has to be before it counts as the
 # handle. The wall is faceted, so its own vertices wander a little either side
@@ -755,6 +778,14 @@ def _readme(plaques: list[tuple[str, float, float, int, dict[str, Any] | None]],
         piece_note = " Two pieces: the ring and a piece of the handle." if pieces == 2 else (
             f" {pieces} pieces." if pieces > 2 else "")
         lines.append(f"{filename}: {z_mm:.1f} mm up, {percent}% of the height. {what}{piece_note}".rstrip())
+    lines.extend([
+        "",
+        "The other files are a separate, larger set. They are not made from",
+        "tutorial_mug.stl, so they do not match it or its plaques in size, and",
+        "their cuts run along X rather than Z.",
+        "",
+    ])
+    lines.extend(f"{filename}: {what}" for filename, what in FIXED_PRINTS.items())
     lines.append("")
     return "\n".join(lines)
 
@@ -770,9 +801,9 @@ _ZIP_DATE = (2026, 1, 1, 0, 0, 0)
 def build_prints_zip() -> bytes:
     """The archive, built in memory the first time it is asked for and kept.
 
-    Nothing is written to disk: the mug is read from builtin_models/, every
-    file is made in memory, and the archive lives in this process until it
-    exits.
+    Nothing is written to disk: the mug is read from builtin_models/ and the
+    larger set from tutorial_prints/, the plaques are made in memory, and the
+    archive lives in this process until it exits.
     """
     global _prints_zip
     with _prints_lock:
@@ -798,6 +829,7 @@ def build_prints_zip() -> bytes:
             described.append(
                 (filename, percent, z_mm, len(region_polygons(region)), _band_at(landmarks["axes"]["z"], percent))
             )
+        files.extend((name, (PRINTS_DIR / name).read_bytes()) for name in FIXED_PRINTS)
         files.append(("README.txt", _readme(described, z_max - z_min).encode("utf-8")))
 
         buffer = io.BytesIO()

@@ -457,7 +457,11 @@ def test_locate_refuses_a_mug_that_does_not_match_its_landmarks(client, monkeypa
 # /tutorial/prints.zip
 # ---------------------------------------------------------------------------
 
-EXPECTED_PRINTS = {"tutorial_mug.stl", "README.txt"} | {f"plaque_z{p:02d}.stl" for p in range(5, 100, 10)}
+EXPECTED_PRINTS = (
+    {"tutorial_mug.stl", "README.txt"}
+    | {f"plaque_z{p:02d}.stl" for p in range(5, 100, 10)}
+    | set(tutorial.FIXED_PRINTS)
+)
 
 
 @pytest.fixture()
@@ -526,6 +530,21 @@ def test_the_prints_are_the_mug_ten_plaques_and_a_readme(client):
     assert "\u2014" not in readme and "\u2013" not in readme
     for percent in range(5, 100, 10):
         assert f"plaque_z{percent:02d}.stl" in readme
+
+
+def test_the_larger_set_goes_in_as_it_is_and_the_readme_says_what_each_is(client):
+    """The files in app/tutorial_prints/ are not made here, so the zip carries
+    them byte for byte, and the README describes every one. A file added to
+    the folder without a line in FIXED_PRINTS would ship unexplained."""
+    shipped = {p.name for p in tutorial.PRINTS_DIR.iterdir() if not p.name.startswith(".")}
+    assert shipped == set(tutorial.FIXED_PRINTS)
+
+    archive = zipfile.ZipFile(io.BytesIO(client.get("/tutorial/prints.zip").get_data()))
+    readme = archive.read("README.txt").decode("utf-8")
+    assert "separate, larger set" in readme
+    for name, what in tutorial.FIXED_PRINTS.items():
+        assert archive.read(name) == (tutorial.PRINTS_DIR / name).read_bytes(), name
+        assert f"{name}: {what}" in readme
 
 
 # ---------------------------------------------------------------------------

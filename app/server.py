@@ -1659,7 +1659,7 @@ def home():
                 "/tutorial/lessons": "GET - Tutorial lessons, key names for ?display=, and the practice mug's landmarks",
                 "/tutorial/test-pattern": "POST - A frame and a corner block packed for the Monarch and the DotPad",
                 "/tutorial/locate": "POST - Where the practice mug's handle and body are on the pins for a render request",
-                "/tutorial/prints.zip": "GET - The practice mug and ten plaques to 3D print",
+                "/tutorial/prints.zip": "GET - The practice mug, ten plaques and a larger set of mug pieces to 3D print",
                 "/health": "GET - Deployment self-check: storage layout, writability, database",
             },
         }

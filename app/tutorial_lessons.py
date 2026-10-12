@@ -464,7 +464,8 @@ LESSONS: list[dict[str, Any]] = [
                 done="Next, check that the keys work.",
                 hints=(
                     ("The files are a zip with the mug, ten flat plaques, each one slice across the "
-                     "mug's height, and a short text file that says what each one is."),
+                     "mug's height, a separate set of larger mugs and cut pieces, and a short text "
+                     "file that says what each one is."),
                     "Most people do not have a printed mug. Every lesson works without one.",
                     "Press Next, or {key:tutorial_continue}, to go on.",
                 ),
@@ -1256,7 +1257,8 @@ LESSONS: list[dict[str, Any]] = [
                 done="Exit tutorial (button) to leave",
                 hints=(
                     ("The files are a zip with the mug, ten flat plaques, each one slice across the "
-                     "mug's height, and a short text file that says what each one is."),
+                     "mug's height, a separate set of larger mugs and cut pieces, and a short text "
+                     "file that says what each one is."),
                     "The extras need the slice graph layout, the WitMotion cube or the Trinkey slider.",
                     "Press Next, or {key:tutorial_continue}, for the extras, or choose Exit tutorial.",
                 ),

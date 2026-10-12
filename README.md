@@ -131,8 +131,10 @@ The pieces:
 - `app/tutorial_lessons.py` holds the lessons as data, and the key names they use, in one
   table checked against the viewer by `tests/test_tutorial_lessons.py`.
 - `app/tutorial.py` serves the lessons, a display test pattern, where the handle is on the
-  display (`/tutorial/locate`), and the printable mug and slice plaques
+  display (`/tutorial/locate`), and the printable mug, slice plaques and larger mug pieces
   (`/tutorial/prints.zip`).
+- `app/tutorial_prints/` holds the larger mug pieces. They go in the zip as they are, and
+  `FIXED_PRINTS` in `app/tutorial.py` says what each one is.
 - `builtin_models/tutorial_mug.stl` and `app/tutorial_mug.landmarks.json` are generated from
   `builtin_models/mug.stl` by `python scripts/build_tutorial_mug.py`. Rerun it after changing
   the band descriptions in that script; `tests/test_tutorial_mug.py` fails until you do.
