@@ -81,22 +81,32 @@ def _snapshot():
     }
 
 
-def test_an_upload_an_ingest_and_a_render_touch_nothing_in_data():
+def test_an_upload_an_ingest_and_a_render_touch_nothing_in_data(tmp_path, monkeypatch):
     """The three things that used to leave files behind, through the real routes."""
+    # A database of its own, set up as the server sets one up at start: an upload
+    # is recorded against the browser that sent it (#237), and CI starts with none.
+    monkeypatch.setattr(analytics_db, "DB_PATH", tmp_path / "usage.db")
+    analytics_db._local.__dict__.clear()
+    analytics_db._contacts_local.__dict__.clear()
+    analytics_db.init_db()
     before = _snapshot()
     flask_app.config["TESTING"] = True
-    with flask_app.test_client() as client:
-        uploaded = client.post(
-            "/upload",
-            data={"file": (io.BytesIO(STL), "suite_upload.stl")},
-            content_type="multipart/form-data",
-        )
-        ingested = client.post("/ingest?filename=suite_ingest.stl", data=STL,
-                               content_type="application/octet-stream")
-        rendered = client.post("/render", json={
-            "view": "z+", "renderMode": "Cut", "mode": "single", "depth": 50, "zoom": 0,
-            "current_model": 0, "target_pixel_width": 96, "target_pixel_height": 40,
-        })
+    try:
+        with flask_app.test_client() as client:
+            uploaded = client.post(
+                "/upload",
+                data={"file": (io.BytesIO(STL), "suite_upload.stl")},
+                content_type="multipart/form-data",
+            )
+            ingested = client.post("/ingest?filename=suite_ingest.stl", data=STL,
+                                   content_type="application/octet-stream")
+            rendered = client.post("/render", json={
+                "view": "z+", "renderMode": "Cut", "mode": "single", "depth": 50, "zoom": 0,
+                "current_model": 0, "target_pixel_width": 96, "target_pixel_height": 40,
+            })
+    finally:
+        analytics_db._local.__dict__.clear()
+        analytics_db._contacts_local.__dict__.clear()
     assert uploaded.status_code == 200, uploaded.get_data(as_text=True)
     assert ingested.status_code in (200, 201), ingested.get_data(as_text=True)
     assert rendered.status_code == 200

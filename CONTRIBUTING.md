@@ -15,9 +15,20 @@ Thanks for your interest in improving CAD A11y.
    ```bash
    docker compose up --build
    ```
-3. Open `http://localhost:8635/viewer` in a browser.
+3. Open `http://localhost:8635/` in a browser (`/viewer` works too).
 
 Code changes in `app/`, `src/`, and `static/` require a rebuild (`docker compose up --build`).
+
+## Listing the server's routes
+
+Flask prints every route the server answers, with its methods, straight from its routing table:
+
+```bash
+docker compose exec app conda run -n cad-a11y python -m flask --app app.server routes
+```
+
+Most of these belong to the viewer and change with it. The API other tools integrate with is described
+separately, at `/api/v1/openapi.json`.
 
 ## Branching
 

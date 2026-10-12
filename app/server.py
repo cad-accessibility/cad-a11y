@@ -43,7 +43,7 @@ from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
 
-from . import db, recording
+from . import api, db, email_address, recording
 from .studies import engine as studies_engine
 from .studies import registry as studies_registry
 from .braille_display import (
@@ -64,6 +64,8 @@ CORS(app)
 # Cap request bodies (uploads and /ingest); default 100 MB. Oversized requests
 # are rejected with 413 before the handler runs.
 app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_UPLOAD_MB", "100") or "100") * 1024 * 1024
+# /api/v1, where tools will send models (#236), and its one error shape.
+api.install(app)
 
 
 if getattr(sys, "frozen", False):
@@ -280,7 +282,6 @@ _SESSION_MAX_AGE = 365 * 24 * 3600  # 1 year
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
 )
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # Allowlist for event_type values accepted by POST /events/track.
 _ALLOWED_EVENT_TYPES = frozenset(
     {
@@ -350,7 +351,7 @@ def _participant_for_name(first_name: str) -> str:
         return existing
     user_id = str(uuid.uuid4())
     recording.current().touch_session(user_id)
-    recording.current().identify_session(user_id, first_name, consent=False, is_workshop=True)
+    recording.current().enroll_workshop_participant(user_id, first_name)
     return user_id
 
 
@@ -441,20 +442,23 @@ def _renderer_stdio_guard():
     return contextlib.nullcontext(), contextlib.nullcontext()
 
 
-# The extensions a model file can carry, compared case-insensitively. Discovery
-# below still globs a fixed set of spellings, so a file named .STL is not indexed
-# and cannot be opened; _stem_is_taken uses this set anyway, so such a file still
-# reserves its name and cannot be shadowed by an upload.
+# The extensions a model file can carry, compared case-insensitively everywhere
+# they are checked: discovery, the upload check and _stem_is_taken. Discovery
+# used to glob a fixed set of spellings, and glob matches case even on a disk
+# that ignores it, so an upload named MUG.STL passed the upload check, was saved,
+# and was never found. The viewer then asked for MUG and silently got the default
+# model (#238). Several CAD tools export .STL in capitals by default.
 MODEL_SUFFIXES = frozenset({".stl", ".step"})
 
 
 def _discover_models() -> list[Path]:
-    patterns = ("*.stl", "*.step", "*.STEP")
     models: list[Path] = []
     search_dirs = list(dict.fromkeys([MODEL_DIR, UPLOAD_DIR]))
     for model_dir in search_dirs:
-        for pattern in patterns:
-            models.extend(sorted(model_dir.glob(pattern)))
+        found = [p for p in model_dir.glob("*") if p.suffix.lower() in MODEL_SUFFIXES]
+        # STL ahead of STEP, as when each spelling was globbed in turn, so the
+        # first model found, which is the default, is the same one as before.
+        models.extend(sorted(found, key=lambda p: (p.suffix.lower() != ".stl", p)))
     # Deduplicate while preserving order.
     return list(dict.fromkeys(models))
 
@@ -536,7 +540,12 @@ _MODEL_LIST_REFRESH_INTERVAL = 2.0  # seconds
 
 
 def _refresh_model_list_if_stale() -> None:
-    """Refresh AVAILABLE_MODELS/MODEL_NAME_LIST from disk at most every 2 s."""
+    """Refresh AVAILABLE_MODELS/MODEL_NAME_LIST from disk at most every 2 s.
+
+    A file added or removed behind the app's back, by an operator or a cleanup
+    script, shows up here, so open viewers are told the same way they are for an
+    upload or a delete.
+    """
     global AVAILABLE_MODELS, MODEL_NAME_LIST, _model_list_last_refresh
     now = time.monotonic()
     if now - _model_list_last_refresh < _MODEL_LIST_REFRESH_INTERVAL:
@@ -544,9 +553,92 @@ def _refresh_model_list_if_stale() -> None:
     with models_lock:
         if now - _model_list_last_refresh < _MODEL_LIST_REFRESH_INTERVAL:
             return  # another thread already refreshed
+        before = AVAILABLE_MODELS
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
         _model_list_last_refresh = time.monotonic()
+    if AVAILABLE_MODELS != before:
+        _announce_models_changed()
+
+
+def _announce_models_changed() -> None:
+    """Tell every open viewer that the set of models changed, so each asks for
+    its list now instead of at its next poll, up to five seconds later. A list
+    that still offers a model that has gone is how someone ends up choosing it
+    (#238).
+
+    It names nothing. What a viewer may see is for that viewer to ask.
+    """
+    _push_sse({"models_changed": True})
+
+
+class ModelNotAvailable(LookupError):
+    """A request named a model this server cannot show."""
+
+
+@app.errorhandler(ModelNotAvailable)
+def _model_not_available(_error: ModelNotAvailable):
+    """Refused, in the same words whatever the reason, and without repeating the
+    name back. The viewer knows which model it asked for."""
+    return jsonify(
+        {
+            "status": "error",
+            "code": "model_not_available",
+            "message": "That model isn't available.",
+        }
+    ), 404
+
+
+# ---------------------------------------------------------------------------
+# Who can see which upload (#237)
+#
+# An upload belongs to the browser that sent it and to nobody else. Two things
+# can say a request comes from that browser: its cad_session cookie, if it has
+# answered the consent dialog, and its tab's upload id, which every request from
+# the viewer carries. The tab id is the one that always exists, because pressing
+# Escape on the consent dialog or using /demo leaves a tab with no cookie.
+#
+# The browser used to do this filtering and the server did none, so anyone who
+# asked the server directly could list, render and export every upload.
+# ---------------------------------------------------------------------------
+def _request_upload_session_id() -> str | None:
+    """The tab's upload id, from its header and nowhere else.
+
+    Never from the address. The id grants access to the tab's uploads, and an
+    address ends up in access logs and browser history; the event stream used to
+    carry it there, since EventSource cannot set a header, so the stream no
+    longer says anything that depends on who is asking (#243 review).
+    """
+    return _sanitize_upload_session_id(request.headers.get("X-Upload-Session"))
+
+
+def _caller_upload_names(tab_id: str | None = None) -> set[str]:
+    """Filenames in UPLOAD_DIR that the current request may see.
+
+    Outside a request, such as the startup render, that is none.
+    """
+    if not has_request_context():
+        return set()
+    owned: set[str] = set()
+    cookie_sid = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE))
+    # Not on the demo path, which keeps no ownership records to read.
+    if cookie_sid and recording.current().records:
+        owned.update(m["filename"] for m in db.get_session_models(cookie_sid))
+    tab_id = tab_id or _request_upload_session_id()
+    if tab_id:
+        with uploaded_models_lock:
+            owned.update(Path(p).name for p in uploaded_models_by_session.get(tab_id, ()))
+    return owned
+
+
+def _visible_models(tab_id: str | None = None) -> list[Path]:
+    """The built-ins, plus the uploads the current request owns."""
+    owned = _caller_upload_names(tab_id)
+    return [p for p in AVAILABLE_MODELS if _is_builtin(p) or p.name in owned]
+
+
+def _visible_model_names(tab_id: str | None = None) -> list[str]:
+    return [p.stem for p in _visible_models(tab_id)]
 
 
 def _resolve_model_stem(raw_value: Any) -> str:
@@ -558,12 +650,21 @@ def _resolve_model_stem(raw_value: Any) -> str:
     started rendering somebody else's model. This is the crossover the workshop
     reported.
 
-    A name does not renumber. An unknown one falls back to the default model,
-    never to whatever another window happens to be looking at, which is what the
-    process-wide "current model" used to supply.
+    A name does not renumber. One that names no model is refused with
+    ModelNotAvailable, never answered with another model. It used to fall back
+    to the default, so a model that had gone, or a name the server could not
+    find, put a different object under the reader's fingers while the viewer
+    went on announcing the one they chose (#238). Asking for no model at all
+    still gets the default: that is how a page starts.
+
+    Somebody else's upload is an unknown name here. It is refused exactly as a
+    name that does not exist is, so the answer cannot be used to find out which
+    uploads exist. Every endpoint that takes a model comes through
+    this function, which is what makes it the one place ownership is enforced.
 
     Numeric values are still accepted, so a browser holding an older viewer.js
-    keeps working until it reloads.
+    keeps working until it reloads. They count within the models the caller can
+    see, so a position cannot reach anyone else's upload either.
     """
     if raw_value is None:
         return DEFAULT_MODEL.stem
@@ -572,19 +673,23 @@ def _resolve_model_stem(raw_value: Any) -> str:
     if not text:
         return DEFAULT_MODEL.stem
 
-    known = {path.stem for path in AVAILABLE_MODELS}
-    if text in known:
-        return text
+    for path in AVAILABLE_MODELS:
+        if path.stem == text:
+            # Built-ins first, so the common case never reads ownership.
+            if _is_builtin(path) or path.name in _caller_upload_names():
+                return text
+            raise ModelNotAvailable(text)
 
     # Legacy: a position in the list. Ambiguous by nature, which is the whole
     # problem, but resolving it once here is better than rejecting the request.
     try:
         index = int(text)
     except ValueError:
-        return DEFAULT_MODEL.stem
-    if 0 <= index < len(AVAILABLE_MODELS):
-        return AVAILABLE_MODELS[index].stem
-    return DEFAULT_MODEL.stem
+        raise ModelNotAvailable(text) from None
+    visible = _visible_models()
+    if 0 <= index < len(visible):
+        return visible[index].stem
+    raise ModelNotAvailable(text)
 
 
 def _path_for_stem(model_stem: str) -> Path:
@@ -1317,7 +1422,10 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
         "status": "success",
         "image_base64": _img_to_base64_png(preview_payload),
         "image_shape": list(preview_payload.shape),
-        "model_list": MODEL_NAME_LIST,
+        # Which model this is, so the viewer's list and status bar can always
+        # name the model actually on the display.
+        "model": model_stem,
+        "model_list": _visible_model_names(),
         # Where this render ended up looking, so the window that asked can send
         # it back next time. This is what keeps a pan inside the window that
         # made it: the renderer no longer remembers, and must not.
@@ -1373,8 +1481,9 @@ def initialize_default_braille_render() -> None:
 
 def open_viewer_in_browser(port: int = 6969) -> None:
     # A demo station opens on /demo, so nobody has to remember to type it and
-    # nobody can land on the recording viewer by opening the shortcut.
-    path = "/demo" if DEMO_ONLY else "/viewer"
+    # nobody can land on the recording viewer by opening the shortcut. Anywhere
+    # else the viewer is the site's own address (#232).
+    path = "/demo" if DEMO_ONLY else "/"
     url = f"http://localhost:{port}{path}"
     try:
         webbrowser.open(url, new=1)
@@ -1421,7 +1530,11 @@ else:
 # On a station launched with CAD_A11Y_DEMO=1 the study routes do not exist at
 # all, which is the stronger guarantee. This closes the same door on a server
 # that is serving both, where a demo page shares an origin with a study session.
-_CLOSED_TO_DEMO = ("/studies", "/ingest")
+#
+# /api is closed too. It only describes itself today, but the routes coming to
+# it take models in from other tools, and a demo station takes nothing in (#244
+# review).
+_CLOSED_TO_DEMO = ("/studies", "/ingest", "/api")
 
 
 @app.before_request
@@ -1525,9 +1638,11 @@ def demo_status():
     ), 200
 
 
-@app.route("/viewer", methods=["GET"])
+@app.route("/viewer", methods=["GET"], strict_slashes=False)
 def serve_viewer():
-    """Serve the main HTML viewer.
+    """Serve the main HTML viewer. The site's address serves it too (home); this
+    stays for the links, bookmarks and CI steps that name /viewer, with or
+    without a trailing slash.
 
     No session cookie or DB row is created here. Under GDPR/ePrivacy even an
     anonymous persistent identifier requires prior consent, so the session is
@@ -1596,32 +1711,25 @@ def ingest_test():
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify(
-        {
-            "status": "running",
-            "message": "Accessible 3D Viewer server",
-            "endpoints": {
-                "/render": "POST - Render CAD view with parameters",
-                "/render/fit-view": "POST - Render with the model framed to fit the display",
-                "/models": "GET - List available models",
-                "/upload": "POST - Upload an STL or STEP model file",
-                "/ingest": "POST - Ingest an STL from an external tool; optional first_name, returns a workshop_url + user_id",
-                "/workshop": "GET - Simplified viewer; ?model= pre-loads, ?name= resolves a participant's first name",
-                "/ingest-test": "GET - Static harness to send the sample STL to /ingest from a browser",
-                "/get_data": "GET - Optional cube/slider state",
-                "/render/dotpad-hex": "POST - Get render as DotPad hex string for Web SDK",
-                "/viewer": "GET - Serve the HTML viewer (required for DotPad Web SDK)",
-                "/studies/<slug>": "GET - Participant view for an open study's session; models load per protocol step",
-                "/studies/<slug>/control": "GET - Experimenter control panel; signs in with the study's token",
-                "/session/me": "GET - Return current session metadata",
-                "/session/identify": "POST - Store email/consent for current session",
-                "/session/models": "GET - List uploaded models for current session",
-                "/models/<filename>": "DELETE - Delete an uploaded model",
-                "/events/track": "POST - Record a client-side interaction event",
-                "/health": "GET - Deployment self-check: storage layout, writability, database",
-            },
-        }
-    )
+    """The site's address is the viewer (#232).
+
+    It used to answer with a hand-written list of endpoints, so the first thing
+    anyone following a link saw, and heard read out a line at a time, was raw
+    JSON naming routes the release keeps out of sight. The list had also drifted
+    from the routes that exist. Maintainers can list every route with
+    `flask --app app.server routes`; the API tools integrate with is described
+    at /api/v1/openapi.json.
+
+    Served here rather than redirected to /viewer, so there is no extra hop and
+    no second entry in the history (#244 review). Nothing in the page depends on
+    being at /viewer: the scripts compare the path only with /studies/<slug>,
+    /demo and /workshop. A demo station sends its address to /demo instead, the page that
+    records nothing and says so, as open_viewer_in_browser does.
+    """
+    if DEMO_ONLY:
+        query = request.query_string.decode("utf-8", "replace")
+        return redirect("/demo" + (f"?{query}" if query else ""), code=302)
+    return serve_viewer()
 
 
 @app.route("/health", methods=["GET"])
@@ -1731,7 +1839,7 @@ def render_view():
         if not skip_cache and not is_pan_request and merged_params.get("print_view") is not True:
             cached_response = _get_quantized_cached_response(quantized_cache_key)
             if cached_response is not None:
-                cached_response["model_list"] = MODEL_NAME_LIST
+                cached_response["model_list"] = _visible_model_names()
                 debug = dict(cached_response.get("debug", {}))
                 debug.update(
                     {
@@ -1769,6 +1877,8 @@ def render_view():
         if cacheable:
             _set_quantized_cached_response(quantized_cache_key, response)
         return jsonify(response), 200
+    except ModelNotAvailable:
+        raise  # answered by _model_not_available: a 404, not a failed render
     except Exception as error:
         _log(f"Error rendering: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
@@ -1797,7 +1907,10 @@ def render_status():
     yet — "not ready" is the correct answer for that case anyway.
     """
     data = request.get_json(silent=True) or {}
-    model_stem = _resolve_model_stem(data.get("model", data.get("current_model")))
+    try:
+        model_stem = _resolve_model_stem(data.get("model", data.get("current_model")))
+    except ModelNotAvailable:
+        return jsonify({"slice_graphs_ready": False}), 200
     with models_lock:
         engine = renderers_by_model.get(str(_path_for_stem(model_stem)))
     slice_graphs_ready = bool(engine is not None and getattr(engine, "_slice_graphs_ready", False))
@@ -1815,12 +1928,14 @@ def fit_render_view():
 
 @app.route("/models", methods=["GET"])
 def models_endpoint():
-    """List the models on disk.
+    """List the built-ins and the caller's own uploads, by name.
 
     Read only. Selecting a model is not a server-side action: a render names the
     model it wants, so there is nothing here to set. The POST branch that used to
     write a process-wide "current model" is gone, since one window choosing a
     model would change what every other window rendered next.
+
+    It used to list every upload on the server, with each file's absolute path.
     """
     global AVAILABLE_MODELS, MODEL_NAME_LIST
 
@@ -1830,14 +1945,16 @@ def models_endpoint():
     return jsonify(
         {
             "status": "success",
-            "model_list": MODEL_NAME_LIST,
-            "model_paths": [str(model) for model in AVAILABLE_MODELS],
+            "model_list": _visible_model_names(),
         }
     ), 200
 
 
-_ALLOWED_EXTENSIONS = {".stl", ".step"}
-_MAX_UPLOAD_SESSION_ID_LEN = 128
+# The form viewer.js generates: "tab-" and 128 random bits in hex. Nothing else is
+# accepted, because the id is what grants a tab its uploads (#237): the server
+# used to take any 1 to 128 characters, which let a guessable id in, and a viewer
+# from before #237 made its ids from the clock and Math.random (#243 review).
+_UPLOAD_SESSION_ID_RE = re.compile(r"^tab-[0-9a-f]{32}$")
 
 # Tracks uploaded model paths by browser-tab session id so they can be cleaned up
 # when the page closes. Values are absolute path strings under UPLOAD_DIR.
@@ -1846,17 +1963,11 @@ uploaded_models_lock = threading.Lock()
 
 
 def _sanitize_upload_session_id(raw_value: Any) -> str | None:
-    if raw_value is None:
+    """The tab id if it is one the viewer could have made, else None."""
+    if not isinstance(raw_value, str):
         return None
-    value = str(raw_value).strip()
-    if not value:
-        return None
-    if len(value) > _MAX_UPLOAD_SESSION_ID_LEN:
-        value = value[:_MAX_UPLOAD_SESSION_ID_LEN]
-    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
-    if any(ch not in allowed for ch in value):
-        return None
-    return value
+    value = raw_value.strip()
+    return value if _UPLOAD_SESSION_ID_RE.match(value) else None
 
 
 def _register_uploaded_model(session_id: str | None, model_path: Path) -> None:
@@ -1897,6 +2008,12 @@ def _cleanup_uploaded_models_for_session(session_id: str | None) -> dict[str, An
         except Exception as exc:
             errors.append(f"{model_path}: {exc}")
 
+    # The rows go with the files. Left behind, a row went on saying its session
+    # owned the name, so whoever uploaded a file of that name next had it listed,
+    # rendered and deletable by the first session (#243 review).
+    for removed in deleted:
+        recording.current().forget_file(Path(removed).name)
+
     # Refresh in-memory model list and invalidate caches after cleanup.
     global AVAILABLE_MODELS, MODEL_NAME_LIST
     with models_lock:
@@ -1913,7 +2030,57 @@ def _cleanup_uploaded_models_for_session(session_id: str | None) -> dict[str, An
     with preview_payload_cache_lock:
         preview_payload_cache.clear()
 
+    if deleted:
+        _announce_models_changed()
     return {"deleted": deleted, "errors": errors}
+
+
+def _reconcile_uploads() -> dict[str, int]:
+    """Make the upload directory and the ownership rows agree, at start-up.
+
+    They drift two ways, both found in #243's review:
+
+    * A row whose file is gone. Cleanup used to delete files and leave their rows,
+      so the deployed databases hold live rows for names no file has. Marked
+      deleted here; the name check in _save_and_index_stl covers any that appear
+      later.
+    * A file no row owns. An upload made without a cookie belongs only to its
+      tab's entry in memory, which a restart forgets, so the file stayed on disk
+      where nobody could see or delete it. Removed here.
+
+    Only the upload directory, and never a built-in: if the two directories were
+    ever the same, nothing is removed.
+    """
+    result = {"stale_rows": 0, "orphan_files": 0}
+    if not recording.current().records or not UPLOAD_DIR.is_dir():
+        return result
+
+    on_disk = {
+        path.name: path
+        for path in UPLOAD_DIR.iterdir()
+        if path.is_file() and path.suffix.lower() in MODEL_SUFFIXES
+    }
+    live = db.live_upload_filenames()
+    for name in live - set(on_disk):
+        result["stale_rows"] += recording.current().forget_file(name)
+
+    if UPLOAD_DIR.resolve() == _MODEL_DIR_RESOLVED:
+        return result
+    for name in set(on_disk) - live:
+        path = on_disk[name]
+        if _is_builtin(path):
+            continue
+        try:
+            path.unlink()
+            result["orphan_files"] += 1
+        except OSError as error:
+            _log(f"Could not remove orphaned upload {name}: {error}")
+    if result["orphan_files"]:
+        global AVAILABLE_MODELS, MODEL_NAME_LIST
+        with models_lock:
+            AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
+            MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
+    return result
 
 
 def _save_and_index_stl(
@@ -1946,7 +2113,7 @@ def _save_and_index_stl(
     if not filename:
         raise ValueError("No file selected")
     suffix = Path(filename).suffix.lower()
-    if suffix not in _ALLOWED_EXTENSIONS:
+    if suffix not in MODEL_SUFFIXES:
         raise ValueError(f"Unsupported file type '{suffix}'. Use .stl or .step")
 
     target_dir = MODEL_DIR if public else UPLOAD_DIR
@@ -1962,7 +2129,15 @@ def _save_and_index_stl(
     target_dir.mkdir(parents=True, exist_ok=True)
     with models_lock:
         dest = target_dir / filename
-        if dest.exists() or _stem_is_taken(Path(filename).stem):
+        # A name some session still holds a live row for is taken too, file or no
+        # file. A stale row would otherwise hand the new upload to its old owner;
+        # the deployed servers have such rows, since cleanup used to delete files
+        # without their rows (#243 review).
+        if (
+            dest.exists()
+            or _stem_is_taken(Path(filename).stem)
+            or (recording.current().records and db.filename_has_live_owner(filename))
+        ):
             stem = Path(filename).stem
             filename = f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
             dest = target_dir / filename
@@ -1995,6 +2170,7 @@ def _save_and_index_stl(
     # Processed in the background, so whoever uploaded it is not also the one who
     # waits for its first render.
     enqueue_model_for_warmup(dest)
+    _announce_models_changed()
 
     with quantized_render_cache_lock:
         quantized_render_cache.clear()
@@ -2039,7 +2215,9 @@ def upload_model():
     return jsonify({
         "status": "success",
         "filename": filename,
-        "model_list": MODEL_NAME_LIST,
+        # The form field names the tab as well as the header does, so the new
+        # upload is in the list whichever of the two the client sent.
+        "model_list": _visible_model_names(upload_session_id),
         # The name is how a model is addressed. new_model_index is kept for one
         # release for anything still reading it; it is a position in a list that
         # the next upload renumbers.
@@ -2187,21 +2365,35 @@ def session_identify():
     does not, so no identifier is stored before the user answers the consent dialog.
     Email is validated before the row is created, so a rejected request leaves no
     orphan session behind. The response carries the persistent cad_session cookie.
+
+    The email is a contact address and nothing more. It used to double as a key,
+    so typing somebody else's address listed their uploads and let you delete
+    them (#237). It is now kept apart from the session altogether, so nothing
+    ties it to the usage data recorded under one, which is what lets the dialog
+    call that data anonymous (#220).
     """
     data = request.get_json(silent=True) or {}
     email = data.get("email")
     consent = data.get("consent", False)
 
-    if email is not None:
-        email = str(email).strip()
-        if email and not _EMAIL_RE.match(email):
-            return jsonify({"status": "error", "message": "Invalid email address"}), 400
-        email = email or None
+    # One check, the one db.add_contact applies too (app/email_address.py). An
+    # empty field is no address rather than a wrong one.
+    if email is not None and not (isinstance(email, str) and not email.strip()):
+        try:
+            email = email_address.normalise(email)
+        except email_address.InvalidEmail as error:
+            return jsonify(
+                {"status": "error", "reason": error.reason, "message": email_address.message_for(error)}
+            ), 400
+    else:
+        email = None
 
     session_id = _get_or_create_session_id()  # reuse a valid cookie or mint a new UUID
     recorder = recording.current()
     recorder.touch_session(session_id)
-    recorder.identify_session(session_id, email, consent=bool(consent))
+    recorder.identify_session(session_id, consent=bool(consent))
+    if email:
+        recorder.add_contact(email)
 
     response = jsonify({"status": "success"})
     # The cookie is a write too: it is the identifier that would survive the tab
@@ -2244,7 +2436,14 @@ def delete_model(filename: str):
     except Exception as err:
         return jsonify({"status": "error", "message": f"Could not remove file: {err}"}), 500
 
-    recording.current().forget_model(session_id, safe_name)
+    # Every row for the file, not only this session's, and every tab still
+    # holding its path: either one left behind would claim the next upload of
+    # the same name, and a tab's cleanup on closing would delete it (#243 review).
+    recording.current().forget_file(safe_name)
+    resolved = str(dest.resolve())
+    with uploaded_models_lock:
+        for paths in uploaded_models_by_session.values():
+            paths.discard(resolved)
 
     global AVAILABLE_MODELS, MODEL_NAME_LIST
     with models_lock:
@@ -2256,6 +2455,7 @@ def delete_model(filename: str):
     with preview_payload_cache_lock:
         preview_payload_cache.clear()
 
+    _announce_models_changed()
     return jsonify({"status": "success", "filename": safe_name}), 200
 
 
@@ -2277,10 +2477,11 @@ def track_event():
 @app.route("/uploads/cleanup", methods=["POST"])
 def cleanup_uploaded_models():
     payload = request.get_json(silent=True) or {}
+    # From the body or the header, never the address, for the reason in
+    # _request_upload_session_id.
     upload_session_id = _sanitize_upload_session_id(
         payload.get("upload_session_id")
         or request.form.get("upload_session_id")
-        or request.args.get("upload_session_id")
         or request.headers.get("X-Upload-Session")
     )
     if not upload_session_id:
@@ -2303,16 +2504,18 @@ def sse_events():
     Replaces 1-second polling for hardware input — events are pushed immediately
     when device state changes, reducing perceived latency from ~1000 ms to ~10 ms.
     """
+    # Nothing that depends on who is asking. The first message used to be the
+    # caller's model list, which meant the tab id rode in the stream's address,
+    # into access logs (#243 review). The list comes from /get_data and /render,
+    # which send the id in a header.
+    initial: dict[str, Any] = {}
+
     def generate():
         client_queue = _queue_module.Queue(maxsize=20)
         with _sse_clients_lock:
             _sse_clients.append(client_queue)
         try:
             # Send current state immediately on connect so the client is in sync.
-            with models_lock:
-                initial = {
-                    "model_list": MODEL_NAME_LIST,
-                }
             yield f"data: {json.dumps(initial)}\n\n"
             while True:
                 try:
@@ -2338,10 +2541,13 @@ def sse_events():
 
 @app.route("/get_data", methods=["GET"])
 def get_data():
+    # Every open viewer polls this, so a file added or removed behind the app's
+    # back is noticed here even when nobody is rendering.
+    _refresh_model_list_if_stale()
     with models_lock:
         payload = {
             "status": "success",
-            "model_list": MODEL_NAME_LIST,
+            "model_list": _visible_model_names(),
             "builtin_model_stems": _builtin_model_stems(),
         }
     return jsonify(payload), 200
@@ -2389,6 +2595,8 @@ def render_export_source():
             "export_height": export_height,
         }
         return jsonify(response), 200
+    except ModelNotAvailable:
+        raise  # answered by _model_not_available: a 404, not a failed render
     except Exception as error:
         _log(f"Error rendering export source: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
@@ -2425,6 +2633,8 @@ def render_preview():
                 "render_preview_shape": preview_shape,
             }
         ), 200
+    except ModelNotAvailable:
+        raise  # answered by _model_not_available: a 404, not a failed render
     except Exception as error:
         _log(f"Error rendering preview: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
@@ -2474,6 +2684,8 @@ def render_dotpad_hex():
             "dotpad_graphic_hex": hex_string,
             "cell_count": total_cells,
         }), 200
+    except ModelNotAvailable:
+        raise  # answered by _model_not_available: a 404, not a failed render
     except Exception as error:
         _log(f"Error rendering DotPad hex: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
@@ -2529,6 +2741,14 @@ def main() -> int:
         _log("Output mode: quiet (set SERVER_VERBOSE=1 for debug logs)", force=True)
 
     db.init_db()
+    if not DEMO_ONLY:
+        reconciled = _reconcile_uploads()
+        if any(reconciled.values()):
+            _log(
+                f"Uploads reconciled: {reconciled['stale_rows']} row(s) for missing files "
+                f"marked deleted, {reconciled['orphan_files']} unowned file(s) removed",
+                force=True,
+            )
     # Each study has a database of its own, separate from the analytics one, so
     # a session that cannot be re-run is never at the mercy of a change to
     # product telemetry. They were opened when the registry loaded; this says

@@ -57,6 +57,28 @@ h1 {
     color: white;
 }
 
+/* Shown only in a browser that cannot connect a display (#232). The demo
+   banner's warning colours: #6e1414 on #fdecec. */
+.browser-warning {
+    margin: 0 0 8px;
+    padding: 10px 14px;
+    border: 3px solid #8a1c1c;
+    border-radius: 8px;
+    background: #fdecec;
+    color: #6e1414;
+    font-weight: 600;
+}
+
+.browser-warning[hidden] {
+    display: none;
+}
+
+@media (forced-colors: active) {
+    .browser-warning {
+        border-color: CanvasText;
+    }
+}
+
 h2 {
     margin-top: 0;
     color: #34495e;

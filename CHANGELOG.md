@@ -42,6 +42,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Security
 *   Spreadsheet downloads put a quote in front of any cell a spreadsheet would run as a formula.
 
+### 2026-10-01
+
+#### Fixed
+*   A model whose file extension is in capitals, such as `MUG.STL`, opens. It used to be accepted and saved, and then never found, so the viewer announced the upload and showed the default model instead without saying so. Several CAD tools export `.STL` in capitals by default.
+*   The viewer no longer shows a different model from the one you chose. A model that can't be shown, because it has gone or can't be opened, is refused: the viewer says it isn't available and stays on the model you were exploring. It used to show the default model instead, and announce the one you chose as loaded.
+*   The model list keeps up. When a model is uploaded or removed, in this window or another, every open viewer updates its list straight away instead of up to five seconds later. If the model on the display is removed, the viewer says so, and says which model it shows instead.
+
+### 2026-09-28
+
+#### Fixed
+*   Uploaded models are private to the browser that uploaded them. The server used to list every upload to anyone who asked, with its location on the server, and would render or export any of them by name. Only the viewer hid them, and it showed the whole list until it knew which models were built in. The server now lists the built-in models and your own uploads, and a request for somebody else's upload is refused, exactly as a name that does not exist is. Closing or reloading a tab, or deleting an upload, now also forgets who owned it, so the next upload of the same name belongs to whoever sent it; the record of ownership used to outlive the file.
+*   An email address no longer gives access to anything. Typing somebody else's address in the welcome dialog used to list their uploads and let you delete them, and opening the workshop page with that address handed over their session. The address is now kept only to send project updates, in a file of its own with nothing that ties it to a browser or to what anyone did in the viewer, and the welcome dialog says that rather than calling the usage analytics anonymous. Addresses given before this move to that file the first time the server starts, and the usage database is rebuilt so that no copy of them is left in it. Backups of the usage database taken before then still pair those addresses with sessions.
+*   The welcome dialog takes an email address in any script, such as josé@example.es, and refuses with a reason anything that is not one: more than 254 characters, markup, control characters, doubled dots. It used to accept any text without a space, of any length.
+*   A failed delete is said aloud as well as shown.
+*   On start, the server forgets ownership of uploads whose files are gone, and removes uploaded files that nobody owns. Those are uploads made without saving a cookie, which belong to their tab only until the server restarts; after that nobody could see or delete them.
+*   The site's address is the viewer. It used to show a raw list of the server's internal addresses, which a screen reader read out one line at a time, and which named parts of the app that are not meant to be public. `/viewer` still works, with or without a trailing slash. On a demo station the address opens the demo page, which records nothing.
+
+#### Added
+*   The viewer says, before you connect a display, to use a screen reader in focus mode (NVDA) or forms mode (JAWS). It is read with the Connect button until Connect has had focus once, and stays on the page after that. Where a braille display cannot be connected at all, it says why: an address that is not https or localhost, or a browser without Web HID or Web Bluetooth, which Chrome and Edge have.
+*   The integration API has an address, `/api/v1`, and a public description at `/api/v1/openapi.json`. There is nothing in it yet; it is where tools that send models in will connect. Every error under it is answered in the same JSON shape. A demo station does not offer it.
+
+#### Changed
+*   Giving the same email on another browser or device no longer brings your uploads with it. That link is what made the address a key, and it stays gone until there is a sign-in that proves an address is yours.
+
 ### 2026-09-22
 
 #### Fixed
