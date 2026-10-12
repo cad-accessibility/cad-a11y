@@ -16,6 +16,7 @@ import sys
 
 import pytest
 
+from app import db
 from app.server import app as flask_app
 from app.server import (
     BUILTIN_SOURCE_DIR,
@@ -30,10 +31,18 @@ from scripts.cleanup_ingest_models import find_stale_models
 
 
 @pytest.fixture()
-def client():
+def client(tmp_path, monkeypatch):
+    # A database of its own, set up as the server sets one up at start: an upload
+    # is recorded against the browser that sent it (#237), and CI starts with none.
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "usage.db")
+    db._local.__dict__.clear()
+    db._contacts_local.__dict__.clear()
+    db.init_db()
     flask_app.config["TESTING"] = True
     with flask_app.test_client() as c:
         yield c
+    db._local.__dict__.clear()
+    db._contacts_local.__dict__.clear()
 
 
 # --- The invariant the whole scheme rests on ------------------------------
@@ -406,7 +415,7 @@ def test_an_upload_named_in_capitals_renders_the_upload_not_the_default(client):
     rendered the default model without saying so."""
     from app import server
 
-    tab = "tab-" + "238" * 10
+    tab = "tab-" + "0238" * 8
     headers = {"X-Upload-Session": tab}
     geometry = (BUILTIN_SOURCE_DIR / "guide_signature.stl").read_bytes()
 

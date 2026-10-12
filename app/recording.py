@@ -131,12 +131,22 @@ class NullRecorder:
     def identify_session(self, *_args: Any, **_kwargs: Any) -> None:
         self._seen()
 
+    def add_contact(self, *_args: Any, **_kwargs: Any) -> None:
+        self._seen()
+
+    def enroll_workshop_participant(self, *_args: Any, **_kwargs: Any) -> None:
+        self._seen()
+
     def register_model(self, *_args: Any, **_kwargs: Any) -> None:
         self._seen()
 
     def forget_model(self, *_args: Any, **_kwargs: Any) -> bool:
         self._seen()
         return False
+
+    def forget_file(self, *_args: Any, **_kwargs: Any) -> int:
+        self._seen()
+        return 0
 
     def attach_session_cookie(self, response: Response, _session_id: str) -> Response:
         """Returns the response untouched: no cookie, so nothing survives the tab."""
@@ -190,11 +200,16 @@ class PersistentRecorder:
     def touch_session(self, session_id: str) -> None:
         self._analytics.upsert_session(session_id)
 
-    def identify_session(
-        self, session_id: str, email: str | None, *, consent: bool, is_workshop: bool = False
-    ) -> None:
+    def identify_session(self, session_id: str, *, consent: bool) -> None:
+        self._analytics.save_session_consent(session_id, consent_given=consent)
+
+    def add_contact(self, email: str) -> None:
+        # Not on the session: nothing may tie an address to usage data (#220).
+        self._analytics.add_contact(email)
+
+    def enroll_workshop_participant(self, session_id: str, first_name: str) -> None:
         self._analytics.save_session_identifier(
-            session_id, email, consent_given=consent, is_workshop=is_workshop
+            session_id, first_name, consent_given=False, is_workshop=True
         )
 
     def register_model(
@@ -209,6 +224,9 @@ class PersistentRecorder:
 
     def forget_model(self, session_id: str, filename: str) -> bool:
         return bool(self._analytics.mark_model_deleted(session_id, filename))
+
+    def forget_file(self, filename: str) -> int:
+        return int(self._analytics.mark_file_deleted(filename))
 
     def attach_session_cookie(self, response: Response, session_id: str) -> Response:
         return self._cookie_writer(response, session_id)

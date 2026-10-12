@@ -67,6 +67,31 @@ cad-a11y/
 └── docker-compose.dev.yml        # Optional local-development bind mounts
 ```
 
+## Axis modes: Turn and XYZ
+
+Settings → Axis Mode chooses how the model is oriented. The two never share a
+key: a key from the other mode only says which mode it belongs to.
+
+- **XYZ** (the default): X, Y and Z slice along that axis, repeating toggles which direction
+  you are looking from. Every view is one of OpenSCAD's standard
+  views, named by the side you look from: Z is Top, from Z plus, and Z again
+  Bottom, from Z minus; Y is Front, from Y minus, and Y again Back; X is Right,
+  from X plus, and X again Left.
+- **Turn**: U/O roll, I/K pitch and J/L yaw the model a quarter turn at a time.
+  Left, right, up and down are as they are on the display, whichever way the
+  model faces. The study ran in Turn mode, and /study still does.
+
+In either mode, "." says where you are ("View from X plus, Y right, Z up.
+Depth: 50%. Origin: H: 42% V: 42%. Render: Outline. Zoom: 0.0. Model: mug."),
+"," says where the model's origin is on the display, across from the left edge
+and up from the bottom ("Horizontal: 42%, Vertical: 42%", or past 0 and 100 when
+it is off the display), and 0 resets the view (it was Z, which XYZ mode needs).
+Reset puts the slice plane at 50% on every axis in both modes, which is also
+where a model starts.
+
+Axis labels on the pins, the letters at the display edges and the view info box,
+are x, y and z in computer braille.
+
 ## Hardware setup
 
 The viewer works without any hardware. Connect devices for full tactile and braille output.
@@ -84,6 +109,7 @@ The Monarch supports cursor controls and depth changes with the following inputs
 
 - dot 1: change depth shallower by 10%.
 - dot 4: change depth deeper by 10%.
+- dots 1-3-4-6, 1-3-4-5-6 and 1-3-5-6 (the letters x, y and z): slice along that axis in XYZ mode; repeating toggles direction, as on the keyboard.
 - spacebar: cycles through these cursor modes
     - `none`: hides the cursor and disables cursor movement.
     - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
@@ -105,7 +131,11 @@ NOTE: Cursor or guideline movements only work when the cursor or guidelines are 
 3. Pick the device in the browser's pairing prompt.
 
 Turning the cube changes the view in that browser window only. Needs a browser
-with Web Bluetooth, which today means a Chromium-based one.
+with Web Bluetooth, which today means a Chromium-based one. A face has to be
+clearly up, and stay up for a moment, before the view changes, so the cube held
+near a corner no longer flickers between two views. In XYZ mode the face
+pointing up is the axis coming out of the display, and turning to it keeps that
+axis's slice where it was.
 
 ### Adafruit Slider Trinkey
 
@@ -130,6 +160,7 @@ The DotPad supports cursor controls and depth changes with the following inputs:
 
 - dot 1: change depth shallower by 10%.
 - dot 4: change depth deeper by 10%.
+- letters `x`, `y` and `z` (dot chords 1 3 4 6, 1 3 4 5 6 and 1 3 5 6): slice along that axis in XYZ mode; repeating toggles direction. The chord is read as a whole letter, the way `v` is.
 - letter `v` or dot chord 1 2 3 6: cycles through these cursor modes
     - `none`: hides the cursor and disables cursor movement.
     - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
@@ -387,6 +418,8 @@ Models live in two directories, and which one a file is in decides who can see i
 To add a built-in model, put the file in `builtin_models/` and rebuild. Do not put it in `data/models` directly: that directory is runtime state and is not tracked.
 
 The two directories must never be the same. Classification is by location, so if uploads landed in the built-in directory every uploaded file would be served to every visitor. That is exactly what happened in #102 once the move to Docker named volumes made `data/models` writable. The server now refuses to start if `UPLOAD_MODEL_DIR` resolves to the built-in directory.
+
+`CAD_A11Y_MODEL_DIR` moves the built-in directory itself, the way `UPLOAD_MODEL_DIR` moves uploads, and the same check applies wherever it points. The test suite sets both to a temporary directory (`tests/conftest.py`), so running it leaves nothing in the repo's `data/`.
 
 ### Uploads on managed servers
 
