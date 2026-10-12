@@ -166,6 +166,12 @@ def faces_on_plane_fast(shape, plane_origin, plane_normal, tol=1e-3):
 
     return submesh
 
+# How thick a slab a cut on the far face keeps, as a fraction of the object's
+# extent along the cut: half the smallest step the keys take, so 99% and 100%
+# still draw different slices (#252).
+FAR_FACE_SLAB = 0.005
+
+
 def depth_peeling_single_depth_with_bbox(shape, normal_dir, depth: float, bbox):
 
     xmin, ymin, zmin, xmax, ymax, zmax = bbox
@@ -189,6 +195,19 @@ def depth_peeling_single_depth_with_bbox(shape, normal_dir, depth: float, bbox):
 
     if success and cut_shape.area > 0.0:
         return cut_shape, origin
+
+    # A plane on the far face leaves nothing behind it, and this used to hand back
+    # the whole uncut model instead, so 100% drew the same picture as 0% in every
+    # mode that draws the solid (#252). XYZ mode puts the plane there whenever a
+    # model's origin is on its far face, as it is for most OpenSCAD models. Keep
+    # the thinnest slab of the object at that face: what is left at the very end
+    # is its footprint there. The plane stays where it was asked for, so the faces
+    # lying on it, which Cut mode draws, are the same as before.
+    slab_top = min_proj + FAR_FACE_SLAB * (max_proj - min_proj)
+    if d < slab_top:
+        slab, success = cut_shape_with_plane(shape, slab_top * normal_dir, normal_dir)
+        if success and slab.area > 0.0:
+            return slab, origin
 
     return shape, origin
 

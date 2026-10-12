@@ -13,11 +13,14 @@ Three separate things had to be true for this to work, and none of them were:
   drawn.
 * A roll had to redraw. It leaves the same face toward the reader, so the view
   name does not change, and the redraw was conditional on the name changing.
-* The six named views are not consistently handed. Deriving one basis axis from
-  the other two mirrors half of them, so all three are carried explicitly.
+* The turns had to go the way the reader expects from every view. They were
+  written for a reader on the -depth side, which only three of the six views
+  had, so from the default view pitch and yaw ran backwards (#185). Every view
+  now has depth pointing at the reader (see test_standard_views.py).
 
-The rotation tests read the constants out of viewer.js so they describe the
-shipped behaviour rather than a copy of it.
+The rotation tests read the turn formulas out of viewer.js's own switch
+statement, so they test the shipped code rather than a copy of it that could
+agree with itself and nothing else.
 """
 
 from __future__ import annotations
@@ -35,10 +38,11 @@ from src.converter.single_view_stl import _resolve_orientation_basis, get_single
 ROOT = Path(__file__).resolve().parents[1]
 VIEWER_JS = ROOT / "static" / "js" / "viewer.js"
 
-# The viewer's name for each view, and the renderer's.
+# The viewer's name for each view, and the renderer's. x- is the view from +X,
+# OpenSCAD's Right; the token is historical, the key is not.
 TOKEN_TO_VIEW = {
-    "z+": "top", "y-": "front", "x-": "left",
-    "x+": "right", "y+": "back", "z-": "bottom",
+    "z+": "top", "y-": "front", "x-": "right",
+    "x+": "left", "y+": "back", "z-": "bottom",
 }
 
 
@@ -78,32 +82,34 @@ def _rotations() -> dict[str, dict]:
     }
 
 
+def _js_turns() -> dict[str, dict[str, tuple[int, str]]]:
+    """The turn formulas as viewer.js writes them: for each rotation, which basis
+    vector each assigned one is taken from, and with which sign.
+
+    Parsed rather than copied, so a test cannot pass by agreeing with a Python
+    transcription that has drifted from the switch the browser runs."""
+    body = re.search(r"function applyRelativeRotation\(.*?\n\}", _js(), re.S)
+    assert body, "applyRelativeRotation not found in viewer.js"
+    turns = {}
+    for name, case in re.findall(r"case '(\w+)':(.*?)break;", body.group(0), re.S):
+        assigned = {}
+        for target, negated, source in re.findall(
+            r"viewerState\.orientation(Right|Up|Depth)\s*=\s*(negateVec3\()?(right|up|depth)\)?;",
+            case,
+        ):
+            assigned[target.lower()] = (-1 if negated else 1, source)
+        assert len(assigned) == 2, f"{name}: expected two assignments, parsed {assigned}"
+        turns[name] = assigned
+    return turns
+
+
 def _press(basis, rotation_name):
-    """Mirrors applyRelativeRotation's switch exactly: each turn replaces two
-    of the current (right, up, depth) vectors with each other (negating one)
-    and leaves the third untouched -- defined directly in terms of the
-    CURRENT basis rather than as a right-hand-rule turn about a world-frame
-    axis, so it is the same physical turn regardless of which of the six
-    named views (or any orientation reached from them) it starts from. See
-    the comment above RELATIVE_ROTATIONS in viewer.js for why that distinction
-    matters: a world-frame formula looked consistent only because it was only
-    ever checked from one view."""
-    right, up, depth = basis["right"], basis["up"], basis["depth"]
+    """One key press, computed by the formulas parsed out of viewer.js. Each
+    turn replaces two of the current (right, up, depth) vectors, one of them
+    negated, and leaves the third alone."""
     after = dict(basis)
-    if rotation_name == "rollClockwise":
-        after["right"], after["up"] = up, -right
-    elif rotation_name == "rollCounterclockwise":
-        after["right"], after["up"] = -up, right
-    elif rotation_name == "pitchUp":
-        after["up"], after["depth"] = -depth, up
-    elif rotation_name == "pitchDown":
-        after["up"], after["depth"] = depth, -up
-    elif rotation_name == "yawLeft":
-        after["right"], after["depth"] = depth, -right
-    elif rotation_name == "yawRight":
-        after["right"], after["depth"] = -depth, right
-    else:
-        raise ValueError(rotation_name)
+    for target, (sign, source) in _js_turns()[rotation_name].items():
+        after[target] = sign * np.asarray(basis[source])
     return after
 
 
@@ -112,9 +118,9 @@ def _front():
 
 
 def _facing_the_reader(basis):
-    """The model direction pointing out of the screen. The camera looks along
-    +depth, so the face a reader meets is the one on -depth."""
-    return -basis["depth"]
+    """The model direction pointing out of the screen, at the reader: depth, in
+    every view. The face a reader meets is the one on +depth."""
+    return basis["depth"]
 
 
 # --- The six keys behave as the issue specifies ----------------------------
@@ -189,59 +195,43 @@ def test_pitch_and_yaw_are_reversible():
         )
 
 
-def _world_frame_formula(basis, rotation_name):
-    """The formula this feature shipped with and no longer uses: rotate by a
-    fixed +-90 about a world-frame axis (right for pitch, up for yaw, depth
-    for roll) using the right-hand rule. It agreed with the current swap-based
-    _press only at one sign of det(right, up, depth) -- see
-    test_the_fix_actually_changed_behaviour_where_it_needed_to for which sign,
-    and why it differs between pitch/yaw and roll. front/back/bottom (where
-    pitch and yaw were previously correct) was the only view anything had
-    ever been checked from, which is why the bug shipped. Kept here only so
-    the tests below can prove the fix actually changed behaviour where it
-    needed to, not just that the new formula is internally consistent with
-    itself."""
-    axis_name, turns = {
-        "pitchUp": ("right", 1), "pitchDown": ("right", -1),
-        "yawLeft": ("up", 1), "yawRight": ("up", -1),
-        "rollCounterclockwise": ("depth", -1), "rollClockwise": ("depth", 1),
-    }[rotation_name]
-    k = np.array(basis[axis_name], dtype=float)
-    out = {}
-    for name in ("right", "up", "depth"):
-        v = np.array(basis[name], dtype=float)
-        for _ in range(turns % 4):
-            v = k * np.dot(k, v) + np.cross(k, v)
-        out[name] = np.rint(v).astype(int)
-    return out
+AIRPLANE = {
+    # What each key does to a model airplane flying out of the display at the
+    # reader, nose toward them. The expected basis after the press, written in
+    # terms of the basis before it: the nose is depth, the airplane's top is up,
+    # its right wing is right.
+    "pitchUp": {"up": ("depth", 1), "depth": ("up", -1)},        # nose up, belly faces you
+    "pitchDown": {"up": ("depth", -1), "depth": ("up", 1)},      # nose down, back faces you
+    "yawLeft": {"right": ("depth", -1), "depth": ("right", 1)},  # nose to your left, right wing faces you
+    "yawRight": {"right": ("depth", 1), "depth": ("right", -1)}, # nose to your right, left wing faces you
+    "rollClockwise": {"right": ("up", 1), "up": ("right", -1)},  # the top swings to your right
+    "rollCounterclockwise": {"right": ("up", -1), "up": ("right", 1)},
+}
 
 
-@pytest.mark.parametrize("wire_token,view_key", sorted(TOKEN_TO_VIEW.items()))
-@pytest.mark.parametrize("rotation_name", [
-    "pitchUp", "pitchDown", "yawLeft", "yawRight", "rollCounterclockwise", "rollClockwise",
-])
-def test_the_fix_actually_changed_behaviour_where_it_needed_to(rotation_name, wire_token, view_key):
-    """Proves the swap-based formula is not just self-consistent but actually
-    different from the old, buggy one exactly where it needed to be. The two
-    formulas agree only at one sign of det(right, up, depth) -- which sign
-    depends on the rotation, since pitch/yaw rotate about the first/second
-    basis vector and roll about the third: pitch and yaw agreed with the old
-    formula at det=-1 (front/back/bottom, the only view ever checked, which is
-    why the bug shipped), roll agreed at det=+1 (top/left/right). A test that
-    only checked the new formula against itself could not tell a real fix
-    from a no-op change."""
-    base = _view_basis()[wire_token]
-    d = np.dot(np.cross(base["right"], base["up"]), base["depth"])
-    fixed = _press(base, rotation_name)
-    old = _world_frame_formula(base, rotation_name)
-    agrees = all(np.array_equal(fixed[k], old[k]) for k in base)
-    agrees_at_negative_d = rotation_name in (
-        "pitchUp", "pitchDown", "yawLeft", "yawRight",
-    )
-    expected = agrees_at_negative_d if d < 0 else not agrees_at_negative_d
-    assert agrees == expected, (
-        f"{rotation_name} at {view_key} (det={d:+.0f}): expected agreement={expected}, got {agrees}"
-    )
+@pytest.mark.parametrize("wire_token", sorted(TOKEN_TO_VIEW))
+@pytest.mark.parametrize("rotation_name", sorted(AIRPLANE))
+def test_every_turn_goes_the_way_the_reader_expects_from_every_view(rotation_name, wire_token):
+    """#185: the turns are centred on the reader. PR #189's tests checked that
+    two directions differed, which a fully reversed implementation also passes;
+    this checks which way each one goes, from each of the six views."""
+    before = _view_basis()[wire_token]
+    after = _press(before, rotation_name)
+    for target, (source, sign) in AIRPLANE[rotation_name].items():
+        assert np.array_equal(after[target], sign * before[source]), (
+            f"{rotation_name} from {TOKEN_TO_VIEW[wire_token]}: {target} should be "
+            f"{'-' if sign < 0 else ''}{source}"
+        )
+
+
+@pytest.mark.parametrize("wire_token", sorted(TOKEN_TO_VIEW))
+@pytest.mark.parametrize("rotation_name", sorted(AIRPLANE))
+def test_a_turn_keeps_the_basis_right_handed(rotation_name, wire_token):
+    """depth = right x up is what puts the reader on the +depth side, and the
+    cut, the turns and the depth readout all rely on it. A turn that broke it
+    would silently mirror everything after it."""
+    after = _press(_view_basis()[wire_token], rotation_name)
+    assert np.array_equal(np.cross(after["right"], after["up"]), after["depth"])
 
 
 @pytest.mark.parametrize("name", [
@@ -421,12 +411,71 @@ def test_the_cut_follows_the_orientation():
     assert not np.array_equal(shallow, deep), "cut depth had no effect once rotated"
 
 
+# Where the airplane's nose (the model direction pointing at the reader before
+# the press) and its top (the direction pointing up before the press) must be
+# afterwards, as edges of the display. Written from the description of the keys,
+# not from the formulas.
+NOSE_AND_TOP_AFTER = {
+    "pitchUp": {"nose": "top"},
+    "pitchDown": {"nose": "bottom"},
+    "yawLeft": {"nose": "left"},
+    "yawRight": {"nose": "right"},
+    "rollClockwise": {"top": "right"},
+    "rollCounterclockwise": {"top": "left"},
+}
+_SQUARE = [[-2.5, 2.5], [-2.5, 2.5]]
+_EDGE_PROBES = {"right": (1.45, 0.0), "left": (-1.45, 0.0), "top": (0.0, 1.45), "bottom": (0.0, -1.45)}
+
+
+def _edge_of(image):
+    raised = image[..., 0] < 128
+    found = set()
+    for edge, (x, y) in _EDGE_PROBES.items():
+        col = int((x + 2.5) / 5.0 * raised.shape[1])
+        row = int((2.5 - y) / 5.0 * raised.shape[0])
+        if raised[row, col]:
+            found.add(edge)
+    return found
+
+
+@pytest.mark.parametrize("wire_token,view_key", sorted(TOKEN_TO_VIEW.items()))
+@pytest.mark.parametrize("rotation_name", sorted(NOSE_AND_TOP_AFTER))
+def test_after_each_turn_the_nose_is_drawn_where_the_key_sent_it(rotation_name, wire_token, view_key):
+    """A known turn against a known-correct picture, from every view, through
+    the real renderer: the regression #185 asked for. From the default view
+    (x+) pitch up used to swing the nose down and yaw left swing it right."""
+    before = _view_basis()[wire_token]
+    (part, expected_edge), = NOSE_AND_TOP_AFTER[rotation_name].items()
+    marked = before["depth"] if part == "nose" else before["up"]
+
+    body = trimesh.creation.box(extents=(2.0, 2.0, 2.0))
+    marker = trimesh.creation.box(extents=(0.6, 0.6, 0.6))
+    marker.apply_translation(1.3 * np.asarray(marked, dtype=float))
+    shape = trimesh.util.concatenate([body, marker])
+
+    after = _press(before, rotation_name)
+    payload = {
+        "scheme": "basis-v1",
+        "forward": after["depth"].tolist(),
+        "up": after["up"].tolist(),
+        "right": after["right"].tolist(),
+    }
+    image, _ = get_single_view(shape, shape.bounds.flatten(), cut_depth=1.0, view_key=view_key,
+                               rendering_mode="filled", imposed_ax_limits=_SQUARE,
+                               screen_size=[50, 50], orientation_basis=payload)
+    assert _edge_of(image) == {expected_edge}, (
+        f"{rotation_name} from the {view_key} view: the {part} should be at the "
+        f"{expected_edge} edge, found {_edge_of(image) or 'nowhere'}"
+    )
+
+
 # --- The basis is taken as given -------------------------------------------
 
 
 def test_a_complete_basis_is_used_exactly_as_given():
-    """Half the named views have right x up = -depth. Recomputing an axis from
-    the other two therefore mirrors them, which is why nothing is recomputed."""
+    """Even a left-handed one, as this is. The viewer only sends right-handed
+    bases now, but correcting one would mean guessing which of the three axes
+    the sender got wrong, so a complete, perpendicular basis is drawn as sent."""
     right, up, depth = [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]
     resolved = _resolve_orientation_basis({"right": right, "up": up, "forward": depth})
 
@@ -500,11 +549,17 @@ def test_the_axis_pickers_are_gone():
 
 
 def test_the_number_keys_no_longer_name_views():
-    """7 through = were one key per named view, with no key left for roll."""
+    """7 through = were one key per named view, with no key left for roll. 0 is
+    back, as Reset (it was Z until XYZ mode needed Z), and nothing else: it must
+    not select a view."""
     js = _js()
-    for shortcut in ("'7'", "'8'", "'9'", "'0'", "'-'", "'='"):
+    for shortcut in ("'7'", "'8'", "'9'", "'-'", "'='"):
         assert f"case {shortcut}:" not in js, f"{shortcut} still selects a view"
     assert "Digit7" not in js and "Numpad7" not in js, "a removed shortcut alias is still there"
+    zero = re.search(r"case '0':\n(.*?)\n\s*break;", js, re.S)
+    assert zero, "0 should be the reset key"
+    assert "resetOrientationZoomAndDepth()" in zero.group(1)
+    assert "updateView(" not in zero.group(1) and "setOrientationFromView(" not in zero.group(1)
 
 def test_the_page_offers_all_six_turns():
     html = _html()
