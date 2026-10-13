@@ -2732,7 +2732,7 @@ const CHECKS = {
         if (document.querySelector('dialog[open]')) return;
         if (e.metaKey || e.ctrlKey || e.altKey) return;
         const key = String(e.key || '').toLowerCase();
-        if (key !== 'n' && key !== 'b' && key !== 'c' && key !== 'm') return;
+        if (key !== 'n' && key !== 'b' && key !== 'c' && key !== 'p') return;
         // Key help describes them even with single-key shortcuts off, as the
         // viewer does its own keys (#245 review), once per press.
         if (cadTutorial.keyHelpActive) {
@@ -2745,7 +2745,7 @@ const CHECKS = {
         if (e.repeat) return;
         if (key === 'n') continueAction();
         else if (key === 'b') back();
-        else if (key === 'm') showMe();
+        else if (key === 'p') showMe();
         else repeat();
     });
 })();

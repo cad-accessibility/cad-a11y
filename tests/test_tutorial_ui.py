@@ -177,7 +177,7 @@ class TestRegion:
         labels = {
             # "Next (N)": Continue was not obvious for N (#245 review).
             "tutorial-continue-btn": "Next (N)",
-            "tutorial-show-me-btn": "Show me (M)",
+            "tutorial-show-me-btn": "Show me (P)",
             "tutorial-back-btn": "Back (B)",
             "tutorial-repeat-btn": "Repeat (C)",
             "tutorial-hint-btn": "Hint 1 of 3",
@@ -783,15 +783,17 @@ class TestThirdReview:
         assert "return `${stepNumberText()}, ${where}`;" in heading
         assert "if (runner.phase === 'done')" in heading and "if (runner.phase === 'blocked')" in heading
 
-    def test_m_is_show_me(self):
+    def test_p_is_show_me(self):
+        """M marks the origin in the viewer (#266), so Show me is P, or one press
+        would do both."""
         js = _js()
         handler = js[js.index("document.addEventListener('keydown', function (e) {"):]
-        assert "if (key !== 'n' && key !== 'b' && key !== 'c' && key !== 'm') return;" in handler
-        assert "else if (key === 'm') showMe();" in handler
+        assert "if (key !== 'n' && key !== 'b' && key !== 'c' && key !== 'p') return;" in handler
+        assert "else if (key === 'p') showMe();" in handler
         html = _html()
         section = html[html.index('id="tutorial-shortcuts-section"'):]
         section = section[:section.index("</ul>")]
-        assert "<li><kbd>M</kbd> Show me" in section
+        assert "<li><kbd>P</kbd> Show me" in section
 
     def test_a_viewer_key_on_a_step_that_waits_says_how_to_move_on_once(self):
         js = _js()

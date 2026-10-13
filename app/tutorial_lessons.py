@@ -148,6 +148,8 @@ KEYS: dict[str, dict[str, Any]] = {
     "where_am_i": _k("Period", ".", "says where you are: the axis you are on, what percentage the slice plane is at, the "
                      "origin, the render mode, zoom and model"),
     "origin": _k("Comma", ",", "says where the model's origin is on the display"),
+    "origin_mark": _k("M", "m", "marks the origin on the display, or takes the mark away. Turning it on "
+                      "switches to Outline"),
     "reset": _k("0", "0", "resets the view to square, the slice plane to 50%, the zoom to 0 and "
                 "the model to the centre"),
     "fit": _k("F", "f", "fits the current slice to the display"),
@@ -197,8 +199,9 @@ KEYS: dict[str, dict[str, Any]] = {
     "tutorial_continue": _k("N", "n", "goes on to the next step or lesson. Tutorial only"),
     "tutorial_back": _k("B", "b", "goes back one step. Tutorial only"),
     "tutorial_repeat": _k("C", "c", "repeats the current step. Tutorial only"),
-    # "show Me". X, the other obvious letter, is the viewer's X axis.
-    "tutorial_show_me": _k("M", "m", "shows how to do the current step, where it can. Tutorial only"),
+    # Show me. M, its first letter, marks the origin (#266) and X is the X axis,
+    # so it is P, free since Print went.
+    "tutorial_show_me": _k("P", "p", "shows how to do the current step, where it can. Tutorial only"),
 }
 
 # The command names the runner's captureDeviceKey hook reports for a Monarch or
@@ -874,8 +877,7 @@ LESSONS: list[dict[str, Any]] = [
                 "coordinates are measured from. Whoever made the model chose where it is, and it can "
                 "lie outside the object. The mug's base is centered on the origin in X and Y. Press "
                 "{key:origin} to hear where the origin is on the display: how far across from the left "
-                "edge, and how far up from the bottom. In XYZ mode the display also marks the origin "
-                "with a small hollow square.",
+                "edge, and how far up from the bottom.",
                 braille="Press ,",
                 check=_key(","),
                 key_only=True,
@@ -883,8 +885,44 @@ LESSONS: list[dict[str, Any]] = [
                 on_fail="That was a different key. Press {key:origin}.",
                 hints=(
                     "The origin is the point every coordinate is measured from.",
-                    "Feel for the hollow square to check its position.",
+                    "It can lie outside the object, or off the display.",
                     "Press {key:origin}.",
+                ),
+            ),
+            _step(
+                "origin_mark",
+                "Press {key:origin_mark} to mark the origin on the display. Where it is on the display, "
+                "a plus of five pins marks it. When it is past an edge, a T on that edge points toward "
+                "it, and past a corner, a square of four pins fills that corner. Turning the mark on "
+                "also switches to Outline, where the plus is easiest to find, and says where the "
+                "origin is.",
+                sr="Press {key:origin_mark} to mark the origin on the display with a plus of five pins. "
+                   "It also switches to Outline.",
+                braille="Press M to mark",
+                check=_key("m"),
+                key_only=True,
+                done="The origin is marked. Feel for the plus where the viewer said it is.",
+                on_fail="That was a different key. Press {key:origin_mark}.",
+                hints=(
+                    "The mark is a plus, a T at an edge, or a square of four pins in a corner.",
+                    "It is drawn on a small blank patch, so the model does not touch it.",
+                    "Press {key:origin_mark}.",
+                ),
+            ),
+            _step(
+                "origin_mark_off",
+                "Press {key:origin_mark} again to take the mark away. The render mode goes back to "
+                "the one you had.",
+                sr="Press {key:origin_mark} again to take the mark away.",
+                braille="Press M again",
+                check=_key("m"),
+                key_only=True,
+                done="The mark is off. Press {key:origin_mark} whenever you want to find the origin again.",
+                on_fail="That was a different key. Press {key:origin_mark}.",
+                hints=(
+                    "The mark stays on until you take it away.",
+                    "The same key turns the mark on and off.",
+                    "Press {key:origin_mark}.",
                 ),
             ),
             _step(
