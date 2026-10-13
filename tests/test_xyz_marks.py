@@ -242,6 +242,20 @@ def test_the_view_label_wins_over_the_model_and_the_origin_marker(plate):
     assert np.array_equal(_footprint(with_label), _footprint(both))
 
 
+@pytest.mark.parametrize("letters", [False, True])
+def test_the_view_label_has_a_blank_pin_all_round_it_over_a_filled_model(plate, letters):
+    """Zoomed in until the plate fills the corner, nothing of the label may
+    touch the model, or the letter's left dots read as part of the fill."""
+    raised = _raised(plate, zoom=3, show_view_info_box=True, show_axis_letters=letters)
+    width, height = (6, 5) if letters else (LABEL_W, LABEL_H)
+    ring = np.zeros_like(raised)
+    ring[LABEL_Y - 1:LABEL_Y + height + 1, LABEL_X - 1:LABEL_X + width + 1] = True
+    ring[LABEL_Y:LABEL_Y + height, LABEL_X:LABEL_X + width] = False
+    assert raised[LABEL_Y + 2, LABEL_X - 2], "the model does not reach the label, so this proves nothing"
+    assert not raised[ring].any()
+    assert raised[LABEL_Y:LABEL_Y + height, LABEL_X:LABEL_X + width].any()
+
+
 def test_the_view_label_is_drawn_whatever_the_origin_marker_setting(plate):
     assert _footprint(_raised(plate, show_view_info_box=True)).any()
     assert not np.array_equal(_raised(plate), _raised(plate, show_view_info_box=True))

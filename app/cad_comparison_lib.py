@@ -1160,10 +1160,14 @@ class CADComparisonRenderer:
         display's horizontal axis increases toward and holds one, two or three pins
         for X, Y or Z; the row goes on the side the vertical axis increases toward
         and says the same of that axis. Both start next to the corner they share,
-        which stays blank. 
+        which stays blank.
+
+        A one-pin blank border goes all round the footprint, so nothing of the
+        label touches the model: drawn straight onto a filled model, the letter's
+        left dots and the extra row ran into the fill.
 
         It sits at a fixed offset from the top left corner, which leaves room for
-        the origin direction marker when the origin lands in that corner. """
+        the origin direction marker when the origin lands in that corner."""
         w, h = int(drawable_size[0]), int(drawable_size[1])
         offset = _VIEW_LABEL_OFFSET
         label_w, label_h = (7, 6) if show_axes else (6, 5)
@@ -1181,7 +1185,7 @@ class CADComparisonRenderer:
         column_right = across_sign > 0 or not show_axes
         row_above = vertical_sign > 0 or not show_axes
         x0 = y0 = offset
-        self._clear_box(img_array, x0, y0, label_w, label_h)
+        self._clear_box(img_array, x0 - 1, y0 - 1, label_w + 2, label_h + 2)
 
         # The 6x5 box sits inside the footprint, away from the extra column and
         # row; its blank pin on the column's side stays between the two.
