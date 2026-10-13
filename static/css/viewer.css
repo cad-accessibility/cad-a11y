@@ -57,6 +57,28 @@ h1 {
     color: white;
 }
 
+/* Shown only in a browser that cannot connect a display (#232). The demo
+   banner's warning colours: #6e1414 on #fdecec. */
+.browser-warning {
+    margin: 0 0 8px;
+    padding: 10px 14px;
+    border: 3px solid #8a1c1c;
+    border-radius: 8px;
+    background: #fdecec;
+    color: #6e1414;
+    font-weight: 600;
+}
+
+.browser-warning[hidden] {
+    display: none;
+}
+
+@media (forced-colors: active) {
+    .browser-warning {
+        border-color: CanvasText;
+    }
+}
+
 h2 {
     margin-top: 0;
     color: #34495e;
@@ -189,6 +211,24 @@ button:active {
 
 #render-mode-toggle[aria-pressed="true"]:hover {
     background: #196f3d;
+}
+
+/* XYZ mode's view buttons: the view showing is marked current (#235 review), by
+   a ring as well as the colour, so it does not rest on colour alone. */
+#xyz-controls button[aria-current="true"] {
+    background: #1e8449;
+    box-shadow: inset 0 0 0 3px #ffffff;
+}
+
+#xyz-controls button[aria-current="true"]:hover {
+    background: #196f3d;
+}
+
+@media (forced-colors: active) {
+    #xyz-controls button[aria-current="true"] {
+        outline: 3px solid CanvasText;
+        outline-offset: 2px;
+    }
 }
 
 /* Button group layout */
@@ -557,6 +597,13 @@ button:focus-visible {
     margin-bottom: 4px;
     font-size: 0.9em;
     color: #2c3e50;
+}
+
+/* [hidden] is honoured explicitly: the display:grid above otherwise overrides
+   the user-agent rule, and "Left view: -- Right view: --" showed above the
+   preview in every layout, not just side by side. */
+.side-by-side-axis-labels[hidden] {
+    display: none;
 }
 
 .side-by-side-axis-label {
@@ -1046,7 +1093,7 @@ body.simple-ui #tactile-preview-section { display: block; }
 }
 
 /* ---------------------------------------------------------------------------
-   Study mode (/study).
+   Study mode (/studies/<slug>).
 
    The participant works in the ordinary viewer, so almost nothing is hidden:
    the interface they were onboarded on has to be the interface they do the
@@ -1093,6 +1140,164 @@ body.study-ui section[aria-labelledby="model-list-heading"] { display: none; }
    the region would lose its boundary entirely. */
 @media (forced-colors: active) {
     .study-region { border: 2px solid CanvasText; }
+}
+
+/* ---------------------------------------------------------------------------
+   Tutorial (static/js/tutorial.js).
+
+   The region carries .study-region as well, so it has the study region's box,
+   dark-mode colours and forced-colours border, and the two read as one kind of
+   thing. What follows is only what the tutorial adds: a button row that wraps,
+   the lesson list, and the note on locked controls.
+
+   Nothing here sets display on a class the page ships hidden, so [hidden]
+   keeps working (tests/test_main_menu_and_layout.py checks for that).
+   --------------------------------------------------------------------------- */
+
+/* Not offered on the study page or the simplified workshop viewer: the button,
+   its section in the shortcuts dialog and the region itself are all gone, not
+   merely hidden from sight, so none of them sits in the tab order. */
+body.study-ui #nav-tutorial-btn,
+body.study-ui #tutorial-shortcuts-section,
+body.study-ui #tutorial-region,
+body.simple-ui #nav-tutorial-btn,
+body.simple-ui #tutorial-shortcuts-section,
+body.simple-ui #tutorial-region {
+    display: none;
+}
+
+/* Resume has no meaning on /demo, where nothing survives the tab. */
+body.demo-ui .tutorial-resume {
+    display: none;
+}
+
+.tutorial-region .tutorial-progress {
+    font-weight: 600;
+    margin: 4px 0;
+}
+
+.tutorial-region .tutorial-step-text {
+    margin: 8px 0;
+    font-size: 1.05em;
+}
+
+.tutorial-region .tutorial-note {
+    margin: 8px 0;
+    font-weight: 600;
+}
+
+.tutorial-region .tutorial-last {
+    margin: 8px 0;
+    color: #3d4a52;
+}
+
+.tutorial-region .tutorial-answers-label {
+    margin: 12px 0 0;
+    font-weight: 600;
+}
+
+.tutorial-region .tutorial-hints,
+.tutorial-region .tutorial-step-links {
+    margin: 8px 0;
+    padding-left: 1.5em;
+}
+
+/* Nine or more buttons in one row: they wrap rather than run off the side,
+   and a narrow window (or 400% zoom) gets them stacked. */
+.tutorial-region .tutorial-controls {
+    margin-top: 12px;
+}
+
+.tutorial-region button {
+    min-width: 0;
+}
+
+/* The heading takes focus when the tutorial opens, and on Lessons, Resume and
+   Start over. A sighted helper watching needs to see where it went. */
+.tutorial-region h2:focus-visible,
+.tutorial-region h2:focus {
+    outline: 3px solid #f39c12;
+    outline-offset: 2px;
+}
+
+/* A toggle's state has to show without colour alone: an inset ring appears and
+   the text is underlined while Key help is on. */
+.tutorial-region button[aria-pressed="true"],
+#tutorial-shortcuts-section button[aria-pressed="true"] {
+    background: #0f3d5c;
+    box-shadow: inset 0 0 0 3px #f39c12;
+    text-decoration: underline;
+}
+
+.tutorial-region h3 {
+    margin: 16px 0 6px;
+    font-size: 1.05em;
+    color: #2c3e50;
+}
+
+.tutorial-lesson-list {
+    list-style: none;
+    margin: 0 0 8px;
+    padding: 0;
+}
+
+.tutorial-lesson-list li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
+    padding: 4px 0;
+    border-bottom: 1px solid #d5e3ec;
+}
+
+.tutorial-lesson-list .tutorial-lesson-name {
+    font-weight: 600;
+    min-width: 14em;
+}
+
+.tutorial-lesson-list .tutorial-lesson-status {
+    flex: 1 1 12em;
+}
+
+/* Beside a control the tutorial has locked for the lesson: plain words for
+   why it does nothing, rather than a control that is silently dead. */
+.tutorial-lock-note {
+    font-style: normal;
+    font-weight: 600;
+    color: #7a4100;
+}
+
+@media (prefers-color-scheme: dark) {
+    .tutorial-region,
+    .tutorial-region h2,
+    .tutorial-region h3 {
+        color: #e8f1f7;
+    }
+    .tutorial-region .tutorial-last {
+        color: #c9d8e2;
+    }
+    .tutorial-region a {
+        color: #9fd3f5;
+    }
+    .tutorial-lesson-list li {
+        border-bottom-color: #2d4b5d;
+    }
+}
+
+@media (forced-colors: active) {
+    .tutorial-region button[aria-pressed="true"],
+    #tutorial-shortcuts-section button[aria-pressed="true"] {
+        border: 3px solid Highlight;
+        forced-color-adjust: none;
+        background: Highlight;
+        color: HighlightText;
+    }
+    .tutorial-region h2:focus {
+        outline: 3px solid Highlight;
+    }
+    .tutorial-lesson-list li {
+        border-bottom: 1px solid CanvasText;
+    }
 }
 
 /* ---------------------------------------------------------------------------

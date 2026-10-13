@@ -8,6 +8,8 @@ A tool for making 3D CAD models accessible to blind and low-vision (BLV) users. 
 - [ACCESSIBILITY.md](ACCESSIBILITY.md) — project accessibility goals, scope, and how to report accessibility issues
 - [CHANGELOG.md](CHANGELOG.md) — version history
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — deployment architecture and Docker details
+- [docs/STUDIES.md](docs/STUDIES.md): defining, running, exporting and retiring a study
+- [docs/STUDY_DATA_EXPORT.md](docs/STUDY_DATA_EXPORT.md): what a study's exported data means
 - [docs/MAINTAINER_GUIDE.md](docs/MAINTAINER_GUIDE.md) — release process, branch strategy, triage
 
 ## Prerequisites
@@ -22,7 +24,7 @@ Run the default Docker image configuration:
 docker compose up --build
 ```
 
-Then open `http://localhost:8635/viewer` in a browser.
+Then open `http://localhost:8635/` in a browser. The viewer is the site's address; `/viewer` still works.
 
 Model files placed in `data/models/` are available immediately without rebuilding the image.
 
@@ -40,6 +42,8 @@ cad-a11y/
 ├── app/
 │   ├── server.py                 # Flask server (entry point inside the container)
 │   ├── recording.py              # The one place interaction data leaves the process
+│   ├── studies/                  # Studies at /studies/<slug>: engine, storage, export
+│   │   └── definitions/          # One file per study, with its status
 │   ├── braille_display.py        # Braille display I/O (Monarch, DotPad)
 │   └── cad_comparison_lib.py     # CAD rendering and comparison library
 ├── src/
@@ -68,6 +72,82 @@ cad-a11y/
 └── docker-compose.dev.yml        # Optional local-development bind mounts
 ```
 
+## Axis modes: Turn and XYZ
+
+Settings → Axis Mode chooses how the model is oriented. The two never share a
+key: a key from the other mode only says which mode it belongs to.
+
+- **XYZ** (the default): X, Y and Z slice along that axis, repeating toggles which direction
+  you are looking from. Every view is one of OpenSCAD's standard
+  views, named by the side you look from: Z is Top, from Z plus, and Z again
+  Bottom, from Z minus; Y is Front, from Y minus, and Y again Back; X is Right,
+  from X plus, and X again Left.
+  On the display, you can choose to have additional context -- a view
+  label showing all three axes, or axis markers at the positive end of each axis.
+- **Turn**: U/O roll, I/K pitch and J/L yaw the model a quarter turn at a time.
+  Left, right, up and down are as they are on the display, whichever way the
+  model faces. The comparison study ran in Turn mode; a study's own settings
+  choose the mode its models load in.
+
+In either mode, "." says where you are ("View from X plus, Y right, Z up.
+Depth: 50%. Origin: H: 42% V: 42%. Render: Outline. Zoom: 0.0. Model: mug."),
+"," says where the model's origin is on the display, across from the left edge
+and up from the bottom ("Horizontal: 42%, Vertical: 42%", or past 0 and 100 when
+it is off the display), and 0 resets the view (it was Z, which XYZ mode needs).
+Reset puts the slice plane at 50% on every axis in both modes, which is also
+where a model starts.
+
+M toggles the origin mark on the display. The toggle also switches
+to Outline, where a small mark is easiest to find, or back to the
+render mode that was showing (unless R has chosen another since). Turning the mark on
+also invokes ",". The origin is represented as a plus (+) of five
+pins. When it is off the display past one side, a T is shown on that 
+side: its bar runs along the edge, and its stem indicates the
+direction to the origin. If the origin is outside two sides
+at once, a square of four pins is drawn in that corner.
+
+Axis labels on the pins, the letters at the display edges and the view info box,
+are x, y and z in computer braille.
+
+## The tutorial
+
+The first time someone opens `/viewer` in a browser, a tutorial starts in a region at the top of
+the page, after the consent dialog. It teaches every feature on a practice mug in 16 lessons
+(setup, core, optional and wrap-up), using the real viewer controls. Exit tutorial is on every
+step and pauses it: the viewer is then yours, and the Tutorial button in the main menu (or the
+top of the keyboard shortcuts list) resumes at the same lesson and step, starts over, or opens
+any lesson from a list. Someone who used the viewer before the tutorial existed hears one line
+saying it is there, and it does not start by itself for them.
+
+Where it starts by itself is one table, `TUTORIAL_ROUTES` in `static/js/tutorial.js`:
+
+| Path | Starts by itself | Offered from the menu | Can resume |
+|---|---|---|---|
+| `/viewer` | yes | yes | yes |
+| `/demo` | no | yes | no (demo storage resets on every load) |
+| `/workshop`, `?ui=simple` | no | no | no |
+| `/study` | no | no | no (it has its own onboarding) |
+
+`?tutorial=start` starts it on any path that offers it (a facilitator at a demo station, for
+one), and `?tutorial=off` keeps it closed for one load. Progress is kept in this browser's
+`localStorage` (`cadA11yTutorial`), never on the server. With analytics allowed, only coarse
+progress is recorded (loaded, lesson finished or skipped, exited, completed); never keys.
+
+The pieces:
+
+- `static/js/tutorial.js` runs it: the lesson state machine, the checks, speech, locks and Key
+  help mode.
+- `app/tutorial_lessons.py` holds the lessons as data, and the key names they use, in one
+  table checked against the viewer by `tests/test_tutorial_lessons.py`.
+- `app/tutorial.py` serves the lessons, a display test pattern, where the handle is on the
+  display (`/tutorial/locate`), and the printable mug, slice plaques and larger mug pieces
+  (`/tutorial/prints.zip`).
+- `app/tutorial_prints/` holds the larger mug pieces. They go in the zip as they are, and
+  `FIXED_PRINTS` in `app/tutorial.py` says what each one is.
+- `builtin_models/tutorial_mug.stl` and `app/tutorial_mug.landmarks.json` are generated from
+  `builtin_models/mug.stl` by `python scripts/build_tutorial_mug.py`. Rerun it after changing
+  the band descriptions in that script; `tests/test_tutorial_mug.py` fails until you do.
+
 ## Hardware setup
 
 The viewer works without any hardware. Connect devices for full tactile and braille output.
@@ -85,6 +165,7 @@ The Monarch supports cursor controls and depth changes with the following inputs
 
 - dot 1: change depth shallower by 10%.
 - dot 4: change depth deeper by 10%.
+- dots 1-3-4-6, 1-3-4-5-6 and 1-3-5-6 (the letters x, y and z): slice along that axis in XYZ mode; repeating toggles direction, as on the keyboard.
 - spacebar: cycles through these cursor modes
     - `none`: hides the cursor and disables cursor movement.
     - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
@@ -106,7 +187,11 @@ NOTE: Cursor or guideline movements only work when the cursor or guidelines are 
 3. Pick the device in the browser's pairing prompt.
 
 Turning the cube changes the view in that browser window only. Needs a browser
-with Web Bluetooth, which today means a Chromium-based one.
+with Web Bluetooth, which today means a Chromium-based one. A face has to be
+clearly up, and stay up for a moment, before the view changes, so the cube held
+near a corner no longer flickers between two views. In XYZ mode the face
+pointing up is the axis coming out of the display, and turning to it keeps that
+axis's slice where it was.
 
 ### Adafruit Slider Trinkey
 
@@ -131,6 +216,7 @@ The DotPad supports cursor controls and depth changes with the following inputs:
 
 - dot 1: change depth shallower by 10%.
 - dot 4: change depth deeper by 10%.
+- letters `x`, `y` and `z` (dot chords 1 3 4 6, 1 3 4 5 6 and 1 3 5 6): slice along that axis in XYZ mode; repeating toggles direction. The chord is read as a whole letter, the way `v` is.
 - letter `v` or dot chord 1 2 3 6: cycles through these cursor modes
     - `none`: hides the cursor and disables cursor movement.
     - `crosshair`: shows a small 5-by-5 pixel crosshair at the cursor position.
@@ -238,11 +324,10 @@ missing, the viewer does not start rather than starting without it.
 
 ### What people can do in a demo session
 
-* **Switch between models freely.** The ordinary model chooser, with the models
-  the server has. Nothing is preselected and nothing is hidden: the demo is the
-  viewer with recording off, not a different set of objects. The mug is the
-  quickest thing to reach for when showing somebody what slicing does to a shape,
-  and the LEGO brick, pencil holder and cane tip are all there.
+* **Switch between the study's models.** The model chooser offers the study's
+  six objects: the two cane tips, the two pencil holders and the two LEGO
+  bricks. The study's onboarding mug is left out on purpose (#198). The
+  tutorial, opened from the Tutorial button, brings its own practice mug.
 * **Bring their own model.** The **Upload model...** control takes an STL or STEP
   file. It is reachable by keyboard and labelled for a screen reader. No record
   of the upload is written: on the demo path the row that would normally be
@@ -252,8 +337,8 @@ missing, the viewer does not start rather than starting without it.
   itself. Press `H` for the full list.
 
 There is no consent flow, no onboarding script, no task sequence, no rating
-scales and no control panel. Those belong to `/study`, which a demo station does
-not serve.
+scales and no control panel. Those belong to `/studies`, which a demo station
+does not serve.
 
 ### Afterwards
 
@@ -263,120 +348,32 @@ lines appended, no participant numbers issued, and no cookies set.
 
 ## Running a study session
 
-`/study` runs the study protocol end to end. It is the ordinary viewer, with the
-model chooser removed and a study region added at the top carrying the current
-step and an "I am ready to move on" button. Models load themselves at each step,
-so the experimenter never has to find one in a list mid-session.
-
-There are two pages, and they stay in sync over Server-Sent Events, so the
-experimenter can drive the session from their own machine while the participant
-works on theirs.
+A study runs on the ordinary viewer at `/studies/<slug>`, with the model chooser
+removed and a study region at the top carrying the current step and an "I am
+ready to move on" button. Models load themselves at each step. The experimenter
+drives the session from `/studies/<slug>/control`, usually on a second machine,
+and the two stay in step over Server-Sent Events.
 
 | Page | Who uses it | What they need |
 | --- | --- | --- |
-| `/study/control` | The experimenter | Nothing — opening it starts a session |
-| `/study` | The participant | The four-character code from the panel |
+| `/studies/<slug>/control` | The experimenter | The study's panel token, once a day |
+| `/studies/<slug>` | The participant | The four-character code from the panel |
 
-### Running one
-
-1. Open **`/study/control`**. That starts a session — there is nothing to fill in
-   first, because the participant id, the model pairs and the session number are
-   all decided by the protocol.
-2. The panel shows two things to read out: the address `/study`, and a
-   four-character code.
-3. The participant opens `/study` in Chrome — Chrome specifically, because the
-   braille display connects over Bluetooth — and enters the code.
+1. Open the panel and sign in with the study's token.
+2. Choose the task set. The panel shows the participant's code and a join code.
+3. The participant opens the study's address in Chrome, which is what connects
+   their braille display, and enters the join code.
 4. Work through the steps. Each shows what to do, what to say and what to ask,
-   which printed model to hand over, and, for the exploration steps, the answer
-   key for that pair. "Next step" advances both views and loads the next model.
-5. End the session when you reach the last step. That closes the record.
+   what to hand over, and the answer key where the task has one. N moves on and
+   loads the next model; N on the last step ends the session.
 
-The participant sees a practice round with the Lego brick, then two of the three
-model pairs, assigned by a Latin square so they stay balanced across
-participants. The panel shows the assignment.
-
-### If you only have one computer
-
-On the panel, **Run the study on this device**. That window becomes the
-participant's view — exactly `/study`, nothing added — and the session moves to
-the next step when they press "I am ready to move on" rather than waiting for a
-Next button you can no longer reach.
-
-Have the protocol to hand: the script is not shown there. Putting it on that page
-would put it where the participant's screen reader can read it, along with the
-answer key.
-
-Everything else is the same. The same events are recorded in the same order; the
-only difference in the log is that the step advances are attributed to the
-participant, because they are the one who pressed the button.
-
-### One panel, one session
-
-A tab of `/study/control` owns exactly one session. Reloading stays on the same
-session; opening the panel in a **new tab or window starts another**. That is how
-two people run participants at the same time — two panels, two codes — and it is
-also why you should not open the panel "just to look" while a session is running.
-
-The code is what ties a participant's browser to a session, and it is asked for
-every time, whether one session is running or five. One instruction to give, and
-it never changes.
-
-### Access
-
-There is none by default: whoever has the address can open the panel. That is
-deliberate — it keeps the thing you actually do down to opening the app and
-starting.
-
-On a public deployment it also means a stranger with the URL can advance a live
-session, see the answer key and download a participant's interaction log. Setting
-`STUDY_CONTROL_TOKEN` in `.env` turns a gate back on, and the panel then needs
-`/study/control?token=…`. It is off unless that variable is set.
-
-### What each step shows you
-
-Steps are written as labelled blocks rather than one run of prose, because most
-mix things to do with things to say:
-
-| Label | Means |
-| --- | --- |
-| **Say** | Read this to the participant. Shown in quotes. |
-| **Do** | An action you perform. Not spoken. |
-| **Ask** | Questions to ask verbally, sometimes with the response options. |
-| **Note** | Context or a reminder. Never spoken. |
-
-### Questionnaires
-
-The background questions, the rating scale after each object, and the closing
-discussion questions are all in the panel, so there is no second document to keep
-open. They are there **to read from**: ask them out loud and write the answers on
-your own sheet. The panel gives you nowhere to type them and stores none of them.
-
-Consent is not part of the session. It is given before the participant is sent
-the link, so step 1 is settling them in and step 2 is setting up the machine and
-the display.
-
-### Where the data goes
-
-Two records, written independently, both keyed to the participant ID:
-
-- `data/db/study.db` — a SQLite database, separate from the usage database.
-  Interactions and their timings: keypresses, renders, step advances, model
-  loads, readiness signals, announcements.
-- `data/logs/study/<participant>_S<n>_<date>.jsonl` — append-only, one event per
-  line, each line carrying the full viewer state at that moment. This is the
-  record a session is reconstructed from, and it is written even when the
-  database write is the thing that failed.
-
-Nothing else is stored. What the participant said and what the experimenter
-observed stay on the experimenter's own sheet.
-
-Ending a session checkpoints the database, so `study.db` is complete on its own.
-Copy it mid-session and you get only what SQLite has folded in so far — take the
-`-wal` file too, or use the per-session JSON download in the panel.
-
-The control panel reports whether logging is working while the session is
-running, so a storage problem is visible at the time rather than discovered
-during analysis.
+Each study is a definition in `app/studies/definitions/` with a status that
+decides what the servers serve. Nothing answers at `/study` any more: the
+comparison study that ran there is closed, which leaves only its data downloads,
+behind its own token. [docs/STUDIES.md](docs/STUDIES.md) covers
+writing a new study from the example, tokens, running one on a single computer,
+where the data is kept, getting it out without shell access, and retiring a
+study.
 
 ## Where models are stored
 
@@ -388,6 +385,8 @@ Models live in two directories, and which one a file is in decides who can see i
 To add a built-in model, put the file in `builtin_models/` and rebuild. Do not put it in `data/models` directly: that directory is runtime state and is not tracked.
 
 The two directories must never be the same. Classification is by location, so if uploads landed in the built-in directory every uploaded file would be served to every visitor. That is exactly what happened in #102 once the move to Docker named volumes made `data/models` writable. The server now refuses to start if `UPLOAD_MODEL_DIR` resolves to the built-in directory.
+
+`CAD_A11Y_MODEL_DIR` moves the built-in directory itself, the way `UPLOAD_MODEL_DIR` moves uploads, and the same check applies wherever it points. The test suite sets both to a temporary directory (`tests/conftest.py`), so running it leaves nothing in the repo's `data/`.
 
 ### Uploads on managed servers
 
@@ -406,3 +405,7 @@ docker compose exec app python scripts/cleanup_ingest_models.py
 ```
 
 That reports only. Re-run with `--apply` to delete. It never touches anything shipped in `builtin_models/`, and it warns about models that share a stem, since a stem names one model to the client.
+
+## License
+
+BSD 3-Clause, in the University of Washington's wording: see [LICENSE](LICENSE). It covers this project's own code. The libraries it depends on keep their own licenses.
