@@ -125,7 +125,7 @@ class TestRegion:
 
     def test_region_is_first_in_main_right_after_the_study_region(self):
         """The skip link lands on main, and a screen reader meets the lesson
-        before any control. Right after #study-region, which is hidden off /study."""
+        before any control. Right after #study-region, which is hidden off a study's pages."""
         html = _html()
         study_end = html.index("</section>", html.index('id="study-region"'))
         region = html.index('id="tutorial-region"')
@@ -304,7 +304,6 @@ class TestEntryPoints:
             "/demo": (False, True, False),
             "/workshop": (False, False, False),
             "?ui=simple": (False, False, False),
-            "/study": (False, False, False),
         }
 
     def test_start_and_off_parameters(self):
@@ -385,12 +384,12 @@ class TestRunner:
         ):
             assert guard in handler
         assert "'escape'" not in handler.lower()
-        # Inert on /study before anything is wired.
-        assert js.index("if (path === '/study'") < js.index("study.onInteraction.push(")
+        # Inert on a study's pages before anything is wired.
+        assert js.index("study.isStudyMode()) return;") < js.index("study.onInteraction.push(")
 
     def test_hooks_object_is_created_before_anything_can_return(self):
         js = _js()
-        assert js.index("window.cadTutorial = cadTutorial;") < js.index("if (path === '/study'")
+        assert js.index("window.cadTutorial = cadTutorial;") < js.index("study.isStudyMode()) return;")
         for field in ("ownsFirstRender", "holdDisplay", "keyHelpActive", "captureDeviceKey", "describeKey"):
             assert f"{field}:" in js[:js.index("window.cadTutorial = cadTutorial;")]
 
@@ -574,7 +573,7 @@ class TestContinuousIntegration:
     def test_axe_checks_the_tutorial_lesson_and_the_lesson_list(self):
         ci = CI_YML.read_text(encoding="utf-8")
         pages = ci[ci.index("const pages = ["):]
-        assert pages.index("{ name: '/viewer', url: `${base}/viewer` },") < pages.index("/viewer (tutorial lesson)")
+        assert pages.index("{ name: '/viewer', url: () => `${base}/viewer` },") < pages.index("/viewer (tutorial lesson)")
         assert pages.index("/viewer (tutorial lesson)") < pages.index("/viewer (tutorial lesson list)")
         assert "await page.click('#consent-decline');" in ci
         assert "await page.click('#tutorial-lessons-btn');" in ci

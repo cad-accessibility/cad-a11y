@@ -30,8 +30,8 @@ from typing import Any
 
 import pytest
 
-from app import study_protocol
 from app import tutorial_lessons as tl
+from app.studies.definitions import comparison_2026
 
 ROOT = Path(__file__).resolve().parents[1]
 VIEWER_JS = ROOT / "static" / "js" / "viewer.js"
@@ -374,7 +374,7 @@ CONTROL_TAGS = {"button", "input", "select", "textarea"}
 def _controls_to_teach() -> dict[str, set[str]]:
     """The page's controls a person uses, by kind: main-menu buttons, dialogs,
     Settings controls, and the controls on the page itself (the device sections
-    among them). The tutorial's own region and /study's are not taught; they are
+    among them). The tutorial's own region and the study's are not taught; they are
     the tutorial and the study."""
     kinds: dict[str, set[str]] = {"menu": set(), "dialog": set(), "settings": set(), "page": set()}
     for element in _page_elements():
@@ -760,11 +760,12 @@ def test_turn_mode_steps_run_only_for_people_who_keep_turn_mode():
 
 
 def test_default_pose_is_the_study_defaults_on_the_tutorial_mug():
-    """The pose most lessons start from is the one /study's onboarding uses, so
-    "the handle is on the left" means the same in both."""
+    """The pose most lessons start from is the one the comparison study's
+    onboarding used (#207 moved it into that study's definition), so "the handle
+    is on the left" means the same in both."""
     for field in ("view", "depth", "render_mode", "representation_mode", "compose_scrollbar",
                   "zoom", "reset_pan"):
-        assert tl.DEFAULT_POSE[field] == study_protocol.VIEWER_DEFAULTS[field], field
+        assert tl.DEFAULT_POSE[field] == comparison_2026.VIEWER_DEFAULTS[field], field
     # Lesson 8's differs only in the mode and where the slice plane starts,
     # which test_lesson_8_starts_away_from_the_handle_and_its_hints_land_in_it
     # holds against the mug.

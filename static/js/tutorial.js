@@ -22,7 +22,8 @@
  * demand. Nothing here speaks or advances on a timer (WCAG 2.2.1): hints come
  * only when asked for, and a step waits as long as it takes.
  *
- * Inert on /study, which has its own onboarding and logs.
+ * Inert on a study's pages (/studies/<slug>), which have their own onboarding
+ * and logs.
  */
 
 // ---------------------------------------------------------------------------
@@ -37,7 +38,8 @@
 // (#244), so both open it by itself; an unlisted path would not. /demo is
 // facilitated and its storage lasts one tab (demo-bootstrap.js), so
 // "first visit" would be every visit. /workshop and ?ui=simple hide most of
-// what the lessons teach. /study has its own onboarding and its own log.
+// what the lessons teach. A study's pages are not listed: the guard below keeps
+// the tutorial off them, as they have their own onboarding and their own log.
 // ?tutorial=start opens it on any offered route, for a facilitator, and
 // ?tutorial=off keeps it closed for one load.
 // ---------------------------------------------------------------------------
@@ -47,7 +49,6 @@ const TUTORIAL_ROUTES = [
     { route: '/demo', autostart: false, offered: true, resume: false },
     { route: '/workshop', autostart: false, offered: false, resume: false },
     { route: '?ui=simple', autostart: false, offered: false, resume: false },
-    { route: '/study', autostart: false, offered: false, resume: false },
 ];
 
 // ---------------------------------------------------------------------------
@@ -246,7 +247,7 @@ const CHECKS = {
     // -----------------------------------------------------------------------
     // The hooks the viewer and the device scripts call. Created first and
     // always, so their calls are safe whatever happens below, including on
-    // /study where the rest of this file does nothing.
+    // a study's pages, where the rest of this file does nothing.
     // -----------------------------------------------------------------------
     const cadTutorial = {
         // True while the tutorial is about to put its mug on the display, so the
@@ -275,7 +276,7 @@ const CHECKS = {
         || { route: path, autostart: false, offered: true, resume: true };
 
     const study = window.cadStudy;
-    if (path === '/study' || !study || typeof study.getState !== 'function') return;
+    if (!study || typeof study.getState !== 'function' || study.isStudyMode()) return;
 
     const $ = (id) => document.getElementById(id);
     const region = $('tutorial-region');

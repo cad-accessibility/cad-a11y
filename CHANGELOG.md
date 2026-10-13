@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-10-05
+
+#### Removed
+*   `/study` and everything under it are gone (#207). The comparison study's control panel was open on both servers, so anyone who found the address could advance a live session, read the answer key and download a participant's interaction log, and its spreadsheet needed no token at all. The study is closed: its protocol is kept as the record of what its sessions did, the last code that served it is tagged `study-instrument-2026`, and the only thing served for it is its data, behind a token of its own, at `/studies/comparison-2026/control`, until that data is stored and the study is retired. `docs/STUDIES.md` says how.
+*   `STUDY_CONTROL_TOKEN` no longer does anything.
+
+#### Added
+*   Studies are defined in the repository and run at `/studies/<name>`, with the control panel at `/studies/<name>/control`. Each has a status (draft, open, closed or retired), and a server serves exactly what that status allows. Several can be open at once, each with its own database, logs, participant numbers and join codes. `docs/STUDIES.md` is the guide, and `app/studies/definitions/example.py` is a short study to copy.
+*   Each study's control panel needs that study's token. It is typed once into a sign-in form and lasts the working day in that browser, and it is never part of an address, so it ends up in no browser history and no server log. A study without a token is not served.
+*   A closed study keeps its control panel's downloads after collection ends, so its data can come off a server without shell access. Its database is only read, never created or changed: a server without it says "This server has no data for this study." rather than handing over an empty one.
+*   A study's data downloads as one zip: a consistent copy of the database, every session log, the long spreadsheet of completed sessions with a codebook for every column, a second one in the same columns for abandoned sessions and for those a closed study left running, a table of sessions, a report of known data problems, and a checksum for every file. `python -m app.studies export` makes the same zip from a server or a restored backup, and `scripts/download_study_data.sh` downloads it.
+*   The data checks look for the problems the review of the study code found (#183), sessions ended twice and participant numbers issued with no session, and also for sessions still running, sessions with no recorded end, rows recorded after the end, logs that disagree with the database, steps whose object never reached the display, and sessions an export could not read. They also name the sessions recorded before the orientation fix (#185), whose depths in the front, back and bottom views read the other way round, and the codebook and README in the zip say so when there are any.
+*   Every session records the version of the app and a fingerprint of the protocol it ran, prompts included, so sessions from either side of a change can be told apart from the data.
+*   Latin square and balanced Latin square helpers for a study's counterbalancing.
+*   The example study, whose panel token is published, runs only where `CAD_A11Y_ALLOW_EXAMPLE_STUDY=1` is set beside `CAD_A11Y_OPEN_STUDIES=example`. `docker-compose.yml` never passes it; `docker-compose.example-study.yml` does, for CI and development.
+
+#### Changed
+*   Ending a session before its last step records it as not finished (abandoned): its task set stays available, and its rows are kept apart from the completed sessions'. End used to record every session as completed, even one stopped at step 3 of 22, which counted its task set as run. The panel says which it will be before it asks.
+
+#### Fixed
+*   Closing idle sessions could end a session an experimenter had just ended, adding a second end to its record and changing it from completed to abandoned. A session now ends once, and ending it again says so (#183).
+*   A refused request to start a session could still issue a participant number, leaving a number with no session and moving everyone after it one place along the rotation. It now issues nothing (#183).
+*   A render could be recorded against any running session by naming its number, which counts up from 1. Renders are now matched to a session by its join code.
+*   A double click on Next, a held N key, or a second panel on the same session could each skip a step the participant never reached. A step press now counts once, and one made against a step the session has already left is refused. The same holds for the participant's own keys in a one-device session.
+*   N and B opened the current step's script before the step had changed, so a screen reader could read the old step out as the new one. The script opens once the move has happened.
+*   B in a one-device session said nothing when there was nowhere to go back to. It says so now.
+*   A step whose model is missing left the previous object on the participant's display, under text telling them to explore it. The page now says the object is not available and asks them to tell the experimenter.
+*   A participant code typed for a new participant could match one the server would give out later, and every enrolment after that failed. The automatic code steps aside now (P02b), and a refused start says why in plain words.
+*   Elapsed times in the study data were a millisecond short about once in every 150 values, and a row written while the step changed could carry an earlier time than the row before it.
+
+*   On a Mac, the server aborted as it stopped ("Python quit unexpectedly"), and so did anything else that loaded the renderer, because of the order two mesh libraries load in. It exits cleanly now, and the test of what a demo station serves passes there.
+
+#### Security
+*   Spreadsheet downloads put a quote in front of any cell a spreadsheet would run as a formula.
+
+### 2026-10-01
+
+#### Fixed
+*   A model whose file extension is in capitals, such as `MUG.STL`, opens. It used to be accepted and saved, and then never found, so the viewer announced the upload and showed the default model instead without saying so. Several CAD tools export `.STL` in capitals by default.
+*   The viewer no longer shows a different model from the one you chose. A model that can't be shown, because it has gone or can't be opened, is refused: the viewer says it isn't available and stays on the model you were exploring. It used to show the default model instead, and announce the one you chose as loaded.
+*   The model list keeps up. When a model is uploaded or removed, in this window or another, every open viewer updates its list straight away instead of up to five seconds later. If the model on the display is removed, the viewer says so, and says which model it shows instead.
+
 ### 2026-09-29
 
 #### Added
@@ -22,6 +64,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 *   F said the output device's internal name ("View fitted to monarch_hid") and fitted the slice to the Monarch's size on every display. It now fits to the display the render is actually drawn for, and says "View fitted to the Monarch" or "the DotPad" when one is connected, otherwise "View fitted to the display".
 *   The README described a LEGO practice round the study no longer runs, a demo chooser that offered every model, and a study panel that started a session as soon as it opened. It now says what each one does.
 *   Focus went to the page title twice on every load, the second time a moment after the page was ready, which would pull it off anything focused in between, such as the tutorial's first lesson. The second move now happens only when the page comes back from the browser's cache, which is what it was for.
+
+### 2026-09-28
+
+#### Fixed
+*   Uploaded models are private to the browser that uploaded them. The server used to list every upload to anyone who asked, with its location on the server, and would render or export any of them by name. Only the viewer hid them, and it showed the whole list until it knew which models were built in. The server now lists the built-in models and your own uploads, and a request for somebody else's upload is refused, exactly as a name that does not exist is. Closing or reloading a tab, or deleting an upload, now also forgets who owned it, so the next upload of the same name belongs to whoever sent it; the record of ownership used to outlive the file.
+*   An email address no longer gives access to anything. Typing somebody else's address in the welcome dialog used to list their uploads and let you delete them, and opening the workshop page with that address handed over their session. The address is now kept only to send project updates, in a file of its own with nothing that ties it to a browser or to what anyone did in the viewer, and the welcome dialog says that rather than calling the usage analytics anonymous. Addresses given before this move to that file the first time the server starts, and the usage database is rebuilt so that no copy of them is left in it. Backups of the usage database taken before then still pair those addresses with sessions.
+*   The welcome dialog takes an email address in any script, such as josé@example.es, and refuses with a reason anything that is not one: more than 254 characters, markup, control characters, doubled dots. It used to accept any text without a space, of any length.
+*   A failed delete is said aloud as well as shown.
+*   On start, the server forgets ownership of uploads whose files are gone, and removes uploaded files that nobody owns. Those are uploads made without saving a cookie, which belong to their tab only until the server restarts; after that nobody could see or delete them.
+*   The site's address is the viewer. It used to show a raw list of the server's internal addresses, which a screen reader read out one line at a time, and which named parts of the app that are not meant to be public. `/viewer` still works, with or without a trailing slash. On a demo station the address opens the demo page, which records nothing.
+
+#### Added
+*   The viewer says, before you connect a display, to use a screen reader in focus mode (NVDA) or forms mode (JAWS). It is read with the Connect button until Connect has had focus once, and stays on the page after that. Where a braille display cannot be connected at all, it says why: an address that is not https or localhost, or a browser without Web HID or Web Bluetooth, which Chrome and Edge have.
+*   The integration API has an address, `/api/v1`, and a public description at `/api/v1/openapi.json`. There is nothing in it yet; it is where tools that send models in will connect. Every error under it is answered in the same JSON shape. A demo station does not offer it.
+
+#### Changed
+*   Giving the same email on another browser or device no longer brings your uploads with it. That link is what made the address a key, and it stays gone until there is a sign-in that proves an address is yours.
 
 ### 2026-09-22
 
