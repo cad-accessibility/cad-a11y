@@ -1,11 +1,52 @@
 version: 2
-updates:
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: weekly
 
+# Version updates are paused until the alpha ships (#240): every entry below has
+# `open-pull-requests-limit: 0`. Delete those lines to resume. Security updates
+# are not affected by that limit and keep arriving as they did.
+#
+# Once resumed, each ecosystem opens at most one bundled pull request a month for
+# minor and patch releases, and one per major release, ignoring anything released
+# less than a week earlier. Security updates are never delayed by that wait.
+
+updates:
+  # requirements-lock.txt (pins) and requirements.txt (minimums).
   - package-ecosystem: pip
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    # Change the pin in requirements-lock.txt, and leave a minimum in
+    # requirements.txt alone when it already allows the new release.
+    versioning-strategy: increase-if-necessary
+    cooldown:
+      default-days: 7
+    groups:
+      pip-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    open-pull-requests-limit: 0  # paused for the alpha (#240)
+
+  # environment.yml: numpy, matplotlib, pillow and what they bring with them.
+  - package-ecosystem: conda
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      conda-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # Python stays on 3.12 until the image moves to a newer one on purpose.
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    open-pull-requests-limit: 0  # paused for the alpha (#240)
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      github-actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 0  # paused for the alpha (#240)

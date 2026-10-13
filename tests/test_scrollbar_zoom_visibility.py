@@ -24,6 +24,7 @@ def _make_renderer(monkeypatch, width=30, height=20):
     renderer.screen_size = [width, height]
     renderer.shapes = [object(), object()]
     renderer.bbox = None
+    renderer.longest_3d_dim = 0.0
     renderer.view_limits = [
         [[0, 10], [0, 10]] for _ in range(6)
     ]
@@ -51,7 +52,8 @@ def _render_with_scrollbar(monkeypatch, zoom):
         "compose_scrollbar": True,
         "compose_slicegraph": False,
     }
-    return renderer.render(params)
+    # render() returns a RenderResult on this branch; the tests want the image.
+    return renderer.render(params).image
 
 
 def test_scrollbar_hidden_at_zero_zoom_even_when_requested(monkeypatch):

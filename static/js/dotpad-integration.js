@@ -9,9 +9,14 @@ let connectionType = null;     // 'ble' | 'usb'
 let rawTarget = null;          // BluetoothDevice | SerialPort
 
 const statusEl = document.getElementById('dotpad-status');
-const bleScanBtn = document.getElementById('dotpad-scan-ble-btn');
-const disconnectBtn = document.getElementById('dotpad-disconnect-btn');
 const autoSendCheckbox = document.getElementById('dotpad-auto-send');
+
+// There is no DotPad-specific connect/disconnect button in the page:
+// the generic "Connect"/"Disconnect" pair in the nav calls connectDotpad() /
+// disconnectDotpad() directly, exposed further down this file, when the Output
+// Device setting names DotPad. `connecting` stands in for the
+// disabled-while-connecting state a dedicated button used to carry.
+let connecting = false;
 
 // ── NABCC 8-dot Computer Braille lookup table ────────────────────────────
 // Index = ASCII code - 0x20 (covers 0x20 space through 0x7E tilde)
@@ -123,6 +128,11 @@ const DOTPAD_KEY_ACTIONS = {
     PanningLeft: [-1, 0],
     PanningRight: [1, 0],
 };
+// The panning keys while the cursor is off: back or forward a page of the text line.
+const DOTPAD_TEXT_SCROLL = {
+    PanningLeft: -1,
+    PanningRight: 1,
+};
 const DOTPAD_ONE_STEP = 1;
 const DOTPAD_HOLD_START_MS = 350;
 const DOTPAD_HOLD_REPEAT_MS = 100;
@@ -228,7 +238,12 @@ async function connectBleWithRetry(device) {
     return null;
 }
 
-bleScanBtn.addEventListener('click', async () => {
+// Called directly by the generic Connect/Disconnect pair in viewer.js (#145) —
+// see deviceConnectBtn / deviceDisconnectBtn — when the Output Device setting
+// names DotPad.
+async function connectDotpad() {
+    if (connecting || connectedDevice) return;
+    connecting = true;
     try {
         setStatus('Scanning for BLE DotPad...');
         const device = await scanner.startBleScan();
@@ -240,8 +255,8 @@ bleScanBtn.addEventListener('click', async () => {
             connectionType = 'ble';
             sdk.setCallBack(onMessage, onKey);
             setStatus(`Connected: ${device.name || 'BLE DotPad'}`);
-            disconnectBtn.disabled = false;
             if (typeof window.announce === 'function') window.announce('DotPad connected via Bluetooth.');
+            window.setDotpadConnected?.(true);
             setConnectedDotPadDisplay(dotDevice, 'ble');
             // Send current model state immediately so the display shows the model on connect.
             if (typeof window.sendStateToServer === 'function') window.sendStateToServer();
@@ -253,11 +268,12 @@ bleScanBtn.addEventListener('click', async () => {
         console.error('BLE scan/connect error:', err);
         setStatus('BLE error: ' + err.message);
         if (typeof window.announceAlert === 'function') window.announceAlert('DotPad Bluetooth error: ' + err.message);
+    } finally {
+        connecting = false;
     }
-});
+}
 
-// --- Disconnect ---
-disconnectBtn.addEventListener('click', () => {
+function disconnectDotpad() {
     if (connectedDevice) sdk.disconnect(connectedDevice);
     // Also tear down the raw GATT directly, in case a prior attempt left one open
     // that the SDK never took ownership of (#45).
@@ -267,12 +283,47 @@ disconnectBtn.addEventListener('click', () => {
     connectedDevice = null;
     connectionType = null;
     rawTarget = null;
-    disconnectBtn.disabled = true;
     window.setTactileDisplay?.('dotpad', null);
+    window.setDotpadConnected?.(false);
     setStatus('Disconnected.');
     if (typeof window.announce === 'function') window.announce('DotPad disconnected.');
     // No global device dimensions exposed in minimal setup
-});
+}
+
+window.connectDotpad = connectDotpad;
+window.disconnectDotpad = disconnectDotpad;
+
+// The tutorial's name for a key (static/js/tutorial.js), in the same order onKey
+// below reads them: a whole x, y or z chord before the single dots it contains.
+// The panning keys scroll the text line while the cursor is off and move the
+// cursor while it is on, so they have a name for each.
+const DOTPAD_TUTORIAL_LETTERS = { x: 'axis-x', y: 'axis-y', z: 'axis-z', v: 'cursor', f: 'fit' };
+const DOTPAD_TUTORIAL_DOTS = {
+    0x01: 'dot1',
+    0x08: 'dot4',
+    0x03: 'depth-shallower-1',
+    0x18: 'depth-deeper-1',
+    0x07: 'depth-near',
+    0x38: 'depth-far',
+};
+const DOTPAD_TUTORIAL_TEXT_KEYS = {
+    PanningLeft: 'text-back',
+    PanningRight: 'text-forward',
+};
+const DOTPAD_TUTORIAL_KEYS = {
+    KeyFunction1: 'move-up',
+    KeyFunction4: 'move-down',
+    PanningLeft: 'move-left',
+    PanningRight: 'move-right',
+};
+
+function dotpadTutorialName(currKeyCode, byte6, letter, cursorState) {
+    return DOTPAD_TUTORIAL_LETTERS[letter]
+        || DOTPAD_TUTORIAL_DOTS[byte6]
+        || (cursorState === 'none' ? DOTPAD_TUTORIAL_TEXT_KEYS[currKeyCode] : null)
+        || DOTPAD_TUTORIAL_KEYS[currKeyCode]
+        || 'other';
+}
 
 // --- SDK callbacks ---
 function onMessage(device, dataCode, msg) {
@@ -280,8 +331,8 @@ function onMessage(device, dataCode, msg) {
         connectedDevice = null;
         connectionType = null;
         rawTarget = null;
-        disconnectBtn.disabled = true;
         window.setTactileDisplay?.('dotpad', null);
+        window.setDotpadConnected?.(false);
         setStatus('DotPad disconnected unexpectedly.');
         if (typeof window.announceAlert === 'function') window.announceAlert('DotPad disconnected unexpectedly.');
     } else if (dataCode === DataCodes.Connected) {
@@ -297,73 +348,89 @@ function onKey(device, currKeyCode, keyMsg) {
     const byte6 = labelToByte6(label);
     const letter = byte6ToLetter(byte6);
     const cursorState = window.whichCursor ? window.whichCursor() : 'none';
-    if (
-        typeof window.getCurrentSliceDepth !== 'function' ||
-        typeof window.updateSliceDepth !== 'function' ||
-        typeof window.announceDepthValue !== 'function'
-    ) {
+    // First, before the key does anything: the tutorial may take it as an
+    // answer (dot 1 left, dot 4 right, during the test pattern) or, in Key help
+    // mode, describe it instead of acting on it.
+    if (window.cadTutorial?.captureDeviceKey?.({
+        device: 'dotpad',
+        name: dotpadTutorialName(currKeyCode, byte6, letter, cursorState),
+    })) return;
+    const n = 10; // TODO: make this global and dynamic
+    if (typeof window.stepSliceDepth !== 'function') {
         console.warn('DotPad depth controls are unavailable because viewer depth helpers are not exposed.');
         return;
     }
 
+    // X, Y and Z spelled as braille chords pick the axis in XYZ mode (#185):
+    // dots 1346, 13456 and 1356, the letters themselves, from the home view, and
+    // the chord for the axis already showing flips it to the other side, as the
+    // same letter pressed again does on the keyboard. Each chord contains shorter ones that mean
+    // something else (dot 1 alone is shallower), so this relies on the SDK
+    // reporting a chord once it is complete, as the "v" chord below already
+    // does. If a sub-chord is seen firing first, decode on key release instead
+    // (SDK 3.0.1+ reports key up with the raw key state).
+    if (letter === 'x' || letter === 'y' || letter === 'z') {
+        if (typeof window.axisCommandFromDevice === 'function') {
+            window.axisCommandFromDevice(letter, 'dotpad');
+        }
+        return;
+    }
     if (letter === 'v'){
         if (typeof window.cycleCursorState === 'function') {
             window.cycleCursorState();
             // 20 character announcement for screen reader users to know the cursor state has changed
-            console.log('Cursor state: ', window.whichCursor ? window.whichCursor() : 'none');
+            console.log('Cursor state now ', window.whichCursor ? window.whichCursor() : 'none');
         }
         return;
     }
+    // F fits the current slice to the display, as it does on the keyboard.
     if (letter === 'f'){
-        if (typeof window.fitCurrentViewToDevice != 'function') {
-            console.warn('DotPad fit controls are unavailable because viewer fit helpers are not exposed.');
-            return;
+        if (typeof window.fitCurrentViewToDevice === 'function') {
+            window.fitCurrentViewToDevice();
         }
-        window.fitCurrentViewToDevice();
         return;
     }
+    // Dots 1 and 4 step the depth like Page Down and Page Up, through the same
+    // function, so deeper is away from the reader in both modes (#235 review).
     if (byte6 === 0x01){
-        // Go shallower by 10
-        const previousDepth = window.getCurrentSliceDepth();
-        const nextDepth = Math.max(0, previousDepth - 10);
-        window.updateSliceDepth(nextDepth, false);
-        window.announceDepthValue(nextDepth, previousDepth);
+        // Go shallower by 100/N
+        window.stepSliceDepth(-100/n);
         return;
     }
     if (byte6 === 0x08){
-        // Go deeper by 10
-        const previousDepth = window.getCurrentSliceDepth();
-        const nextDepth = Math.min(100, previousDepth + 10);
-        window.updateSliceDepth(nextDepth, false);
-        window.announceDepthValue(nextDepth, previousDepth);
+        // Go deeper by 100/N
+        window.stepSliceDepth(100/n);
         return;
     }
+    // Dots 1 2 and 4 5 are the 1% steps, like Arrow Down and Arrow Up.
     if (byte6 === 0x03){
-        // Go shallower by 1
-        const previousDepth = window.getCurrentSliceDepth();
-        const nextDepth = Math.max(0, previousDepth - 1);
-        window.updateSliceDepth(nextDepth, false);
-        window.announceDepthValue(nextDepth, previousDepth);
+        window.stepSliceDepth(-1);
         return;
     }
     if (byte6 === 0x18){
-        // Go deeper by 1
-        const previousDepth = window.getCurrentSliceDepth();
-        const nextDepth = Math.min(100, previousDepth + 1);
-        window.updateSliceDepth(nextDepth, false);
-        window.announceDepthValue(nextDepth, previousDepth);
+        window.stepSliceDepth(1);
         return;
     }
-    if (byte6 === 0x07) {
-        scrollTactileText(-1);
+    // Dots 1 2 3 and 4 5 6 are Home and End: the surface nearest the reader and
+    // the far side (#280). The left hand's keys move toward the reader and the
+    // right hand's away, a step, a fine step or all the way.
+    if (byte6 === 0x07){
+        if (typeof window.goToSliceEnd === 'function') window.goToSliceEnd(false);
         return;
     }
-    if (byte6 === 0x38) {
-        scrollTactileText(1);
+    if (byte6 === 0x38){
+        if (typeof window.goToSliceEnd === 'function') window.goToSliceEnd(true);
         return;
     }
-
+    // With the cursor off, the panning keys scroll the text line through a
+    // message longer than it, as a braille display's panning keys do (#154).
+    // With the cursor on they move it, below.
+    if (cursorState === 'none' && DOTPAD_TEXT_SCROLL[currKeyCode]) {
+        scrollTactileText(DOTPAD_TEXT_SCROLL[currKeyCode]);
+        return;
+    }
     if (typeof window.moveCursor != 'function') return;
+
     const cursorAction = DOTPAD_KEY_ACTIONS[currKeyCode];
     if (cursorState === 'none') {
         console.log('DotPad key pressed but cursor state is "none":', currKeyCode, keyMsg);
@@ -495,7 +562,9 @@ async function sendHexToDotPad(renderParams) {
     try {
         const resp = await fetch(`${SERVER_URL}/render/dotpad-hex`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            // viewer.js's, so the server lets this tab render its own upload.
+            headers: window.uploadSessionHeaders?.({ 'Content-Type': 'application/json' })
+                ?? { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ...renderParams, dotpad_cols: dotpadCols, dotpad_rows: dotpadRows }),
             mode: 'cors',
         });
@@ -513,9 +582,24 @@ async function sendHexToDotPad(renderParams) {
 // Hook into the main render cycle
 window._dotpadOnRender = sendHexToDotPad;
 
+// Put a ready-made graphic on the pins, for the tutorial's test pattern, which
+// the server has already drawn at this display's size. Returns whether it was
+// sent: false with no DotPad connected.
+window._dotpadShowHex = function (graphicHex) {
+    if (!connectedDevice || !graphicHex) return false;
+    sdk.displayGraphicData(String(graphicHex), connectedDevice, DisplayMode.GraphicMode);
+    return true;
+};
+
 
 // --- Send announcements to DotPad ---
 
+// The text line shows one page of the latest announcement at a time. The pages
+// are the braille lines the viewer wrote for it ("Z 31%" for "Z slice at 31
+// percent"), or the spoken message when it wrote none, each broken at spaces
+// into pieces that fit; a word longer than the line, such as a file name, is
+// split. A new announcement starts on its first page, and the panning keys move
+// between pages while the cursor is off (#154).
 let tactileTextPages = [];
 let tactileTextPageIndex = 0;
 
@@ -577,9 +661,9 @@ function renderTactileTextWindow() {
     sdk.displayTextData(textHex, connectedDevice, DisplayMode.TextMode);
 }
 
-function setTactileTextMessage(message) {
+function setTactileTextLines(lines) {
     const cellCount = getDotPadTextCellCount();
-    tactileTextPages = buildTactileTextPages(message, cellCount);
+    tactileTextPages = lines.flatMap(line => buildTactileTextPages(line, cellCount));
     tactileTextPageIndex = 0;
     renderTactileTextWindow();
 }
@@ -596,9 +680,10 @@ function scrollTactileText(deltaPages) {
     renderTactileTextWindow();
 }
 
-function sendAnnouncementToDotPad({message}) {
+function sendAnnouncementToDotPad({message, braille}) {
     if (!connectedDevice) return;
-    setTactileTextMessage(message);
+    const lines = Array.isArray(braille) && braille.length ? braille : [message];
+    setTactileTextLines(lines);
 }
 
 window.onTactileAnnouncement = sendAnnouncementToDotPad;

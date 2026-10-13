@@ -4,13 +4,16 @@
 Features:
 - Receives render state from the viewer and renders with CADComparisonRenderer.
 - Sends rendered output to a connected braille display using braille_display.py.
-- Optionally reads WitMotion IMU orientation and Slider Trinkey position if hardware is present.
-- Supports command logging endpoints used by the legacy cube/slider server.
 - Opens accessible-3d-viewer.html in the default browser at startup.
+
+Input hardware is not handled here. The orientation cube, the slider, the Monarch
+and the DotPad are all connected by the browser, to the window using them, so one
+person's device moves that window and no other.
 """
 
 from __future__ import annotations
 
+import atexit
 import base64
 import copy
 import contextlib
@@ -21,14 +24,15 @@ import logging
 import os
 import queue as _queue_module
 import re
+import filecmp
 import shutil
 import sqlite3
 import sys
+import tempfile
 import threading
 import time
 import webbrowser
 from collections import OrderedDict
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
@@ -40,7 +44,9 @@ from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
 
-from . import db
+from . import api, db, email_address, recording, tutorial
+from .studies import engine as studies_engine
+from .studies import registry as studies_registry
 from .braille_display import (
     _pixels_to_braille_cells,
     _pixels_to_braille_cells_dotpad,
@@ -49,16 +55,8 @@ from .braille_display import (
     _DOTPAD_LINES,
     _DOTPAD_COLS,
 )
-from .cad_comparison_lib import DEFAULT_SCREEN_SIZE, CADComparisonRenderer
+from .cad_comparison_lib import DEFAULT_SCREEN_SIZE, CADComparisonRenderer, RenderResult
 from src.converter.render_low_res import dilate_mask, raised_ink_mask, save_binary_array_as_vector_pdf
-
-try:
-    import serial  # type: ignore
-    from serial.tools import list_ports  # type: ignore
-except Exception:
-    serial = None
-    list_ports = None
-
 
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
@@ -67,13 +65,8 @@ CORS(app)
 # Cap request bodies (uploads and /ingest); default 100 MB. Oversized requests
 # are rejected with 413 before the handler runs.
 app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_UPLOAD_MB", "100") or "100") * 1024 * 1024
-
-
-@dataclass
-class RuntimeState:
-    cube_value: str = "z+"
-    slider_value: int = 0
-    current_model_index: int = 0
+# /api/v1, where tools will send models (#236), and its one error shape.
+api.install(app)
 
 
 if getattr(sys, "frozen", False):
@@ -82,7 +75,9 @@ if getattr(sys, "frozen", False):
 else:
     # app/server.py lives one level below the project root.
     REPO_ROOT = Path(__file__).resolve().parent.parent
-MODEL_DIR = REPO_ROOT / "data" / "models"
+# CAD_A11Y_MODEL_DIR moves it, the way UPLOAD_MODEL_DIR moves uploads. The test
+# suite uses both, so a run cannot leave its fixture models in the real data/.
+MODEL_DIR = Path(os.getenv("CAD_A11Y_MODEL_DIR", "").strip() or REPO_ROOT / "data" / "models")
 # Tracked built-in models ship here, outside any Docker volume mount, and are
 # copied into MODEL_DIR at startup by _seed_builtin_models(). Keeping the source
 # outside the mount is what lets built-ins added later reach a server whose
@@ -177,6 +172,43 @@ def _resolve_upload_dir() -> Path:
     )
 
 
+# ---------------------------------------------------------------------------
+# Demo station scratch space
+#
+# A demo station must leave nothing behind when it exits. The mesh loader and the
+# slice precompute cache both take a *path* -- trimesh reads STL bytes from a file
+# handle and the precompute cache is a gzipped file per model -- so an uploaded
+# model does touch the disk while it is being explored. What this does is make
+# that a directory the operating system hands out and this process removes: it is
+# outside the repo, outside any Docker volume, named per run, and deleted whole
+# when the process ends. Nothing in it survives the station being shut down, and
+# no other station can see into it.
+#
+# Stated plainly because it is the one place the "nothing crosses the process
+# boundary" rule is met by cleanup rather than by never writing: an upload's bytes
+# exist on disk for as long as the tab is open. The tab's own unload handler
+# (POST /uploads/cleanup) removes the file before that, so in practice the window
+# is the exploration itself.
+_demo_scratch: Path | None = None
+
+
+def demo_scratch_dir() -> Path:
+    """The per-run scratch directory, created on first use and removed at exit."""
+    global _demo_scratch
+    if _demo_scratch is None:
+        _demo_scratch = Path(tempfile.mkdtemp(prefix="cad-a11y-demo-"))
+        atexit.register(shutil.rmtree, _demo_scratch, True)
+    return _demo_scratch
+
+
+if recording.demo_only_process():
+    # Uploads, print exports and the precompute cache all move into scratch, so a
+    # demo station writes nothing into data/ at all.
+    _scratch = demo_scratch_dir()
+    os.environ.setdefault("UPLOAD_MODEL_DIR", str(_scratch / "uploads"))
+    os.environ.setdefault("CAD_A11Y_PRECOMPUTE_DIR", str(_scratch / "precompute"))
+    RENDERS_DIR = _scratch / "renders"
+
 UPLOAD_DIR = _resolve_upload_dir()
 
 # Structural invariant, not a preference. If uploads ever shared a directory with
@@ -189,8 +221,14 @@ if UPLOAD_DIR.resolve() == MODEL_DIR.resolve():
     )
 
 
+# Built-ins generated by a script (scripts/build_tutorial_mug.py) whose data
+# ships with the code, so a seeded copy must follow the shipped one.
+_REFRESHED_BUILTINS = frozenset({"tutorial_mug.stl"})
+
+
 def _seed_builtin_models() -> int:
-    """Copy tracked built-ins into MODEL_DIR, skipping files already present.
+    """Copy tracked built-ins into MODEL_DIR, skipping files already present,
+    except a generated one in _REFRESHED_BUILTINS that no longer matches.
 
     Idempotent and safe on every boot. Docker seeds a named volume from the image
     only while the volume is empty, so without this a built-in added to the image
@@ -210,11 +248,22 @@ def _seed_builtin_models() -> int:
             continue
         target = MODEL_DIR / source.name
         if target.exists():
-            continue
+            # The tutorial mug is generated, never edited in place, and its
+            # landmarks ship with the code: an older copy left on a volume would
+            # make /tutorial/locate refuse (hash mismatch) and every band check
+            # compare against a different mesh. So it is replaced when it differs.
+            if source.name not in _REFRESHED_BUILTINS or filecmp.cmp(source, target, shallow=False):
+                continue
+        # Copied beside the target and moved into place, so a worker booting at
+        # the same moment, or a render reading the mug, never sees a half-written
+        # file (#245 review). os.replace is atomic within one directory.
+        temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
         try:
-            shutil.copy2(source, target)
+            shutil.copy2(source, temporary)
+            os.replace(temporary, target)
             copied += 1
         except Exception as error:
+            temporary.unlink(missing_ok=True)
             _log(f"Could not seed built-in model {source.name}: {error}", force=True)
     if copied:
         _log(f"Seeded {copied} built-in model(s) into {MODEL_DIR}", force=True)
@@ -251,7 +300,6 @@ _SESSION_MAX_AGE = 365 * 24 * 3600  # 1 year
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
 )
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # Allowlist for event_type values accepted by POST /events/track.
 _ALLOWED_EVENT_TYPES = frozenset(
     {
@@ -260,6 +308,10 @@ _ALLOWED_EVENT_TYPES = frozenset(
         "device_connect",
         "export",
         "model_select",
+        # The first-run tutorial's progress: which lesson was finished, skipped
+        # or left. The data is cut down to {action, lesson} before it is
+        # stored; see tutorial.clean_event_data.
+        "tutorial",
     }
 )
 
@@ -317,11 +369,11 @@ def _participant_for_name(first_name: str) -> str:
     the workshop mitigates that out of band (name tags, photos)."""
     existing = db.get_session_id_for_identifier(first_name)
     if existing:
-        db.upsert_session(existing)  # refresh last_seen_at
+        recording.current().touch_session(existing)  # refresh last_seen_at
         return existing
     user_id = str(uuid.uuid4())
-    db.upsert_session(user_id)
-    db.save_session_identifier(user_id, first_name, consent_given=False, is_workshop=True)
+    recording.current().touch_session(user_id)
+    recording.current().enroll_workshop_participant(user_id, first_name)
     return user_id
 
 
@@ -335,48 +387,43 @@ DEFAULT_RENDER_PARAMS: dict[str, Any] = {
     "print_view": False,
 }
 
-# WitMotion IMU orientation → view mapping
-_FACE_NORMALS = np.array([
-    [1, 0, 0],   # x+
-    [-1, 0, 0],  # x-
-    [0, 1, 0],   # y+
-    [0, -1, 0],  # y-
-    [0, 0, 1],   # z+
-    [0, 0, -1],  # z-
-], dtype=float)
-_FACE_NAMES = ["x+", "x-", "y+", "y-", "z+", "z-"]
-_WORLD_UP = np.array([0.0, 0.0, 1.0])
+# Keyed by model path, not by position in the discovered list. An upload or a
+# delete renumbers that list, so an index-keyed entry silently came to mean a
+# different model, which is why every one of them used to be thrown away on any
+# change. Paths do not renumber, so only the model that actually changed is
+# evicted and everyone else keeps a renderer that is still correct.
+#
+# Bounded, because nothing clears it wholesale any more: a long workshop would
+# otherwise hold every mesh anyone had ever opened. Least recently used goes
+# first; rebuilding one is a mesh load, not a correctness problem.
+RENDERER_CACHE_MAX = int(os.getenv("RENDERER_CACHE_MAX", "24"))
 
-
-def _euler_to_rotation_matrix(roll_deg: float, pitch_deg: float, yaw_deg: float) -> np.ndarray:
-    r, p, y = np.radians(roll_deg), np.radians(pitch_deg), np.radians(yaw_deg)
-    Rx = np.array([[1, 0, 0], [0, np.cos(r), -np.sin(r)], [0, np.sin(r), np.cos(r)]])
-    Ry = np.array([[np.cos(p), 0, np.sin(p)], [0, 1, 0], [-np.sin(p), 0, np.cos(p)]])
-    Rz = np.array([[np.cos(y), -np.sin(y), 0], [np.sin(y), np.cos(y), 0], [0, 0, 1]])
-    return Rz @ Ry @ Rx
-
-
-def _orientation_to_view(roll_deg: float, pitch_deg: float, yaw_deg: float) -> str:
-    R = _euler_to_rotation_matrix(roll_deg, pitch_deg, yaw_deg)
-    dots = (_FACE_NORMALS @ R.T) @ _WORLD_UP
-    return _FACE_NAMES[int(np.argmax(dots))]
-
-state = RuntimeState()
-renderers_by_model: dict[int, CADComparisonRenderer] = {}
-current_render: np.ndarray | None = None
-commands_log: list[dict[str, Any]] = []
-state_lock = threading.Lock()
+# Startup only warms this many models; the rest stay cold until the render path
+# builds them on demand the first time someone actually opens them (same
+# fallback that already covers a model a warmup pass failed on). Warming every
+# model up front doesn't scale as the model count grows, and most of a large
+# library may never be opened in a given deployment's lifetime. Uploads still
+# enqueue for warmup immediately via enqueue_model_for_warmup, independent of
+# this limit — it only bounds what start_model_warmup() does at boot.
+STARTUP_WARMUP_LIMIT = max(0, int(os.getenv("STARTUP_WARMUP_LIMIT", "1")))
+renderers_by_model: OrderedDict[str, CADComparisonRenderer] = OrderedDict()
 models_lock = threading.Lock()
-# Serialize all engine.render() calls — matplotlib is not thread-safe, and
-# engine.render() mutates view_current_camera_center (camera pan state).
-# Concurrent renders corrupt that state, producing blank or wrong-view output.
+# Serialize all engine.render() calls, because matplotlib is not thread-safe:
+# the converters below it drive the pyplot module globals and call a bare
+# plt.close(). That is the whole reason. It used to also stand in for the camera
+# pan state a render mutated on the shared renderer, which is gone: a render now
+# takes its camera centre and grid as arguments and returns what it resolved.
+# Do not put per-request state back on the renderer on the strength of this lock.
+# It orders renders; it does not isolate them, and it is a global bottleneck
+# rather than a concurrency mechanism.
 render_lock = threading.Lock()
 braille_log_lock = threading.Lock()
-commands_log_lock = threading.Lock()
 braille_send_sequence = 0
-last_render_fingerprint: str | None = None
-last_render_response: dict[str, Any] | None = None
-RENDER_QUANTIZED_CACHE_MAX = int(os.getenv("RENDER_QUANTIZED_CACHE_MAX", "128"))
+# Raised from 128 because this is now the only render cache, and because every
+# window keys separately on its own camera centre, so N windows exploring the
+# same model no longer share entries the way one window did. An entry is about
+# 16 KB, so this ceiling is roughly 8 MB.
+RENDER_QUANTIZED_CACHE_MAX = int(os.getenv("RENDER_QUANTIZED_CACHE_MAX", "512"))
 quantized_render_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
 quantized_render_cache_lock = threading.Lock()
 PREVIEW_PAYLOAD_CACHE_MAX = int(os.getenv("PREVIEW_PAYLOAD_CACHE_MAX", "128"))
@@ -417,20 +464,23 @@ def _renderer_stdio_guard():
     return contextlib.nullcontext(), contextlib.nullcontext()
 
 
-# The extensions a model file can carry, compared case-insensitively. Discovery
-# below still globs a fixed set of spellings, so a file named .STL is not indexed
-# and cannot be opened; _stem_is_taken uses this set anyway, so such a file still
-# reserves its name and cannot be shadowed by an upload.
+# The extensions a model file can carry, compared case-insensitively everywhere
+# they are checked: discovery, the upload check and _stem_is_taken. Discovery
+# used to glob a fixed set of spellings, and glob matches case even on a disk
+# that ignores it, so an upload named MUG.STL passed the upload check, was saved,
+# and was never found. The viewer then asked for MUG and silently got the default
+# model (#238). Several CAD tools export .STL in capitals by default.
 MODEL_SUFFIXES = frozenset({".stl", ".step"})
 
 
 def _discover_models() -> list[Path]:
-    patterns = ("*.stl", "*.step", "*.STEP")
     models: list[Path] = []
     search_dirs = list(dict.fromkeys([MODEL_DIR, UPLOAD_DIR]))
     for model_dir in search_dirs:
-        for pattern in patterns:
-            models.extend(sorted(model_dir.glob(pattern)))
+        found = [p for p in model_dir.glob("*") if p.suffix.lower() in MODEL_SUFFIXES]
+        # STL ahead of STEP, as when each spelling was globbed in turn, so the
+        # first model found, which is the default, is the same one as before.
+        models.extend(sorted(found, key=lambda p: (p.suffix.lower() != ".stl", p)))
     # Deduplicate while preserving order.
     return list(dict.fromkeys(models))
 
@@ -451,6 +501,42 @@ AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
 MODEL_NAME_LIST = [model_path.stem for model_path in AVAILABLE_MODELS]
 
 _MODEL_DIR_RESOLVED = MODEL_DIR.resolve()
+
+# The /studies endpoints live in their own package. They need two things from
+# here -- the current model list (to check a study's models are all present) and
+# the repo root (to serve the two HTML pages). Passed as callables rather than
+# imported, because MODEL_NAME_LIST is rebound whenever the model set changes,
+# and because the engine importing server.py would be a cycle.
+studies_engine.set_model_list_provider(lambda: MODEL_NAME_LIST)
+studies_engine.set_repo_root_provider(lambda: REPO_ROOT)
+# Not registered at all on a demo station. The study path is not merely unused
+# there -- it is the thing that allocates participant identifiers and opens
+# session logs, and the surest way to know it cannot run is for its URLs not to
+# exist. /studies and everything under it return 404.
+#
+# Elsewhere which studies are served is decided once, here, from each study's
+# definition (app/studies/definitions). Nothing answers at /study any more: the
+# comparison study that ran there is closed, which leaves only its data
+# downloads, behind its own token, at /studies/comparison-2026/control.
+DEMO_ONLY = recording.demo_only_process()
+STUDY_LOAD_MESSAGES: list[str] = []
+if not DEMO_ONLY:
+    app.register_blueprint(studies_engine.studies_bp)
+    STUDY_LOAD_MESSAGES = studies_registry.load()
+
+# The tutorial's endpoints, on every server a demo station included: they write
+# nothing and record nothing, so there is nothing for a demo to be kept away
+# from. /tutorial/locate has to read a render request the way /render does, so
+# it is handed the functions /render uses, as lambdas because most of them are
+# defined further down this file.
+tutorial.configure(
+    prepare_render_params=lambda data: _prepare_render_params(data),
+    renderer_for_stem=lambda stem: get_or_create_renderer(stem),
+    model_path_for_stem=lambda stem: _path_for_stem(stem),
+    target_grid=lambda params: _target_grid(params),
+    builtin_dir=lambda: BUILTIN_SOURCE_DIR,
+)
+app.register_blueprint(tutorial.tutorial_bp)
 
 
 def _is_builtin(model_path: Path) -> bool:
@@ -490,7 +576,12 @@ _MODEL_LIST_REFRESH_INTERVAL = 2.0  # seconds
 
 
 def _refresh_model_list_if_stale() -> None:
-    """Refresh AVAILABLE_MODELS/MODEL_NAME_LIST from disk at most every 2 s."""
+    """Refresh AVAILABLE_MODELS/MODEL_NAME_LIST from disk at most every 2 s.
+
+    A file added or removed behind the app's back, by an operator or a cleanup
+    script, shows up here, so open viewers are told the same way they are for an
+    upload or a delete.
+    """
     global AVAILABLE_MODELS, MODEL_NAME_LIST, _model_list_last_refresh
     now = time.monotonic()
     if now - _model_list_last_refresh < _MODEL_LIST_REFRESH_INTERVAL:
@@ -498,42 +589,314 @@ def _refresh_model_list_if_stale() -> None:
     with models_lock:
         if now - _model_list_last_refresh < _MODEL_LIST_REFRESH_INTERVAL:
             return  # another thread already refreshed
+        before = AVAILABLE_MODELS
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
         _model_list_last_refresh = time.monotonic()
+    if AVAILABLE_MODELS != before:
+        _announce_models_changed()
 
 
-def _normalize_model_index(raw_index: Any) -> int:
-    if raw_index is None:
-        with state_lock:
-            return state.current_model_index
+def _announce_models_changed() -> None:
+    """Tell every open viewer that the set of models changed, so each asks for
+    its list now instead of at its next poll, up to five seconds later. A list
+    that still offers a model that has gone is how someone ends up choosing it
+    (#238).
+
+    It names nothing. What a viewer may see is for that viewer to ask.
+    """
+    _push_sse({"models_changed": True})
+
+
+class ModelNotAvailable(LookupError):
+    """A request named a model this server cannot show."""
+
+
+@app.errorhandler(ModelNotAvailable)
+def _model_not_available(_error: ModelNotAvailable):
+    """Refused, in the same words whatever the reason, and without repeating the
+    name back. The viewer knows which model it asked for."""
+    return jsonify(
+        {
+            "status": "error",
+            "code": "model_not_available",
+            "message": "That model isn't available.",
+        }
+    ), 404
+
+
+# ---------------------------------------------------------------------------
+# Who can see which upload (#237)
+#
+# An upload belongs to the browser that sent it and to nobody else. Two things
+# can say a request comes from that browser: its cad_session cookie, if it has
+# answered the consent dialog, and its tab's upload id, which every request from
+# the viewer carries. The tab id is the one that always exists, because pressing
+# Escape on the consent dialog or using /demo leaves a tab with no cookie.
+#
+# The browser used to do this filtering and the server did none, so anyone who
+# asked the server directly could list, render and export every upload.
+# ---------------------------------------------------------------------------
+def _request_upload_session_id() -> str | None:
+    """The tab's upload id, from its header and nowhere else.
+
+    Never from the address. The id grants access to the tab's uploads, and an
+    address ends up in access logs and browser history; the event stream used to
+    carry it there, since EventSource cannot set a header, so the stream no
+    longer says anything that depends on who is asking (#243 review).
+    """
+    return _sanitize_upload_session_id(request.headers.get("X-Upload-Session"))
+
+
+def _caller_upload_names(tab_id: str | None = None) -> set[str]:
+    """Filenames in UPLOAD_DIR that the current request may see.
+
+    Outside a request, such as the startup render, that is none.
+    """
+    if not has_request_context():
+        return set()
+    owned: set[str] = set()
+    cookie_sid = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE))
+    # Not on the demo path, which keeps no ownership records to read.
+    if cookie_sid and recording.current().records:
+        owned.update(m["filename"] for m in db.get_session_models(cookie_sid))
+    tab_id = tab_id or _request_upload_session_id()
+    if tab_id:
+        with uploaded_models_lock:
+            owned.update(Path(p).name for p in uploaded_models_by_session.get(tab_id, ()))
+    return owned
+
+
+def _visible_models(tab_id: str | None = None) -> list[Path]:
+    """The built-ins, plus the uploads the current request owns."""
+    owned = _caller_upload_names(tab_id)
+    return [p for p in AVAILABLE_MODELS if _is_builtin(p) or p.name in owned]
+
+
+def _visible_model_names(tab_id: str | None = None) -> list[str]:
+    return [p.stem for p in _visible_models(tab_id)]
+
+
+def _resolve_model_stem(raw_value: Any) -> str:
+    """The model a request means, named rather than numbered.
+
+    A model used to be addressed by its position in the discovered list. That
+    list is rebuilt from disk on a timer and on every upload, so a number meant a
+    different file after anyone added one: a window sitting on index 18 silently
+    started rendering somebody else's model. This is the crossover the workshop
+    reported.
+
+    A name does not renumber. One that names no model is refused with
+    ModelNotAvailable, never answered with another model. It used to fall back
+    to the default, so a model that had gone, or a name the server could not
+    find, put a different object under the reader's fingers while the viewer
+    went on announcing the one they chose (#238). Asking for no model at all
+    still gets the default: that is how a page starts.
+
+    Somebody else's upload is an unknown name here. It is refused exactly as a
+    name that does not exist is, so the answer cannot be used to find out which
+    uploads exist. Every endpoint that takes a model comes through
+    this function, which is what makes it the one place ownership is enforced.
+
+    Numeric values are still accepted, so a browser holding an older viewer.js
+    keeps working until it reloads. They count within the models the caller can
+    see, so a position cannot reach anyone else's upload either.
+    """
+    if raw_value is None:
+        return DEFAULT_MODEL.stem
+
+    text = str(raw_value).strip()
+    if not text:
+        return DEFAULT_MODEL.stem
+
+    for path in AVAILABLE_MODELS:
+        if path.stem == text:
+            # Built-ins first, so the common case never reads ownership.
+            if _is_builtin(path) or path.name in _caller_upload_names():
+                return text
+            raise ModelNotAvailable(text)
+
+    # Legacy: a position in the list. Ambiguous by nature, which is the whole
+    # problem, but resolving it once here is better than rejecting the request.
     try:
-        index = int(raw_index)
-    except (TypeError, ValueError):
-        return 0
-    if index < 0 or index >= len(AVAILABLE_MODELS):
-        return 0
-    return index
+        index = int(text)
+    except ValueError:
+        raise ModelNotAvailable(text) from None
+    visible = _visible_models()
+    if 0 <= index < len(visible):
+        return visible[index].stem
+    raise ModelNotAvailable(text)
 
 
-def get_or_create_renderer(model_index: int | None = None) -> CADComparisonRenderer:
-    index = _normalize_model_index(model_index)
+def _path_for_stem(model_stem: str) -> Path:
+    """The file behind a model name, or the default if it has gone."""
+    for path in AVAILABLE_MODELS:
+        if path.stem == model_stem:
+            return path
+    return DEFAULT_MODEL
+
+
+def get_or_create_renderer(model_stem: str | None = None) -> CADComparisonRenderer:
+    stem = _resolve_model_stem(model_stem)
     with models_lock:
-        if index not in renderers_by_model:
-            model_path = AVAILABLE_MODELS[index]
-            _log(f"Initializing CAD renderer with: {model_path}")
+        return _renderer_for_path(_path_for_stem(stem))
+
+
+def _renderer_for_path(model_path: Path) -> CADComparisonRenderer:
+    """The renderer for this file, building it if nobody has yet.
+
+    Caller holds models_lock. Construction happens inside it, which serialises a
+    mesh load against the model list, but the alternative is two threads building
+    the same renderer and one of them being discarded.
+    """
+    key = str(model_path)
+    existing = renderers_by_model.get(key)
+    if existing is not None:
+        renderers_by_model.move_to_end(key)
+        return existing
+
+    _log(f"Initializing CAD renderer with: {model_path}")
+    out_guard, err_guard = _renderer_stdio_guard()
+    with out_guard, err_guard:
+        # Slice-graph precompute is expensive and only feeds a mode the
+        # simplified workshop viewer can't reach, so it's kicked off lazily
+        # (CADComparisonRenderer._get_zoom_filtered_slice_profile) on first
+        # actual use instead of unconditionally here.
+        renderer = CADComparisonRenderer(str(model_path), str(model_path))
+
+    renderers_by_model[key] = renderer
+    while len(renderers_by_model) > max(1, RENDERER_CACHE_MAX):
+        renderers_by_model.popitem(last=False)
+    return renderer
+
+
+def _forget_renderer(model_path: Path) -> None:
+    """Drop one model's renderer and its precomputed slice data.
+
+    Caller holds models_lock. The cache file goes too: it is keyed by the model's
+    signature, so a deleted upload would otherwise leave megabytes behind that
+    nothing can ever match again. A workshop's worth of uploads and deletions
+    would fill the volume with data for models that no longer exist.
+    """
+    engine = renderers_by_model.pop(str(model_path), None)
+    if engine is None:
+        return
+    # Tell the background precompute (if it is still running) that this model is
+    # gone, so it does not write its cache file back after we unlink it here.
+    engine._discarded = True
+    with contextlib.suppress(Exception):
+        Path(engine.cache_path).unlink(missing_ok=True)
+
+
+# Models are processed up front rather than when someone first opens them, so
+# nobody pays the mesh load and the slice precompute by being the first to look.
+# One worker, one model at a time: the work is CPU-bound and a pool would simply
+# take the GIL away from request handling for longer.
+_warmup_queue: _queue_module.Queue = _queue_module.Queue()
+_warmup_state_lock = threading.Lock()
+_warmup_state: dict[str, Any] = {"total": 0, "processed": 0, "current": None, "started": False}
+
+
+def _warmup_snapshot() -> dict[str, Any]:
+    """What the warm-up has got through, for /health."""
+    with _warmup_state_lock:
+        state_copy = dict(_warmup_state)
+    state_copy["pending"] = max(0, state_copy["total"] - state_copy["processed"])
+    state_copy["complete"] = state_copy["started"] and state_copy["pending"] == 0
+    return state_copy
+
+
+def enqueue_model_for_warmup(model_path: Path) -> None:
+    """Process this model soon, in the background.
+
+    Called for every model at startup and for each new upload, so a model is
+    ready before anyone asks for it rather than at the cost of whoever asks
+    first.
+    """
+    with _warmup_state_lock:
+        _warmup_state["total"] += 1
+    _warmup_queue.put(Path(model_path))
+
+
+def _warm_one_model(model_path: Path) -> None:
+    """Load a model and make sure its slice data exists.
+
+    Skipped cheaply when a previous run already cached it: the renderer's own
+    loader checks the signature, so an unchanged model costs a file read.
+    """
+    with models_lock:
+        engine = _renderer_for_path(model_path)
+    engine.start_background_slice_precompute()
+    # Wait, so the queue really is one model at a time. Without this the worker
+    # would start every model's precompute thread at once, which is the pool this
+    # is meant not to be.
+    engine._precompute_done.wait()
+
+
+def _warmup_worker() -> None:
+    while True:
+        model_path = _warmup_queue.get()
+        try:
+            with _warmup_state_lock:
+                _warmup_state["current"] = model_path.stem
             out_guard, err_guard = _renderer_stdio_guard()
             with out_guard, err_guard:
-                # Slice-graph precompute is expensive and only feeds a mode the
-                # simplified workshop viewer can't reach, so it's kicked off lazily
-                # (CADComparisonRenderer._get_zoom_filtered_slice_profile) on first
-                # actual use instead of unconditionally here.
-                renderer = CADComparisonRenderer(
-                    str(model_path),
-                    str(model_path),
-                )
-                renderers_by_model[index] = renderer
-        return renderers_by_model[index]
+                _warm_one_model(model_path)
+        except Exception as error:
+            # One bad model must not stop the rest being processed, and must not
+            # stop the server: it will simply be built on demand like before.
+            _log(f"Warm-up failed for {model_path.name}: {error}", force=True)
+        finally:
+            with _warmup_state_lock:
+                _warmup_state["processed"] += 1
+                _warmup_state["current"] = None
+            _warmup_queue.task_done()
+
+
+def start_model_warmup() -> None:
+    """Start the worker and hand it up to STARTUP_WARMUP_LIMIT models on disk.
+
+    The rest are left cold; the render path builds one the first time someone
+    actually asks for it, same as a model that failed warmup already did.
+    """
+    with _warmup_state_lock:
+        if _warmup_state["started"]:
+            return
+        _warmup_state["started"] = True
+
+    threading.Thread(target=_warmup_worker, name="cad-model-warmup", daemon=True).start()
+    with models_lock:
+        models = list(AVAILABLE_MODELS)
+
+    # The tutorial mug goes first. A first visit to /viewer opens the tutorial
+    # on it, so without this the very first thing a new user meets is the
+    # wait for a cold model. The default model still gets its renderer from
+    # initialize_default_braille_render either way.
+    tutorial_first = [p for p in models if p.stem == tutorial.TUTORIAL_MODEL_STEM and _is_builtin(p)]
+    models = tutorial_first + [p for p in models if p not in tutorial_first]
+    to_warm = models[:STARTUP_WARMUP_LIMIT]
+
+    # A fixed cache size smaller than the warmup batch would otherwise have
+    # warmup evict its own earlier work before anyone's even hit the server —
+    # raising it here, once, at startup, so warming a batch at boot actually
+    # keeps that batch warm. A later upload that pushes the count higher still
+    # can trigger ordinary LRU eviction, same as before this existed.
+    global RENDERER_CACHE_MAX
+    if len(to_warm) > RENDERER_CACHE_MAX:
+        _log(
+            f"Raising RENDERER_CACHE_MAX from {RENDERER_CACHE_MAX} to {len(to_warm)} "
+            "so warming the startup batch doesn't evict its own work.",
+            force=True,
+        )
+        RENDERER_CACHE_MAX = len(to_warm)
+
+    for model_path in to_warm:
+        enqueue_model_for_warmup(model_path)
+    _log(
+        f"Warming {len(to_warm)} of {len(models)} model(s) in the background at startup; "
+        "the rest build on demand when first requested.",
+        force=True,
+    )
 
 
 def _ensure_minimum_feature_thickness(mask: np.ndarray) -> np.ndarray:
@@ -659,7 +1022,7 @@ def _target_grid(params: dict[str, Any]) -> tuple[int, int] | None:
 
 
 def _make_hifi_preview(
-    params: dict[str, Any], model_index: int, preview_width: int = 800, *, use_cache: bool = True
+    params: dict[str, Any], model_stem: str, preview_width: int = 800, *, use_cache: bool = True
 ) -> tuple[str, list[int]]:
     """Render at high resolution and return (base64_png, [height, width]).
 
@@ -671,17 +1034,15 @@ def _make_hifi_preview(
     the tactile preview reported the device while this one silently kept showing
     the 96x40 default (#52).
     """
-    engine = get_or_create_renderer(model_index)
     grid = _target_grid(params)
     if grid is None:
-        orig = list(engine.screen_size) if engine.screen_size else list(DEFAULT_SCREEN_SIZE)
-        grid = (max(1, orig[0]), max(1, orig[1] if len(orig) > 1 else orig[0]))
+        grid = DEFAULT_SCREEN_SIZE
     w0, h0 = grid
     hifi_h = max(1, int(round(preview_width * h0 / w0)))
 
     payload = _get_braille_payload_at_size(
         params,
-        model_index=model_index,
+        model_stem=model_stem,
         pixel_width=preview_width,
         pixel_height=hifi_h,
         use_cache=use_cache,
@@ -692,40 +1053,29 @@ def _make_hifi_preview(
 
 
 def _render_and_send(
-    params: dict[str, Any], *, source: str, model_index: int,
+    params: dict[str, Any], *, source: str, model_stem: str,
     render_size: tuple[int, int] | None = None,
-) -> tuple[np.ndarray, list[float] | None, np.ndarray]:
-    global current_render
-
-    engine = get_or_create_renderer(model_index)
+) -> tuple[np.ndarray, list[float] | None, np.ndarray, RenderResult]:
+    engine = get_or_create_renderer(model_stem)
     out_guard, err_guard = _renderer_stdio_guard()
+    grid = None
+    if render_size is not None:
+        grid = [max(1, int(render_size[0])), max(1, int(render_size[1]))]
     with render_lock:
-        original_screen_size = list(engine.screen_size) if engine.screen_size else list(DEFAULT_SCREEN_SIZE)
-        if render_size is not None:
-            engine.screen_size = [max(1, int(render_size[0])), max(1, int(render_size[1]))]
-        try:
-            with out_guard, err_guard:
-                rendered = engine.render(params)
-        finally:
-            engine.screen_size = original_screen_size
-    current_render = rendered
+        with out_guard, err_guard:
+            result = engine.render(params, screen_size=grid)
+    rendered = result.image
 
     braille_payload = _to_braille_payload(rendered)
     sequence = _next_braille_send_sequence()
-    with state_lock:
-        state_snapshot = {
-            "cube_value": state.cube_value,
-            "slider_value": state.slider_value,
-            "current_model_index": state.current_model_index,
-        }
     event: dict[str, Any] = {
         "event": "braille_send",
         "sequence": sequence,
         "source": source,
         "input_source": params.get("input_source", "unknown"),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "model": str(AVAILABLE_MODELS[model_index]),
-        "model_index": model_index,
+        "model": str(_path_for_stem(model_stem)),
+        "model_stem": model_stem,
         "params": {
             "view": params.get("view"),
             "zoom": params.get("zoom"),
@@ -735,7 +1085,6 @@ def _render_and_send(
             "move_camera_center": params.get("move_camera_center"),
             "print_view": params.get("print_view"),
         },
-        "state": state_snapshot,
         "render_shape": list(rendered.shape),
         "payload": _payload_stats(braille_payload),
         "request": _collect_request_context(),
@@ -743,16 +1092,24 @@ def _render_and_send(
 
     # Device sends are handled browser-side (Web HID / Web BLE).
     event.update({"status": "success", "send_duration_ms": 0.0})
-    _write_braille_event(event)
+    # This line carries the model, the view, the depth, the render mode and the
+    # caller's address, so it is interaction data and goes through the recorder.
+    recording.current().braille_event(event)
 
     bbox = getattr(engine, "bbox", None)
-    return rendered, bbox, braille_payload
+    return rendered, bbox, braille_payload, result
 
 
-def _save_print_if_requested(params: dict[str, Any], engine: CADComparisonRenderer, img_data: np.ndarray) -> None:
+def _save_print_if_requested(params: dict[str, Any], result: RenderResult, img_data: np.ndarray) -> None:
+    """A print export is a file on disk carrying what was on the display, so it
+    goes through the recorder like every other write rather than straight to
+    RENDERS_DIR. On the demo path the recorder is null and no file appears."""
     if not params.get("print_view"):
         return
+    recording.current().print_render(params, result, img_data)
 
+
+def _write_print_render(params: dict[str, Any], result: RenderResult, img_data: np.ndarray) -> None:
     RENDERS_DIR.mkdir(parents=True, exist_ok=True)
     next_index = 0
     for file_path in RENDERS_DIR.glob("print_*.pdf"):
@@ -767,10 +1124,10 @@ def _save_print_if_requested(params: dict[str, Any], engine: CADComparisonRender
 
     stem = (
         f"print_{next_index}_"
-        f"{engine.current_render_mode}_"
-        f"{engine.current_cut_depth}_"
-        f"{engine.view_current_axis}_"
-        f"{np.array(engine.view_current_view_limits).tolist()}"
+        f"{result.render_mode}_"
+        f"{result.cut_depth}_"
+        f"{result.view_axis}_"
+        f"{np.array(result.framing_bounds).tolist()}"
     )
     pdf_path = RENDERS_DIR / f"{stem}.pdf"
     npy_path = RENDERS_DIR / f"{stem}.npy"
@@ -806,7 +1163,7 @@ def _coerce_positive_int(value: Any, default: int) -> int:
 
 
 def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any], int, bool, str]:
-    """Merge incoming request data with defaults and return (params, model_index, is_pan, fingerprint)."""
+    """Merge incoming request data with defaults and return (params, model_stem, is_pan, fingerprint)."""
     if data is None:
         data = {}
     merged = dict(DEFAULT_RENDER_PARAMS)
@@ -865,7 +1222,7 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
     else:
         merged["world_camera_center"] = None
 
-    model_index = _normalize_model_index(data.get("current_model"))
+    model_stem = _resolve_model_stem(data.get("model", data.get("current_model")))
 
     # Camera moves are computed relative to the supplied camera_center, so they
     # must bypass cache lookup; otherwise a move request can hit a cached image
@@ -878,23 +1235,25 @@ def _prepare_render_params(data: dict[str, Any] | None) -> tuple[dict[str, Any],
                "camera_center",
                "world_camera_center",
                "compose_scrollbar", "compose_cursor", "cursor_col", "cursor_row", "cursor_state", "compose_slicegraph", "show_view_info_box",
+               "show_origin_marker", "show_axis_letters",
                "output_device", "slicegraph_locked", "slicegraph_view", "slicegraph_depth", "slicegraph_mode",
+               "shape", "superpositionMode",
                # The frame is drawn at this size, so two requests that differ only
                # here are different renders. Omitting it meant connecting a display
                # returned the previous size's frame from cache, and the preview then
                # reported that stale size against the new display's name.
                "target_pixel_width", "target_pixel_height")
     fp_dict = {k: merged.get(k) for k in fp_keys}
-    fp_dict["model_index"] = model_index
+    fp_dict["model_stem"] = model_stem
     fingerprint = hashlib.sha256(json.dumps(fp_dict, sort_keys=True).encode()).hexdigest()
 
-    return merged, model_index, is_pan_request, fingerprint
+    return merged, model_stem, is_pan_request, fingerprint
 
 
-def _build_quantized_render_key(params: dict[str, Any], model_index: int) -> str:
+def _build_quantized_render_key(params: dict[str, Any], model_stem: str) -> str:
     """Build a stable coarse key for near-identical interactive requests."""
     quantized = {
-        "model_index": model_index,
+        "model_stem": model_stem,
         "view": str(params.get("view", "")).lower(),
         "orientation": params.get("orientation"),
         "camera_center": params.get("camera_center"),
@@ -916,6 +1275,23 @@ def _build_quantized_render_key(params: dict[str, Any], model_index: int) -> str
         "slicegraph_mode": str(params.get("slicegraph_mode", "difference")).lower(),
         # Same reason as the exact fingerprint: this decides the size drawn.
         "target_grid": _target_grid(params),
+        # Drawn onto the image, so leaving it out meant the checkbox was ignored
+        # whenever the render came from cache, even within one window.
+        "show_view_info_box": bool(params.get("show_view_info_box", False)),
+        # XYZ mode's marks, drawn onto the image for the same reason.
+        "show_origin_marker": bool(params.get("show_origin_marker", False)),
+        "show_axis_letters": bool(params.get("show_axis_letters", False)),
+        # Decides whether the response carries monarch_cells_hex, so a cached
+        # answer made for another device arrived without the cells the Monarch
+        # needs. Narrower than it looks, since target_grid usually differs too,
+        # but not reliably: nothing stops two devices sharing a grid.
+        "output_device": str(params.get("output_device", "")).strip().lower(),
+        # Neither of these is reachable from the viewer today, and "shape" cannot
+        # change the picture while a renderer is built from one file passed twice.
+        # Keyed anyway: a key that is right only because of how the caller happens
+        # to behave is a trap for whoever changes the caller.
+        "shape": str(params.get("shape", "after")).lower(),
+        "superpositionMode": str(params.get("superpositionMode", "outline")).lower(),
     }
     return hashlib.sha256(json.dumps(quantized, sort_keys=True).encode()).hexdigest()
 
@@ -938,7 +1314,7 @@ def _set_quantized_cached_response(cache_key: str, response: dict[str, Any]) -> 
 
 
 def _build_preview_payload_cache_key(
-    params: dict[str, Any], model_index: int, pixel_width: int, pixel_height: int
+    params: dict[str, Any], model_stem: str, pixel_width: int, pixel_height: int
 ) -> str:
     fp_keys = (
         "view",
@@ -957,13 +1333,17 @@ def _build_preview_payload_cache_key(
         "cursor_state",
         "compose_slicegraph",
         "show_view_info_box",
+        "show_origin_marker",
+        "show_axis_letters",
         "slicegraph_locked",
         "slicegraph_view",
         "slicegraph_depth",
         "slicegraph_mode",
+        "shape",
+        "superpositionMode",
     )
     fp_dict = {k: params.get(k) for k in fp_keys}
-    fp_dict["model_index"] = model_index
+    fp_dict["model_stem"] = model_stem
     fp_dict["pixel_width"] = int(pixel_width)
     fp_dict["pixel_height"] = int(pixel_height)
     return hashlib.sha256(json.dumps(fp_dict, sort_keys=True).encode()).hexdigest()
@@ -987,35 +1367,32 @@ def _set_preview_payload_cached(cache_key: str, payload: np.ndarray) -> None:
 
 
 def _render_braille_payload_at_size(
-    params: dict[str, Any], *, model_index: int, pixel_width: int, pixel_height: int
+    params: dict[str, Any], *, model_stem: str, pixel_width: int, pixel_height: int
 ) -> np.ndarray:
-    engine = get_or_create_renderer(model_index)
+    engine = get_or_create_renderer(model_stem)
     out_guard, err_guard = _renderer_stdio_guard()
     with render_lock:
-        original_screen_size = list(engine.screen_size) if engine.screen_size else list(DEFAULT_SCREEN_SIZE)
-        engine.screen_size = [max(1, int(pixel_width)), max(1, int(pixel_height))]
-        try:
-            with out_guard, err_guard:
-                rendered = engine.render(params)
-        finally:
-            engine.screen_size = original_screen_size
-    return _to_braille_payload(rendered)
+        with out_guard, err_guard:
+            result = engine.render(
+                params, screen_size=[max(1, int(pixel_width)), max(1, int(pixel_height))]
+            )
+    return _to_braille_payload(result.image)
 
 
 def _get_braille_payload_at_size(
-    params: dict[str, Any], *, model_index: int, pixel_width: int, pixel_height: int, use_cache: bool = True
+    params: dict[str, Any], *, model_stem: str, pixel_width: int, pixel_height: int, use_cache: bool = True
 ) -> np.ndarray:
     if not use_cache:
         return _render_braille_payload_at_size(
             params,
-            model_index=model_index,
+            model_stem=model_stem,
             pixel_width=pixel_width,
             pixel_height=pixel_height,
         )
 
     cache_key = _build_preview_payload_cache_key(
         params,
-        model_index=model_index,
+        model_stem=model_stem,
         pixel_width=pixel_width,
         pixel_height=pixel_height,
     )
@@ -1025,7 +1402,7 @@ def _get_braille_payload_at_size(
 
     payload = _render_braille_payload_at_size(
         params,
-        model_index=model_index,
+        model_stem=model_stem,
         pixel_width=pixel_width,
         pixel_height=pixel_height,
     )
@@ -1036,7 +1413,7 @@ def _get_braille_payload_at_size(
 def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     """Render, send to braille display, and build JSON response dict."""
     _refresh_model_list_if_stale()
-    model_index = _normalize_model_index(params.get("current_model"))
+    model_stem = _resolve_model_stem(params.get("model", params.get("current_model")))
     # A client that names a target pixel size used to cost two full renders per
     # interaction: one at the default grid, whose payload only fed telemetry, and
     # a second at the device size that actually reached the display. Render once
@@ -1049,8 +1426,8 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     # is precisely what sent it down the second-render path it was meant to avoid.
     render_size = _target_grid(params)
 
-    rendered, bbox, braille_payload = _render_and_send(
-        params, source=source, model_index=model_index, render_size=render_size
+    rendered, bbox, braille_payload, render_result = _render_and_send(
+        params, source=source, model_stem=model_stem, render_size=render_size
     )
 
     # What the previews show is the payload that reaches the display, so the two
@@ -1064,37 +1441,74 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
         _set_preview_payload_cached(
             _build_preview_payload_cache_key(
                 params,
-                model_index=model_index,
+                model_stem=model_stem,
                 pixel_width=render_size[0],
                 pixel_height=render_size[1],
             ),
             braille_payload,
         )
     session_id = _validate_session_cookie(request.cookies.get(_SESSION_COOKIE)) if has_request_context() else None
-    db.record_render(
-        session_id=session_id,
-        view=str(params.get("view", "")),
-        render_mode=str(params.get("renderMode", "")),
-        depth=float(params.get("depth", 0)),
-        zoom=float(params.get("zoom", 0)),
-        layout_mode=str(params.get("mode", "single")),
-        input_source=source,
-    )
+    # A render the tutorial asked for is a pose a lesson set, not something the
+    # person chose to look at, so it stays out of the usage analytics. Only
+    # this row is skipped: the braille log and the study's own record are
+    # unchanged, and a demo request still reaches the null recorder for them.
+    if not (has_request_context() and tutorial.is_tutorial_request(request)):
+        recording.current().render(
+            session_id=session_id,
+            view=str(params.get("view", "")),
+            render_mode=str(params.get("renderMode", "")),
+            depth=float(params.get("depth", 0)),
+            zoom=float(params.get("zoom", 0)),
+            layout_mode=str(params.get("mode", "single")),
+            input_source=source,
+        )
 
-    engine = get_or_create_renderer(model_index)
-    _save_print_if_requested(params, engine, rendered)
+    _save_print_if_requested(params, render_result, rendered)
 
     response: dict[str, Any] = {
         "status": "success",
         "image_base64": _img_to_base64_png(preview_payload),
         "image_shape": list(preview_payload.shape),
-        "model_list": MODEL_NAME_LIST,
+        # Which model this is, so the viewer's list and status bar can always
+        # name the model actually on the display.
+        "model": model_stem,
+        "model_list": _visible_model_names(),
+        # Where this render ended up looking, so the window that asked can send
+        # it back next time. This is what keeps a pan inside the window that
+        # made it: the renderer no longer remembers, and must not.
+        "camera_center": render_result.camera_center,
+        # Whether the object is fully outside the viewport this render settled
+        # on, and if so which way(s) to pan to bring it back (#153). Up to two
+        # entries -- an object out on both axes needs both a horizontal and a
+        # vertical pan. Same per-window reasoning as camera_center above.
+        "object_out_of_frame": render_result.object_out_of_frame,
+        "pan_guidance_directions": render_result.pan_guidance_directions,
     }
-    debug_info = getattr(engine, "last_render_debug", None)
-    if isinstance(debug_info, dict) and debug_info:
-        response["debug"] = debug_info
     if bbox is not None:
         response["bbox"] = bbox
+    # Where the model's origin lies along each axis, as a fraction of the object's
+    # extent, for XYZ mode's "," and "where am I". The render just done cached
+    # the engine, so this is a lookup rather than a build.
+    with models_lock:
+        engine = renderers_by_model.get(str(_path_for_stem(model_stem)))
+    if engine is not None and hasattr(engine, "origin_fraction"):
+        origin_fraction = engine.origin_fraction()
+        if origin_fraction is not None:
+            response["origin_fraction"] = origin_fraction
+    # Where the origin landed on this frame, across from the left edge and up
+    # from the bottom, as fractions of the display: what "," and "." say
+    # (#235 review). Absent when the layout has no single view to place it in.
+    if render_result.origin_display is not None:
+        response["origin_display"] = [float(value) for value in render_result.origin_display]
+    # Only meaningful for a request that actually asked for the slice graph:
+    # slicegraph_ready otherwise carries whatever a previous request left it at,
+    # which would misreport for one that wasn't building a graph. The render just
+    # done cached this model's engine, so reading the flag is a lookup, not a build.
+    if params.get("compose_slicegraph"):
+        with models_lock:
+            engine = renderers_by_model.get(str(_path_for_stem(model_stem)))
+        if engine is not None and not getattr(engine, "slicegraph_ready", True):
+            response["slicegraph_ready"] = False
     if str(params.get("output_device", "")).strip().lower() == "monarch_hid":
         cells = _pixels_to_braille_cells(braille_payload, lines=_MONARCH_LINES, cols=_MONARCH_COLS)
         response["monarch_cells_hex"] = cells.hex()
@@ -1105,129 +1519,177 @@ def initialize_default_braille_render() -> None:
     _log("Preparing initial render...", force=True)
 
     try:
-        merged_params, model_index, _is_pan_request, _fingerprint = _prepare_render_params(dict(DEFAULT_RENDER_PARAMS))
-        rendered, _, _ = _render_and_send(merged_params, source="startup", model_index=model_index)
+        merged_params, model_stem, _is_pan_request, _fingerprint = _prepare_render_params(dict(DEFAULT_RENDER_PARAMS))
+        rendered, _, _, _ = _render_and_send(merged_params, source="startup", model_stem=model_stem)
         _log(f"Initial render ready: shape={tuple(rendered.shape)}", force=True)
     except Exception as error:
         _log(f"Initial render failed: {error}", force=True)
 
 
-def _record_command(data: dict[str, Any]) -> int:
-    entry = {
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "request": _collect_request_context(),
-        "data": data,
-    }
-    with commands_log_lock:
-        commands_log.append(entry)
-        return len(commands_log)
-
-
-def open_viewer_in_browser() -> None:
+def open_viewer_in_browser(port: int = 6969) -> None:
+    # A demo station opens on /demo, so nobody has to remember to type it and
+    # nobody can land on the recording viewer by opening the shortcut. Anywhere
+    # else the viewer is the site's own address (#232).
+    path = "/demo" if DEMO_ONLY else "/"
+    url = f"http://localhost:{port}{path}"
     try:
-        webbrowser.open("http://localhost:6969/viewer", new=1)
-        _log("Opened viewer: http://localhost:6969/viewer", force=True)
+        webbrowser.open(url, new=1)
+        _log(f"Opened viewer: {url}", force=True)
     except Exception as error:
         _log(f"Could not open viewer in browser: {error}", force=True)
 
 
-def _slider_worker() -> None:
-    if serial is None or list_ports is None:
-        _log("Serial dependencies unavailable; slider input disabled.", force=True)
-        return
+# ---------------------------------------------------------------------------
+# Recording: the single injection point
+#
+# Everything below that could later say what somebody did goes through
+# recording.current(). There is deliberately no `if demo:` at any of those call
+# sites -- the object they get back is the whole difference. See app/recording.py.
+# ---------------------------------------------------------------------------
 
-    while True:
-        trinkey_port = None
-        for port in list_ports.comports(include_links=False):
-            if getattr(port, "pid", None) == 0x8102:
-                trinkey_port = port
-                break
-
-        if trinkey_port is None:
-            _log("Slider Trinkey not found; slider input disabled.", force=True)
-            return
-
-        _log(f"Slider Trinkey found at {trinkey_port.device}", force=True)
-        try:
-            with serial.Serial(trinkey_port.device, timeout=1) as trinkey:
-                # Average 10 consecutive readings to smooth jitter before reporting.
-                samples: list[int] = []
-                while True:
-                    line = trinkey.readline().decode("utf-8", errors="ignore").strip()
-                    if not line.startswith("Slider: "):
-                        continue
-                    try:
-                        samples.append(int(float(line.split(": ", maxsplit=1)[1])))
-                    except ValueError:
-                        continue
-                    if len(samples) < 10:
-                        continue
-                    value = int(sum(samples) / len(samples))
-                    samples.clear()
-                    with state_lock:
-                        state.slider_value = value
-                    _push_sse({"slider_value": value})
-        except Exception as error:
-            _log(f"Slider disconnected ({error}); retrying in 3s...", force=True)
-            time.sleep(3)
+if DEMO_ONLY:
+    # No handles are constructed at all: this process has no analytics module,
+    # no log path and no cookie writer to reach for.
+    #
+    # The same instance the per-request binding uses, so that on a demo station
+    # the count of writes that did not happen is one number rather than two --
+    # /demo/status reports it, and a reading that only covered half the requests
+    # would be worse than no reading.
+    recording.install(recording.null_recorder())
+else:
+    recording.install(
+        recording.PersistentRecorder(
+            analytics=db,
+            braille_writer=_write_braille_event,
+            study_render_writer=studies_engine.record_render_for_request,
+            print_writer=_write_print_render,
+            cookie_writer=_attach_session_cookie,
+        )
+    )
 
 
-def _witmotion_worker() -> None:
-    """Read WitMotion IMU euler angles via serial and push view updates.
+# Paths a demo client has no business on. Two of them write durable state that
+# does not pass through the recorder -- /studies allocates participant
+# identifiers and opens session logs, /ingest writes a model into the public
+# built-in directory -- so for those the recorder swap is not the whole answer
+# and the request is refused outright.
+#
+# On a station launched with CAD_A11Y_DEMO=1 the study routes do not exist at
+# all, which is the stronger guarantee. This closes the same door on a server
+# that is serving both, where a demo page shares an origin with a study session.
+#
+# /api is closed too. It only describes itself today, but the routes coming to
+# it take models in from other tools, and a demo station takes nothing in (#244
+# review).
+_CLOSED_TO_DEMO = ("/studies", "/ingest", "/api")
 
-    Supports WT901 and similar devices in ASCII CSV output mode.
-    Expected line format: Time,ax,ay,az,wx,wy,wz,Roll(deg),Pitch(deg),Yaw(deg)[,...]
+
+@app.before_request
+def _bind_recorder_for_request():
+    """Bind demo requests to the null recorder before any handler runs.
+
+    Ordinary requests are left alone and fall through to the process recorder,
+    which on a demo station is itself null. Binding here rather than in each
+    handler is what makes a handler added later safe by default.
     """
-    if serial is None or list_ports is None:
-        _log("Serial dependencies unavailable; WitMotion input disabled.", force=True)
-        return
+    if not recording.request_is_demo(request):
+        return None
+    recording.bind_null()
 
-    # WitMotion WT901 uses CH340 (vid=0x1a86) or CP2102 (vid=0x10c4) USB-serial chips.
-    witmotion_port = None
-    for port in list_ports.comports(include_links=False):
-        if getattr(port, "vid", None) in {0x1A86, 0x10C4}:
-            witmotion_port = port
-            break
-
-    if witmotion_port is None:
-        _log("WitMotion sensor not found; IMU orientation input disabled.", force=True)
-        return
-
-    _log(f"WitMotion sensor found at {witmotion_port.device}", force=True)
-    last_view: str | None = None
-    try:
-        with serial.Serial(witmotion_port.device, baudrate=9600, timeout=1) as sensor:
-            while True:
-                line = sensor.readline().decode("utf-8", errors="ignore").strip()
-                parts = line.split(",")
-                if len(parts) < 10:
-                    continue
-                try:
-                    roll = float(parts[7])
-                    pitch = float(parts[8])
-                    yaw = float(parts[9])
-                except (ValueError, IndexError):
-                    continue
-                view = _orientation_to_view(roll, pitch, yaw)
-                if view == last_view:
-                    continue
-                last_view = view
-                with state_lock:
-                    state.cube_value = view
-                _push_sse({"cube_value": view})
-                _log(f"WitMotion orientation ({roll:.1f}, {pitch:.1f}, {yaw:.1f}) -> view {view}")
-    except Exception as error:
-        _log(f"WitMotion integration disabled after error: {error}", force=True)
+    path = request.path
+    if any(path == closed or path.startswith(closed + "/") for closed in _CLOSED_TO_DEMO):
+        return jsonify(
+            {
+                "status": "error",
+                "message": "Not available in demo mode.",
+            }
+        ), 404
+    return None
 
 
-def start_optional_hardware_watchers() -> None:
-    threading.Thread(target=_slider_worker, daemon=True).start()
-    threading.Thread(target=_witmotion_worker, daemon=True).start()
+# ---------------------------------------------------------------------------
+# The demo endpoint
+# ---------------------------------------------------------------------------
+
+# The models the demo chooser offers: the six the comparison study compared, each
+# pair's original then its edited version. Listed here rather than read from the
+# study, which has finished: the demo goes on offering them, and a future study's
+# choice of models is not a reason for the demo's to change.
+DEMO_MODEL_STEMS: tuple[str, ...] = (
+    "pencil_holder_2x2",
+    "pencil_holder_2x3",
+    "cane_tip_hook",
+    "cane_tip_fitted",
+    "lego_2x3",
+    "lego_2x4",
+)
 
 
-@app.route("/viewer", methods=["GET"])
+def _demo_model_stems() -> list[str]:
+    """The models the demo chooser offers. The onboarding mug is deliberately not
+    here: the ask was for the six objects under comparison."""
+    return list(DEMO_MODEL_STEMS)
+
+
+@app.route("/demo", methods=["GET"])
+def demo_view():
+    """Exploration with nothing recorded, at its own address.
+
+    Same HTML as /viewer, so every control -- depth, the U/O/I/K/J/L rotation
+    cluster, R for render mode, the display's own buttons -- is the one that has
+    always been there. What differs is decided in three places and nowhere else:
+
+    * ``before_request`` above bound this request, and every request the page
+      makes, to the null recorder;
+    * ``static/js/demo-bootstrap.js`` replaces the browser's own persistence and
+      network transports before the application's code runs;
+    * ``viewer.js`` refuses to start on this path if that shim did not run.
+
+    There is no consent flow, no onboarding, no task sequence and no facilitator
+    panel here: those live under /studies, which a demo station does not register
+    at all.
+    """
+    return send_file(REPO_ROOT / "accessible-3d-viewer.html")
+
+
+@app.route("/demo/status", methods=["GET"])
+def demo_status():
+    """What the page's indicator reads, and what to show a host who asks.
+
+    Deliberately answerable from the running app rather than from the source. It
+    reports the recorder this very request resolved to, so it cannot say
+    "recording off" while some other code path is on: it is the same
+    ``recording.current()`` every write goes through.
+    """
+    recorder = recording.current()
+    return jsonify(
+        {
+            "demo": True,
+            "recording": bool(recorder.records),
+            "recorder": recorder.name,
+            "process_demo_only": recording.demo_only_process(),
+            "study_routes_registered": any(
+                str(rule).startswith("/studies") for rule in app.url_map.iter_rules()
+            ),
+            # Counts calls that reached the null recorder and wrote nothing. Zero
+            # is normal on a freshly opened page; it climbs as somebody explores,
+            # and it is the count of writes that did *not* happen.
+            "suppressed_writes": getattr(recorder, "writes", 0),
+            # The stems the demo chooser is limited to, DEMO_MODEL_STEMS.
+            #
+            # This filters what the page displays. It does not change where
+            # models are loaded from, what the server will render, or what an
+            # upload does; anything not in this list is simply not offered.
+            "models": _demo_model_stems(),
+        }
+    ), 200
+
+
+@app.route("/viewer", methods=["GET"], strict_slashes=False)
 def serve_viewer():
-    """Serve the main HTML viewer.
+    """Serve the main HTML viewer. The site's address serves it too (home); this
+    stays for the links, bookmarks and CI steps that name /viewer, with or
+    without a trailing slash.
 
     No session cookie or DB row is created here. Under GDPR/ePrivacy even an
     anonymous persistent identifier requires prior consent, so the session is
@@ -1281,7 +1743,7 @@ def workshop():
                 resp = redirect(f"/workshop?model={quote(stem)}", code=302)
                 user_id = db.get_session_id_for_identifier(normalized_name)
                 if user_id:
-                    _attach_session_cookie(resp, user_id)
+                    recording.current().attach_session_cookie(resp, user_id)
                 return resp
     return _render_workshop_entry(notice=True)
 
@@ -1296,35 +1758,26 @@ def ingest_test():
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify(
-        {
-            "status": "running",
-            "message": "Accessible 3D Viewer server",
-            "endpoints": {
-                "/render": "POST - Render CAD view with parameters",
-                "/render/image": "GET - Get last rendered image as PNG",
-                "/render/base64": "GET - Get last rendered image as base64",
-                "/command": "POST - Receive and log command; auto-render if render params exist",
-                "/commands": "GET - Retrieve logged commands",
-                "/commands/clear": "POST - Clear command log",
-                "/commands/stats": "GET - Command statistics",
-                "/models": "GET/POST - List or update active model index",
-                "/upload": "POST - Upload an STL or STEP model file",
-                "/ingest": "POST - Ingest an STL from an external tool; optional first_name, returns a workshop_url + user_id",
-                "/workshop": "GET - Simplified viewer; ?model= pre-loads, ?name= resolves a participant's first name",
-                "/ingest-test": "GET - Static harness to send the sample STL to /ingest from a browser",
-                "/get_data": "GET - Optional cube/slider state",
-                "/render/dotpad-hex": "POST - Get render as DotPad hex string for Web SDK",
-                "/viewer": "GET - Serve the HTML viewer (required for DotPad Web SDK)",
-                "/session/me": "GET - Return current session metadata",
-                "/session/identify": "POST - Store email/consent for current session",
-                "/session/models": "GET - List uploaded models for current session",
-                "/models/<filename>": "DELETE - Delete an uploaded model",
-                "/events/track": "POST - Record a client-side interaction event",
-                "/health": "GET - Deployment self-check: storage layout, writability, database",
-            },
-        }
-    )
+    """The site's address is the viewer (#232).
+
+    It used to answer with a hand-written list of endpoints, so the first thing
+    anyone following a link saw, and heard read out a line at a time, was raw
+    JSON naming routes the release keeps out of sight. The list had also drifted
+    from the routes that exist. Maintainers can list every route with
+    `flask --app app.server routes`; the API tools integrate with is described
+    at /api/v1/openapi.json.
+
+    Served here rather than redirected to /viewer, so there is no extra hop and
+    no second entry in the history (#244 review). Nothing in the page depends on
+    being at /viewer: the scripts compare the path only with /studies/<slug>,
+    /demo and /workshop, and the tutorial starts by itself at / as at /viewer.
+    A demo station sends its address to /demo instead, the page that records
+    nothing and says so, as open_viewer_in_browser does.
+    """
+    if DEMO_ONLY:
+        query = request.query_string.decode("utf-8", "replace")
+        return redirect("/demo" + (f"?{query}" if query else ""), code=302)
+    return serve_viewer()
 
 
 @app.route("/health", methods=["GET"])
@@ -1344,6 +1797,16 @@ def health():
 
     # Cached: this endpoint is unauthenticated by design and polled every 30s by
     # the container healthcheck, and each probe writes and unlinks a file.
+    #
+    # "logs" deliberately checks STUDY_LOG_DIR, the real directory, and not the
+    # resolved BRAILLE_LOG_PATH.parent. Reporting the resolved path would make
+    # /health green whenever braille telemetry had fallen back to /tmp, and the
+    # fallback is not equivalent: /tmp is inside the container and is discarded
+    # on every redeploy, and studies write participant session logs under
+    # data/logs/studies with no fallback at all, so they fail outright while the
+    # deployment still looked healthy. The entrypoint repairs the ownership that
+    # made the directory unwritable, so this reports a condition that is now
+    # fixable rather than one we have to live with.
     writable = {
         "models": _is_writable_directory_cached(MODEL_DIR),
         "uploads": _is_writable_directory_cached(UPLOAD_DIR),
@@ -1383,6 +1846,10 @@ def health():
         "unexpected_public_models": max(0, public_models - shipped),
         "writable": writable,
         "database": database,
+        # Reported so a slow first start reads as work in progress rather than a
+        # hang. Deliberately not part of `healthy`: a server that is still
+        # warming answers renders perfectly well, just without the head start.
+        "warmup": _warmup_snapshot(),
     }
 
     healthy = (
@@ -1401,38 +1868,26 @@ def health():
 
 @app.route("/render", methods=["POST"])
 def render_view():
-    global last_render_fingerprint, last_render_response
-
     try:
         t0 = time.perf_counter()
         _refresh_model_list_if_stale()
-        merged_params, model_index, is_pan_request, fingerprint = _prepare_render_params(request.get_json(silent=True))
-        quantized_cache_key = _build_quantized_render_key(merged_params, model_index)
+        merged_params, model_stem, is_pan_request, fingerprint = _prepare_render_params(request.get_json(silent=True))
+        quantized_cache_key = _build_quantized_render_key(merged_params, model_stem)
 
-        with state_lock:
-            if (
-                not is_pan_request
-                and merged_params.get("print_view") is not True
-                and last_render_fingerprint == fingerprint
-                and last_render_response is not None
-            ):
-                last_render_response["model_list"] = MODEL_NAME_LIST
-                response = copy.deepcopy(last_render_response)
-                debug = dict(response.get("debug", {}))
-                debug.update(
-                    {
-                        "phase1_exact_cache_hit": True,
-                        "phase1_quantized_cache_hit": False,
-                        "phase1_total_ms": round((time.perf_counter() - t0) * 1000.0, 3),
-                    }
-                )
-                response["debug"] = debug
-                return jsonify(response), 200
+        # A slice-graph response is not a pure function of these params: the
+        # precompute it plots finishes in the background, independent of any
+        # request, so identical params legitimately produce a different (correct)
+        # response once that finishes. A response cached while precompute was
+        # still pending would then be served forever, even once the real graph
+        # was ready, because nothing here knows precompute state changed on its
+        # own. Skip the cache entirely for these; the render is cheap once
+        # precompute is done, so this only costs the redundant plot.
+        skip_cache = bool(merged_params.get("compose_slicegraph"))
 
-        if not is_pan_request and merged_params.get("print_view") is not True:
+        if not skip_cache and not is_pan_request and merged_params.get("print_view") is not True:
             cached_response = _get_quantized_cached_response(quantized_cache_key)
             if cached_response is not None:
-                cached_response["model_list"] = MODEL_NAME_LIST
+                cached_response["model_list"] = _visible_model_names()
                 debug = dict(cached_response.get("debug", {}))
                 debug.update(
                     {
@@ -1442,13 +1897,11 @@ def render_view():
                     }
                 )
                 cached_response["debug"] = debug
+                # Recorded on the cache path too: a cached response still put a
+                # new image under the participant's fingers, and dropping those
+                # would lose most of a fast arrow-key traversal from the record.
+                recording.current().study_render(merged_params, model_stem=model_stem, cache_hit=True)
                 return jsonify(cached_response), 200
-
-        # Do not copy browser-selected viewpoint into global hardware state.
-        # Global cube_value is reserved for hardware-originated updates (WitMotion IMU)
-        # so one browser's manual navigation does not move other connected clients.
-        with state_lock:
-            state.current_model_index = model_index
 
         response = _render_response(merged_params, source="http_render")
         debug = dict(response.get("debug", {}))
@@ -1460,196 +1913,96 @@ def render_view():
             }
         )
         response["debug"] = debug
+        recording.current().study_render(merged_params, model_stem=model_stem, cache_hit=False)
 
-        with state_lock:
-            if merged_params.get("print_view") is not True:
-                last_render_fingerprint = fingerprint
-                last_render_response = response
-                _set_quantized_cached_response(quantized_cache_key, response)
+        # A pan is not cacheable in either direction. "move left" means move from
+        # wherever this window already was, and neither key carries that starting
+        # point or the verb, so the same key describes two different pictures.
+        # Reads were already guarded; writes were not, so a pan stored its result
+        # under the unpanned key and the next window to ask got it. The request
+        # after a pan carries the new centre explicitly and caches correctly.
+        cacheable = not skip_cache and not is_pan_request and merged_params.get("print_view") is not True
+        if cacheable:
+            _set_quantized_cached_response(quantized_cache_key, response)
         return jsonify(response), 200
+    except ModelNotAvailable:
+        raise  # answered by _model_not_available: a 404, not a failed render
     except Exception as error:
         _log(f"Error rendering: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
 
+
+@app.route("/render/status", methods=["POST"])
+def render_status():
+    """Per-model async-work status — today, whether slice-graph precompute has
+    finished. A cheap, render_lock-free check, deliberately separate from
+    /render itself (unlike /health, this is per-model, so it can't live there:
+    /health is a fixed, unauthenticated, model-name-free deployment check
+    polled by infra, not something with per-viewer-session context).
+
+    The client polls this while waiting for a locked slice graph's first real
+    render (see viewer.js's scheduleSliceGraphStatusCheck). Polling /render
+    itself for this would repeatedly re-run the same, non-trivial
+    matplotlib/shapely-based render() under render_lock — real CPU competing
+    with the very background precompute thread the poll is waiting on, which
+    can starve it indefinitely under constrained CPU. This only reads a flag
+    already set by the background thread; it never renders and never blocks
+    on render_lock, so it cannot compete with the thing it's checking on.
+
+    Looks the renderer up directly rather than through get_or_create_renderer,
+    so calling this can't itself construct a renderer (and thus can't be the
+    thing that kicks off a mesh load) for a model nobody has actually rendered
+    yet — "not ready" is the correct answer for that case anyway.
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        model_stem = _resolve_model_stem(data.get("model", data.get("current_model")))
+    except ModelNotAvailable:
+        return jsonify({"slice_graphs_ready": False}), 200
+    with models_lock:
+        engine = renderers_by_model.get(str(_path_for_stem(model_stem)))
+    slice_graphs_ready = bool(engine is not None and getattr(engine, "_slice_graphs_ready", False))
+    return jsonify({"slice_graphs_ready": slice_graphs_ready}), 200
+
+
 @app.route("/render/fit-view", methods=["POST"])
 def fit_render_view():
     data = request.get_json(silent=True) or {}
-    merged_params, model_index, _, _ = _prepare_render_params(data)
-    engine = get_or_create_renderer(model_index)
-    fit = engine.compute_fit_view(merged_params)
+    merged_params, model_stem, _, _ = _prepare_render_params(data)
+    engine = get_or_create_renderer(model_stem)
+    fit = engine.compute_fit_view(merged_params, screen_size=_target_grid(merged_params))
     return jsonify({"status": "success", **fit}), 200
 
-@app.route("/render/image", methods=["GET"])
-def get_render_image():
-    if current_render is None:
-        return jsonify({"status": "error", "message": "No image has been rendered yet"}), 404
-    try:
-        return send_file(_img_to_png_bytes(current_render), mimetype="image/png")
-    except Exception as error:
-        return jsonify({"status": "error", "message": str(error)}), 400
 
+@app.route("/models", methods=["GET"])
+def models_endpoint():
+    """List the built-ins and the caller's own uploads, by name.
 
-@app.route("/render/base64", methods=["GET"])
-def get_render_base64():
-    if current_render is None:
-        return jsonify({"status": "error", "message": "No image has been rendered yet"}), 404
-    try:
-        return jsonify(
-            {
-                "status": "success",
-                "image_base64": _img_to_base64_png(current_render),
-                "image_shape": list(current_render.shape),
-            }
-        ), 200
-    except Exception as error:
-        return jsonify({"status": "error", "message": str(error)}), 400
+    Read only. Selecting a model is not a server-side action: a render names the
+    model it wants, so there is nothing here to set. The POST branch that used to
+    write a process-wide "current model" is gone, since one window choosing a
+    model would change what every other window rendered next.
 
+    It used to list every upload on the server, with each file's absolute path.
+    """
+    global AVAILABLE_MODELS, MODEL_NAME_LIST
 
-@app.route("/command", methods=["POST"])
-def receive_command():
-    global last_render_fingerprint, last_render_response
-    try:
-        data = request.get_json(silent=True) or {}
-        command_id = _record_command(data)
-
-        response_data: dict[str, Any] = {
-            "status": "success",
-            "message": "Command received",
-            "command_id": command_id,
-        }
-
-        render_keys = {"view", "renderMode", "depth", "zoom", "mode", "move_camera_center", "print_view", "current_model"}
-        if any(key in data for key in render_keys):
-            merged_params, model_index, is_pan_request, fingerprint = _prepare_render_params(data)
-            with state_lock:
-                state.current_model_index = model_index
-
-            render_result: dict[str, Any] | None = None
-            if not is_pan_request and merged_params.get("print_view") is not True:
-                with state_lock:
-                    if last_render_fingerprint == fingerprint and last_render_response is not None:
-                        render_result = copy.deepcopy(last_render_response)
-                        render_result["model_list"] = MODEL_NAME_LIST
-                if render_result is None:
-                    quantized_cache_key = _build_quantized_render_key(merged_params, model_index)
-                    render_result = _get_quantized_cached_response(quantized_cache_key)
-                    if render_result is not None:
-                        render_result["model_list"] = MODEL_NAME_LIST
-
-            if render_result is None:
-                render_result = _render_response(merged_params, source="command_auto_render")
-                if not is_pan_request and merged_params.get("print_view") is not True:
-                    quantized_cache_key = _build_quantized_render_key(merged_params, model_index)
-                    with state_lock:
-                        last_render_fingerprint = fingerprint
-                        last_render_response = render_result
-                    _set_quantized_cached_response(quantized_cache_key, render_result)
-            response_data["render"] = render_result
-
-        return jsonify(response_data), 200
-    except Exception as error:
-        _log(f"Error processing command: {error}", force=True)
-        return jsonify({"status": "error", "message": str(error)}), 400
-
-
-@app.route("/commands", methods=["GET"])
-def get_commands():
-    with commands_log_lock:
-        payload = {
-            "status": "success",
-            "total_commands": len(commands_log),
-            "commands": list(commands_log),
-        }
-    return jsonify(payload), 200
-
-
-@app.route("/commands/clear", methods=["POST"])
-def clear_commands():
-    with commands_log_lock:
-        count = len(commands_log)
-        commands_log.clear()
-    return jsonify({"status": "success", "message": f"Cleared {count} commands"}), 200
-
-
-@app.route("/commands/stats", methods=["GET"])
-def get_stats():
-    with commands_log_lock:
-        snapshot = list(commands_log)
-
-    if not snapshot:
-        return jsonify({"status": "success", "total_commands": 0, "stats": {}}), 200
-
-    type_counts: dict[str, int] = {}
-    action_counts: dict[str, int] = {}
-    for entry in snapshot:
-        data = entry.get("data", {})
-        if not isinstance(data, dict):
-            continue
-        cmd_type = str(data.get("type", "unknown"))
-        action = str(data.get("action", "unknown"))
-        type_counts[cmd_type] = type_counts.get(cmd_type, 0) + 1
-        action_counts[action] = action_counts.get(action, 0) + 1
-
+    with models_lock:
+        AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
+        MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
     return jsonify(
         {
             "status": "success",
-            "total_commands": len(snapshot),
-            "stats": {
-                "by_type": type_counts,
-                "by_action": action_counts,
-                "first_command": snapshot[0].get("timestamp"),
-                "last_command": snapshot[-1].get("timestamp"),
-            },
+            "model_list": _visible_model_names(),
         }
     ), 200
 
 
-@app.route("/models", methods=["GET", "POST"])
-def models_endpoint():
-    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response
-
-    if request.method == "GET":
-        with models_lock:
-            AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
-            MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
-        with state_lock:
-            current_index = state.current_model_index
-        return jsonify(
-            {
-                "status": "success",
-                "model_list": MODEL_NAME_LIST,
-                "model_paths": [str(model) for model in AVAILABLE_MODELS],
-                "current_model": current_index,
-            }
-        ), 200
-
-    try:
-        data = request.get_json(silent=True) or {}
-        model_index = _normalize_model_index(data.get("current_model", data.get("model_index")))
-        with state_lock:
-            state.current_model_index = model_index
-            # Changing model invalidates response cache.
-            last_render_fingerprint = None
-            last_render_response = None
-        with quantized_render_cache_lock:
-            quantized_render_cache.clear()
-        with preview_payload_cache_lock:
-            preview_payload_cache.clear()
-        return jsonify(
-            {
-                "status": "success",
-                "message": "Current model updated",
-                "current_model": model_index,
-                "model_name": MODEL_NAME_LIST[model_index],
-                "model_path": str(AVAILABLE_MODELS[model_index]),
-            }
-        ), 200
-    except Exception as error:
-        return jsonify({"status": "error", "message": str(error)}), 400
-
-
-_ALLOWED_EXTENSIONS = {".stl", ".step"}
-_MAX_UPLOAD_SESSION_ID_LEN = 128
+# The form viewer.js generates: "tab-" and 128 random bits in hex. Nothing else is
+# accepted, because the id is what grants a tab its uploads (#237): the server
+# used to take any 1 to 128 characters, which let a guessable id in, and a viewer
+# from before #237 made its ids from the clock and Math.random (#243 review).
+_UPLOAD_SESSION_ID_RE = re.compile(r"^tab-[0-9a-f]{32}$")
 
 # Tracks uploaded model paths by browser-tab session id so they can be cleaned up
 # when the page closes. Values are absolute path strings under UPLOAD_DIR.
@@ -1658,17 +2011,11 @@ uploaded_models_lock = threading.Lock()
 
 
 def _sanitize_upload_session_id(raw_value: Any) -> str | None:
-    if raw_value is None:
+    """The tab id if it is one the viewer could have made, else None."""
+    if not isinstance(raw_value, str):
         return None
-    value = str(raw_value).strip()
-    if not value:
-        return None
-    if len(value) > _MAX_UPLOAD_SESSION_ID_LEN:
-        value = value[:_MAX_UPLOAD_SESSION_ID_LEN]
-    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
-    if any(ch not in allowed for ch in value):
-        return None
-    return value
+    value = raw_value.strip()
+    return value if _UPLOAD_SESSION_ID_RE.match(value) else None
 
 
 def _register_uploaded_model(session_id: str | None, model_path: Path) -> None:
@@ -1709,25 +2056,79 @@ def _cleanup_uploaded_models_for_session(session_id: str | None) -> dict[str, An
         except Exception as exc:
             errors.append(f"{model_path}: {exc}")
 
+    # The rows go with the files. Left behind, a row went on saying its session
+    # owned the name, so whoever uploaded a file of that name next had it listed,
+    # rendered and deletable by the first session (#243 review).
+    for removed in deleted:
+        recording.current().forget_file(Path(removed).name)
+
     # Refresh in-memory model list and invalidate caches after cleanup.
-    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response, renderers_by_model
+    global AVAILABLE_MODELS, MODEL_NAME_LIST
     with models_lock:
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
-        renderers_by_model.clear()
+        # Only the files this tab actually removed. Dropping every renderer made
+        # one visitor closing a tab reload every mesh for everyone still working.
+        for removed in deleted:
+            _forget_renderer(Path(removed))
 
-    with state_lock:
-        if state.current_model_index >= len(AVAILABLE_MODELS):
-            state.current_model_index = 0
-        last_render_fingerprint = None
-        last_render_response = None
 
     with quantized_render_cache_lock:
         quantized_render_cache.clear()
     with preview_payload_cache_lock:
         preview_payload_cache.clear()
 
+    if deleted:
+        _announce_models_changed()
     return {"deleted": deleted, "errors": errors}
+
+
+def _reconcile_uploads() -> dict[str, int]:
+    """Make the upload directory and the ownership rows agree, at start-up.
+
+    They drift two ways, both found in #243's review:
+
+    * A row whose file is gone. Cleanup used to delete files and leave their rows,
+      so the deployed databases hold live rows for names no file has. Marked
+      deleted here; the name check in _save_and_index_stl covers any that appear
+      later.
+    * A file no row owns. An upload made without a cookie belongs only to its
+      tab's entry in memory, which a restart forgets, so the file stayed on disk
+      where nobody could see or delete it. Removed here.
+
+    Only the upload directory, and never a built-in: if the two directories were
+    ever the same, nothing is removed.
+    """
+    result = {"stale_rows": 0, "orphan_files": 0}
+    if not recording.current().records or not UPLOAD_DIR.is_dir():
+        return result
+
+    on_disk = {
+        path.name: path
+        for path in UPLOAD_DIR.iterdir()
+        if path.is_file() and path.suffix.lower() in MODEL_SUFFIXES
+    }
+    live = db.live_upload_filenames()
+    for name in live - set(on_disk):
+        result["stale_rows"] += recording.current().forget_file(name)
+
+    if UPLOAD_DIR.resolve() == _MODEL_DIR_RESOLVED:
+        return result
+    for name in set(on_disk) - live:
+        path = on_disk[name]
+        if _is_builtin(path):
+            continue
+        try:
+            path.unlink()
+            result["orphan_files"] += 1
+        except OSError as error:
+            _log(f"Could not remove orphaned upload {name}: {error}")
+    if result["orphan_files"]:
+        global AVAILABLE_MODELS, MODEL_NAME_LIST
+        with models_lock:
+            AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
+            MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
+    return result
 
 
 def _save_and_index_stl(
@@ -1754,13 +2155,13 @@ def _save_and_index_stl(
     Returns ``(filename, dest_path, new_index)``. Raises ``ValueError`` for a
     missing name or unsupported extension; save/registration errors propagate.
     """
-    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response, renderers_by_model
+    global AVAILABLE_MODELS, MODEL_NAME_LIST
 
     filename = secure_filename(requested_name or "")
     if not filename:
         raise ValueError("No file selected")
     suffix = Path(filename).suffix.lower()
-    if suffix not in _ALLOWED_EXTENSIONS:
+    if suffix not in MODEL_SUFFIXES:
         raise ValueError(f"Unsupported file type '{suffix}'. Use .stl or .step")
 
     target_dir = MODEL_DIR if public else UPLOAD_DIR
@@ -1770,18 +2171,33 @@ def _save_and_index_stl(
     # upload allowed to reuse a built-in's stem would both collide and be shown
     # to every visitor. Before the storage split a plain dest.exists() sufficed,
     # because everything lived in one directory.
-    dest = target_dir / filename
-    if dest.exists() or _stem_is_taken(Path(filename).stem):
-        stem = Path(filename).stem
-        filename = f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
-        dest = target_dir / filename
-
+    # Claimed under models_lock, because the check and the write have to be one
+    # step. Two uploads of the same name could otherwise both look free, both
+    # rename to the same stem, and end up as two models claiming one name.
     target_dir.mkdir(parents=True, exist_ok=True)
+    with models_lock:
+        dest = target_dir / filename
+        # A name some session still holds a live row for is taken too, file or no
+        # file. A stale row would otherwise hand the new upload to its old owner;
+        # the deployed servers have such rows, since cleanup used to delete files
+        # without their rows (#243 review).
+        if (
+            dest.exists()
+            or _stem_is_taken(Path(filename).stem)
+            or (recording.current().records and db.filename_has_live_owner(filename))
+        ):
+            stem = Path(filename).stem
+            filename = f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
+            dest = target_dir / filename
+        # Reserve the name before releasing the lock, so a second upload arriving
+        # now sees it taken. The real bytes overwrite this immediately below.
+        dest.touch()
+
     save_fn(dest)
 
     if session_id:
         try:
-            db.register_model(
+            recording.current().register_model(
                 session_id,
                 filename,
                 original_name or filename,
@@ -1794,14 +2210,16 @@ def _save_and_index_stl(
     with models_lock:
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
-        # A new or renamed file reorders the discovered model list, so any
-        # renderer cached by index may now point at stale data.
-        renderers_by_model.clear()
+        # Nothing to evict: this path is new, and a name collision is renamed
+        # rather than overwritten, so no cached renderer can be stale. Renderers
+        # are keyed by path, so the list reordering underneath them is harmless.
         new_index = next((i for i, p in enumerate(AVAILABLE_MODELS) if p == dest), 0)
 
-    with state_lock:
-        last_render_fingerprint = None
-        last_render_response = None
+    # Processed in the background, so whoever uploaded it is not also the one who
+    # waits for its first render.
+    enqueue_model_for_warmup(dest)
+    _announce_models_changed()
+
     with quantized_render_cache_lock:
         quantized_render_cache.clear()
     with preview_payload_cache_lock:
@@ -1841,11 +2259,17 @@ def upload_model():
 
     _register_uploaded_model(upload_session_id, dest)
 
-    _log(f"Model uploaded: {filename} → index {new_index}", force=True)
+    _log(f"Model uploaded: {filename}", force=True)
     return jsonify({
         "status": "success",
         "filename": filename,
-        "model_list": MODEL_NAME_LIST,
+        # The form field names the tab as well as the header does, so the new
+        # upload is in the list whichever of the two the client sent.
+        "model_list": _visible_model_names(upload_session_id),
+        # The name is how a model is addressed. new_model_index is kept for one
+        # release for anything still reading it; it is a position in a list that
+        # the next upload renumbers.
+        "model_stem": Path(filename).stem,
         "new_model_index": new_index,
     }), 200
 
@@ -1989,23 +2413,40 @@ def session_identify():
     does not, so no identifier is stored before the user answers the consent dialog.
     Email is validated before the row is created, so a rejected request leaves no
     orphan session behind. The response carries the persistent cad_session cookie.
+
+    The email is a contact address and nothing more. It used to double as a key,
+    so typing somebody else's address listed their uploads and let you delete
+    them (#237). It is now kept apart from the session altogether, so nothing
+    ties it to the usage data recorded under one, which is what lets the dialog
+    call that data anonymous (#220).
     """
     data = request.get_json(silent=True) or {}
     email = data.get("email")
     consent = data.get("consent", False)
 
-    if email is not None:
-        email = str(email).strip()
-        if email and not _EMAIL_RE.match(email):
-            return jsonify({"status": "error", "message": "Invalid email address"}), 400
-        email = email or None
+    # One check, the one db.add_contact applies too (app/email_address.py). An
+    # empty field is no address rather than a wrong one.
+    if email is not None and not (isinstance(email, str) and not email.strip()):
+        try:
+            email = email_address.normalise(email)
+        except email_address.InvalidEmail as error:
+            return jsonify(
+                {"status": "error", "reason": error.reason, "message": email_address.message_for(error)}
+            ), 400
+    else:
+        email = None
 
     session_id = _get_or_create_session_id()  # reuse a valid cookie or mint a new UUID
-    db.upsert_session(session_id)
-    db.save_session_identifier(session_id, email, bool(consent))
+    recorder = recording.current()
+    recorder.touch_session(session_id)
+    recorder.identify_session(session_id, consent=bool(consent))
+    if email:
+        recorder.add_contact(email)
 
     response = jsonify({"status": "success"})
-    _attach_session_cookie(response, session_id)
+    # The cookie is a write too: it is the identifier that would survive the tab
+    # closing. The null recorder returns the response untouched.
+    recorder.attach_session_cookie(response, session_id)
     return response, 200
 
 
@@ -2043,23 +2484,26 @@ def delete_model(filename: str):
     except Exception as err:
         return jsonify({"status": "error", "message": f"Could not remove file: {err}"}), 500
 
-    db.mark_model_deleted(session_id, safe_name)
+    # Every row for the file, not only this session's, and every tab still
+    # holding its path: either one left behind would claim the next upload of
+    # the same name, and a tab's cleanup on closing would delete it (#243 review).
+    recording.current().forget_file(safe_name)
+    resolved = str(dest.resolve())
+    with uploaded_models_lock:
+        for paths in uploaded_models_by_session.values():
+            paths.discard(resolved)
 
-    global AVAILABLE_MODELS, MODEL_NAME_LIST, last_render_fingerprint, last_render_response, renderers_by_model
+    global AVAILABLE_MODELS, MODEL_NAME_LIST
     with models_lock:
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
-        renderers_by_model.clear()
-    with state_lock:
-        if state.current_model_index >= len(AVAILABLE_MODELS):
-            state.current_model_index = 0
-        last_render_fingerprint = None
-        last_render_response = None
+        _forget_renderer(dest)
     with quantized_render_cache_lock:
         quantized_render_cache.clear()
     with preview_payload_cache_lock:
         preview_payload_cache.clear()
 
+    _announce_models_changed()
     return jsonify({"status": "success", "filename": safe_name}), 200
 
 
@@ -2074,17 +2518,24 @@ def track_event():
     event_data = data.get("event_data")
     if event_data is not None and not isinstance(event_data, dict):
         return jsonify({"status": "error", "message": "event_data must be an object"}), 400
-    db.record_page_event(session_id, event_type, event_data)
+    if event_type == "tutorial":
+        event_data = tutorial.clean_event_data(event_data)
+        if event_data is None:
+            return jsonify(
+                {"status": "error", "message": "a tutorial event needs a known action and a lesson id"}
+            ), 400
+    recording.current().page_event(session_id, event_type, event_data)
     return jsonify({"status": "success"}), 200
 
 
 @app.route("/uploads/cleanup", methods=["POST"])
 def cleanup_uploaded_models():
     payload = request.get_json(silent=True) or {}
+    # From the body or the header, never the address, for the reason in
+    # _request_upload_session_id.
     upload_session_id = _sanitize_upload_session_id(
         payload.get("upload_session_id")
         or request.form.get("upload_session_id")
-        or request.args.get("upload_session_id")
         or request.headers.get("X-Upload-Session")
     )
     if not upload_session_id:
@@ -2107,17 +2558,18 @@ def sse_events():
     Replaces 1-second polling for hardware input — events are pushed immediately
     when device state changes, reducing perceived latency from ~1000 ms to ~10 ms.
     """
+    # Nothing that depends on who is asking. The first message used to be the
+    # caller's model list, which meant the tab id rode in the stream's address,
+    # into access logs (#243 review). The list comes from /get_data and /render,
+    # which send the id in a header.
+    initial: dict[str, Any] = {}
+
     def generate():
         client_queue = _queue_module.Queue(maxsize=20)
         with _sse_clients_lock:
             _sse_clients.append(client_queue)
         try:
             # Send current state immediately on connect so the client is in sync.
-            with state_lock:
-                initial = {
-                    "cube_value": state.cube_value,
-                    "model_list": MODEL_NAME_LIST,
-                }
             yield f"data: {json.dumps(initial)}\n\n"
             while True:
                 try:
@@ -2143,13 +2595,13 @@ def sse_events():
 
 @app.route("/get_data", methods=["GET"])
 def get_data():
-    with state_lock:
+    # Every open viewer polls this, so a file added or removed behind the app's
+    # back is noticed here even when nobody is rendering.
+    _refresh_model_list_if_stale()
+    with models_lock:
         payload = {
             "status": "success",
-            "cube_value": state.cube_value,
-            "slider_value": state.slider_value,
-            "current_model": state.current_model_index,
-            "model_list": MODEL_NAME_LIST,
+            "model_list": _visible_model_names(),
             "builtin_model_stems": _builtin_model_stems(),
         }
     return jsonify(payload), 200
@@ -2167,26 +2619,27 @@ def render_export_source():
         merged_params.update(params)
         merged_params["view"] = str(merged_params.get("view", "")).lower()
         merged_params["print_view"] = False
+        # The client names the model on this request too. It used to be ignored,
+        # so an export handed back whatever model the server-wide value happened
+        # to hold: you could export somebody else's model.
+        export_stem = _resolve_model_stem(
+            merged_params.get("model", merged_params.get("current_model"))
+        )
 
         export_width = _coerce_positive_int(params.get("export_width", 1000), 1000)
 
-        engine = get_or_create_renderer()
+        engine = get_or_create_renderer(export_stem)
 
+        aspect_ratio = float(DEFAULT_SCREEN_SIZE[1]) / float(DEFAULT_SCREEN_SIZE[0])
+        export_height = max(1, int(round(export_width * aspect_ratio)))
         with render_lock:
-            original_screen_size = list(engine.screen_size)
-            if not original_screen_size or original_screen_size[0] <= 0:
-                original_screen_size = list(DEFAULT_SCREEN_SIZE)
-            aspect_ratio = float(original_screen_size[1]) / float(original_screen_size[0])
-            export_height = max(1, int(round(export_width * aspect_ratio)))
-            engine.screen_size = [export_width, export_height]
-            try:
-                out_guard, err_guard = _renderer_stdio_guard()
-                with out_guard, err_guard:
-                    rendered = engine.render(merged_params)
-            finally:
-                engine.screen_size = original_screen_size
+            out_guard, err_guard = _renderer_stdio_guard()
+            with out_guard, err_guard:
+                result = engine.render(
+                    merged_params, screen_size=[export_width, export_height]
+                )
 
-        tactile_payload = _to_braille_payload(rendered)
+        tactile_payload = _to_braille_payload(result.image)
         response = {
             "status": "success",
             "message": "Export source render complete",
@@ -2196,6 +2649,8 @@ def render_export_source():
             "export_height": export_height,
         }
         return jsonify(response), 200
+    except ModelNotAvailable:
+        raise  # answered by _model_not_available: a 404, not a failed render
     except Exception as error:
         _log(f"Error rendering export source: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
@@ -2210,12 +2665,18 @@ def render_preview():
     """
     try:
         _refresh_model_list_if_stale()
-        merged_params, model_index, is_pan_request, _fingerprint = _prepare_render_params(request.get_json(silent=True))
+        merged_params, model_stem, is_pan_request, _fingerprint = _prepare_render_params(request.get_json(silent=True))
         preview_width = _coerce_positive_int(merged_params.get("preview_width", 800), 800)
-        use_cache = not is_pan_request and merged_params.get("print_view") is not True
+        use_cache = (
+            not is_pan_request
+            and merged_params.get("print_view") is not True
+            # See render_view(): a slice-graph output is time-dependent
+            # (precompute finishes on its own), so it must not be cached.
+            and not merged_params.get("compose_slicegraph")
+        )
         preview_b64, preview_shape = _make_hifi_preview(
             merged_params,
-            model_index,
+            model_stem,
             preview_width=preview_width,
             use_cache=use_cache,
         )
@@ -2226,6 +2687,8 @@ def render_preview():
                 "render_preview_shape": preview_shape,
             }
         ), 200
+    except ModelNotAvailable:
+        raise  # answered by _model_not_available: a 404, not a failed render
     except Exception as error:
         _log(f"Error rendering preview: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
@@ -2240,7 +2703,7 @@ def render_dotpad_hex():
     """
     try:
         params = request.get_json(silent=True) or {}
-        merged_params, model_index, is_pan_request, _fingerprint = _prepare_render_params(params)
+        merged_params, model_stem, is_pan_request, _fingerprint = _prepare_render_params(params)
 
         # Use device-reported cell grid if provided; fall back to DotPad 300A defaults.
         dotpad_cols = max(1, min(int(params.get("dotpad_cols", _DOTPAD_COLS)), 128))
@@ -2250,10 +2713,16 @@ def render_dotpad_hex():
         pixel_width  = dotpad_cols * 2
         pixel_height = dotpad_rows * 4
 
-        use_cache = not is_pan_request and merged_params.get("print_view") is not True
+        use_cache = (
+            not is_pan_request
+            and merged_params.get("print_view") is not True
+            # See render_view(): a slice-graph output is time-dependent
+            # (precompute finishes on its own), so it must not be cached.
+            and not merged_params.get("compose_slicegraph")
+        )
         braille_payload = _get_braille_payload_at_size(
             merged_params,
-            model_index=model_index,
+            model_stem=model_stem,
             pixel_width=pixel_width,
             pixel_height=pixel_height,
             use_cache=use_cache,
@@ -2269,6 +2738,8 @@ def render_dotpad_hex():
             "dotpad_graphic_hex": hex_string,
             "cell_count": total_cells,
         }), 200
+    except ModelNotAvailable:
+        raise  # answered by _model_not_available: a 404, not a failed render
     except Exception as error:
         _log(f"Error rendering DotPad hex: {error}", force=True)
         return jsonify({"status": "error", "message": str(error)}), 400
@@ -2295,25 +2766,66 @@ def serve_static_css(filename):
 
 
 def main() -> int:
-    _log("Server starting on http://localhost:6969", force=True)
+    # One station per process, so three stations on one machine need three ports.
+    # See the demo section of the README.
+    port = int(os.getenv("PORT", "6969") or "6969")
+    _log(f"Server starting on http://localhost:{port}", force=True)
     _log(f"Model directory: {MODEL_DIR}", force=True)
     _log(f"Upload directory: {UPLOAD_DIR}", force=True)
     _log(f"Upload directory writable: {_is_writable_directory(UPLOAD_DIR)}", force=True)
     _log(f"Models found: {len(AVAILABLE_MODELS)}", force=True)
-    _log("Endpoints: POST /render, POST /command, GET /get_data", force=True)
-    _log(f"Braille send logs: {BRAILLE_LOG_PATH}", force=True)
+    _log("Endpoints: POST /render, GET /get_data", force=True)
+
+    if DEMO_ONLY:
+        # Said loudly, at the top, because it is the thing to check before letting
+        # anybody sit down at this station.
+        _log("", force=True)
+        _log("=" * 60, force=True)
+        _log("DEMO STATION - RECORDING IS OFF", force=True)
+        _log("  Nothing is written: no databases, no logs, no cookies.", force=True)
+        _log(f"  Open: http://localhost:{port}/demo", force=True)
+        _log(f"  Confirm: http://localhost:{port}/demo/status", force=True)
+        _log("  The study endpoints are not served by this process.", force=True)
+        _log(f"  Scratch (deleted on exit): {demo_scratch_dir()}", force=True)
+        _log("=" * 60, force=True)
+        _log("", force=True)
+    else:
+        _log(f"Braille send logs: {BRAILLE_LOG_PATH}", force=True)
     if QUIET_MODE:
         _log("Output mode: quiet (set SERVER_VERBOSE=1 for debug logs)", force=True)
 
     db.init_db()
-    initialize_default_braille_render()
-    start_optional_hardware_watchers()
-    open_viewer_in_browser()
+    if not DEMO_ONLY:
+        reconciled = _reconcile_uploads()
+        if any(reconciled.values()):
+            _log(
+                f"Uploads reconciled: {reconciled['stale_rows']} row(s) for missing files "
+                f"marked deleted, {reconciled['orphan_files']} unowned file(s) removed",
+                force=True,
+            )
+    # Each study has a database of its own, separate from the analytics one, so
+    # a session that cannot be re-run is never at the mercy of a change to
+    # product telemetry. They were opened when the registry loaded; this says
+    # which studies are served and which definitions were refused.
+    for message in STUDY_LOAD_MESSAGES or ["No studies are served by this process."]:
+        _log(message, force=True)
+    # Backgrounded rather than awaited: this used to run before app.run(), so
+    # nothing -- not even /health -- answered until the first default-params
+    # render finished. A cold model's mesh load and slice precompute is easily
+    # several seconds, which is several seconds the whole site was down for on
+    # every restart for no reason a visitor should ever wait on. The render
+    # path already builds a renderer on demand if this hasn't finished yet, the
+    # same fallback a model that missed warmup entirely already relies on.
+    threading.Thread(
+        target=initialize_default_braille_render, name="cad-initial-render", daemon=True
+    ).start()
+    start_model_warmup()
+    open_viewer_in_browser(port)
 
     _log("Ready.", force=True)
     # threaded=True lets /events (SSE) and /get_data respond concurrently while
     # a render is in progress; render_lock still serializes the renders themselves.
-    app.run(debug=False, host="0.0.0.0", port=6969, threaded=True)
+    app.run(debug=False, host="0.0.0.0", port=port, threaded=True)
     return 0
 
 

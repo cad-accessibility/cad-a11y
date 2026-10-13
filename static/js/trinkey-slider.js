@@ -60,6 +60,8 @@
             setStatus('Connected — reading slider…');
             disconnectBtn.disabled = false;
             if (typeof announce === 'function') announce('Trinkey Slider connected.');
+            // An interaction event as well, for the study log and the tutorial.
+            window.reportDeviceConnection?.('slider', true);
             startReading();
         } catch (err) {
             if (err.name !== 'NotFoundError') {
@@ -94,6 +96,7 @@
         connectBtn.disabled = false;
         if (depthValueEl) depthValueEl.textContent = '--';
         if (typeof announce === 'function') announce('Trinkey Slider disconnected.');
+        window.reportDeviceConnection?.('slider', false);
     }
 
     async function startReading() {
@@ -141,7 +144,7 @@
                     if (lastHardwareDepth === null || Math.abs(depth - lastHardwareDepth) >= MIN_DEPTH_CHANGE) {
                         lastHardwareDepth = depth;
                         if (typeof updateSliceDepth === 'function') {
-                            window.pendingInputSource = 'slider';
+                            window.setPendingInputSource?.('slider');
                             updateSliceDepth(depth, false);
                         }
                     }

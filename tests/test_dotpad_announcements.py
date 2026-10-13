@@ -150,11 +150,11 @@ def test_dotpad_text_cell_count_uses_connected_device_with_fallback():
 
 def test_new_announcement_resets_scroll_offset_and_renders_first_window():
     source = _dotpad_source()
-    body = _function_body(source, "setTactileTextMessage")
+    body = _function_body(source, "setTactileTextLines")
     compact = _compact(body)
 
     assert "constcellCount=getDotPadTextCellCount();" in compact
-    assert "tactileTextPages=buildTactileTextPages(message,cellCount);" in compact
+    assert "tactileTextPages=lines.flatMap(line=>buildTactileTextPages(line,cellCount));" in compact
     assert "tactileTextPageIndex=0;" in compact
     assert "renderTactileTextWindow();" in compact
 
@@ -208,31 +208,6 @@ def test_tactile_text_pages_break_on_whitespace_unless_word_is_too_long(
     assert _wrap_like_dotpad(message, cell_count) == expected
 
 
-@pytest.mark.parametrize(
-    ("page_count", "start_index", "delta", "expected_index"),
-    [
-        (0, 0, 1, 0),
-        (1, 0, 1, 0),
-        (2, 0, -1, 0),
-        (2, 0, 1, 1),
-        (2, 1, 1, 1),
-        (3, 1, -1, 0),
-        (3, 1, 1, 2),
-        (3, 2, 1, 2),
-    ],
-)
-def test_tactile_text_page_scroll_clamps_to_available_pages(
-    page_count: int, start_index: int, delta: int, expected_index: int
-):
-    if page_count == 0:
-        actual = 0
-    else:
-        max_page_index = max(0, page_count - 1)
-        actual = max(0, min(max_page_index, start_index + delta))
-
-    assert actual == expected_index
-
-
 def test_scroll_tactile_text_clamps_page_index_before_rendering():
     source = _dotpad_source()
     body = _function_body(source, "scrollTactileText")
@@ -244,10 +219,14 @@ def test_scroll_tactile_text_clamps_page_index_before_rendering():
     assert "renderTactileTextWindow();" in compact
 
 
-def test_announcement_hook_saves_scrollable_text_message():
+def test_announcement_hook_pages_the_braille_lines_before_the_speech():
+    """The braille form the viewer wrote ("Z 31%") is what gets paged, and the
+    spoken message only when there is none."""
     source = _dotpad_source()
     body = _function_body(source, "sendAnnouncementToDotPad")
     compact = _compact(body)
 
+    assert "function sendAnnouncementToDotPad({message, braille})" in source
     assert "if(!connectedDevice)return;" in compact
-    assert "setTactileTextMessage(message);" in compact
+    assert "constlines=Array.isArray(braille)&&braille.length?braille:[message];" in compact
+    assert "setTactileTextLines(lines);" in compact

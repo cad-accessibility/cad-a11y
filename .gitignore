@@ -30,3 +30,6 @@ data/db/*
 
 # Local environment and secrets
 .env
+test-results/
+node_modules
+*.log

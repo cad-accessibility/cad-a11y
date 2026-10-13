@@ -30,9 +30,10 @@ jobs:
       - name: Install pip dependencies
         shell: bash -l {0}
         run: |
-          grep -vE '^\s*(#|polyscope)' requirements.txt \
+          # The versions the image installs, so the tests run on what ships (#240).
+          grep -vE '^\s*(#|polyscope)' requirements-lock.txt \
             | micromamba run -n cad-a11y pip install --no-cache-dir -r /dev/stdin
-          micromamba run -n cad-a11y pip install --no-cache-dir polyscope || true
+          micromamba run -n cad-a11y pip install --no-cache-dir "$(grep -E '^polyscope==' requirements-lock.txt)" || true
           micromamba run -n cad-a11y pip install --no-cache-dir pytest ruff
 
       - name: Lint (errors only)
@@ -47,6 +48,12 @@ jobs:
 
   axe-accessibility:
     runs-on: ubuntu-latest
+    # Every compose command in this job reads both files. The second opens the
+    # example study, a draft no server runs, so its pages go through the same
+    # checks as the viewer; its token is published, which is why only this job
+    # and a development machine pass the variable that allows it.
+    env:
+      COMPOSE_FILE: docker-compose.yml:docker-compose.example-study.yml
 
     steps:
       - name: Checkout
@@ -62,8 +69,10 @@ jobs:
 
       - name: Wait for app to be ready
         run: |
+          # The site's address serves the viewer, so its title in the reply
+          # shows the page itself is served, not just that the process answers.
           for i in {1..30}; do
-            if curl -fsS http://localhost:8635/ >/dev/null; then
+            if curl -fsS http://localhost:8635/ | grep -q "<title>Accessible 3D Model Viewer</title>"; then
               echo "App is up"
               exit 0
             fi
@@ -99,36 +108,124 @@ jobs:
             });
             page.on('pageerror', (err) => consoleErrors.push(err.message));
 
-            await page.goto('http://localhost:8635/viewer', { waitUntil: 'domcontentloaded' });
-            await page.waitForTimeout(2000);
+            // The study pages are checked as well as the viewer, and in the
+            // states they are actually used in: the panel before sign-in, the
+            // participant page waiting for a code and in a session, and the
+            // panel choosing a task set and running one. The example study is
+            // the one CI opens; its panel token is published for that reason
+            // (app/studies/definitions/example.py).
+            const base = 'http://localhost:8635';
+            const study = `${base}/studies/example`;
+            const signIn = async () => {
+              await page.goto(`${study}/control`, { waitUntil: 'domcontentloaded' });
+              return page.evaluate(async (control) => {
+                const signedIn = await fetch(`${control}/sign-in`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ token: 'example-panel-token' }),
+                });
+                if (!signedIn.ok) throw new Error(`sign-in failed: ${signedIn.status}`);
+                const res = await fetch(`${control}/session/start`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: '{}',
+                });
+                return (await res.json()).state;
+              }, `${study}/control`);
+            };
 
-            if (consoleErrors.length > 0) {
-              console.error('Console/page errors found on /viewer:');
-              for (const message of consoleErrors) {
-                console.error(`- ${message}`);
-              }
-              await browser.close();
-              process.exit(1);
-            }
+            // The panel remembers its session in sessionStorage, not in the URL,
+            // so a fresh tab always opens on the task-set picker. Both of its
+            // states are checked: the picker, and the running session reached
+            // by choosing a set from it.
+            // The tutorial opens by itself on a first visit to /viewer, once the
+            // consent dialog is answered, so both of its views are checked here:
+            // a lesson, and the lesson list. The second load finds consent
+            // already decided and the tutorial already under way, so it resumes
+            // without a dialog to answer.
+            const answerConsent = async () => {
+              if (await page.isVisible('#consent-decline')) await page.click('#consent-decline');
+              await page.waitForSelector('#tutorial-region:not([hidden])');
+            };
+            let started = null;
+            const pages = [
+              { name: '/viewer', url: () => `${base}/viewer` },
+              {
+                name: '/viewer (tutorial lesson)',
+                url: () => `${base}/viewer`,
+                after: async () => {
+                  await answerConsent();
+                  await page.waitForSelector('#tutorial-lesson-view:not([hidden])');
+                },
+              },
+              {
+                name: '/viewer (tutorial lesson list)',
+                url: () => `${base}/viewer`,
+                after: async () => {
+                  await answerConsent();
+                  await page.click('#tutorial-lessons-btn');
+                  await page.waitForSelector('#tutorial-menu-view:not([hidden])');
+                },
+              },
+              { name: '/studies/example/control (signing in)', url: () => `${study}/control` },
+              {
+                name: '/studies/example (waiting for a code)',
+                before: async () => { started = await signIn(); },
+                url: () => study,
+              },
+              { name: '/studies/example (in a session)', url: () => `${study}?s=${started.participant_key}` },
+              { name: '/studies/example/control (choosing a task set)', url: () => `${study}/control` },
+              {
+                name: '/studies/example/control (running a session)',
+                url: () => `${study}/control`,
+                after: async () => {
+                  await page.click('#set-list button');
+                  await page.waitForSelector('#session-section:not([hidden])');
+                },
+              },
+            ];
 
-            const results = await new AxeBuilder({ page }).analyze();
-            const blocking = results.violations.filter((v) =>
-              ['serious', 'critical'].includes(v.impact)
-            );
+            let failed = false;
+            for (const target of pages) {
+              if (target.before) await target.before();
+              consoleErrors.length = 0;
+              await page.goto(target.url(), { waitUntil: 'domcontentloaded' });
+              await page.waitForTimeout(2000);
+              if (target.after) await target.after();
 
-            if (blocking.length > 0) {
-              console.error('Axe found serious/critical violations:');
-              for (const violation of blocking) {
-                console.error(`- ${violation.id} (${violation.impact}): ${violation.help}`);
-                for (const node of violation.nodes) {
-                  console.error(`  target: ${node.target.join(', ')}`);
+              if (consoleErrors.length > 0) {
+                console.error(`Console/page errors found on ${target.name}:`);
+                for (const message of consoleErrors) {
+                  console.error(`- ${message}`);
                 }
+                failed = true;
               }
+
+              const results = await new AxeBuilder({ page }).analyze();
+              const blocking = results.violations.filter((v) =>
+                ['serious', 'critical'].includes(v.impact)
+              );
+
+              if (blocking.length > 0) {
+                console.error(`Axe found serious/critical violations on ${target.name}:`);
+                for (const violation of blocking) {
+                  console.error(`- ${violation.id} (${violation.impact}): ${violation.help}`);
+                  for (const node of violation.nodes) {
+                    console.error(`  target: ${node.target.join(', ')}`);
+                  }
+                }
+                failed = true;
+              }
+
+              if (!failed) console.log(`ok: ${target.name}`);
+            }
+
+            if (failed) {
               await browser.close();
               process.exit(1);
             }
 
-            console.log('Console-error and axe checks passed: no console errors, no serious or critical a11y violations.');
+            console.log('Console-error and axe checks passed on every page: no console errors, no serious or critical a11y violations.');
             await browser.close();
           })().catch((err) => {
             console.error(err);

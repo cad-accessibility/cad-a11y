@@ -24,9 +24,59 @@ body {
 /* Typography */
 h1 {
     color: #2c3e50;
-    margin-bottom: 30px;
+    margin-bottom: 12px;
     font-size: 2.2em;
     font-weight: 600;
+}
+
+/* Main menu (#145): Main/About/Help/Settings. About/Help/Settings open dialogs;
+   Main is an escape hatch back to the tool (closes any open dialog and refocuses
+   main content), a no-op when you're already there. */
+.site-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 24px;
+}
+
+.site-nav button {
+    padding: 8px 16px;
+    border: 2px solid #1e6fa4;
+    border-radius: 6px;
+    background: white;
+    color: #1e6fa4;
+    font-size: 0.95em;
+    font-weight: 500;
+    cursor: pointer;
+    min-height: 40px;
+}
+
+.site-nav button:hover,
+.site-nav button:focus {
+    background: #1e6fa4;
+    color: white;
+}
+
+/* Shown only in a browser that cannot connect a display (#232). The demo
+   banner's warning colours: #6e1414 on #fdecec. */
+.browser-warning {
+    margin: 0 0 8px;
+    padding: 10px 14px;
+    border: 3px solid #8a1c1c;
+    border-radius: 8px;
+    background: #fdecec;
+    color: #6e1414;
+    font-weight: 600;
+}
+
+.browser-warning[hidden] {
+    display: none;
+}
+
+@media (forced-colors: active) {
+    .browser-warning {
+        border-color: CanvasText;
+    }
 }
 
 h2 {
@@ -161,6 +211,24 @@ button:active {
 
 #render-mode-toggle[aria-pressed="true"]:hover {
     background: #196f3d;
+}
+
+/* XYZ mode's view buttons: the view showing is marked current (#235 review), by
+   a ring as well as the colour, so it does not rest on colour alone. */
+#xyz-controls button[aria-current="true"] {
+    background: #1e8449;
+    box-shadow: inset 0 0 0 3px #ffffff;
+}
+
+#xyz-controls button[aria-current="true"]:hover {
+    background: #196f3d;
+}
+
+@media (forced-colors: active) {
+    #xyz-controls button[aria-current="true"] {
+        outline: 3px solid CanvasText;
+        outline-offset: 2px;
+    }
 }
 
 /* Button group layout */
@@ -531,6 +599,13 @@ button:focus-visible {
     color: #2c3e50;
 }
 
+/* [hidden] is honoured explicitly: the display:grid above otherwise overrides
+   the user-agent rule, and "Left view: -- Right view: --" showed above the
+   preview in every layout, not just side by side. */
+.side-by-side-axis-labels[hidden] {
+    display: none;
+}
+
 .side-by-side-axis-label {
     text-align: left;
     font-weight: 600;
@@ -711,8 +786,64 @@ button:focus-visible {
     }
 }
 
-/* Keyboard shortcuts dialog (#146) */
-#shortcuts-dialog {
+/* Settings dialog checkbox list — stacked, unlike the inline .button-group default. */
+.settings-checkbox-group {
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+/* Page footer (#145): GitHub/bug-report links, then a "Funded by" row. #767676 on
+   white = 4.5:1 (AA pass) for the muted link color; full-strength #333 on hover
+   matches focus-visible feedback elsewhere on the page. */
+.site-footer {
+    margin-top: 30px;
+    padding-top: 20px;
+    border-top: 1px solid #e1e8ed;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+
+.footer-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    font-size: 0.9em;
+}
+
+.footer-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #767676;
+    text-decoration: none;
+}
+
+.footer-link:hover,
+.footer-link:focus {
+    color: #333;
+    text-decoration: underline;
+}
+
+.footer-sep {
+    color: #c7d2dc;
+}
+
+.footer-funders-label {
+    color: #767676;
+}
+
+.footer-logo {
+    width: 16px;
+    height: 16px;
+}
+
+/* Shared chrome for the small read-only dialogs opened from the Main menu:
+   Keyboard Shortcuts (#146), About and Settings (#145). */
+.info-dialog {
     border: none;
     border-radius: 12px;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
@@ -724,14 +855,18 @@ button:focus-visible {
     color: #333;
 }
 
-#shortcuts-dialog::backdrop {
+.info-dialog::backdrop {
     background: rgba(0, 0, 0, 0.55);
 }
 
-#shortcuts-dialog h2 {
+.info-dialog h2 {
     margin: 0 0 8px 0;
     font-size: 1.4em;
     color: #2c3e50;
+}
+
+.info-dialog p {
+    line-height: 1.6;
 }
 
 #shortcuts-dialog h3 {
@@ -832,12 +967,15 @@ button:focus-visible {
 }
 
 /*
- * The shortcuts dialog focuses its own heading on open (tabindex=-1), per the ARIA
- * APG dialog pattern's guidance for read-only content: land on a static element at
- * the top of the dialog rather than the first interactive control, so reading
- * forward from there covers the whole dialog instead of starting at the end.
+ * Each info dialog (Shortcuts, About, Settings) focuses its own heading on open
+ * (tabindex=-1), per the ARIA APG dialog pattern's guidance for read-only content:
+ * land on a static element at the top of the dialog rather than the first
+ * interactive control, so reading forward from there covers the whole dialog
+ * instead of starting at the end.
  */
-#shortcuts-heading:focus {
+#shortcuts-heading:focus,
+#about-heading:focus,
+#settings-heading:focus {
     outline: none;
 }
 
@@ -952,4 +1090,308 @@ body.simple-ui #tactile-preview-section { display: block; }
     padding: 8px 16px;
     background: #1e6fa4;
     color: #fff;
+}
+
+/* ---------------------------------------------------------------------------
+   Study mode (/studies/<slug>).
+
+   The participant works in the ordinary viewer, so almost nothing is hidden:
+   the interface they were onboarded on has to be the interface they do the
+   tasks with, or the study measures the difference between the two.
+
+   Two things do go. The model chooser, because the model is decided by the
+   protocol step and a participant browsing to a later task's model would spoil
+   it, and the upload control, which has no meaning in a session. Both use
+   display:none rather than visibility, so they leave the accessibility tree
+   entirely instead of sitting in the tab order as invisible controls.
+   --------------------------------------------------------------------------- */
+body.study-ui section[aria-labelledby="model-list-heading"] { display: none; }
+
+.study-region {
+    border: 2px solid #1e6fa4;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    background: #f4f9fc;
+}
+.study-region h2 {
+    margin-top: 0;
+    /* Focus lands here on every step change; without a visible ring a sighted
+       facilitator watching over the participant's shoulder cannot tell the step
+       advanced. */
+    outline-offset: 2px;
+}
+.study-region .study-progress {
+    font-weight: 600;
+    margin: 4px 0;
+}
+.study-region .study-step-text {
+    margin: 8px 0;
+}
+
+@media (prefers-color-scheme: dark) {
+    .study-region {
+        background: #12222c;
+        border-color: #6cb6e0;
+    }
+}
+
+/* Windows High Contrast Mode drops the background and border colours above, so
+   the region would lose its boundary entirely. */
+@media (forced-colors: active) {
+    .study-region { border: 2px solid CanvasText; }
+}
+
+/* ---------------------------------------------------------------------------
+   Tutorial (static/js/tutorial.js).
+
+   The region carries .study-region as well, so it has the study region's box,
+   dark-mode colours and forced-colours border, and the two read as one kind of
+   thing. What follows is only what the tutorial adds: a button row that wraps,
+   the lesson list, and the note on locked controls.
+
+   Nothing here sets display on a class the page ships hidden, so [hidden]
+   keeps working (tests/test_main_menu_and_layout.py checks for that).
+   --------------------------------------------------------------------------- */
+
+/* Not offered on the study page or the simplified workshop viewer: the button,
+   its section in the shortcuts dialog and the region itself are all gone, not
+   merely hidden from sight, so none of them sits in the tab order. */
+body.study-ui #nav-tutorial-btn,
+body.study-ui #tutorial-shortcuts-section,
+body.study-ui #tutorial-region,
+body.simple-ui #nav-tutorial-btn,
+body.simple-ui #tutorial-shortcuts-section,
+body.simple-ui #tutorial-region {
+    display: none;
+}
+
+/* Resume has no meaning on /demo, where nothing survives the tab. */
+body.demo-ui .tutorial-resume {
+    display: none;
+}
+
+.tutorial-region .tutorial-progress {
+    font-weight: 600;
+    margin: 4px 0;
+}
+
+.tutorial-region .tutorial-step-text {
+    margin: 8px 0;
+    font-size: 1.05em;
+}
+
+.tutorial-region .tutorial-note {
+    margin: 8px 0;
+    font-weight: 600;
+}
+
+.tutorial-region .tutorial-last {
+    margin: 8px 0;
+    color: #3d4a52;
+}
+
+.tutorial-region .tutorial-answers-label {
+    margin: 12px 0 0;
+    font-weight: 600;
+}
+
+.tutorial-region .tutorial-hints,
+.tutorial-region .tutorial-step-links {
+    margin: 8px 0;
+    padding-left: 1.5em;
+}
+
+/* Nine or more buttons in one row: they wrap rather than run off the side,
+   and a narrow window (or 400% zoom) gets them stacked. */
+.tutorial-region .tutorial-controls {
+    margin-top: 12px;
+}
+
+.tutorial-region button {
+    min-width: 0;
+}
+
+/* The heading takes focus when the tutorial opens, and on Lessons, Resume and
+   Start over. A sighted helper watching needs to see where it went. */
+.tutorial-region h2:focus-visible,
+.tutorial-region h2:focus {
+    outline: 3px solid #f39c12;
+    outline-offset: 2px;
+}
+
+/* A toggle's state has to show without colour alone: an inset ring appears and
+   the text is underlined while Key help is on. */
+.tutorial-region button[aria-pressed="true"],
+#tutorial-shortcuts-section button[aria-pressed="true"] {
+    background: #0f3d5c;
+    box-shadow: inset 0 0 0 3px #f39c12;
+    text-decoration: underline;
+}
+
+.tutorial-region h3 {
+    margin: 16px 0 6px;
+    font-size: 1.05em;
+    color: #2c3e50;
+}
+
+.tutorial-lesson-list {
+    list-style: none;
+    margin: 0 0 8px;
+    padding: 0;
+}
+
+.tutorial-lesson-list li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
+    padding: 4px 0;
+    border-bottom: 1px solid #d5e3ec;
+}
+
+.tutorial-lesson-list .tutorial-lesson-name {
+    font-weight: 600;
+    min-width: 14em;
+}
+
+.tutorial-lesson-list .tutorial-lesson-status {
+    flex: 1 1 12em;
+}
+
+/* Beside a control the tutorial has locked for the lesson: plain words for
+   why it does nothing, rather than a control that is silently dead. */
+.tutorial-lock-note {
+    font-style: normal;
+    font-weight: 600;
+    color: #7a4100;
+}
+
+@media (prefers-color-scheme: dark) {
+    .tutorial-region,
+    .tutorial-region h2,
+    .tutorial-region h3 {
+        color: #e8f1f7;
+    }
+    .tutorial-region .tutorial-last {
+        color: #c9d8e2;
+    }
+    .tutorial-region a {
+        color: #9fd3f5;
+    }
+    .tutorial-lesson-list li {
+        border-bottom-color: #2d4b5d;
+    }
+}
+
+@media (forced-colors: active) {
+    .tutorial-region button[aria-pressed="true"],
+    #tutorial-shortcuts-section button[aria-pressed="true"] {
+        border: 3px solid Highlight;
+        forced-color-adjust: none;
+        background: Highlight;
+        color: HighlightText;
+    }
+    .tutorial-region h2:focus {
+        outline: 3px solid Highlight;
+    }
+    .tutorial-lesson-list li {
+        border-bottom: 1px solid CanvasText;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   DEMO MODE INDICATOR
+
+   Shown only at /demo. It has to be readable across a room at a glance -- the
+   person running the event needs to confirm recording is off while standing
+   behind somebody, and answer a host who asks -- so it is full width, high
+   contrast and larger than body text rather than a subtle chip.
+
+   Colour is not the only carrier: the wording says "not recording" outright,
+   and the same sentence is what a screen reader is given. The contrast pair
+   below is 8.6:1, which clears WCAG AA for large and normal text both.
+
+   [hidden] is honoured explicitly because the display:block here would
+   otherwise override the user-agent rule and show an empty bar on every
+   non-demo page.
+   --------------------------------------------------------------------------- */
+.demo-banner {
+    display: block;
+    margin: 0 0 20px;
+    padding: 12px 16px;
+    border: 3px solid #7b3f00;
+    border-radius: 8px;
+    background: #fff4e0;
+    color: #5c2f00;
+    font-size: 1.15em;
+    font-weight: 600;
+    line-height: 1.4;
+}
+
+.demo-banner[hidden] {
+    display: none;
+}
+
+/* Reported when the page asked the server whether it was recording and the
+   answer was yes, or did not arrive. Louder than the normal state on purpose:
+   this is the one that means stop and check. */
+.demo-banner.demo-banner-warning {
+    border-color: #8a1c1c;
+    background: #fdecec;
+    color: #6e1414;
+}
+
+@media (prefers-contrast: high) {
+    .demo-banner {
+        border-width: 4px;
+        background: #fff;
+        color: #000;
+    }
+}
+
+@media (forced-colors: active) {
+    .demo-banner {
+        border: 3px solid CanvasText;
+        background: Canvas;
+        color: CanvasText;
+        forced-color-adjust: none;
+    }
+}
+
+/* The recheck control inside the demo banner. Inline with the sentence, because
+   it belongs to the claim it re-verifies rather than being a separate action. */
+.demo-recheck {
+    display: inline-block;
+    margin-left: 10px;
+    padding: 5px 12px;
+    border: 2px solid currentColor;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 0.9em;
+    cursor: pointer;
+}
+
+.demo-recheck:hover {
+    background: rgba(0, 0, 0, 0.06);
+}
+
+/* Focus is drawn from the banner's own colour so it stays visible against both
+   the normal and the warning background. */
+.demo-recheck:focus-visible {
+    outline: 3px solid currentColor;
+    outline-offset: 2px;
+}
+
+/* The machine-readable half: what the server answered, and how many writes it
+   turned away. Smaller than the sentence above it, but never hidden -- this is
+   the part somebody checks rather than reads. */
+.demo-detail {
+    display: block;
+    margin-top: 6px;
+    font-size: 0.85em;
+    font-weight: 400;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }

@@ -17,9 +17,9 @@ def test_preview_cursor_state_change():
         "cursor_state": "guidelines"
     }
 
-    assert _build_preview_payload_cache_key(base, model_index=0, pixel_width=60, pixel_height=40) != _build_preview_payload_cache_key(
+    assert _build_preview_payload_cache_key(base, model_stem="cube", pixel_width=60, pixel_height=40) != _build_preview_payload_cache_key(
         changed,
-        model_index=0,
+        model_stem="cube",
         pixel_width=60,
         pixel_height=40
     )
@@ -38,9 +38,9 @@ def test_preview_cursor_col_change():
         "cursor_col": 25,
     }
 
-    assert _build_preview_payload_cache_key(base, model_index=1, pixel_width=60, pixel_height=40) != _build_preview_payload_cache_key(
+    assert _build_preview_payload_cache_key(base, model_stem="mug", pixel_width=60, pixel_height=40) != _build_preview_payload_cache_key(
         changed,
-        model_index=1,
+        model_stem="mug",
         pixel_width=60,
         pixel_height=40
     )
@@ -59,9 +59,9 @@ def test_preview_cursor_row_change():
         "cursor_row": 10,
     }
 
-    assert _build_preview_payload_cache_key(base, model_index=1, pixel_width=60, pixel_height=40) != _build_preview_payload_cache_key(
+    assert _build_preview_payload_cache_key(base, model_stem="mug", pixel_width=60, pixel_height=40) != _build_preview_payload_cache_key(
         changed,
-        model_index=1,
+        model_stem="mug",
         pixel_width=60,
         pixel_height=40
     )
@@ -82,7 +82,7 @@ def test_quant_cursor_fields():
         "cursor_state": "horizontal-line"
     }
 
-    assert _build_quantized_render_key(key1, model_index=2) != _build_quantized_render_key(
+    assert _build_quantized_render_key(key1, model_stem="lego_2x3") != _build_quantized_render_key(
         key2,
-        model_index=2
+        model_stem="lego_2x3"
     )
