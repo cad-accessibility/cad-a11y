@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Study Control Panel — CAD A11y</title>
     <meta name="description" content="Experimenter control panel for running a CAD A11y study session">
+    <meta name="referrer" content="no-referrer">
     <link rel="stylesheet" href="/static/css/viewer.css">
     <link rel="stylesheet" href="/static/css/study-control.css">
 </head>
@@ -51,6 +52,30 @@
         <main id="main-content">
 
             <!-- ============================================================
+                 SIGNING IN: the study's panel token, once per browser per day
+                 =============================================================
+                 The token is sent once and answered with a cookie scoped to
+                 this panel's path, so it never sits in a URL, a bookmark or the
+                 proxy's logs. A password field, so it is not shown on a screen
+                 a participant may be facing.
+            -->
+            <section id="sign-in-section" aria-labelledby="sign-in-heading" hidden>
+                <h2 id="sign-in-heading" tabindex="-1">Sign in to the panel</h2>
+                <form id="sign-in-form" class="study-join">
+                    <label for="sign-in-token">Panel token</label>
+                    <input type="password" id="sign-in-token" name="token"
+                           autocomplete="current-password" spellcheck="false"
+                           aria-describedby="sign-in-hint" required>
+                    <button type="submit" id="sign-in-btn">Sign in</button>
+                    <span id="sign-in-hint" class="help-text">
+                        The study's token, from whoever runs the study. It lasts the
+                        working day in this browser.
+                    </span>
+                </form>
+                <p id="sign-in-error" class="error-text" role="alert" hidden></p>
+            </section>
+
+            <!-- ============================================================
                  STARTING UP — shown while the protocol loads, while the session
                  is being created, and again once the session has ended
                  =============================================================
@@ -65,18 +90,19 @@
             </section>
 
             <!-- ============================================================
-                 CHOOSING THE MODEL SET — the one decision starting a session
+                 CHOOSING THE TASK SET: the one decision starting a session
                  needs, so it is the first thing on screen
                  =============================================================
-                 Three objects taken two at a time gives six sets, and a round is
-                 those six run once each. The ones already recorded are struck
-                 through — and said in words, since a line through text is not
-                 announced. Once every set has been run the whole list comes back
-                 unstruck as a fresh round; nothing has to be reset by hand.
+                 One set per row of the study's counterbalancing design, and a
+                 round is every set run once. The ones already recorded are
+                 struck through, and said in words, since a line through text
+                 is not announced. Once every set has been run the whole list
+                 comes back unstruck as a fresh round; nothing has to be reset
+                 by hand.
             -->
             <section id="set-section" aria-labelledby="set-heading" hidden>
-                <h2 id="set-heading" tabindex="-1">Choose the model set</h2>
-                <p id="set-round" class="help-text">Loading the model sets&hellip;</p>
+                <h2 id="set-heading" tabindex="-1">Choose the task set</h2>
+                <p id="set-round" class="help-text">Loading the task sets&hellip;</p>
                 <ul id="set-list" class="set-list" aria-labelledby="set-heading"></ul>
                 <p id="set-error" class="error-text" role="alert" hidden></p>
             </section>
@@ -94,11 +120,36 @@
                     <dt>Participant</dt><dd id="summary-participant">--</dd>
                     <dt>Session</dt><dd id="summary-session-number">--</dd>
                     <dt>Study code</dt><dd id="summary-code">--</dd>
-                    <dt>Model pairs</dt><dd id="summary-tasks">--</dd>
+                    <dt>Tasks</dt><dd id="summary-tasks">--</dd>
                     <dt>Recorded so far</dt><dd id="summary-counts">--</dd>
                     <dt>Logging</dt><dd id="summary-logging">--</dd>
                     <dt>Participant views connected</dt><dd id="summary-clients">--</dd>
                 </dl>
+            </section>
+
+            <!-- ============================================================
+                 DATA: the study's downloads, offered whenever no session is
+                 running here. Plain links: the sign-in cookie is what lets
+                 them through, so there is nothing to paste into a terminal.
+                 ============================================================ -->
+            <section id="data-section" aria-labelledby="data-heading" hidden>
+                <h2 id="data-heading">Data</h2>
+                <ul class="data-downloads">
+                    <li>
+                        <a id="download-archive" href="#" download>Everything, as one zip</a>:
+                        the database, every session log, the long CSV with its
+                        codebook, the data checks and a manifest with checksums.
+                        Store it where the IRB protocol says study data lives.
+                    </li>
+                    <li>
+                        <a id="download-long-csv" href="#" download>Long CSV</a>:
+                        one row per interaction, completed sessions only.
+                    </li>
+                    <li>
+                        <a id="download-checks" href="#">Data checks</a>:
+                        known problems looked for, and what was found.
+                    </li>
+                </ul>
             </section>
         </main>
     </div>
@@ -166,11 +217,11 @@
             above, with the instruction that it IS spoken.
         -->
         <div id="object-block" hidden>
-            <h3 id="object-heading">This object</h3>
+            <h3 id="object-heading">This task</h3>
             <p id="object-label" class="physical-model"></p>
             <p id="object-description" class="object-description"></p>
-            <p class="help-text">
-                Read the description to the participant at the start of Part A,
+            <p id="object-description-note" class="help-text">
+                Read the description to the participant when the script says to,
                 before anything goes on the display.
             </p>
         </div>
@@ -180,7 +231,7 @@
             <p class="help-text">For your reference only. Do not read this out.</p>
             <h4>What changed</h4>
             <ul id="answer-key-differences" aria-labelledby="answer-key-heading"></ul>
-            <h4>What did not change</h4>
+            <h4 id="answer-key-unchanged-heading">What did not change</h4>
             <ul id="answer-key-unchanged"></ul>
         </div>
 

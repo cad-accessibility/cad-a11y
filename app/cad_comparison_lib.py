@@ -14,6 +14,12 @@ import threading
 import time
 import os
 from OCC.Core.STEPControl import STEPControl_Reader
+# meshlib before trimesh, which src.converter.plane_intersection_utils needs
+# anyway. With trimesh loaded first, a process that imports this file aborts
+# (SIGABRT) as it exits on macOS, after everything else has run: the dev server
+# on every stop, and the demo-station test's subprocess. Linux exits cleanly
+# either way.
+import meshlib.mrmeshpy  # noqa: F401
 import trimesh as tm
 from trimesh.exchange.stl import load_stl
 from trimesh import Trimesh

@@ -288,6 +288,24 @@ function disconnectDotpad() {
 window.connectDotpad = connectDotpad;
 window.disconnectDotpad = disconnectDotpad;
 
+// The tutorial's name for a key (static/js/tutorial.js), in the same order onKey
+// below reads them: a whole x, y or z chord before the single dots it contains.
+const DOTPAD_TUTORIAL_LETTERS = { x: 'axis-x', y: 'axis-y', z: 'axis-z', v: 'cursor' };
+const DOTPAD_TUTORIAL_DOTS = { 1: 'dot1', 8: 'dot4' };
+const DOTPAD_TUTORIAL_KEYS = {
+    KeyFunction1: 'move-up',
+    KeyFunction4: 'move-down',
+    PanningLeft: 'move-left',
+    PanningRight: 'move-right',
+};
+
+function dotpadTutorialName(currKeyCode, byte6, letter) {
+    return DOTPAD_TUTORIAL_LETTERS[letter]
+        || DOTPAD_TUTORIAL_DOTS[byte6]
+        || DOTPAD_TUTORIAL_KEYS[currKeyCode]
+        || 'other';
+}
+
 // --- SDK callbacks ---
 function onMessage(device, dataCode, msg) {
     if (dataCode === DataCodes.Disconnected) {
@@ -310,6 +328,13 @@ function onKey(device, currKeyCode, keyMsg) {
     const label = keyMsg || currKeyCode;
     const byte6 = labelToByte6(label);
     const letter = byte6ToLetter(byte6);
+    // First, before the key does anything: the tutorial may take it as an
+    // answer (dot 1 left, dot 4 right, during the test pattern) or, in Key help
+    // mode, describe it instead of acting on it.
+    if (window.cadTutorial?.captureDeviceKey?.({
+        device: 'dotpad',
+        name: dotpadTutorialName(currKeyCode, byte6, letter),
+    })) return;
     const cursorState = window.whichCursor ? window.whichCursor() : 'none';
     const n = 10; // TODO: make this global and dynamic
     if (typeof window.stepSliceDepth !== 'function') {
@@ -484,7 +509,9 @@ async function sendHexToDotPad(renderParams) {
     try {
         const resp = await fetch(`${SERVER_URL}/render/dotpad-hex`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            // viewer.js's, so the server lets this tab render its own upload.
+            headers: window.uploadSessionHeaders?.({ 'Content-Type': 'application/json' })
+                ?? { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ...renderParams, dotpad_cols: dotpadCols, dotpad_rows: dotpadRows }),
             mode: 'cors',
         });
@@ -501,6 +528,15 @@ async function sendHexToDotPad(renderParams) {
 
 // Hook into the main render cycle
 window._dotpadOnRender = sendHexToDotPad;
+
+// Put a ready-made graphic on the pins, for the tutorial's test pattern, which
+// the server has already drawn at this display's size. Returns whether it was
+// sent: false with no DotPad connected.
+window._dotpadShowHex = function (graphicHex) {
+    if (!connectedDevice || !graphicHex) return false;
+    sdk.displayGraphicData(String(graphicHex), connectedDevice, DisplayMode.GraphicMode);
+    return true;
+};
 
 
 // --- Send announcements to DotPad ---

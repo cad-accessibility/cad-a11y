@@ -91,7 +91,7 @@
                 const command = MONARCH_COMMANDS[key];
 
                 console.log('[Monarch HID] Input report:', key, command || 'unmapped');
-                handleMonarchCommand(command);
+                handleMonarchCommand(command, key);
             });
         } catch (err) {
             monarchHidDevice = null;
@@ -132,7 +132,32 @@
         return `${reportId}:${Array.from(new Uint8Array(data.buffer, data.byteOffset, data.byteLength)).join(',')}`;
     }
 
-    function handleMonarchCommand(command) {
+    // The tutorial's name for a command (static/js/tutorial.js), or null for a
+    // report that is no press at all. A report of all zeros is taken to be a
+    // release: describing it in Key help mode, or reading it as an answer to
+    // the test pattern, would follow every real press with a phantom one.
+    // Whether the Monarch sends such a report is not yet confirmed on hardware.
+    function tutorialCommandName(command, key) {
+        if (!command) {
+            return /^\d+:(0,)*0$/.test(String(key || '')) ? null : 'other';
+        }
+        if (command.type === 'depth') return command.delta < 0 ? 'dot1' : 'dot4';
+        if (command.type === 'cycle-cursor') return 'cursor';
+        if (command.type === 'axis') return `axis-${command.axis}`;
+        if (command.type === 'move') {
+            if (command.dCol < 0) return 'move-left';
+            if (command.dCol > 0) return 'move-right';
+            return command.dRow < 0 ? 'move-up' : 'move-down';
+        }
+        return 'other';
+    }
+
+    function handleMonarchCommand(command, key) {
+        // First, before the press does anything: the tutorial may take it as an
+        // answer (dot 1 left, dot 4 right, during the test pattern) or, in Key
+        // help mode, describe it instead of acting on it.
+        const tutorialName = tutorialCommandName(command, key);
+        if (tutorialName && window.cadTutorial?.captureDeviceKey?.({ device: 'monarch', name: tutorialName })) return;
         if (!command) return;
 
         if (command.type === 'cycle-cursor') {
