@@ -621,11 +621,11 @@ class TestReviewRegressions:
         source = _js()
         where = source[source.index("function whereAgainstBand("):]
         where = where[:where.index("\n    }\n")]
-        assert "Math.ceil(Number(target.from) - offset)" in where and "Math.floor(Number(target.to) - offset)" in where
-        # In XYZ mode the numbers are the viewer's, from the model's origin (#235).
-        assert "state.cut_origin_percent" in where
-        # In Turn mode it speaks the depth the viewer just announced.
-        assert "state.axis_mode !== 'xyz'" in where and "reader_depth" in where
+        assert "${Math.ceil(low)} to ${Math.floor(high)} percent." in where
+        # Depth from the reader in both axis modes, the numbers the viewer just
+        # said (#263): no XYZ branch and no origin offset.
+        assert "reader_depth" in where
+        assert "axis_mode" not in where and "cut_origin_percent" not in where
 
     def test_the_far_side_is_measured_in_reader_depth(self):
         assert "reader_depth: Math.round(depthFromPlanePosition(" in _js(VIEWER_JS)

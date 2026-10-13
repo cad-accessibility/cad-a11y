@@ -933,28 +933,18 @@ const CHECKS = {
             return `You are slicing along ${String(state.cut_axis || '').toUpperCase()}; the ${bandLabel(target)} is along ${letter}.`;
         }
         const percent = Number(state.cut_percent);
-        // Turn mode speaks depth from the reader, which from the right, the back
-        // or above runs the opposite way to the axis. Speak the same numbers
-        // the viewer just said, or the person is sent to the wrong end.
-        if (state.axis_mode !== 'xyz') {
-            const depth = Number(state.reader_depth);
-            const flipped = Math.abs((100 - percent) - depth) < Math.abs(percent - depth);
-            const toDepth = (p) => (flipped ? 100 - p : p);
-            const low = Math.min(toDepth(Number(target.from)), toDepth(Number(target.to)));
-            const high = Math.max(toDepth(Number(target.from)), toDepth(Number(target.to)));
-            return `You are at depth ${Math.round(depth)} percent; the ${bandLabel(target)} is from depth `
-                + `${Math.ceil(low)} to ${Math.floor(high)} percent.`;
-        }
-        // XYZ mode reads the cut out from the model's origin (#235), so the
-        // numbers here are too: the band's are along the object, from its lowest
-        // coordinate, like cut_percent. Whole percents inside the band only:
-        // 40.5 to 59.5 is "41 to 59", so a position the check refuses is never
-        // spoken as inside the range.
-        const origin = Number(state.cut_origin_percent);
-        const offset = state.cut_origin_percent !== null && Number.isFinite(origin) ? origin : 0;
-        const said = (value) => (value < 0 ? `minus ${-value}` : String(value));
-        return `You are at ${letter} ${said(Math.round(percent - offset))} percent; the ${bandLabel(target)} runs from `
-            + `${letter} ${said(Math.ceil(Number(target.from) - offset))} to ${said(Math.floor(Number(target.to) - offset))} percent.`;
+        // The viewer speaks depth from the reader in both axis modes (#263),
+        // which from the right, the back or above runs the opposite way to the
+        // axis. Speak the same numbers it just said, or the person is sent to
+        // the wrong end. Whole percents inside the band only: 40.5 to 59.5 is
+        // "41 to 59", so a position the check refuses is never spoken as inside.
+        const depth = Number(state.reader_depth);
+        const flipped = Math.abs((100 - percent) - depth) < Math.abs(percent - depth);
+        const toDepth = (p) => (flipped ? 100 - p : p);
+        const low = Math.min(toDepth(Number(target.from)), toDepth(Number(target.to)));
+        const high = Math.max(toDepth(Number(target.from)), toDepth(Number(target.to)));
+        return `You are at depth ${Math.round(depth)} percent; the ${bandLabel(target)} is from depth `
+            + `${Math.ceil(low)} to ${Math.floor(high)} percent.`;
     }
 
     /** Say the step's on_fail once when the cut moves away from where it needs
@@ -1689,16 +1679,12 @@ const CHECKS = {
         else updateView(home);
     }
 
-    /** Put the cut at `percent` along `axis`, from the object's low end, and
-     * let the viewer say it in the mode's own terms. */
+    /** Put the slice at `percent` along `axis`, from the object's low end, and
+     * let the viewer say where it landed: depth from the reader, in both axis
+     * modes (#263). */
     function showMeCut(axis, percent) {
-        const before = getState();
         window.setPendingInputSource?.('tutorial');
-        const xyz = before.axis_mode === 'xyz';
-        window.setCutPosition(axis, percent / 100, window.announceAlert, { announce: xyz });
-        if (!xyz && typeof window.announceDepthValue === 'function') {
-            window.announceDepthValue(getState().depth, before.depth, window.announceAlert);
-        }
+        window.setCutPosition(axis, percent / 100, window.announceAlert);
     }
 
     function showMe() {
@@ -1795,13 +1781,9 @@ const CHECKS = {
         }
         renderLesson();
         const more = runner.demoFrame < frames.length ? '' : ' That was the last one; Next goes on.';
-        // The braille line uses the viewer's own numbers: depth in Turn mode,
-        // and in XYZ mode the position along the axis, from the origin (#235).
-        const now = getState();
-        const origin = now.cut_origin_percent === null ? 0 : Number(now.cut_origin_percent) || 0;
-        const brailleLine = now.axis_mode === 'xyz'
-            ? `${String(axis || '').toUpperCase()} ${Math.round(percent - origin)}%`
-            : `Depth ${Math.round(Number(now.reader_depth))}%`;
+        // The braille line uses the viewer's own numbers: depth from the reader,
+        // in both axis modes (#263).
+        const brailleLine = `Depth ${Math.round(Number(getState().reader_depth))}%`;
         say(`Example ${runner.demoFrame} of ${frames.length}. ${resolveText(frame.say)}${more}`, brailleLine);
     }
 

@@ -285,10 +285,9 @@ def _decimate_for_display(mesh):
     return simplified if len(simplified.faces) > 0 else mesh
 
 
-# Six-dot braille for the only letters ever drawn onto the pins, and the capital
-# sign that goes before each: see _draw_axis_label.
+# Six-dot computer braille for the only letters ever drawn onto the pins: see
+# _draw_axis_label.
 _AXIS_LETTER_DOTS = {"x": [1, 3, 4, 6], "y": [1, 3, 4, 5, 6], "z": [1, 3, 5, 6]}
-_CAPITAL_SIGN_DOTS = [6]
 
 
 class CADComparisonRenderer:
@@ -1102,20 +1101,12 @@ class CADComparisonRenderer:
                     img_array[py, px, 3] = 255
 
     def _draw_axis_label(self, img_array, axis_letter, x, y):
-        """Draw a two-cell capital axis label, e.g. ⠠⠭ for X, with its top-left
-        at (x, y): 5 pixels wide and 4 tall.
-
-        The capital sign and then the letter, the way BANA's guidelines write a
-        diagram label. These used to be a lowercase letter and a sign glyph,
-        "x+" drawn as dots 1346 and 346, and the pilot found them unreadable: a
-        lone lowercase x is the word "it" in contracted UEB, and dots 346 are
-        Nemeth's plus but UEB's "ing". No sign is drawn anywhere now; which side
-        a view is seen from is said in speech and braille instead."""
+        """Draw an axis label, one braille cell, with its top-left at (x, y):
+        2 pixels wide and 4 tall."""
         dots = _AXIS_LETTER_DOTS.get(str(axis_letter or "").lower()[:1])
         if dots is None:
             return
-        self._draw_braille_cell(img_array, x, y, _CAPITAL_SIGN_DOTS)
-        self._draw_braille_cell(img_array, x + 3, y, dots)
+        self._draw_braille_cell(img_array, x, y, dots)
 
     @staticmethod
     def _clear_box(img_array, x0, y0, box_w, box_h):
@@ -1145,19 +1136,19 @@ class CADComparisonRenderer:
         self._draw_axis_label(img_array, right_axis, right_x, y)
 
     def _overlay_view_info_box(self, img_array, axis_text):
-        """Overlay a compact 7x5 top-left info box naming the axis coming out of
-        the display, e.g. ⠠⠵ for Z."""
+        """Overlay a compact top-left info box naming the axis coming out of
+        the display with its computer braille letter, e.g. ⠵ for Z."""
         if img_array is None or len(img_array.shape) != 3:
             return
         h, w = img_array.shape[0], img_array.shape[1]
-        if h < 5 or w < 7:
+        if h < 5 or w < 4:
             return
 
-        # Fixed size requested by user. White background only (no outline).
-        box_w = min(w, 7)
+        # White background only (no outline).
+        box_w = min(w, 4)
         box_h = min(h, 5)
         self._clear_box(img_array, 0, 0, box_w, box_h)
-        # Layout inside 7x5 box: [margin][capital sign][gap][letter][margin].
+        # Layout inside the 4x5 box: [margin][letter][margin].
         self._draw_axis_label(img_array, (axis_text or "x")[:1], 1, 1)
 
     def _overlay_axis_letters(self, img_array, right_axis, up_axis, drawable_size):
@@ -1168,7 +1159,7 @@ class CADComparisonRenderer:
         sits shows the direction without a sign. Projecting targets onto the
         edges helped blind users with layout (Kane et al., Access Overlays)."""
         w, h = int(drawable_size[0]), int(drawable_size[1])
-        box_w, box_h = 7, 6  # a 5x4 label and a one-pin blank margin
+        box_w, box_h = 4, 6  # a 2x4 label and a one-pin blank margin
         if w < 2 * box_w + 2 or h < 2 * box_h + 2:
             return
 

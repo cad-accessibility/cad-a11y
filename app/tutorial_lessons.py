@@ -855,7 +855,8 @@ LESSONS: list[dict[str, Any]] = [
                 "Press {key:axis_z}. The slice plane is now parallel to the table, and "
                 "the viewer says Z from plus, X right, Y up: you are above the mug, facing down. "
                 "On your display, X increases to the right and Y increases up the display. "
-                "This is indicated with a braille X at the display's right and a braille Y at its top.",
+                "This is indicated with an x at the display's right and a y at its top, each one cell "
+                "of computer braille.",
                 sr="Press {key:axis_z} to slice along Z, across the mug, parallel to the table.",
                 braille="Slice along Z",
                 check=_state("cut_axis", equals="z"),

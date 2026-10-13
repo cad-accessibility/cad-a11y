@@ -1,10 +1,11 @@
 """What XYZ mode puts on the pins (#185), and the label that replaced "x+".
 
-* The view info box names the axis coming out of the display as a two-cell
-  capital label, e.g. ⠠⠵ for Z. It used to draw a lowercase letter and a sign,
-  and the pilot found those unreadable: a lone lowercase x is the word "it" in
-  contracted UEB, and dots 346 are Nemeth's plus but UEB's "ing". No sign glyph
-  is drawn anywhere now.
+* The view info box names the axis coming out of the display with one cell of
+  computer braille, e.g. ⠵ for Z, with no capital sign (the viewer's help says
+  the labels are computer braille). It used to draw a lowercase letter and a
+  sign, and the pilot found those unreadable: a lone lowercase x is the word
+  "it" in contracted UEB, and dots 346 are Nemeth's plus but UEB's "ing". No
+  sign glyph is drawn anywhere now.
 * The origin marker, a hollow 3x3 square, sits where the model's origin is.
 * The edge letters label each display axis at the edge it increases toward.
 
@@ -71,21 +72,20 @@ LETTERS = {"x": [1, 3, 4, 6], "y": [1, 3, 4, 5, 6], "z": [1, 3, 5, 6]}
 
 
 @pytest.mark.parametrize("token", ["z+", "z-", "y-", "y+", "x-", "x+"])
-def test_the_info_box_is_a_capital_axis_letter_and_no_sign(plate, token):
+def test_the_info_box_is_one_computer_braille_letter_and_no_sign(plate, token):
     raised = _raised(plate, view=token, show_view_info_box=True)
-    box = raised[0:5, 0:7]
-    expected = np.zeros((5, 7), dtype=bool)
-    expected[1:5, 1:3] = _cell([6])                 # the capital sign
-    expected[1:5, 4:6] = _cell(LETTERS[token[0]])   # the letter
+    box = raised[0:5, 0:4]
+    expected = np.zeros((5, 4), dtype=bool)
+    expected[1:5, 1:3] = _cell(LETTERS[token[0]])   # the letter, no capital sign
     assert np.array_equal(box, expected), (
-        f"{token}: expected the capital {token[0].upper()} label, got\n{box.astype(int)}"
+        f"{token}: expected the letter {token[0]} alone, got\n{box.astype(int)}"
     )
 
 
 def test_both_sides_of_an_axis_get_the_same_label(plate):
     """The side is said in speech and braille; no pin says plus or minus."""
-    top = _raised(plate, view="z+", show_view_info_box=True)[0:5, 0:7]
-    bottom = _raised(plate, view="z-", show_view_info_box=True)[0:5, 0:7]
+    top = _raised(plate, view="z+", show_view_info_box=True)[0:5, 0:4]
+    bottom = _raised(plate, view="z-", show_view_info_box=True)[0:5, 0:4]
     assert np.array_equal(top, bottom)
 
 
@@ -166,21 +166,6 @@ def test_every_render_tells_the_viewer_where_the_origin_is():
     assert all(value is None or isinstance(value, float) for value in body["origin_fraction"])
 
 
-def test_the_origin_can_be_asked_for_before_the_first_render():
-    """XYZ mode starts a model with the cut at its origin (#235 review) and asks
-    where that is before rendering, so the first frame is already there. The
-    answer is the one the render gives."""
-    flask_app.config["TESTING"] = True
-    with flask_app.test_client() as client:
-        asked = client.post("/render/origin", json={"current_model": 0}).get_json()
-        rendered = client.post("/render", json={
-            "view": "z+", "renderMode": "Cut", "mode": "single", "depth": 50, "zoom": 0,
-            "current_model": 0, "target_pixel_width": 96, "target_pixel_height": 40,
-        }).get_json()
-    assert asked["status"] == "success"
-    assert asked["origin_fraction"] == rendered["origin_fraction"]
-
-
 def test_the_origin_s_place_on_the_display_is_where_the_marker_goes(plate, far_plate):
     """What "," and "." read (#235 review): across from the left edge and up from
     the bottom, as fractions of the display, so the pin the marker is drawn on
@@ -222,11 +207,8 @@ def test_no_marks_unless_asked(plate):
 
 
 def _label_at(raised, x, y):
-    """Which axis letter, if any, is drawn as a capital label with its top-left at (x, y)."""
-    sign = raised[y:y + 4, x:x + 2]
-    letter = raised[y:y + 4, x + 3:x + 5]
-    if not np.array_equal(sign, _cell([6])):
-        return None
+    """Which axis letter, if any, is drawn with its top-left at (x, y)."""
+    letter = raised[y:y + 4, x:x + 2]
     for name, dots in LETTERS.items():
         if np.array_equal(letter, _cell(dots)):
             return name
@@ -236,7 +218,7 @@ def _label_at(raised, x, y):
 def _edges(raised):
     """The letter at the middle of each edge, where _overlay_axis_letters puts them."""
     width, height = GRID
-    box_w, box_h = 7, 6
+    box_w, box_h = 4, 6
     return {
         "right": _label_at(raised, width - box_w + 1, (height - box_h) // 2 + 1),
         "left": _label_at(raised, 1, (height - box_h) // 2 + 1),
