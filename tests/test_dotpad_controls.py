@@ -33,6 +33,7 @@ def test_viewer_exposes_depth_helpers():
     assert "window.getCurrentSliceDepth = getCurrentSliceDepth;" in source
     assert "window.updateSliceDepth = updateSliceDepth;" in source
     assert "window.announceDepthValue = announceDepthValue;" in source
+    assert "window.stepSliceDepth = stepSliceDepth;" in source
 
 
 def test_dotpad_depth_controls_run_before_cursor_movement_requirements():
@@ -47,16 +48,15 @@ def test_dotpad_depth_controls_run_before_cursor_movement_requirements():
 
 
 def test_dot_1_goes_shallower():
+    """Through the viewer's stepSliceDepth, the function Arrow Down uses, so
+    shallower means toward the reader in both axis modes (#235 review)."""
     source = _source(DOTPAD_JS)
     body = _byte6_branch(source, "0x01")
     compact = _compact(body)
 
-    assert "constpreviousDepth=window.getCurrentSliceDepth();" in compact
+    assert "window.stepSliceDepth(-100/n);" in compact
     assert "currentSliceDepth" not in body
-    assert "Math.max(0," in body
-    assert "-100/n" in compact or "-10" in compact
-    assert "window.updateSliceDepth(nextDepth,false);" in compact
-    assert "window.announceDepthValue(nextDepth,previousDepth);" in compact
+    assert "getCurrentSliceDepth" not in body, "a device step must not do its own depth arithmetic"
 
 
 def test_dot_4_goes_deeper():
@@ -64,9 +64,6 @@ def test_dot_4_goes_deeper():
     body = _byte6_branch(source, "0x08")
     compact = _compact(body)
 
-    assert "constpreviousDepth=window.getCurrentSliceDepth();" in compact
+    assert "window.stepSliceDepth(100/n);" in compact
     assert "currentSliceDepth" not in body
-    assert "Math.min(100," in body
-    assert "+100/n" in compact or "+10" in compact
-    assert "window.updateSliceDepth(nextDepth,false);" in compact
-    assert "window.announceDepthValue(nextDepth,previousDepth);" in compact
+    assert "getCurrentSliceDepth" not in body, "a device step must not do its own depth arithmetic"

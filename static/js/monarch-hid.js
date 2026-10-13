@@ -22,6 +22,18 @@
         '32:1,0,0': { type: 'depth', delta: -10 },
         '32:8,0,0': { type: 'depth', delta: 10 },
         '32:0,1,0': { type: 'cycle-cursor' },
+        // XYZ mode's axes (#185), as the braille letters: x = dots 1346, y =
+        // 13456, z = 1356. One chord per axis: the same chord again gives the
+        // other side, as the same letter does on the keyboard, so there is no
+        // dot-7 capital to guess at. INFERRED, NOT YET SEEN ON HARDWARE: byte 0
+        // looks like a dot bitfield (dot 1 = 1 and dot 4 = 8 are the depth keys
+        // above), and these are what those chords should send. Press them and
+        // read the "[Monarch HID] Input report" line in the console before
+        // relying on them. If bare dots type text on the device instead, use
+        // Space + x/y/z.
+        '32:45,0,0': { type: 'axis', axis: 'x' },
+        '32:61,0,0': { type: 'axis', axis: 'y' },
+        '32:53,0,0': { type: 'axis', axis: 'z' },
     };
 
     function setStatus(msg) {
@@ -79,7 +91,7 @@
                 const command = MONARCH_COMMANDS[key];
 
                 console.log('[Monarch HID] Input report:', key, command || 'unmapped');
-                handleMonarchCommand(command);
+                handleMonarchCommand(command, key);
             });
         } catch (err) {
             monarchHidDevice = null;
@@ -120,7 +132,32 @@
         return `${reportId}:${Array.from(new Uint8Array(data.buffer, data.byteOffset, data.byteLength)).join(',')}`;
     }
 
-    function handleMonarchCommand(command) {
+    // The tutorial's name for a command (static/js/tutorial.js), or null for a
+    // report that is no press at all. A report of all zeros is taken to be a
+    // release: describing it in Key help mode, or reading it as an answer to
+    // the test pattern, would follow every real press with a phantom one.
+    // Whether the Monarch sends such a report is not yet confirmed on hardware.
+    function tutorialCommandName(command, key) {
+        if (!command) {
+            return /^\d+:(0,)*0$/.test(String(key || '')) ? null : 'other';
+        }
+        if (command.type === 'depth') return command.delta < 0 ? 'dot1' : 'dot4';
+        if (command.type === 'cycle-cursor') return 'cursor';
+        if (command.type === 'axis') return `axis-${command.axis}`;
+        if (command.type === 'move') {
+            if (command.dCol < 0) return 'move-left';
+            if (command.dCol > 0) return 'move-right';
+            return command.dRow < 0 ? 'move-up' : 'move-down';
+        }
+        return 'other';
+    }
+
+    function handleMonarchCommand(command, key) {
+        // First, before the press does anything: the tutorial may take it as an
+        // answer (dot 1 left, dot 4 right, during the test pattern) or, in Key
+        // help mode, describe it instead of acting on it.
+        const tutorialName = tutorialCommandName(command, key);
+        if (tutorialName && window.cadTutorial?.captureDeviceKey?.({ device: 'monarch', name: tutorialName })) return;
         if (!command) return;
 
         if (command.type === 'cycle-cursor') {
@@ -128,13 +165,15 @@
             return;
         }
 
-        if (command.type === 'depth') {
-            const previousDepth = window.getCurrentSliceDepth?.();
-            if (previousDepth == null) return;
+        if (command.type === 'axis') {
+            window.axisCommandFromDevice?.(command.axis, 'monarch');
+            return;
+        }
 
-            const nextDepth = Math.max(0, Math.min(100, previousDepth + command.delta));
-            window.updateSliceDepth?.(nextDepth, false);
-            window.announceDepthValue?.(nextDepth, previousDepth);
+        if (command.type === 'depth') {
+            // The same step as Arrow Up and Down, so deeper is away from the
+            // reader in both modes (#235 review).
+            window.stepSliceDepth?.(command.delta);
             return;
         }
 
