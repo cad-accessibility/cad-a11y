@@ -7,6 +7,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-10-05
+
+#### Removed
+*   `/study` and everything under it are gone (#207). The comparison study's control panel was open on both servers, so anyone who found the address could advance a live session, read the answer key and download a participant's interaction log, and its spreadsheet needed no token at all. The study is closed: its protocol is kept as the record of what its sessions did, the last code that served it is tagged `study-instrument-2026`, and the only thing served for it is its data, behind a token of its own, at `/studies/comparison-2026/control`, until that data is stored and the study is retired. `docs/STUDIES.md` says how.
+*   `STUDY_CONTROL_TOKEN` no longer does anything.
+
+#### Added
+*   Studies are defined in the repository and run at `/studies/<name>`, with the control panel at `/studies/<name>/control`. Each has a status (draft, open, closed or retired), and a server serves exactly what that status allows. Several can be open at once, each with its own database, logs, participant numbers and join codes. `docs/STUDIES.md` is the guide, and `app/studies/definitions/example.py` is a short study to copy.
+*   Each study's control panel needs that study's token. It is typed once into a sign-in form and lasts the working day in that browser, and it is never part of an address, so it ends up in no browser history and no server log. A study without a token is not served.
+*   A closed study keeps its control panel's downloads after collection ends, so its data can come off a server without shell access. Its database is only read, never created or changed: a server without it says "This server has no data for this study." rather than handing over an empty one.
+*   A study's data downloads as one zip: a consistent copy of the database, every session log, the long spreadsheet of completed sessions with a codebook for every column, a second one in the same columns for abandoned sessions and for those a closed study left running, a table of sessions, a report of known data problems, and a checksum for every file. `python -m app.studies export` makes the same zip from a server or a restored backup, and `scripts/download_study_data.sh` downloads it.
+*   The data checks look for the problems the review of the study code found (#183), sessions ended twice and participant numbers issued with no session, and also for sessions still running, sessions with no recorded end, rows recorded after the end, logs that disagree with the database, steps whose object never reached the display, and sessions an export could not read. They also name the sessions recorded before the orientation fix (#185), whose depths in the front, back and bottom views read the other way round, and the codebook and README in the zip say so when there are any.
+*   Every session records the version of the app and a fingerprint of the protocol it ran, prompts included, so sessions from either side of a change can be told apart from the data.
+*   Latin square and balanced Latin square helpers for a study's counterbalancing.
+*   The example study, whose panel token is published, runs only where `CAD_A11Y_ALLOW_EXAMPLE_STUDY=1` is set beside `CAD_A11Y_OPEN_STUDIES=example`. `docker-compose.yml` never passes it; `docker-compose.example-study.yml` does, for CI and development.
+
+#### Changed
+*   Ending a session before its last step records it as not finished (abandoned): its task set stays available, and its rows are kept apart from the completed sessions'. End used to record every session as completed, even one stopped at step 3 of 22, which counted its task set as run. The panel says which it will be before it asks.
+
+#### Fixed
+*   Closing idle sessions could end a session an experimenter had just ended, adding a second end to its record and changing it from completed to abandoned. A session now ends once, and ending it again says so (#183).
+*   A refused request to start a session could still issue a participant number, leaving a number with no session and moving everyone after it one place along the rotation. It now issues nothing (#183).
+*   A render could be recorded against any running session by naming its number, which counts up from 1. Renders are now matched to a session by its join code.
+*   A double click on Next, a held N key, or a second panel on the same session could each skip a step the participant never reached. A step press now counts once, and one made against a step the session has already left is refused. The same holds for the participant's own keys in a one-device session.
+*   N and B opened the current step's script before the step had changed, so a screen reader could read the old step out as the new one. The script opens once the move has happened.
+*   B in a one-device session said nothing when there was nowhere to go back to. It says so now.
+*   A step whose model is missing left the previous object on the participant's display, under text telling them to explore it. The page now says the object is not available and asks them to tell the experimenter.
+*   A participant code typed for a new participant could match one the server would give out later, and every enrolment after that failed. The automatic code steps aside now (P02b), and a refused start says why in plain words.
+*   Elapsed times in the study data were a millisecond short about once in every 150 values, and a row written while the step changed could carry an earlier time than the row before it.
+
+*   On a Mac, the server aborted as it stopped ("Python quit unexpectedly"), and so did anything else that loaded the renderer, because of the order two mesh libraries load in. It exits cleanly now, and the test of what a demo station serves passes there.
+
+#### Security
+*   Spreadsheet downloads put a quote in front of any cell a spreadsheet would run as a formula.
+
+### 2026-10-01
+
+#### Fixed
+*   A model whose file extension is in capitals, such as `MUG.STL`, opens. It used to be accepted and saved, and then never found, so the viewer announced the upload and showed the default model instead without saying so. Several CAD tools export `.STL` in capitals by default.
+*   The viewer no longer shows a different model from the one you chose. A model that can't be shown, because it has gone or can't be opened, is refused: the viewer says it isn't available and stays on the model you were exploring. It used to show the default model instead, and announce the one you chose as loaded.
+*   The model list keeps up. When a model is uploaded or removed, in this window or another, every open viewer updates its list straight away instead of up to five seconds later. If the model on the display is removed, the viewer says so, and says which model it shows instead.
+
+### 2026-09-29
+
+#### Added
+*   A tutorial that starts by itself the first time someone opens the viewer in a browser, after the consent dialog, so people who arrive without a facilitator can learn the viewer on their own. It teaches the viewer on a practice mug in 12 lessons: connecting and testing a display, what a slice is, moving the slice plane, render modes, zoom and moving the model, X, Y and Z, Reset and Fit, help and Settings, a set of "mug detective" challenges, and loading your own model. Three extras follow for anyone who wants them: layouts and the slice graph, the cube, and the slider. It runs in a region at the top of the page with the real controls, not in a dialog, so every key works while it teaches them. Each step moves on when the viewer shows you did the thing (the slice plane reached the handle, the render mode came back to Cut), says what changed, and never moves on or repeats itself on a timer. A step with something to read or feel waits for Next (N) instead, and ends with "Press Next (N) when ready." Hints come only when asked for, and on a step that moves the slice plane, Show me (P) does it for you and says what is there. The display chosen in the first lesson becomes the Output device setting and is kept for later visits, and before the end the tutorial links to the guides for building the cube and the slider.
+*   Exit tutorial on every step. It pauses the tutorial rather than dismissing it: the viewer is yours straight away, and the new Tutorial button in the main menu, or the top of the keyboard shortcuts list, resumes at the same lesson and step, starts over, or opens any lesson from a list with its status. Closing the tab partway through the first run picks up at the same place next time. Someone who has used the viewer before hears once that the tutorial is there, and it does not start by itself for them. It never starts by itself on the demo, workshop or study pages; the demo offers it from the Tutorial button, and `?tutorial=start` opens it anywhere it is offered.
+*   Key help mode, from the tutorial or the shortcuts list: every key and every Monarch or DotPad button says what it does and does nothing, the way VoiceOver's keyboard help and NVDA's input help work.
+*   A practice mug in millimetres, standing on Z = 0 with its handle toward negative Y as an OpenSCAD model would, and printable files for it, ten slice plaques and a separate, larger set of mug pieces cut along X at `/tutorial/prints.zip`.
+
+#### Removed
+*   P, "Print current render", from the keys and the keyboard shortcuts help. It never worked: the render it was sent with failed, and nothing was printed or saved. #49 has the fix for the server's print path, if printing comes back.
+
+#### Fixed
+*   F said the output device's internal name ("View fitted to monarch_hid") and fitted the slice to the Monarch's size on every display. It now fits to the display the render is actually drawn for, and says "View fitted to the Monarch" or "the DotPad" when one is connected, otherwise "View fitted to the display".
+*   The README described a LEGO practice round the study no longer runs, a demo chooser that offered every model, and a study panel that started a session as soon as it opened. It now says what each one does.
+*   Focus went to the page title twice on every load, the second time a moment after the page was ready, which would pull it off anything focused in between, such as the tutorial's first lesson. The second move now happens only when the page comes back from the browser's cache, which is what it was for.
+
+### 2026-09-28
+
+#### Fixed
+*   Uploaded models are private to the browser that uploaded them. The server used to list every upload to anyone who asked, with its location on the server, and would render or export any of them by name. Only the viewer hid them, and it showed the whole list until it knew which models were built in. The server now lists the built-in models and your own uploads, and a request for somebody else's upload is refused, exactly as a name that does not exist is. Closing or reloading a tab, or deleting an upload, now also forgets who owned it, so the next upload of the same name belongs to whoever sent it; the record of ownership used to outlive the file.
+*   An email address no longer gives access to anything. Typing somebody else's address in the welcome dialog used to list their uploads and let you delete them, and opening the workshop page with that address handed over their session. The address is now kept only to send project updates, in a file of its own with nothing that ties it to a browser or to what anyone did in the viewer, and the welcome dialog says that rather than calling the usage analytics anonymous. Addresses given before this move to that file the first time the server starts, and the usage database is rebuilt so that no copy of them is left in it. Backups of the usage database taken before then still pair those addresses with sessions.
+*   The welcome dialog takes an email address in any script, such as josé@example.es, and refuses with a reason anything that is not one: more than 254 characters, markup, control characters, doubled dots. It used to accept any text without a space, of any length.
+*   A failed delete is said aloud as well as shown.
+*   On start, the server forgets ownership of uploads whose files are gone, and removes uploaded files that nobody owns. Those are uploads made without saving a cookie, which belong to their tab only until the server restarts; after that nobody could see or delete them.
+*   The site's address is the viewer. It used to show a raw list of the server's internal addresses, which a screen reader read out one line at a time, and which named parts of the app that are not meant to be public. `/viewer` still works, with or without a trailing slash. On a demo station the address opens the demo page, which records nothing.
+
+#### Added
+*   The viewer says, before you connect a display, to use a screen reader in focus mode (NVDA) or forms mode (JAWS). It is read with the Connect button until Connect has had focus once, and stays on the page after that. Where a braille display cannot be connected at all, it says why: an address that is not https or localhost, or a browser without Web HID or Web Bluetooth, which Chrome and Edge have.
+*   The integration API has an address, `/api/v1`, and a public description at `/api/v1/openapi.json`. There is nothing in it yet; it is where tools that send models in will connect. Every error under it is answered in the same JSON shape. A demo station does not offer it.
+
+#### Changed
+*   Giving the same email on another browser or device no longer brings your uploads with it. That link is what made the address a key, and it stays gone until there is a sign-in that proves an address is yours.
+
+### 2026-09-22
+
+#### Fixed
+*   Pitch and yaw now turn the way the keys say from every view. They used to run backwards from the viewer's starting view and from two others: pitching up showed the object's top rather than its underside, and yawing left brought the wrong side round. The turns are now centred on the person reading the display: pitch up swings the part nearest you up to the top edge, yaw left swings it to your left, and that holds whichever way the object is currently facing (#185).
+*   All six views are now the views OpenSCAD shows under the same names. Front, back and bottom used to be sliced from the far side, so 0% depth there was the surface furthest from you, and bottom showed the top of the object turned half round instead of the view from below. 0% is now the surface nearest you in every view, which is what the help has always said.
+*   The view is named the way OpenSCAD names it (Top, Front, Right and so on) in the status bar and wherever it is announced, instead of internal codes like "x+", two of which pointed the opposite way to what they suggested.
+*   Fitting the current slice to the display (F) centres and sizes the slice again. It measured a different slice once the object had been turned, and even unturned it worked out the zoom against the wrong window, so the slice came out off-centre or the wrong size (#173).
+*   The arrows, Page Up and Down, Home and End now work as usual in a focused list, radio group or slider, where they used to move the slice instead. Screen reader users rely on them to move within a control, and had no way to get them back.
+*   "." and the status bar name the model on display. After /ingest opened a model in a viewer that was already open, both went on naming the model before it.
+*   The help text for the arrow keys said Up goes shallower and Down deeper. It is the other way round, and the help now says so.
+*   At 100% depth, Filled, Outline and X-Ray drew the whole model instead of what is left at the far side: a slice that left nothing behind fell back to the unsliced model. They now draw the object's last slice there, the same picture as 99%. Cut mode, which already drew the faces lying on the far side, is unchanged (#252).
+*   Renders driven by the cube or the slider were recorded as keyboard renders. The two modules set a variable the viewer never read, so every cube and slider render in the study data so far says `keyboard`. They now say `witmotion` and `slider`. Earlier rows cannot be corrected from the data; anyone analysing input source should know the old ones are wrong.
+*   On the study page, P printed and also stepped back. B is the key for back and P is print, as the help says.
+*   The depth slider moved the number but not the plane, so turning the model afterwards jumped back to wherever the plane had been, and what it read out to a screen reader never changed from "50 percent depth". Both follow the slider now.
+*   Running the test suite no longer leaves files in the repo's `data/` folder. Every run left its one-triangle test models in `data/models` and `data/uploads` (about 2,400 so far on one development machine), and the ones in `data/models` were listed to everyone as built-in models. Runs also left slice caches and lines in the local braille log and usage database. The suite now points the app at a temporary folder that is removed when it finishes. `CAD_A11Y_MODEL_DIR` is new for this: it moves the built-in model folder the way `UPLOAD_MODEL_DIR` moves uploads.
+
+#### Added
+*   An XYZ axis mode, now the default, for people who model in OpenSCAD and already think in axes (#185). X, Y and Z slice along that axis, and the same letter again from the other side, so the other side is two presses of one key and every view is one of OpenSCAD's standard views. Each press says the axis, the side you look from as plus or minus, and where the other two axes increase ("X from plus, Y right, Z up"), and the buttons X plus to Z minus do the same with a pointer. Depth works and reads exactly as in Turn mode, in percent from the surface nearest you, for the Arrow, Page, Home and End keys, the slider, the Trinkey and the DotPad's and the Monarch's depth keys (#263). The viewer writes a short braille line for the DotPad's text display alongside the speech. Turn mode is still in Settings, and the study keeps it. No key does something in both modes: a key from the other one only says which mode it belongs to.
+*  Settings can turn on and off axis labels at the positive extent of each on-screen axis, and a view info box that includes labels for the other two axes using extreme shorthand: 1 dot for x, 2 for y, and 3 for z, on the side that axis increases toward. Axis labels are computer braille.
+*   The view info box names the axis coming out of the display with one cell of computer braille and a + or -. It used to draw a lowercase letter and a plus or minus sign, which pilot participants could not read: a lone lowercase x is the word "it" in contracted braille, and the plus sign read as "ing".
+*   "." says where you are in a few words, in both modes: "View from X plus, Y right, Z up. Depth: 50%. Origin: H: 42% V: 42%. Render: Outline. Zoom: 0.0. Model: mug." Turn mode names the view instead ("View from the front"). This is what #193 asked for, and it is correct from every view now that the views are. "," says where the model's origin is on the display, measured from the left and bottom edges ("Horizontal: 42%, Vertical: 42%"), with values past 0 and 100 when it is off the display.
+*   M (Mark) toggles the origin on the display (#266). Turning it on switches to Outline and invokes ","; turning it off goes back to the render mode that was showing, unless R has been used to change render mode. The mark is a plus of five pins where the origin is; a T on the edge it lies beyond, its stem reaching that edge, level with the origin; or a square of four pins in the corner it lies beyond. It replaces the origin-marker checkbox in Settings and the hollow square: the mark starts off, in both modes.
+*   Single-key shortcuts can be switched off in Settings, for anyone whose screen reader or speech input sends letters the viewer would otherwise act on (WCAG 2.1.4). The arrow, Page, Home and End keys keep working.
+*   The study data records the axis mode and where the slice was on every row: the axis, the side it was seen from, and how far along the object. `docs/STUDY_DATA_EXPORT.md` describes the new columns.
+
+#### Changed
+*   Reset is now 0, not Z, in both modes, since Z slices along Z in XYZ mode. Pressing Z in Turn mode says where reset went.
+*   The cube only changes the view once a face is clearly up and has stayed up for a moment. Held near a corner, it used to flicker between two views, redrawing and interrupting with an announcement each time.
+*   Study data: in the front, back and bottom views the same slice now reads as 100 minus the depth it used to (30% becomes 70%), and the orientation recorded for those views changed with it. `docs/STUDY_DATA_EXPORT.md` explains how to tell sessions from before and after this apart in the data itself.
+
 ### 2026-08-19
 
 #### Added
@@ -51,7 +156,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 *   Alongside the database, each session is written to its own log file, one line per event, each line carrying the full state of the viewer at that moment. It is written independently of the database, so a session can still be reconstructed if the database write is the thing that failed.
 *   The control panel says whether recording is actually working while the session is running. Previously the only way to find out that data had not been captured would have been to look for it afterwards.
 *   Each participant explores a practice Lego brick, then two of the three model pairs. Which two, and in which order, follows a fixed balanced design rather than being drawn at random, which at this number of participants would routinely produce a lopsided set. The panel shows the whole assignment table, so it is clear in advance which objects to have printed and ready.
-*   Every model loads into the same starting state: the object upright, cut through the middle, zoomed out and centred. The second version of an object therefore starts exactly where the first did, so what a participant notices is a difference between the models rather than between viewpoints.
+*   Every model loads into the same starting state: the object upright, sliced through the middle, zoomed out and centred. The second version of an object therefore starts exactly where the first did, so what a participant notices is a difference between the models rather than between viewpoints.
 *   Session data can be downloaded from the control panel as a single file, so analysis does not begin with getting a database off the server.
 *   Running a session is now: open the panel, read two things out. Opening `/study/control` starts a session straight away — there is no form to fill in first, because the participant number, the model pairs and the session number are all decided by the protocol. The panel then shows the address for the participant to open and a four-character code for them to enter, and that is the whole setup.
 *   The panel no longer needs a secret. It used to be reachable only with a token that had to be found in the server's own log, which was the most confusing part of running a session. Anyone who can reach the address can now open it. A deployment that wants the old behaviour can still require a token by setting one.

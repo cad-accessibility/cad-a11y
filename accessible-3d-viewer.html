@@ -41,12 +41,32 @@
 
         <header role="banner">
             <h1 id="page-title" tabindex="-1">Accessible 3D Model Viewer</h1>
+            <!--
+                Said before the Connect button, and read as its description (#232):
+                the focus-mode note until Connect has had focus once in this
+                browser, the browser note whenever it shows (#244 review). The
+                browser note appears only where a display cannot be connected at
+                all; viewer.js decides that by asking whether the address is secure,
+                then for Web HID (the Monarch) and Web Bluetooth (the DotPad), not
+                by the browser's name.
+            -->
+            <p id="browser-support-note" class="browser-warning" hidden>
+                This browser can't connect to a braille display. Open this page in Chrome or Edge on a computer.
+            </p>
+            <p id="focus-mode-note" class="help-text">
+                Use with focus mode (NVDA) or forms mode (JAWS).
+            </p>
             <nav aria-label="Main menu" class="site-nav">
               <div class="button-group">
-		<button type="button" id="device-connect-btn">Connect</button>
+		<button type="button" id="device-connect-btn" aria-describedby="focus-mode-note">Connect</button>
 	        <button type="button" id="device-disconnect-btn" hidden>Disconnect</button>
                 <button type="button" id="nav-about-btn">About</button>
                 <button type="button" id="nav-help-btn">Help</button>
+                <!-- The tutorial's permanent home: Resume, Start over and the
+                     lesson list. Hidden where the tutorial is not offered
+                     (a study's pages, /workshop, ?ui=simple); see TUTORIAL_ROUTES in
+                     static/js/tutorial.js. -->
+                <button type="button" id="nav-tutorial-btn">Tutorial</button>
                 <button type="button" id="nav-settings-btn">Settings</button>
 	      </div>
             </nav>
@@ -54,7 +74,7 @@
 
         <!--
             STATUS: single terse line for braille display users.
-            A braille reader sees: "x+ 50% Outline z:0.0 single cube"
+            A braille reader sees: "Left 50% Outline z:0.0 single cube"
             Sighted users see the full styled bar.
             Not a live region: it updates silently and is read on demand, either by
             the reader landing on this labelled region or via the "." shortcut, which
@@ -64,11 +84,11 @@
         <div id="status-bar" role="region" aria-label="Viewer status">
             <span class="status-item">
                 <span class="status-label">View<span aria-hidden="true">:</span></span>
-                <span class="status-value highlight" id="sb-view">x+</span>
+                <span class="status-value highlight" id="sb-view">Left</span>
             </span>
             <span class="status-separator" aria-hidden="true">|</span>
             <span class="status-item">
-                <span class="status-label">Depth<span aria-hidden="true">:</span></span>
+                <span class="status-label"><span id="sb-depth-label">Depth</span><span aria-hidden="true">:</span></span>
                 <span class="status-value highlight" id="sb-depth">50%</span>
             </span>
             <span class="status-separator" aria-hidden="true">|</span>
@@ -130,7 +150,7 @@
        <main id="main-content">
 
             <!--
-                STUDY SESSION REGION — only shown at /study (viewer.js adds
+                STUDY SESSION REGION — only shown at /studies/<slug> (viewer.js adds
                 body.study-ui; see viewer.css). First thing inside main, so the
                 skip link lands on it and a screen reader meets the current step
                 before the controls.
@@ -195,6 +215,86 @@
                 <p id="study-ready-status" role="status" class="help-text"></p>
             </section>
 
+            <!--
+                TUTORIAL REGION -- the first-run tutorial, driven by
+                static/js/tutorial.js. It opens by itself on a first visit to
+                /viewer and from the Tutorial button in the main menu; it never
+                appears on a study's pages or in the simplified workshop viewer (see
+                TUTORIAL_ROUTES in tutorial.js, and viewer.css).
+
+                Right after the study region, so it is the first thing in main
+                and the skip link lands on it. A region rather than a dialog: the
+                viewer ignores every key while a dialog is open, and the lessons
+                are about those keys.
+
+                Nothing in here is a live region. A step change is said once,
+                through the shared polite announcement window, and the text here
+                stays put to be read on demand, like the study region above. The
+                "Last thing said" line is plain text for the same reason: it keeps
+                the last thing the viewer or the tutorial said, for anyone who
+                missed it, and lesson 1 says so. Every answer is a button, never a
+                radio, so one press answers.
+            -->
+            <section id="tutorial-region" class="study-region tutorial-region" aria-labelledby="tutorial-heading" hidden>
+                <h2 id="tutorial-heading" tabindex="-1">Tutorial</h2>
+
+                <div id="tutorial-lesson-view">
+                    <p id="tutorial-progress" class="tutorial-progress">Step 1 of 1</p>
+                    <p id="tutorial-step-text" class="tutorial-step-text"></p>
+                    <!-- A step's links: its text is plain, so they come after it. -->
+                    <ul id="tutorial-step-links" class="tutorial-step-links" aria-label="Links for this step" hidden></ul>
+                    <p id="tutorial-note" class="tutorial-note" hidden></p>
+                    <p id="tutorial-last" class="tutorial-last">Last thing said: <span id="tutorial-last-text">nothing yet.</span></p>
+                    <div id="tutorial-answers" role="group" aria-labelledby="tutorial-answers-label" hidden>
+                        <p id="tutorial-answers-label" class="tutorial-answers-label">Answers</p>
+                        <div id="tutorial-answer-buttons" class="button-group"></div>
+                    </div>
+                    <ol id="tutorial-hints" class="tutorial-hints" aria-label="Hints so far" hidden></ol>
+                    <!--
+                        Exit is always here, on every lesson and every step: named
+                        on the first screen, one press, nothing lost (it pauses).
+                        Escape cannot be the only way out, since NVDA takes it.
+                    -->
+                    <div class="button-group tutorial-controls">
+                        <button type="button" id="tutorial-continue-btn">Next (N)</button>
+                        <button type="button" id="tutorial-back-btn">Back (B)</button>
+                        <button type="button" id="tutorial-repeat-btn">Repeat (C)</button>
+                        <button type="button" id="tutorial-hint-btn">Hint 1 of 3</button>
+                        <button type="button" id="tutorial-show-me-btn" hidden>Show me (P)</button>
+                        <button type="button" id="tutorial-restart-lesson-btn">Return to lesson start</button>
+                        <button type="button" id="tutorial-keyhelp-btn" aria-pressed="false">Key help</button>
+                        <button type="button" id="tutorial-lessons-btn">Lessons</button>
+                        <button type="button" id="tutorial-skip-btn">Skip step</button>
+                        <button type="button" id="tutorial-skip-lesson-btn" hidden>Skip lesson</button>
+                        <button type="button" id="tutorial-keys-btn" aria-expanded="false" aria-controls="tutorial-keys-help" hidden>Keys aren't working</button>
+                        <button type="button" id="tutorial-connect-monarch-btn" hidden>Connect Monarch</button>
+                        <button type="button" id="tutorial-connect-dotpad-btn" hidden>Connect DotPad</button>
+                        <button type="button" id="tutorial-exit-btn">Exit tutorial</button>
+                    </div>
+                    <div id="tutorial-keys-help" class="tutorial-keys-help" hidden>
+                        <h3 id="tutorial-keys-help-heading">When keys do nothing</h3>
+                        <ul id="tutorial-keys-help-list"></ul>
+                    </div>
+                </div>
+
+                <div id="tutorial-menu-view" hidden>
+                    <p id="tutorial-menu-intro" class="tutorial-step-text">
+                        Pick any lesson. Done lessons can be redone.
+                    </p>
+                    <div id="tutorial-menu-resume" class="tutorial-resume" hidden>
+                        <button type="button" id="tutorial-resume-btn">Resume</button>
+                    </div>
+                    <div id="tutorial-menu-groups"></div>
+                    <div class="button-group">
+                        <button type="button" id="tutorial-start-over-btn">Start over</button>
+                        <button type="button" id="tutorial-menu-exit-btn">Exit tutorial</button>
+                    </div>
+                    <p>
+                        <a href="/tutorial/prints.zip" download>Printable tutorial mug and slice plaques (zip file)</a>
+                    </p>
+                </div>
+            </section>
+
             <div class="layout">
                 <!-- LEFT COLUMN: controls (braille reading order: most-used first) -->
                 <div class="left-col" id="left-col">
@@ -206,22 +306,51 @@
             <!-- 1a. Orientation — most frequently changed -->
             <section class="section" aria-labelledby="orientation-heading">
                 <h2 id="orientation-heading">Orientation</h2>
-                <div id="orientation-help" class="help-text">
-                    Each turns the model a quarter turn. Left and right, up and down,
-                    and clockwise are as they are on the display, whichever way the
-                    model is currently facing.
+                <!-- Turn mode: pitch, roll and yaw. Only one of these two groups
+                     is ever shown, and each one's buttons refuse to act in the
+                     other mode, so no control does something in both. The mode is
+                     chosen in Settings, under Axis Mode; XYZ is the default. -->
+                <div id="turn-controls" hidden>
+                    <div id="orientation-help" class="help-text">
+                        Each turns the model a quarter turn. Left and right, up and down,
+                        and clockwise are as they are on the display, whichever way the
+                        model is currently facing.
+                    </div>
+                    <div class="button-group" aria-describedby="orientation-help">
+                        <button type="button" id="pitch-up-btn">Pitch up</button>
+                        <button type="button" id="pitch-down-btn">Pitch down</button>
+                    </div>
+                    <div class="button-group" style="margin-top: 8px;">
+                        <button type="button" id="yaw-left-btn">Yaw left</button>
+                        <button type="button" id="yaw-right-btn">Yaw right</button>
+                    </div>
+                    <div class="button-group" style="margin-top: 8px;">
+                        <button type="button" id="roll-ccw-btn">Roll counterclockwise</button>
+                        <button type="button" id="roll-cw-btn">Roll clockwise</button>
+                    </div>
                 </div>
-                <div class="button-group" aria-describedby="orientation-help">
-                    <button type="button" id="pitch-up-btn">Pitch up</button>
-                    <button type="button" id="pitch-down-btn">Pitch down</button>
-                </div>
-                <div class="button-group" style="margin-top: 8px;">
-                    <button type="button" id="yaw-left-btn">Yaw left</button>
-                    <button type="button" id="yaw-right-btn">Yaw right</button>
-                </div>
-                <div class="button-group" style="margin-top: 8px;">
-                    <button type="button" id="roll-ccw-btn">Roll counterclockwise</button>
-                    <button type="button" id="roll-cw-btn">Roll clockwise</button>
+                <!-- XYZ mode: slice along X, Y or Z, each seen as one of OpenSCAD's
+                     standard views. One button per axis and side, the side being
+                     where the reader looks from (#235 review); the one showing is
+                     marked current. -->
+                <div id="xyz-controls">
+                    <div id="xyz-help" class="help-text">
+                        Slice along X, Y or Z, as in OpenSCAD. Plus or minus is the
+                        side you look from.
+                    </div>
+                    <div class="button-group" aria-describedby="xyz-help">
+                        <button type="button" id="view-x-plus-btn" data-axis="x" data-side="plus">X plus</button>
+                        <button type="button" id="view-x-minus-btn" data-axis="x" data-side="minus">X minus</button>
+                    </div>
+                    <div class="button-group" style="margin-top: 8px;">
+                        <button type="button" id="view-y-plus-btn" data-axis="y" data-side="plus">Y plus</button>
+                        <button type="button" id="view-y-minus-btn" data-axis="y" data-side="minus">Y minus</button>
+                    </div>
+                    <div class="button-group" style="margin-top: 8px;">
+                        <button type="button" id="view-z-plus-btn" data-axis="z" data-side="plus">Z plus</button>
+                        <button type="button" id="view-z-minus-btn" data-axis="z" data-side="minus">Z minus</button>
+                    </div>
+                    <p id="xyz-position" class="help-text"></p>
                 </div>
             </section>
 
@@ -230,7 +359,7 @@
             <section class="section" aria-labelledby="slice-heading">
                 <h2 id="slice-heading">Depth</h2>
                 <label for="slice-depth-slider">
-                    <span id="slice-percentage">50</span>%
+                    <span id="slice-percentage">50%</span>
                 </label>
                 <input
                     type="range"
@@ -245,13 +374,13 @@
                     aria-valuetext="50 percent depth"
                     aria-describedby="slice-help"
                 >
-                <div id="slice-help" class="help-text sr-only">0% surface, 100% full depth. Keys: Up shallower 1%, Down deeper 1%, Page Up/Down for coarse steps (10%).</div>
+                <div id="slice-help" class="help-text sr-only">0% is the surface nearest you and 100% the far side, whichever way the model is facing, in both axis modes. Keys: Up deeper 1%, Down shallower 1%, Page Up deeper 10%, Page Down shallower 10%, Home the surface, End the far side.</div>
                 <div class="button-group">
                     <button type="button" id="deeper-btn" aria-describedby="deeper-help">Deeper: 50%</button>
                     <button type="button" id="shallower-btn" aria-describedby="shallower-help">Shallower: 50%</button>
                 </div>
-                <div id="deeper-help" class="sr-only">+10%</div>
-                <div id="shallower-help" class="sr-only">-10%</div>
+                <div id="deeper-help" class="sr-only">Moves the slice 10% further from you.</div>
+                <div id="shallower-help" class="sr-only">Moves the slice 10% nearer to you.</div>
             </section>
 
             <!-- 1c. Render mode -->
@@ -286,8 +415,11 @@
                     Choose how to visualize the model
                 </div>
                 <div id="view-mode-block" aria-describedby="view-mode-help">
-                    <fieldset role="radiogroup" aria-labelledby="render-heading">
-                        <legend class="sr-only">View Mode Options</legend>
+                    <!-- Named by its own legend, not by the section heading: both groups used to
+                         take "Rendering Mode" from it, so a screen reader announced two groups with
+                         one name (#209). "Layout" is what the status bar and "." call this. -->
+                    <fieldset role="radiogroup">
+                        <legend class="sr-only">Layout</legend>
                         <label>
                             <input type="radio" name="view-mode" id="view-mode-single" value="single" checked>
                             Single (with scrollbar)
@@ -301,6 +433,11 @@
                             Slice Graph
                         </label>
                     </fieldset>
+                    <!-- Shown, and pointed to from each radio, while a tutorial
+                         lesson has the layout locked (static/js/tutorial.js). -->
+                    <p id="layout-lock-note" class="help-text tutorial-lock-note" hidden>
+                        Locked during the tutorial. Exit the tutorial to change the layout.
+                    </p>
                 </div>
                 <div class="help-text" id="slice-graph-lock-status">Graph lock ON.</div>
             </section>
@@ -329,7 +466,7 @@
                 <div class="button-group zoom-reset-row" style="margin-top: 8px;">
                     <button type="button" id="reset-position-btn">Reset Position</button>
                 </div>
-                <div class="help-text sr-only">Snaps the view back to the default centered position. Key: Z.</div>
+                <div class="help-text sr-only">Snaps the view back to the default centered position. Key: 0.</div>
             </section>
 
             <!-- ============================================================
@@ -340,6 +477,11 @@
                 <select id="model-list-dropdown" aria-label="Select a 3D model">
                     <option value="" selected>Loading models...</option>
                 </select>
+                <!-- Shown, and pointed to from the chooser and the upload field,
+                     while a tutorial lesson has them locked (static/js/tutorial.js). -->
+                <p id="model-lock-note" class="help-text tutorial-lock-note" hidden>
+                    Locked during the tutorial. Exit the tutorial to choose or upload a model.
+                </p>
                 <button type="button" id="delete-model-btn" hidden>Remove uploaded model</button>
                 <div style="margin-top: 12px;">
                     <input type="file" id="upload-model-input" accept=".stl,.step,.STEP"
@@ -495,7 +637,31 @@
         <h2 id="shortcuts-heading" tabindex="-1">Keyboard Shortcuts</h2>
         <p class="help-text">Press <kbd>Esc</kbd> or activate Close to return to where you were.</p>
 
-        <!-- Only meaningful at /study; hidden elsewhere and revealed by
+        <!-- The tutorial's other home, beside the Tutorial button in the main
+             menu. Each button closes this dialog first and acts once it has
+             closed, so focus ends in the tutorial rather than back on whatever
+             opened the dialog. Hidden where the tutorial is not offered (see
+             viewer.css); Resume is shown only when there is something to
+             resume, and Key help only while the tutorial is running. -->
+        <div id="tutorial-shortcuts-section">
+            <h3 id="tutorial-shortcuts-heading">Tutorial</h3>
+            <!-- A labelled group, so tabbing in says "Tutorial" before "Start over":
+                 on its own that button name does not say what it starts over. -->
+            <div class="button-group" role="group" aria-labelledby="tutorial-shortcuts-heading">
+                <button type="button" id="tutorial-dialog-resume-btn" class="tutorial-resume" hidden>Resume</button>
+                <button type="button" id="tutorial-dialog-start-over-btn">Start over</button>
+                <button type="button" id="tutorial-dialog-lessons-btn">Choose a lesson</button>
+                <button type="button" id="tutorial-dialog-keyhelp-btn" aria-pressed="false" hidden>Key help</button>
+            </div>
+            <ul class="shortcuts-list">
+                <li><kbd>N</kbd> Next, while the tutorial is running</li>
+                <li><kbd>B</kbd> Back a step</li>
+                <li><kbd>C</kbd> Repeat the step</li>
+                <li><kbd>P</kbd> Show me, on a step the tutorial can show you how to do</li>
+            </ul>
+        </div>
+
+        <!-- Only meaningful at /studies/<slug>; hidden elsewhere and revealed by
              study.js the same way #study-region itself is (#180). Placed
              first since it's the most relevant reference during a session. -->
         <div id="study-shortcuts-section" hidden>
@@ -507,34 +673,57 @@
             </ul>
         </div>
 
-        <h3>Orientation</h3>
-        <ul class="shortcuts-list">
-            <li><kbd>U</kbd> Roll counterclockwise (90°): Rotate around forward facing axis </li>
-            <li><kbd>O</kbd> Roll clockwise (90°): Rotate around forward facing axis</li>
-            <li><kbd>I</kbd> Pitch up (90°): rotate around horizontal axis.</li>
-            <li><kbd>K</kbd> Pitch down (90°): rotate around horizontal axis.</li>
-            <li><kbd>J</kbd> Yaw left (90°): rotate around vertical axis. </li>
-            <li><kbd>L</kbd> Yaw right (90°): rotate around vertical axis</li>
-        </ul>
+        <!-- Only the active axis mode's keys are shown, with one line naming the
+             other mode, like the study section above. -->
+        <div id="turn-shortcuts-section" hidden>
+            <h3>Orientation (Turn mode)</h3>
+            <ul class="shortcuts-list">
+                <li><kbd>U</kbd> Roll counterclockwise (90°): Rotate around forward facing axis </li>
+                <li><kbd>O</kbd> Roll clockwise (90°): Rotate around forward facing axis</li>
+                <li><kbd>I</kbd> Pitch up (90°): rotate around horizontal axis.</li>
+                <li><kbd>K</kbd> Pitch down (90°): rotate around horizontal axis.</li>
+                <li><kbd>J</kbd> Yaw left (90°): rotate around vertical axis. </li>
+                <li><kbd>L</kbd> Yaw right (90°): rotate around vertical axis</li>
+            </ul>
+            <p class="help-text">Other axis mode: XYZ, which slices along X, Y or Z as in OpenSCAD. Change it in Settings.</p>
+        </div>
+        <div id="xyz-shortcuts-section">
+            <h3>Axes (XYZ mode)</h3>
+            <ul class="shortcuts-list">
+                <li><kbd>X</kbd>, <kbd>Y</kbd>, <kbd>Z</kbd> Slice along that axis: X from plus, Y from minus, Z from plus, the side you look from</li>
+                <li><kbd>X</kbd>, <kbd>Y</kbd> or <kbd>Z</kbd> again The same axis from the other side</li>
+            </ul>
+            <p class="help-text">Other axis mode: Turn, which turns the model with pitch, roll and yaw. Change it in Settings.</p>
+            <p class="help-text">Axis labels on the display, the letters at its edges and the view info box, are x, y and z in computer braille: one cell each, with no capital sign.</p>
+        </div>
 
-        <h3>Depth &amp; Zoom</h3>
+        <h3>Depth</h3>
         <ul class="shortcuts-list">
-            <li><kbd>Arrow Up</kbd> Shallower 1%</li>
-            <li><kbd>Arrow Down</kbd> Deeper 1%</li>
+            <li><kbd>Arrow Up</kbd> Deeper 1%</li>
+            <li><kbd>Arrow Down</kbd> Shallower 1%</li>
             <li><kbd>Page Up</kbd> Deeper 10%</li>
             <li><kbd>Page Down</kbd> Shallower 10%</li>
+            <li><kbd>Home</kbd> The surface nearest you</li>
+            <li><kbd>End</kbd> The far side</li>
+        </ul>
+        <p class="help-text">The same in both axis modes: 0% is the surface nearest you and 100% the far side.</p>
+
+        <h3>Zoom</h3>
+        <ul class="shortcuts-list">
             <li><kbd>5</kbd> Zoom in 1%</li>
             <li><kbd>4</kbd> Zoom out 1%</li>
             <li><kbd>3</kbd> Zoom in 10%</li>
             <li><kbd>2</kbd> Zoom out 10%</li>
         </ul>
 
-        <h3>View &amp; Render Mode</h3>
+        <h3>Render Mode &amp; Layout</h3>
         <ul class="shortcuts-list">
             <li><kbd>R</kbd> Cycle render mode</li>
-            <li><kbd>T</kbd> Cycle view mode</li>
+            <li><kbd>T</kbd> Cycle layout</li>
             <li><kbd>F</kbd> Fit current slice to tactile display</li>
-            <li><kbd>.</kbd> Read current status</li>
+            <li><kbd>.</kbd> Where am I: the view, the depth, the origin, render, zoom and model</li>
+            <li><kbd>,</kbd> Where the model's origin is on the display, across from the left edge and up from the bottom</li>
+            <li><kbd>M</kbd> Toggle the origin mark on the display. Turning it on switches to Outline; turning it off goes back to the render mode you had</li>
         </ul>
 
         <h3>Slice Graph</h3>
@@ -549,14 +738,9 @@
             <li><kbd>A</kbd> Pan object left</li>
             <li><kbd>S</kbd> Pan object down</li>
             <li><kbd>D</kbd> Pan object right</li>
-            <li><kbd>Z</kbd> Reset position</li>
+            <li><kbd>0</kbd> Reset position: the view to square, the slice plane to 50%, the zoom to 0 and the model to the centre</li>
             <li><kbd>[</kbd> Toggle scrollbar overlay</li>
             <li><kbd>]</kbd> Toggle slice-graph overlay</li>
-        </ul>
-
-        <h3>Export</h3>
-        <ul class="shortcuts-list">
-            <li><kbd>P</kbd> Print current render</li>
         </ul>
 
         <h3>This Dialog</h3>
@@ -603,6 +787,33 @@
             These control which optional features appear on the main page.
         </p>
 
+        <h3>Axis Mode</h3>
+        <fieldset>
+            <legend class="sr-only">Axis mode</legend>
+            <label>
+                <input type="radio" name="axis-mode" id="axis-mode-turn" value="turn">
+                Turn: pitch, roll and yaw
+            </label>
+            <label>
+                <input type="radio" name="axis-mode" id="axis-mode-xyz" value="xyz" checked>
+                XYZ: slice along X, Y or Z, as in OpenSCAD
+            </label>
+        </fieldset>
+        <div class="button-group settings-checkbox-group">
+            <label class="checkbox-label" for="settings-axis-letters">
+                <input type="checkbox" id="settings-axis-letters" checked>
+                Axis letters at the display edges, in computer braille
+            </label>
+        </div>
+
+        <h3>Keyboard</h3>
+        <div class="button-group settings-checkbox-group">
+            <label class="checkbox-label" for="settings-single-key-shortcuts">
+                <input type="checkbox" id="settings-single-key-shortcuts" checked>
+                Single-key shortcuts (letters, digits and punctuation)
+            </label>
+        </div>
+
         <h3>Output Device</h3>
         <fieldset>
             <legend class="sr-only">Output device</legend>
@@ -642,8 +853,8 @@
         <h3>Display</h3>
         <div class="button-group settings-checkbox-group">
             <label class="checkbox-label" for="show-view-info-box">
-                <input type="checkbox" id="show-view-info-box">
-                View info box on display
+                <input type="checkbox" id="show-view-info-box" checked>
+                View label: the axis you are looking down, at the top left of the display, in computer braille
             </label>
             <label class="checkbox-label" for="slice-graph-lock-checkbox">
                 <input type="checkbox" id="slice-graph-lock-checkbox" checked>
@@ -676,18 +887,30 @@
         <h2 id="consent-dialog-title">Welcome to CAD A11y</h2>
         <p id="consent-dialog-desc">
             We store a cookie to remember your visit.
-            You can optionally allow anonymous usage analytics to help us improve the
-            tool, and optionally share your email to receive project updates.
+            You can optionally allow usage analytics to help us improve the tool, and
+            optionally share your email to receive project updates. Your email is kept
+            in a separate list that is not linked to your usage data.
             Analytics and email are independent, and the viewer is fully usable without either.
         </p>
         <form method="dialog" id="consent-form" novalidate>
             <div class="consent-field">
                 <label for="consent-email">Email address (optional)</label>
+                <!--
+                    type="text" with inputmode="email" rather than type="email": the
+                    browser's own email check refuses an address like josé@example.es
+                    before it is sent, and the server accepts it. The server's check is
+                    the only one (app/email_address.py), and its message lands in the
+                    alert below.
+                -->
                 <input
-                    type="email"
+                    type="text"
+                    inputmode="email"
                     id="consent-email"
                     name="email"
                     autocomplete="email"
+                    autocapitalize="off"
+                    spellcheck="false"
+                    maxlength="254"
                     placeholder="you@example.com"
                     aria-describedby="consent-email-hint"
                 >
@@ -709,10 +932,16 @@
 
     <script src="/static/js/viewer.js"></script>
 
-    <!-- Study session driver. Inert everywhere except /study, where it reveals the
+    <!-- Study session driver. Inert everywhere except /studies/<slug>, where it reveals the
          study region above, loads the model for each protocol step, and reports
          interactions to the study log. -->
     <script src="/static/js/study.js"></script>
+
+    <!-- First-run tutorial. A classic script, not deferred: it has to decide
+         before the viewer's first render whether that render is its own, and
+         listen for the consent dialog settling, which the script below reports.
+         Inert on a study's pages. -->
+    <script src="/static/js/tutorial.js"></script>
 
     <!-- Monarch USB Browser HID integration (mirrors braille_display.py _send_to_monarch) -->
     <script src="/static/js/monarch-hid.js"></script>
@@ -731,6 +960,24 @@
         'use strict';
 
         // ---------------------------------------------------------------------------
+        // Consent settled: said once per load, whichever way initSession ends.
+        //
+        // The tutorial (static/js/tutorial.js) waits for this before it starts,
+        // since the consent dialog is modal and would sit on top of the first
+        // lesson, and it reads `reason` to tell a returning visitor from a new
+        // one: "decided" means this browser answered on an earlier visit.
+        // consent_given is true, false, or null where nothing was asked.
+        // ---------------------------------------------------------------------------
+        let consentSettled = false;
+        function settleConsent(reason, consentGiven) {
+            if (consentSettled) return;
+            consentSettled = true;
+            document.dispatchEvent(new CustomEvent('cad:consent-settled', {
+                detail: { reason: reason, consent_given: consentGiven },
+            }));
+        }
+
+        // ---------------------------------------------------------------------------
         // Session initialisation — runs once per page load.
         // GET /session/me tells us whether the user has already seen the consent prompt.
         // ---------------------------------------------------------------------------
@@ -739,39 +986,42 @@
             // transient, no-login flow and we deliberately set no tracking cookie there.
             const workshopSimple = location.pathname.replace(/\/+$/, '') === '/workshop'
                 || new URLSearchParams(location.search).get('ui') === 'simple';
-            if (workshopSimple) return;
+            if (workshopSimple) return settleConsent('workshop', null);
 
             // Skip it in study mode too. Study participants give informed consent
-            // on paper before the session starts, so this dialog asks a question
+            // before the session starts, so this dialog asks a question
             // that has already been answered — and it would ask it as a modal, in
             // front of a participant who is mid-onboarding on a braille display.
             // Study logging is separate from analytics and is not gated on it.
-            if (location.pathname.replace(/\/+$/, '') === '/study') return;
+            if (/^\/studies\/[a-z0-9]+(?:-[a-z0-9]+)*\/?$/.test(location.pathname)) return settleConsent('study', null);
 
             // Skip it on the demo path, and never create a session there. The
             // dialog's entire subject is a tracking cookie and an email address,
             // and a demo station sets neither -- asking would offer a choice that
             // has already been made, in the one place it cannot be answered
             // either way.
-            if (window.CAD_DEMO_MODE) return;
+            if (window.CAD_DEMO_MODE) return settleConsent('demo', null);
 
             let sessionData = null;
             try {
                 const res = await fetch('/session/me');
                 if (res.ok) sessionData = await res.json();
             } catch (_) {
-                return; // server unavailable, so skip the dialog silently
+                // server unavailable, so skip the dialog silently
+                return settleConsent('unavailable', null);
             }
 
             // Show the dialog only for a genuinely new session (no consent decision yet).
-            if (!sessionData || sessionData.consent_given !== null) return;
+            if (!sessionData) return settleConsent('unavailable', null);
+            // The database keeps consent as 1 or 0; listeners are promised true or false.
+            if (sessionData.consent_given !== null) return settleConsent('decided', Boolean(sessionData.consent_given));
 
             const dialog = document.getElementById('session-consent-dialog');
             const form = document.getElementById('consent-form');
             const emailInput = document.getElementById('consent-email');
             const errorEl = document.getElementById('consent-email-error');
             const main = document.getElementById('main-content');
-            if (!dialog || !dialog.showModal || !form) return;
+            if (!dialog || !dialog.showModal || !form) return settleConsent('no-dialog', null);
 
             // The error lives inside the dialog so its role="alert" is announced even while
             // the modal makes the rest of the page inert. We also mark the field invalid and
@@ -814,6 +1064,9 @@
             // Escape is caught via keydown and cancel, and the submit handler restores it directly.
             dialog.addEventListener('close', restoreBackground);
             dialog.addEventListener('cancel', restoreBackground);
+            // Closed without a choice (Escape). A successful submit has already
+            // settled it by the time this fires, with the choice made.
+            dialog.addEventListener('close', function () { settleConsent('dismissed', null); });
             dialog.addEventListener('keydown', function (e) {
                 if (e.key === 'Escape') restoreBackground();
             });
@@ -827,11 +1080,8 @@
                 if (action !== 'accept' && action !== 'decline') return;
 
                 const email = (emailInput?.value || '').trim();
-                // Lightweight client-side check; the server re-validates authoritatively.
-                if (email && emailInput && !emailInput.checkValidity()) {
-                    showError('Please enter a valid email address, or leave the field blank.');
-                    return;
-                }
+                // No check here: the server's is the one that counts, and its message
+                // says whether the address is too long or not an address at all.
                 clearError();
 
                 fetch('/session/identify', {
@@ -856,9 +1106,9 @@
                             main.setAttribute('tabindex', '-1');
                             main.focus();
                         }
-                        // Email may link this session to prior uploads on other devices;
-                        // refresh the model list so those files appear immediately.
-                        initSessionModels();
+                        // After focus has moved, so the tutorial, which starts on
+                        // this, moves it once more to its own first lesson.
+                        settleConsent('submitted', action === 'accept');
                         return;
                     }
                     return res.json().catch(function () { return {}; }).then(function (body) {
@@ -899,6 +1149,10 @@
                 body: JSON.stringify({ event_type: eventType, event_data: eventData }),
             }).catch(function () {});
         }
+        // The tutorial's coarse progress events ("tutorial": lesson completed,
+        // exited, and so on) go through this same helper, and only once the
+        // visitor has allowed analytics; see track() in static/js/tutorial.js.
+        window.cadTrackEvent = trackEvent;
 
         // Track how long the user dwells in each labelled section.
         (function trackSectionDwell() {

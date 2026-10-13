@@ -3,7 +3,7 @@ const SERVER_URL = window.location.origin;
 const UPLOAD_SESSION_STORAGE_KEY = 'cadA11yUploadSessionId';
 
 // ---------------------------------------------------------------------------
-// Study mode (/study).
+// Study mode (/studies/<slug>).
 //
 // The participant uses the ordinary viewer -- the interface they were onboarded
 // on is the interface they do the tasks with -- with two differences. The model
@@ -12,11 +12,17 @@ const UPLOAD_SESSION_STORAGE_KEY = 'cadA11yUploadSessionId';
 // question the participant is being asked to work out by touch. studyModelLabel
 // holds the neutral label ("Second object") that is shown in its place.
 //
-// studySessionId tags every render request, which is how the server attributes a
-// render to the right session when several are running at once.
+// studySlug and studySessionKey tag every render request, which is how the
+// server attributes a render to the right study and session when several are
+// running at once. The key is the session's join code rather than its id: ids
+// are small sequential numbers, and a guessed one used to be enough to write
+// renders into someone else's session.
 // ---------------------------------------------------------------------------
-const studyMode = location.pathname.replace(/\/+$/, '') === '/study';
-let studySessionId = null;
+const STUDY_PATH = /^\/studies\/([a-z0-9]+(?:-[a-z0-9]+)*)\/?$/;
+const studyPathMatch = location.pathname.match(STUDY_PATH);
+const studyMode = Boolean(studyPathMatch);
+const studySlug = studyPathMatch ? studyPathMatch[1] : null;
+let studySessionKey = null;
 let studyModelLabel = null;
 
 // ---------------------------------------------------------------------------
@@ -52,18 +58,37 @@ if (demoMode && window.__CAD_DEMO_SEALED__ !== true) {
     throw new Error('demo mode is not sealed; refusing to start the viewer');
 }
 
+// The tab's upload id is what lets the server show this tab its own uploads and
+// nobody else's (#237), so it has to be unguessable. getRandomValues rather than
+// randomUUID, which only exists on HTTPS.
+function newUploadSessionId() {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return 'tab-' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+let volatileUploadSessionId = null;
+
 function getUploadSessionId() {
     try {
         let sessionId = window.sessionStorage.getItem(UPLOAD_SESSION_STORAGE_KEY);
         if (!sessionId) {
-            sessionId = `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+            sessionId = newUploadSessionId();
             window.sessionStorage.setItem(UPLOAD_SESSION_STORAGE_KEY, sessionId);
         }
         return sessionId;
     } catch (_) {
-        // If sessionStorage is unavailable, still provide a best-effort volatile id.
-        return `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        // If sessionStorage is unavailable, keep one id in memory for this page.
+        // A fresh one per call would lose the tab its own uploads.
+        if (!volatileUploadSessionId) volatileUploadSessionId = newUploadSessionId();
+        return volatileUploadSessionId;
     }
+}
+
+// Every request that names a model, or asks which models there are, carries the
+// tab's upload id. The server answers with the built-ins and this tab's uploads.
+function uploadSessionHeaders(headers = {}) {
+    return { ...headers, 'X-Upload-Session': getUploadSessionId() };
 }
 
 // Drag-to-resize columns
@@ -149,6 +174,9 @@ const RENDER_RETRY_LIMIT = 1;
 // Starts full, so the very first render can retry too, and is refilled by every
 // success. A run of failures therefore costs one extra attempt, not one each.
 let renderRetriesLeft = RENDER_RETRY_LIMIT;
+// The body of the last render that reached the display, or null before one has.
+// See the success handler in sendStateToServer.
+let lastRenderedState = null;
 
 function scheduleHighFidelityPreview(state) {
     if (previewRequestTimer) {
@@ -171,9 +199,9 @@ function requestHighFidelityPreview(state) {
 
     fetch(`${SERVER_URL}/render/preview`, {
         method: 'POST',
-        headers: {
+        headers: uploadSessionHeaders({
             'Content-Type': 'application/json',
-        },
+        }),
         body: JSON.stringify(state),
         mode: 'cors',
         signal: previewAbortController.signal,
@@ -340,12 +368,16 @@ async function sendStateToServer() {
             compose_scrollbar: viewerState.composeScrollbar,
             compose_slicegraph: viewerState.composeSliceGraph,
             show_view_info_box: viewerState.showViewInfoBox,
+            show_origin_marker: viewerState.showOriginMarker,
+            show_axis_letters: viewerState.showAxisLetters,
             output_device: getEffectiveOutputDevice(),
             slicegraph_locked: viewerState.sliceGraphLocked,
             slicegraph_view: requestedGraphView,
             slicegraph_depth: requestedGraphDepth,
             slicegraph_mode: viewerState.sliceGraphMode,
             input_source: pendingInputSource,
+            // For the study log only; the renderer does not read these.
+            ...axisLogFields(),
             // The grid of the display actually receiving output, so the render,
             // the payload sent to it and both previews all describe one thing.
             target_pixel_width: activeTactileGrid().pixelWidth,
@@ -372,11 +404,18 @@ async function sendStateToServer() {
 
         // Send to server and process response
         renderRequestInFlight = true;
-        // The study session is sent as a header rather than in the body so the
+        // The study session is sent as headers rather than in the body so the
         // render parameters -- and with them the render cache key -- are byte for
         // byte what the ordinary viewer sends.
-        const renderHeaders = { 'Content-Type': 'application/json' };
-        if (studySessionId) renderHeaders['X-Study-Session'] = String(studySessionId);
+        const renderHeaders = uploadSessionHeaders({ 'Content-Type': 'application/json' });
+        if (studySlug && studySessionKey) {
+            renderHeaders['X-Study'] = studySlug;
+            renderHeaders['X-Study-Key'] = studySessionKey;
+        }
+        // The tutorial's own renders (a lesson's starting view) are not the
+        // person exploring, so the server leaves them out of the analytics.
+        // Also a header, for the same cache-key reason as the study session.
+        if (state.input_source === 'tutorial') renderHeaders['X-CAD-Tutorial'] = '1';
 
         fetch(`${SERVER_URL}/render`, {
             method: 'POST',
@@ -386,6 +425,15 @@ async function sendStateToServer() {
             signal: renderAbortController.signal,
         })
         .then(res => {
+            // Refused: the model asked for isn't there, or isn't this window's to
+            // see. Nothing was rendered, so the display still shows the last
+            // model it did (#238).
+            if (res.status === 404) {
+                return res.json().catch(() => ({})).then(body => {
+                    if (body && body.code === 'model_not_available') return { modelNotAvailable: true };
+                    throw new Error(`HTTP ${res.status}`);
+                });
+            }
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             return res.json();
         })
@@ -398,13 +446,33 @@ async function sendStateToServer() {
             }
             serverConnected = true;
 
+            if (data.modelNotAvailable) {
+                handleModelNotAvailable(state.current_model, activeModelLoadTask);
+                renderDeliveredSerial = Math.max(renderDeliveredSerial, attemptSerial);
+                return;
+            }
+
+            // The model on the display, in the server's words. A page that asked
+            // for no model gets the default, and the list and status bar should
+            // name it rather than whichever model happens to be first in the list.
+            if (data.model) {
+                lastShownModel = data.model;
+                lastUnavailableModel = null;
+                if (!viewerState.currentModel && !state.current_model) {
+                    viewerState.currentModel = data.model;
+                }
+            }
+
             // Update bounding box if available in response
             if (data.bbox) {
                 updateBoundingBox(data.bbox);
             }
+            // Where the model's origin is on this frame, which "," and "." read.
+            if (data.image_base64) setOriginDisplay(data.origin_display);
             if (data.model_list) {
                 updateModelList(data.model_list);
             }
+            refreshStatusBar();
             syncCameraCenterFromResponse(data, state);
             // Only known once the server has recomputed the object's position
             // relative to the viewport (#153), hence deferred to here rather
@@ -465,17 +533,48 @@ async function sendStateToServer() {
                 scheduleHighFidelityPreview(state);
             }
 
+            // While the tutorial's test pattern is on the pins, a render must
+            // not replace it: the person is feeling for the bump, and a frame
+            // arriving mid-question would answer a different question. The
+            // render itself still happens, so the previews stay current and the
+            // pattern is replaced by the live view the moment the hold ends.
+            const displayHeld = Boolean(window.cadTutorial && window.cadTutorial.holdDisplay);
             // Trigger DotPad web send if connected
-            if (typeof window._dotpadOnRender === 'function') {
+            if (!displayHeld && typeof window._dotpadOnRender === 'function') {
                 window._dotpadOnRender(state);
             }
             // Trigger Monarch browser Web HID send if connected
-            if (typeof window._monarchHidOnRender === 'function' && data.monarch_cells_hex) {
+            if (!displayHeld && typeof window._monarchHidOnRender === 'function' && data.monarch_cells_hex) {
                 window._monarchHidOnRender(data.monarch_cells_hex);
             }
             // This state reached the display. Anything newer is still owed one.
             renderDeliveredSerial = Math.max(renderDeliveredSerial, attemptSerial);
             renderRetriesLeft = RENDER_RETRY_LIMIT;
+            // What is on the display now, for the tutorial's /tutorial/locate:
+            // the request as sent, with the pan it asked for already applied, so
+            // posting it again describes this frame rather than moving once more.
+            lastRenderedState = {
+                ...state,
+                camera_center: Array.isArray(data.camera_center) ? data.camera_center : state.camera_center,
+                world_camera_center: Array.isArray(data.world_camera_center)
+                    ? data.world_camera_center
+                    : state.world_camera_center,
+                move_camera_center: 'none',
+                print_view: false,
+            };
+            // Not on a study page: the study log does not take render events (the
+            // server's own render rows already record them), and the tutorial,
+            // the one listener that wants them, never runs there.
+            if (!studyMode) {
+                reportStudyInteraction('render', {
+                    // The server only ever sends slicegraph_ready: false, while
+                    // the graph is still being computed, and leaves the key out
+                    // once it is ready (see _render_response). So ready means a
+                    // slice-graph render that did not say false.
+                    slicegraph_ready: Boolean(state.compose_slicegraph) && data.slicegraph_ready !== false,
+                    model: state.model,
+                });
+            }
         })
         .catch(error => {
             if (error.name === 'AbortError') return; // Superseded by a newer request — ignore
@@ -523,16 +622,20 @@ async function sendStateToServer() {
 // State management
 viewerState.currentSliceDepth = 50;
 // The slice plane's position along each model axis, as a 0-1 fraction from
-// that axis's minimum end. Kept independent of viewing direction so turning
-// the model doesn't relocate the physical plane -- rotating only changes
-// which of the three is currently the active (visible) one, and from which
-// side viewerState.currentSliceDepth reads it. See activeSliceAxis/displayDepthFromPlanes.
+// that axis's minimum end (0 = the object's lowest X, Y or Z, 1 = its highest).
+// Kept independent of viewing direction so turning the model doesn't relocate
+// the physical plane -- rotating only changes which of the three is currently
+// the active (visible) one, and from which side viewerState.currentSliceDepth
+// reads it. See activeSliceAxis/displayDepthFromPlanes. (This comment used to
+// say the same thing while the code measured from the maximum.)
 viewerState.slicePlanes = { x: 0.5, y: 0.5, z: 0.5 };
 viewerState.currentView = 'x+';
 viewerState.currentZoom = 0.0;
 viewerState.currentRenderMode = 'cut';
 viewerState.currentRepresentationMode = 'single';
 viewerState.currentMoveCamera = "none";
+// Nothing sets this since P stopped printing (#245 review): the server's print
+// path has never worked (see #49), and a key can come back with a fix.
 viewerState.currentPrintView = false;
 // The output-device radio the user picked: 'monarch' or 'dotpad'. Also flipped
 // automatically on a successful connect — see setMonarchHidConnected /
@@ -567,7 +670,17 @@ const representationModes = [
 ];
 viewerState.currentModel = null;   // the model this window is showing, by name
 let sessionOwnedModels = new Set(); // filenames (with extension) owned by the current cookie session
-let builtinModelStems = null;       // stems from MODEL_DIR; null = not yet received, show all
+// Filenames this tab uploaded. Owned whether or not there is a cookie, so they
+// survive sessionOwnedModels being rebuilt from /session/models, which only
+// knows a cookie session's uploads.
+const tabUploadedModels = new Set();
+// The model on the display, as the server reported it. currentModel is what this
+// window last asked for; the two differ while a request is out, and when the
+// one asked for could not be shown (#238).
+let lastShownModel = null;
+// The last model said to be unavailable, so the list and the render, which can
+// both find out, don't both say it.
+let lastUnavailableModel = null;
 // On /demo only: the stems the chooser is limited to, from GET /demo/status.
 // null until it arrives, and null means show everything, so a slow or failed
 // answer leaves the ordinary list rather than an empty one.
@@ -575,7 +688,6 @@ let demoModelStems = null;
 let lastFullModelList = [];         // unfiltered server model_list for re-filtering on state change
 viewerState.composeScrollbar = true;
 viewerState.composeSliceGraph = false;
-viewerState.showViewInfoBox = false;
 viewerState.sliceGraphLocked = true;
 viewerState.sliceGraphAnchorView = 'y-';
 viewerState.sliceGraphAnchorDepth = 50;
@@ -720,21 +832,116 @@ const MAX_ZOOM = Number.POSITIVE_INFINITY;
 const ZOOM_STEP = 0.1;
 const FINE_ZOOM_STEP = 0.01;
 
-// The camera basis for each named view, in model coordinates. These mirror
-// _get_view_basis in src/converter/single_view_stl.py exactly, so sending this
-// basis for a named view renders the same picture as naming the view does.
+// The camera basis for each named view, in model coordinates: which model
+// direction points to the display's right, which to its top edge, and which out
+// of it at the reader (depth). These mirror VIEW_BASES in
+// src/converter/single_view_stl.py exactly, so sending this basis for a named
+// view renders the same picture as naming the view does.
 //
-// All three axes are tracked rather than two plus a cross product, because the
-// six views are not consistently handed: y-, y+ and z- have right x up = -depth
-// where z+, x- and x+ have +depth. Deriving `right` mirrors half of them.
+// One convention for all six: depth = right x up, so every view is right-handed,
+// the reader is always on the +depth side, and the slice removes that half. That is
+// what makes 0% the surface nearest the reader in every view, and it is what the
+// turn formulas in applyRelativeRotation assume. Each view is the OpenSCAD view
+// of the same name. Three of them used to have depth pointing away from the
+// reader instead, which is why pitch and yaw ran backwards from the default view
+// (#185).
+//
+// The tokens are the names the server, the study logs and the study defaults
+// already use, so they stay. Two of them read backwards: x- is the view from +X
+// (Right) and x+ the view from -X (Left). No one hears a token; viewName() is
+// what gets said.
 const VIEW_BASIS = {
-    'z+': { right: [1, 0, 0],  up: [0, 1, 0],  depth: [0, 0, 1] },   // top
-    'y-': { right: [1, 0, 0],  up: [0, 0, 1],  depth: [0, 1, 0] },   // front
-    'x-': { right: [0, 1, 0],  up: [0, 0, 1],  depth: [1, 0, 0] },   // left
-    'x+': { right: [0, -1, 0], up: [0, 0, 1],  depth: [-1, 0, 0] },  // right
-    'y+': { right: [-1, 0, 0], up: [0, 0, 1],  depth: [0, -1, 0] },  // back
-    'z-': { right: [-1, 0, 0], up: [0, -1, 0], depth: [0, 0, -1] },  // bottom
+    'z+': { right: [1, 0, 0],  up: [0, 1, 0],  depth: [0, 0, 1] },   // Top
+    'z-': { right: [1, 0, 0],  up: [0, -1, 0], depth: [0, 0, -1] },  // Bottom
+    'y-': { right: [1, 0, 0],  up: [0, 0, 1],  depth: [0, -1, 0] },  // Front
+    'y+': { right: [-1, 0, 0], up: [0, 0, 1],  depth: [0, 1, 0] },   // Back
+    'x-': { right: [0, 1, 0],  up: [0, 0, 1],  depth: [1, 0, 0] },   // Right
+    'x+': { right: [0, -1, 0], up: [0, 0, 1],  depth: [-1, 0, 0] },  // Left
 };
+
+// What a view is called wherever a person reads or hears it: OpenSCAD's names,
+// which is what the people this is for already know them as.
+const VIEW_NAMES = {
+    'z+': 'Top', 'z-': 'Bottom', 'y-': 'Front', 'y+': 'Back', 'x-': 'Right', 'x+': 'Left',
+};
+
+/** The name of a view token. Never leak the token itself to a person. */
+function viewName(viewToken = viewerState.currentView) {
+    return VIEW_NAMES[viewToken] || String(viewToken);
+}
+
+// ---------------------------------------------------------------------------
+// Axis mode (#185).
+//
+// Two ways to drive the same orientation model, chosen in Settings:
+//   xyz   the default (#235 review). Slice along X, Y or Z. X, Y and Z pick the
+//         axis and the same key again looks from the other side. Every view is
+//         one of OpenSCAD's standard views, so there are only two things to
+//         name, the axis and the side, and nothing to roll.
+//   turn  pitch, roll and yaw (U/O, I/K, J/L), a quarter turn at a time, centred
+//         on the reader. What the comparison study ran on (#185).
+// People who model in OpenSCAD already think in axes -- cube([20,10,5]),
+// translate([0,0,12]) -- and a study participant asked for exactly this (#203).
+//
+// No key, button, chord or cube gesture does something in both. A key from the
+// other mode says which mode it belongs to and does nothing else, so a mode
+// error is heard rather than silently turning or slicing (Sellen et al. 1992).
+// The keys that move the slice (arrows, Page Up/Down, Home/End) are in both,
+// because both have a slice to move; each mode moves it in its own terms.
+// ---------------------------------------------------------------------------
+// label is what the Settings radio reads; short is what is said ("XYZ mode").
+const AXIS_MODES = [
+    { key: 'turn', label: 'Turn: pitch, roll and yaw', short: 'Turn' },
+    { key: 'xyz', label: 'XYZ: slice along X, Y or Z, as in OpenSCAD', short: 'XYZ' },
+];
+
+// The keys that belong to exactly one mode. tests/test_axis_mode.py holds the
+// two lists apart.
+const AXIS_MODE_KEYS = {
+    turn: ['u', 'o', 'i', 'k', 'j', 'l'],
+    // "," is deliberately not here: where the origin is is worth asking in Turn
+    // mode too, so it works in both, like "." (#235 review).
+    xyz: ['x', 'y', 'z'],
+};
+
+// XYZ mode's axes and the two views along each: the home view, which X, Y and Z
+// give, and the other side, which the same letter pressed again gives. Top, Front
+// and Right are home because they are the only views where both display axes
+// increase to the right and up, which is what blind co-designers expected on a
+// flat board (Kamath et al., CHI '26).
+const XYZ_AXES = {
+    x: { letter: 'X', views: ['x-', 'x+'] },
+    y: { letter: 'Y', views: ['y-', 'y+'] },
+    z: { letter: 'Z', views: ['z+', 'z-'] },
+};
+
+// Which side each view looks from, in Turn mode's words, spoken and in braille.
+// XYZ mode names the side by the axis instead (axisSide).
+const VIEW_SIDES = {
+    'z+': 'above', 'z-': 'below', 'y-': 'the front', 'y+': 'the back', 'x-': 'the right', 'x+': 'the left',
+};
+const VIEW_SIDES_BRAILLE = {
+    'z+': 'above', 'z-': 'below', 'y-': 'front', 'y+': 'back', 'x-': 'right', 'x+': 'left',
+};
+
+viewerState.axisMode = 'turn';
+
+function isXyzMode() {
+    return viewerState.axisMode === 'xyz';
+}
+
+function axisModeLabel(modeKey = viewerState.axisMode) {
+    const mode = AXIS_MODES.find(m => m.key === modeKey);
+    return mode ? mode.short : String(modeKey);
+}
+
+/** The mode a key belongs to, or null for a key both modes share. */
+function axisModeForKey(key) {
+    for (const [mode, keys] of Object.entries(AXIS_MODE_KEYS)) {
+        if (keys.includes(key)) return mode;
+    }
+    return null;
+}
 
 // [1,0,0] -> "pos X", [-1,0,0] -> "neg X", [0,0,-1] -> "neg Z"
 // Words, not a +/- glyph: a sign glued to a letter ("-X") can get misread by a
@@ -794,12 +1001,12 @@ function setOrientationFromView(viewToken) {
     viewerState.orientationDepth = [...basis.depth];
 }
 
-// "Position reset" (the Z shortcut and the Reset Position button) means the
+// "Position reset" (the 0 shortcut and the Reset Position button) means the
 // whole framing, not just pan: undo any roll/pitch/yaw back to the straight-on
 // basis for whatever view is currently selected, zoom back out to 0, and
-// bring the slice plane back to the middle (50%) of every axis -- otherwise a
-// rotated, zoomed-in, or deeply-sliced view came back centred on itself
-// rather than on the object. Does not touch which named view is selected, or
+// bring the slice plane back to the middle (50%) of every axis, in both axis
+// modes -- otherwise a rotated, zoomed-in, or deeply-sliced view came back
+// centred on itself rather than on the object. Does not touch which named view is selected, or
 // send anything to the server itself -- callers still own
 // clearCameraCenterState(), setting currentMoveCamera = "reset", and the
 // single sendStateToServer() call, same as before.
@@ -825,6 +1032,19 @@ const RELATIVE_ROTATIONS = {
 };
 
 
+// The turns are centred on the reader, not the model. Picture a model airplane
+// flying out of the display at you, nose toward you, wings left and right:
+//   pitch up    the nose swings up to the top edge; its belly now faces you
+//   pitch down  the nose swings down; its back faces you
+//   yaw left    the nose swings to your left; its right wing now faces you
+//   yaw right   the nose swings to your right
+//   roll        clockwise or counterclockwise, the same face stays toward you
+// With depth pointing at the reader in every view, "the nose" is depth and
+// each turn is two of the three vectors trading places. Written against the
+// current basis rather than a fixed model axis, so it is the same turn from any
+// view and any orientation reached from one. These used to be written for a
+// reader on the -depth side, which only three of the six views had, so from
+// the other three (the default among them) pitch and yaw went the wrong way.
 function applyRelativeRotation(rotationName, emit = announceAlert) {
     const rotation = RELATIVE_ROTATIONS[rotationName];
     const right = viewerState.orientationRight, up = viewerState.orientationUp, depth = viewerState.orientationDepth;
@@ -838,20 +1058,20 @@ function applyRelativeRotation(rotationName, emit = announceAlert) {
             viewerState.orientationUp = right;
             break;
         case 'pitchUp':
-            viewerState.orientationUp = negateVec3(depth);
-            viewerState.orientationDepth = up;
-            break;
-        case 'pitchDown':
             viewerState.orientationUp = depth;
             viewerState.orientationDepth = negateVec3(up);
             break;
-        case 'yawLeft':
-            viewerState.orientationRight = depth;
-            viewerState.orientationDepth = negateVec3(right);
+        case 'pitchDown':
+            viewerState.orientationUp = negateVec3(depth);
+            viewerState.orientationDepth = up;
             break;
-        case 'yawRight':
+        case 'yawLeft':
             viewerState.orientationRight = negateVec3(depth);
             viewerState.orientationDepth = right;
+            break;
+        case 'yawRight':
+            viewerState.orientationRight = depth;
+            viewerState.orientationDepth = negateVec3(right);
             break;
         default:
             return;
@@ -896,9 +1116,10 @@ function getOrientationPayload() {
 }
 
 // Which model axis the current view slices along, and from which side.
-// sign > 0 means depth points toward that axis's positive end (0% is the
-// negative end); sign < 0 means the reverse. This sign is what makes the same
-// physical plane read as (100 - x)% after a 180-degree turn around that axis.
+// sign > 0 means depth points toward that axis's positive end, so the reader is
+// on the + side and 0% depth is the axis maximum; sign < 0 means the reverse.
+// This sign is what makes the same physical plane read as (100 - x)% after a
+// 180-degree turn around that axis.
 function activeSliceAxis() {
     const d = viewerState.orientationDepth;
     if (d[0] !== 0) return { axis: 'x', sign: Math.sign(d[0]) };
@@ -906,20 +1127,31 @@ function activeSliceAxis() {
     return { axis: 'z', sign: Math.sign(d[2]) };
 }
 
+// Convert a plane position (0-1 from the axis minimum) into the view-relative
+// depth the slider, the announcements and the server all use: percent in from
+// the surface nearest the reader. One rule for every view, because the reader
+// is always on the +depth side.
+function depthFromPlanePosition(position, sign) {
+    return (sign > 0 ? 1 - position : position) * 100;
+}
+
+function planePositionFromDepth(depthPercent, sign) {
+    const fraction = depthPercent / 100;
+    return sign > 0 ? 1 - fraction : fraction;
+}
+
 // Convert the persisted absolute plane position into the view-relative
 // percentage the slider/announcements show ("X% from where you're looking").
 function displayDepthFromPlanes() {
     const { axis, sign } = activeSliceAxis();
-    const fraction = viewerState.slicePlanes[axis];
-    return Math.round((sign > 0 ? fraction : 1 - fraction) * 100);
+    return Math.round(depthFromPlanePosition(viewerState.slicePlanes[axis], sign));
 }
 
 // The inverse: fold a view-relative percentage back into the persisted
 // absolute position of whichever axis is currently active.
 function writeDisplayDepthToPlanes(depthPercent) {
     const { axis, sign } = activeSliceAxis();
-    const fraction = depthPercent / 100;
-    viewerState.slicePlanes[axis] = sign > 0 ? fraction : 1 - fraction;
+    viewerState.slicePlanes[axis] = planePositionFromDepth(depthPercent, sign);
 }
 
 function resetSlicePlanes() {
@@ -934,11 +1166,417 @@ function resetSlicePlanes() {
 function syncSliceDepthFromPlanes() {
     const oldDepth = viewerState.currentSliceDepth;
     viewerState.currentSliceDepth = displayDepthFromPlanes();
-    if (sliceSlider) {
-        sliceSlider.value = viewerState.currentSliceDepth;
-    }
-    if (slicePercentage) slicePercentage.textContent = viewerState.currentSliceDepth;
+    refreshDepthControls();
     return oldDepth !== viewerState.currentSliceDepth;
+}
+
+// ---------------------------------------------------------------------------
+// XYZ mode: the axis keys, the standard views and the marks on the display.
+//
+// Depth means the same in both modes, percent in from the surface nearest the
+// reader (#263). XYZ mode used to read the slice out as its position along the
+// axis, measured from the model's origin, so the same key and the same number
+// meant different things in the two modes. Each axis keeps its own plane
+// (slicePlanes), so flipping to the other side keeps the slice where it is. The
+// distance from the origin is a readout of its own, #264.
+// ---------------------------------------------------------------------------
+
+const SETTINGS_AXIS_MODE_KEY = 'settingsAxisMode';
+const SETTINGS_AXIS_LETTERS_KEY = 'settingsAxisLetters';
+const SETTINGS_VIEW_INFO_BOX_KEY = 'settingsViewInfoBox';
+const SETTINGS_SINGLE_KEY_SHORTCUTS_KEY = 'settingsSingleKeyShortcuts';
+
+// Settings that shape what the pins draw, on unless turned off: the view label
+// (the "view info box" setting) and the axis letters at the display edges, both
+// in either axis mode. With the axis letters drawn the label leaves out which
+// way the axes run. The origin marker is not a setting: the M key turns it on
+// and off, in either mode, and it starts off (#266).
+// Single-key shortcuts are on too, with a way to turn them off (WCAG 2.1.4).
+viewerState.showAxisLetters = true;
+viewerState.showViewInfoBox = true;
+viewerState.showOriginMarker = false;
+// The render mode M found showing, to go back to when the marker is turned off.
+viewerState.renderModeBeforeOriginMarker = null;
+viewerState.singleKeyShortcuts = true;
+
+/** The model axis the current view slices along: 'x', 'y' or 'z'. */
+function currentCutAxis() {
+    return activeSliceAxis().axis;
+}
+
+function currentBasis() {
+    return {
+        right: viewerState.orientationRight,
+        up: viewerState.orientationUp,
+        depth: viewerState.orientationDepth,
+    };
+}
+
+// Where the origin landed on the frame now on the display, in whole percent:
+// `across` from the left edge, `up` from the bottom edge, below 0 or above 100
+// when it is off the display. The server works it out for every single-view
+// render, in either mode; null in a layout without one, and until a render
+// answers. It describes the frame under the fingers, so it is replaced only when
+// the next frame arrives.
+viewerState.originDisplay = null;
+
+function setOriginDisplay(position) {
+    const [across, up] = Array.isArray(position) && position.length === 2 ? position.map(Number) : [NaN, NaN];
+    viewerState.originDisplay = Number.isFinite(across) && Number.isFinite(up)
+        ? { across: Math.round(across * 100), up: Math.round(up * 100) }
+        : null;
+}
+
+/** A percentage for speech and braille. Signs are words ("minus 20"): a bare "-"
+ * before a digit is read differently by different screen readers, and in UEB a
+ * lone sign is ambiguous (dots 346, a Nemeth plus, reads as "ing"). */
+function signedPercent(value) {
+    return value < 0 ? `minus ${Math.abs(value)}` : String(value);
+}
+
+function axisLetter(axis) {
+    return XYZ_AXES[axis].letter;
+}
+
+/** "Z", +1 for [0, 0, 1]; "X", -1 for [-1, 0, 0]. */
+function signedAxisOf(vec) {
+    const index = vec.findIndex(v => v !== 0);
+    return { axis: ['x', 'y', 'z'][index], sign: Math.sign(vec[index]) };
+}
+
+/** How the two display axes run, "X right, Y up": each named axis increases in
+ * the direction given. "Y right, Z up" is what the #235 review asked every
+ * readout to say, rather than "Y to the right, Z toward the top edge". */
+function displayAxesPhrase(basis = currentBasis()) {
+    const right = signedAxisOf(basis.right);
+    const up = signedAxisOf(basis.up);
+    const speech = `${axisLetter(right.axis)} ${right.sign > 0 ? 'right' : 'left'}, ${axisLetter(up.axis)} ${up.sign > 0 ? 'up' : 'down'}`;
+    return { speech, braille: speech.replace(',', '') };
+}
+
+/** Which side the reader is looking from, in Turn mode's words: "from the
+ * front", "from above". */
+function sideOfView(viewToken = viewerState.currentView) {
+    const side = VIEW_SIDES[viewToken] || viewName(viewToken);
+    return { short: `from ${side}` };
+}
+
+/** Which side the reader is looking from in XYZ mode, named by the axis that
+ * points at them (#235 review): "X plus" from +X, "Y minus" from -Y, and "X+"
+ * and "Y-" in braille. The view tokens cannot be read this way, since x- is the
+ * view from +X; the depth vector can. */
+function axisSide(viewToken = viewerState.currentView) {
+    const basis = VIEW_BASIS[viewToken];
+    const { axis, sign } = signedAxisOf(basis ? basis.depth : viewerState.orientationDepth);
+    const letter = axisLetter(axis);
+    const word = sign > 0 ? 'plus' : 'minus';
+    return { letter, word, speech: `${letter} ${word}`, braille: `${letter}${sign > 0 ? '+' : '-'}` };
+}
+
+/** Where the origin is on the display, for "," and ".": "Horizontal: 42%,
+ * Vertical: 42%" in full, "H: 42% V: 42%" short, and "(42%, 42%)" as a pair,
+ * past 0 or 100 when it is off the display (#235 review). Null when no frame on
+ * the display has placed it. */
+function originOnDisplayPhrase() {
+    const place = viewerState.originDisplay;
+    if (!place) return null;
+    const across = signedPercent(place.across);
+    const up = signedPercent(place.up);
+    return {
+        speech: `Horizontal: ${across}%, Vertical: ${up}%`,
+        short: `H: ${across}% V: ${up}%`,
+        braille: `H: ${place.across}% V: ${place.up}%`,
+        pair: `(${place.across}%, ${place.up}%)`,
+    };
+}
+
+/** The XYZ picture, for entering the mode and the start of ".": where the reader
+ * looks from, how the display's axes run, and how deep the slice is, in the same
+ * words as Turn mode (#263). */
+function xyzDescription({ lead = '' } = {}) {
+    const side = axisSide();
+    const axes = displayAxesPhrase();
+    const depth = viewerState.currentSliceDepth;
+    return {
+        speech: `${lead}View from ${side.speech}, ${axes.speech}. Depth: ${depth}%.`,
+        braille: [...(lead ? ['XYZ mode'] : []), `${side.braille} ${axes.braille}`, `Depth: ${depth}%`],
+    };
+}
+
+/** The Turn-mode picture, in the same shape: where the reader looks from, how
+ * the display's axes run, and how deep the slice is. */
+function turnDescription() {
+    const axes = displayAxesPhrase();
+    const depth = viewerState.currentSliceDepth;
+    return {
+        speech: `View ${sideOfView().short}, ${axes.speech}. Depth: ${depth}%.`,
+        braille: [`${viewName()} ${depth}%`, axes.braille],
+    };
+}
+
+function capitalize(text) {
+    return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
+
+/** Put the plane along `axis` at a position from its lowest coordinate (0) to
+ * its highest (1), render and, unless told not to, say the depth it is at. The
+ * tutorial's landmarks are positions along the object, so it puts the slice on
+ * one through this (#245). */
+function setCutPosition(axis, position, emit = announceAlert, { render = true, announce: shouldAnnounce = true } = {}) {
+    const clamped = Math.min(1, Math.max(0, position));
+    const changed = clamped !== viewerState.slicePlanes[axis];
+    viewerState.slicePlanes[axis] = clamped;
+    syncSliceDepthFromPlanes();
+    refreshViewInfoSummary();
+    if (render && changed) sendStateToServer();
+    if (shouldAnnounce) announceDepthValue(viewerState.currentSliceDepth, null, emit);
+    return changed;
+}
+
+/** Move the slice deltaPercent deeper, away from the reader, or shallower when it
+ * is negative, and say where it landed. The depth keys, the step buttons, the
+ * DotPad's depth dots and the Monarch's depth keys all come through here or
+ * updateSliceDepth, and depth is measured the same way in both modes (#263). */
+function stepSliceDepth(deltaPercent, emit = announceAlert) {
+    const delta = Number(deltaPercent);
+    if (!Number.isFinite(delta) || delta === 0) return false;
+    const previousDepth = viewerState.currentSliceDepth;
+    const nextDepth = Math.max(0, Math.min(100, previousDepth + delta));
+    const changed = updateSliceDepth(nextDepth, false);
+    announceDepthValue(nextDepth, previousDepth, emit);
+    return changed;
+}
+
+/** Home and End: the surface nearest the reader, or the far side, in either mode. */
+function goToSliceEnd(farSide, emit = announceAlert) {
+    const previousDepth = viewerState.currentSliceDepth;
+    const nextDepth = farSide ? 100 : 0;
+    const changed = updateSliceDepth(nextDepth, false);
+    announceDepthValue(nextDepth, previousDepth, emit);
+    return changed;
+}
+
+/** Show a standard view in XYZ mode and say it the way the #235 review asked:
+ * the axis and the side it is seen from, then where the other two increase, "X
+ * from plus, Y right, Z up", or "X+ Y right Z up" in braille. Plus means the
+ * reader is on the +X side. Where the slice is along the axis is "."'s to say. */
+function showXyzView(viewToken, emit = announceAlert) {
+    updateView(viewToken, false);
+    syncAxisModeUI();
+    const side = axisSide(viewToken);
+    const axes = displayAxesPhrase();
+    emit(`${side.letter} from ${side.word}, ${axes.speech}.`, {
+        braille: `${side.braille} ${axes.braille}`,
+    });
+}
+
+/** The view looking at the object from one side of an axis: from +X (sign 1) is
+ * x-, the Right view, whose depth points at +X. */
+function viewFrom(axis, sign) {
+    const index = ['x', 'y', 'z'].indexOf(axis);
+    return Object.keys(VIEW_BASIS).find(token => Math.sign(VIEW_BASIS[token].depth[index]) === sign);
+}
+
+/** X, Y or Z: slice along that axis from its home view (Right, Front, Top), and
+ * the same letter again from the other side (Left, Back, Bottom). A letter always
+ * names the axis, the way OpenSCAD's View menu and Blender's numpad do; which of
+ * its two sides you get depends only on which one is showing, so a third press
+ * comes back to the first. Each axis keeps its own slice position throughout. */
+function selectAxis(axis, emit = announceAlert) {
+    if (!XYZ_AXES[axis]) return;
+    const [home, other] = XYZ_AXES[axis].views;
+    const showing = viewerState.currentView;
+    const onThisAxis = showing === home || showing === other;
+    // A letter for another axis lands on that axis's home view; the same letter
+    // again gives the other side, and a third press comes back. So minus is
+    // always two presses of one key, with no modifier to hold and nothing for
+    // Caps Lock to interfere with, and a DotPad chord or a Monarch key is the
+    // same press as the keyboard's (#235 review).
+    const target = onThisAxis ? (showing === home ? other : home) : home;
+    showXyzView(target, emit);
+}
+
+/** Change the axis mode. Entering XYZ squares the model up to the standard view
+ * whose axis already faces the reader, so nothing turns away and the slice stays
+ * where it was; leaving keeps the view as it is. */
+function setAxisMode(mode, { announce: shouldAnnounce = true, persist = true, render = true } = {}) {
+    if (!AXIS_MODES.some(m => m.key === mode)) return false;
+    const previous = viewerState.axisMode;
+    viewerState.axisMode = mode;
+    if (persist) {
+        try {
+            window.localStorage.setItem(SETTINGS_AXIS_MODE_KEY, mode);
+        } catch (_) {
+            // Ignore localStorage failures (e.g., privacy mode, or /demo's shim).
+        }
+    }
+    if (mode === 'xyz' && previous !== 'xyz') {
+        const viewToken = orientationViewFromDepth(viewerState.orientationDepth);
+        viewerState.currentView = viewToken;
+        setOrientationFromView(viewToken);
+    }
+    syncSliceDepthFromPlanes();
+    syncAxisModeUI();
+    updateSideBySideAxisLabels();
+    refreshViewInfoSummary();
+    if (previous === mode) return false;
+    // The basis may have just been squared up, and XYZ mode's marks on the
+    // pins come and go with it.
+    if (render) sendStateToServer();
+    if (shouldAnnounce) {
+        if (mode === 'xyz') {
+            const description = xyzDescription({ lead: 'XYZ mode. ' });
+            announce(description.speech, { braille: description.braille });
+        } else {
+            const description = turnDescription();
+            announce(`Turn mode. ${description.speech}`, { braille: ['Turn mode', ...description.braille] });
+        }
+    }
+    return true;
+}
+
+/** A key from the other mode does nothing but say whose it is. */
+function announceWrongModeKey(key, keyMode, emit = announceAlert) {
+    const label = key.toUpperCase();
+    const does = keyMode === 'turn' ? `${label} turns the model` : `${label} slices along ${label}`;
+    // Z was the reset key until Reset moved to 0, and hands remember.
+    const reset = key === 'z' ? ' Reset is now 0.' : '';
+    emit(`${does} in ${axisModeLabel(keyMode)} mode. You're in ${axisModeLabel()} mode; change it in Settings.${reset}`, {
+        braille: `${label} is ${axisModeLabel(keyMode)} only`,
+    });
+}
+
+/** ".": where am I, in either mode, in as few words as the #235 review asked:
+ * "View from X plus, Y right, Z up. Depth: 50%. Origin: H: 42% V: 42%. Render:
+ * Outline. Zoom: 0.0. Model: mug." Layout and the DotPad are left to the
+ * status bar. The braille display gets one short line for each, view first; its
+ * text line is 20 cells, so the view line has no "View:" in front of it. This is
+ * also #193's "which way am I facing": the first sentence answers it. */
+function announceWhereAmI(emit = announceAlert) {
+    const description = isXyzMode() ? xyzDescription() : turnDescription();
+    const speech = [description.speech];
+    const braille = [...description.braille];
+    const origin = originOnDisplayPhrase();
+    if (origin) {
+        speech.push(`Origin: ${origin.short}.`);
+        braille.push(`Origin: ${origin.pair}`);
+    }
+    const render = renderModeLabel();
+    const zoom = Number(viewerState.currentZoom).toFixed(1);
+    speech.push(`Render: ${render}.`, `Zoom: ${zoom}.`, `Model: ${modelLabel()}.`);
+    braille.push(`Render: ${render}`, `Zoom: ${zoom}`);
+    emit(speech.join(' '), { braille });
+}
+
+/** ",": where the model's origin is on the display, in either mode: the share of
+ * the display's width from its left edge and of its height from its bottom
+ * edge, "Horizontal: 42%, Vertical: 42%", and past 0 or 100 when it is off the
+ * display, "Horizontal: minus 200%" (#235 review). Read from the frame on the
+ * display, so it describes what is under the fingers. */
+function announceOrigin(emit = announceAlert) {
+    const origin = originOnDisplayPhrase();
+    if (origin) {
+        emit(`${origin.speech}.`, { braille: origin.braille });
+        return;
+    }
+    emit(viewerState.currentRepresentationMode === 'single'
+        ? 'Where the origin is on the display is not known yet.'
+        : 'Where the origin is on the display is given in the Single layout.');
+}
+
+/** "M": mark the origin on the display, or take the mark away (#266). Turning it
+ * on switches to Outline, where a small mark is easiest to find against the
+ * cut's outline rather than a filled model; turning it off goes back to the
+ * render mode that was showing, unless R has chosen another since. Says what ","
+ * says, from the frame on the display. */
+function toggleOriginMarker(emit = announceAlert) {
+    const on = !viewerState.showOriginMarker;
+    viewerState.showOriginMarker = on;
+    let changedMode = false;
+    if (on) {
+        if (viewerState.currentRenderMode !== 'outline') {
+            viewerState.renderModeBeforeOriginMarker = viewerState.currentRenderMode;
+            changedMode = switchToRenderMode('outline', false) === true;
+        } else {
+            viewerState.renderModeBeforeOriginMarker = null;
+        }
+    } else {
+        const before = viewerState.renderModeBeforeOriginMarker;
+        viewerState.renderModeBeforeOriginMarker = null;
+        if (before && viewerState.currentRenderMode === 'outline') {
+            changedMode = switchToRenderMode(before, false) === true;
+        }
+    }
+    // A change of mode has already sent the state with the marker's new setting.
+    if (!changedMode) sendStateToServer();
+    const origin = originOnDisplayPhrase();
+    const word = on ? 'on' : 'off';
+    const speech = [`Origin marker ${word}.`];
+    const braille = [`Origin marker ${word}`];
+    if (changedMode) {
+        speech.push(`${renderModeLabel()}.`);
+        braille.push(renderModeLabel());
+    }
+    if (on) {
+        speech.push(origin ? `${origin.speech}.` : 'Where the origin is on the display is not known yet.');
+        if (origin) braille.push(origin.braille);
+    }
+    emit(speech.join(' '), { braille });
+}
+
+/** The name of the model on display, for "." and the status bar: the study's
+ * neutral label in study mode, the model list's wording when the list has this
+ * model selected ("mug (your upload)"), and otherwise the name being rendered.
+ * The status bar used to keep the list's selection, so a model opened by /ingest
+ * was named after the one before it (#235 review). */
+function modelLabel() {
+    if (studyMode) return studyModelLabel || '--';
+    const current = viewerState.currentModel;
+    if (!current) return '--';
+    const dropdown = document.getElementById('model-list-dropdown');
+    const selected = dropdown && dropdown.selectedIndex >= 0 ? dropdown.options[dropdown.selectedIndex] : null;
+    return selected && selected.value === current ? selected.text : current;
+}
+
+/** Bring the axis-mode parts of the page in line with the mode and the slice. */
+function syncAxisModeUI() {
+    syncRadioGroup(axisModeRadios(), viewerState.axisMode, 'axis-mode');
+    const xyz = isXyzMode();
+    if (turnControls) turnControls.hidden = xyz;
+    if (xyzControls) xyzControls.hidden = !xyz;
+    // The button for the view showing is marked current.
+    const showing = xyz ? axisSide() : null;
+    for (const button of viewButtons()) {
+        if (showing && button.dataset.axis === showing.letter.toLowerCase() && button.dataset.side === showing.word) {
+            button.setAttribute('aria-current', 'true');
+        } else {
+            button.removeAttribute('aria-current');
+        }
+    }
+    if (turnShortcutsSection) turnShortcutsSection.hidden = xyz;
+    if (xyzShortcutsSection) xyzShortcutsSection.hidden = !xyz;
+    refreshDepthControls();
+}
+
+/** The slider, its readout and the step buttons. The slider is depth in from
+ * the reader's side in both modes, which is also the Trinkey's scale (#263). Its
+ * aria-valuetext used to stay at "50 percent depth" whatever it was set to. */
+function refreshDepthControls() {
+    const xyz = isXyzMode();
+    const depth = Math.round(viewerState.currentSliceDepth);
+    if (sliceSlider) {
+        sliceSlider.value = depth;
+        sliceSlider.setAttribute('aria-valuenow', String(depth));
+        sliceSlider.setAttribute('aria-valuetext', `${depth} percent depth`);
+    }
+    if (slicePercentage) slicePercentage.textContent = `${viewerState.currentSliceDepth}%`;
+    if (sliceHeading) sliceHeading.textContent = 'Depth';
+    if (xyzPosition) {
+        xyzPosition.textContent = xyz
+            ? `View from ${axisSide().speech}, ${displayAxesPhrase().speech}. Depth: ${viewerState.currentSliceDepth}%.`
+            : '';
+    }
+    if (typeof updateButtonLabels === 'function' && deeperBtn) updateButtonLabels();
 }
 
 // DOM elements
@@ -951,6 +1589,20 @@ const currentZoomInfo = document.getElementById('current-zoom-info');
 const currentBBoxDimensionsInfo = document.getElementById('current-bbox-dimensions-info');
 const deeperBtn = document.getElementById('deeper-btn');
 const shallowerBtn = document.getElementById('shallower-btn');
+const deeperHelp = document.getElementById('deeper-help');
+const shallowerHelp = document.getElementById('shallower-help');
+const sliceHeading = document.getElementById('slice-heading');
+const turnControls = document.getElementById('turn-controls');
+const xyzControls = document.getElementById('xyz-controls');
+const xyzPosition = document.getElementById('xyz-position');
+// XYZ mode's six view buttons, X plus to Z minus, each marked with its axis and
+// the side it looks from.
+const viewButtons = () => document.querySelectorAll('#xyz-controls button[data-axis][data-side]');
+const turnShortcutsSection = document.getElementById('turn-shortcuts-section');
+const xyzShortcutsSection = document.getElementById('xyz-shortcuts-section');
+const axisModeRadios = () => document.querySelectorAll('input[name="axis-mode"]');
+const settingsAxisLettersCheckbox = document.getElementById('settings-axis-letters');
+const settingsSingleKeyCheckbox = document.getElementById('settings-single-key-shortcuts');
 const zoomInput = document.getElementById('zoom-input');
 const zoomLevelValue = document.getElementById('zoom-level-value');
 const zoomOutBtn = document.getElementById('zoom-out-btn');
@@ -1008,6 +1660,7 @@ function getRenderPipelineParams(uiRenderMode) {
 // Status bar elements
 const sbView = document.getElementById('sb-view');
 const sbDepth = document.getElementById('sb-depth');
+const sbDepthLabel = document.getElementById('sb-depth-label');
 const sbRenderMode = document.getElementById('sb-render-mode');
 const sbZoom = document.getElementById('sb-zoom');
 const sbViewMode = document.getElementById('sb-view-mode');
@@ -1038,13 +1691,17 @@ function formatCenter2(value) {
 const announcementWindow = document.getElementById('announcement-window');
 const announcementWindowPolite = document.getElementById('announcement-window-polite');
 
-/** Update the top status bar to reflect current state. */
+/** Update the top status bar to reflect current state. In XYZ mode the view is
+ * named by the side it is seen from; depth reads the same in both modes. */
 function refreshStatusBar() {
-    if (sbView) sbView.textContent = viewerState.currentView;
+    const xyz = isXyzMode();
+    if (sbView) sbView.textContent = xyz ? axisSide().speech : viewName();
     if (sbDepth) sbDepth.textContent = viewerState.currentSliceDepth + '%';
+    if (sbDepthLabel) sbDepthLabel.textContent = 'Depth';
     if (sbRenderMode) sbRenderMode.textContent = renderModeLabel();
     if (sbZoom) sbZoom.textContent = Number(viewerState.currentZoom).toFixed(1);
     if (sbViewMode) sbViewMode.textContent = representationModeLabel();
+    if (sbModel) sbModel.textContent = modelLabel();
 }
 
 /** Write the message into the message window for the given politeness tier. */
@@ -1070,6 +1727,8 @@ function clampDepth(value) {
 // already interrupts and replaces whatever's currently being spoken
 
 function announceDepthValue(depthValue, previousDepth = null, emit = announceAlert) {
+    // The Trinkey slider and stepSliceDepth say where depth landed through this,
+    // in the same words in both modes (#263).
     const to = clampDepth(depthValue);
     if (to === null) return;
     announceParameterValue("depth", `Depth ${to}%`, `${to}%`, emit);
@@ -1087,14 +1746,14 @@ function announceZoomValue(zoomValue, previousZoom = null, emit = announceAlert)
 // announcement in between resets the run, so the fuller phrasing returns once the
 // context is no longer obvious. Only zoom and depth use this; everything else
 // calls announceAlert()/announce() directly.
-function announceParameterValue(parameterKey, firstText, repeatText, emit = announceAlert) {
+function announceParameterValue(parameterKey, firstText, repeatText, emit = announceAlert, options = {}) {
     const normalizedKey = String(parameterKey || '').trim().toLowerCase();
     const useFirst = normalizedKey === '' || normalizedKey !== lastAnnouncedParameterKey;
     const message = useFirst ? String(firstText) : String(repeatText);
 
     // emit() clears lastAnnouncedParameterKey; re-establish this parameter's key
     // afterwards so a run of the SAME parameter still drops to the arrow.
-    emit(message);
+    emit(message, options);
     if (normalizedKey) {
         lastAnnouncedParameterKey = normalizedKey;
     }
@@ -1116,30 +1775,15 @@ function refreshViewInfoSummary() {
     refreshStatusBar();
 }
 
-function getStatusBarAnnouncement() {
-    const readText = (element, fallback = '--') => {
-        const text = element && typeof element.textContent === 'string'
-            ? element.textContent.trim()
-            : '';
-        return text || fallback;
-    };
-
-    return [
-        `View: ${readText(sbView, viewerState.currentView)}`,
-        `Depth: ${readText(sbDepth, `${viewerState.currentSliceDepth}%`)}`,
-        `Render: ${readText(sbRenderMode, renderModeLabel())}`,
-        `Zoom: ${readText(sbZoom, Number(viewerState.currentZoom).toFixed(1))}`,
-        `Layout: ${readText(sbViewMode, representationModeLabel())}`,
-        `Model: ${readText(sbModel)}`,
-        `DotPad: ${readText(sbDotPad)}`,
-    ].join('. ');
-}
-
-// Update button labels with current state information
+// The step buttons, the same in both modes: Deeper and Shallower by the coarse
+// step, like Page Up and Page Down. In XYZ mode they used to read "X plus 10%",
+// which would sit next to the "X plus" view button and mean something else
+// (#235 review).
 function updateButtonLabels() {
-    const depthText = `${viewerState.currentSliceDepth}%`;
     deeperBtn.textContent = `Deeper 10%`;
     shallowerBtn.textContent = `Shallower 10%`;
+    if (deeperHelp) deeperHelp.textContent = 'Moves the slice 10% further from you.';
+    if (shallowerHelp) shallowerHelp.textContent = 'Moves the slice 10% nearer to you.';
 }
 
 function updateSliceGraphLockUI() {
@@ -1155,7 +1799,7 @@ function updateSliceGraphLockUI() {
         }
     } else {
         if (isSliceGraphMode) {
-            sliceGraphLockStatus.textContent = `view ${viewerState.sliceGraphAnchorView}, depth ${viewerState.sliceGraphAnchorDepth}%`;
+            sliceGraphLockStatus.textContent = `${viewName(viewerState.sliceGraphAnchorView)} view, depth ${viewerState.sliceGraphAnchorDepth}%`;
         } else {
             sliceGraphLockStatus.textContent = 'Switch to Slice Graph mode to use refresh.';
         }
@@ -1238,7 +1882,7 @@ function scheduleSliceGraphStatusCheck() {
         try {
             const res = await fetch(`${SERVER_URL}/render/status`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: uploadSessionHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({ current_model: viewerState.currentModel }),
             });
             const statusData = await res.json();
@@ -1266,13 +1910,6 @@ function setSliceGraphLocked(locked) {
 
 function toggleSliceGraphLock() {
     setSliceGraphLocked(!viewerState.sliceGraphLocked);
-}
-
-function print_view(){
-    // currentPrintView is reset inside sendStateToServer itself, only once
-    // actually consumed -- see the moveCamera/printView comment there.
-    viewerState.currentPrintView = true;
-    sendStateToServer();
 }
 
 function formatDebugValue(value) {
@@ -1345,6 +1982,8 @@ function makeInfoDialogController(dialog, headingEl) {
         // (the heading, made focusable via tabindex="-1"), so reading forward
         // covers the whole dialog.
         if (headingEl) headingEl.focus({ preventScroll: true });
+        // Named by the dialog's own id, so the three callers stay as they are.
+        reportStudyInteraction('ui_action', { name: dialog.id, action: 'open' });
     }
 
     function close() {
@@ -1362,6 +2001,9 @@ function makeInfoDialogController(dialog, headingEl) {
             trigger.focus();
         }
         trigger = null;
+        // After focus is back, so a listener that moves focus itself (the
+        // tutorial's Resume, for one) has the last word.
+        reportStudyInteraction('ui_action', { name: dialog.id, action: 'close' });
     }
 
     if (dialog) {
@@ -1514,6 +2156,62 @@ function updateGenericDeviceConnectUI() {
                 : 'Not connected.';
     }
 }
+
+// A browser with neither Web HID nor Web Bluetooth cannot connect either
+// display, so say so before anyone tries, as part of what Connect is described
+// by (#232). Asked of the browser rather than read from its name, so a
+// Chromium browser that has the APIs is not told to switch.
+function noteWhenThisBrowserCannotConnect() {
+    const note = document.getElementById('browser-support-note');
+    if (!note || !deviceConnectBtn) return;
+    // Web HID and Web Bluetooth exist only on a secure address, https or
+    // localhost, so over plain http they are missing in every browser, and
+    // "open this page in Chrome or Edge" would send someone to the wrong fix
+    // (#244 review). The DotPad connects only over Bluetooth here, so Web
+    // Serial is not asked about.
+    if (!window.isSecureContext) {
+        note.textContent = "This page can't connect to a braille display at this address. "
+            + 'Open it over https, or at localhost on this computer.';
+    } else if ('hid' in navigator || 'bluetooth' in navigator) {
+        return;
+    }
+    note.hidden = false;
+    const describedBy = (deviceConnectBtn.getAttribute('aria-describedby') || '').split(/\s+/);
+    if (!describedBy.includes(note.id)) {
+        deviceConnectBtn.setAttribute('aria-describedby', [note.id, ...describedBy].join(' ').trim());
+    }
+}
+noteWhenThisBrowserCannotConnect();
+
+// The focus-mode note is read as part of Connect's description until Connect
+// has had focus once in this browser. After that it stays on the page as text
+// but is not read on every focus, in every mode (#244 review).
+const FOCUS_NOTE_HEARD_KEY = 'focusModeNoteHeard';
+
+function describeConnectWithFocusNoteOnce() {
+    if (!deviceConnectBtn) return;
+    let heard = false;
+    try {
+        heard = window.localStorage.getItem(FOCUS_NOTE_HEARD_KEY) === '1';
+    } catch (_) {
+        heard = false;
+    }
+    if (heard) {
+        const others = (deviceConnectBtn.getAttribute('aria-describedby') || '').split(/\s+/)
+            .filter(id => id && id !== 'focus-mode-note');
+        if (others.length) deviceConnectBtn.setAttribute('aria-describedby', others.join(' '));
+        else deviceConnectBtn.removeAttribute('aria-describedby');
+        return;
+    }
+    deviceConnectBtn.addEventListener('focus', () => {
+        try {
+            window.localStorage.setItem(FOCUS_NOTE_HEARD_KEY, '1');
+        } catch (_) {
+            // Private browsing or blocked storage: the note is simply read again.
+        }
+    }, { once: true });
+}
+describeConnectWithFocusNoteOnce();
 
 if (deviceConnectBtn) {
     deviceConnectBtn.addEventListener('click', () => {
@@ -1726,6 +2424,8 @@ function fetchExportSourceState() {
         compose_scrollbar: viewerState.composeScrollbar,
         compose_slicegraph: viewerState.composeSliceGraph,
         show_view_info_box: viewerState.showViewInfoBox,
+        show_origin_marker: viewerState.showOriginMarker,
+        show_axis_letters: viewerState.showAxisLetters,
         output_device: viewerState.currentOutputDevice,
         slicegraph_locked: viewerState.sliceGraphLocked,
         slicegraph_view: requestedGraphView,
@@ -1757,7 +2457,7 @@ function updateHighFidelityPreview(data) {
     }
 
     highFidelityPreviewImg.src = 'data:image/png;base64,' + previewBase64;
-    highFidelityPreviewImg.alt = `Render preview: ${viewerState.currentView} view, ${viewerState.currentSliceDepth}% depth, ${renderModeLabel()}`;
+    highFidelityPreviewImg.alt = `Render preview: ${previewDescription()}`;
 
     highFidelityPreviewMeta.textContent = previewCaption(shape);
 }
@@ -1769,9 +2469,9 @@ async function exportCurrentSliceAsPng() {
 
         const response = await fetch(`${SERVER_URL}/render/export-source`, {
             method: 'POST',
-            headers: {
+            headers: uploadSessionHeaders({
                 'Content-Type': 'application/json',
-            },
+            }),
             body: JSON.stringify(fetchExportSourceState()),
             mode: 'cors'
         });
@@ -1807,11 +2507,12 @@ async function exportCurrentSliceAsPng() {
 
 // Update slice depth display and announce changes
 function updateSliceDepth(newDepth, shouldAnnounce = true) {
+    // Depth from the reader in both modes, as the on-screen slider, the keys and
+    // the readouts all are now (#263), so the Trinkey and the slider agree.
     const oldDepth = viewerState.currentSliceDepth;
     viewerState.currentSliceDepth = Math.max(0, Math.min(100, newDepth));
     writeDisplayDepthToPlanes(viewerState.currentSliceDepth);
-    sliceSlider.value = viewerState.currentSliceDepth;
-    slicePercentage.textContent = viewerState.currentSliceDepth;
+    refreshDepthControls();
     refreshViewInfoSummary();
 
     // Only mutate button labels and trigger a render when the value actually
@@ -1833,6 +2534,9 @@ function updateSliceDepth(newDepth, shouldAnnounce = true) {
 }
 
 function getCurrentSliceDepth(){
+    // Paired with updateSliceDepth: depth from the reader, in both modes. The
+    // DotPad's and the Monarch's depth keys step through stepSliceDepth, so
+    // their "deeper" matches Arrow Up.
     return viewerState.currentSliceDepth;
 }
 
@@ -1885,6 +2589,7 @@ function setMonarchHidConnected(connected) {
         syncRadios();
     }
     updateGenericDeviceConnectUI();
+    reportDeviceConnection('monarch', connected);
 }
 
 // Called by the DotPad integration (dotpad-integration.js) on connect/disconnect,
@@ -1896,8 +2601,18 @@ function setDotpadConnected(connected) {
         syncRadios();
     }
     updateGenericDeviceConnectUI();
+    reportDeviceConnection('dotpad', connected);
 }
 window.setDotpadConnected = setDotpadConnected;
+
+/** A device connecting or dropping, as an interaction event: the study log has
+ * always had a place for it, and the tutorial's Connect lesson waits on it. The
+ * cube and the slider report through this too (witmotion-imu.js,
+ * trinkey-slider.js). `device` is "monarch", "dotpad", "cube" or "slider". */
+function reportDeviceConnection(device, connected) {
+    reportStudyInteraction('device', { device: String(device), connected: Boolean(connected) });
+}
+window.reportDeviceConnection = reportDeviceConnection;
 
 // --- Connected tactile displays -------------------------------------------
 //
@@ -1996,6 +2711,7 @@ window.setTactileDisplay = setTactileDisplay;
 window.activeTactileGrid = activeTactileGrid;
 
 function switchOutputDevice(targetDevice) {
+    saveOutputDevice(targetDevice);
     if (viewerState.currentOutputDevice === targetDevice) {
         announce(`already using ${targetDevice}`);
         return;
@@ -2007,6 +2723,47 @@ function switchOutputDevice(targetDevice) {
     sendStateToServer();
     return true;
 }
+
+// The display someone chose, kept for their next visit. The viewer used to
+// start on DotPad every time, and the main Connect button follows this setting,
+// so a Monarch user had to change it on every visit (#245 review).
+const SETTINGS_OUTPUT_DEVICE_KEY = 'settingsOutputDevice';
+const OUTPUT_DEVICES = ['monarch', 'dotpad'];
+
+function saveOutputDevice(device) {
+    if (!OUTPUT_DEVICES.includes(device)) return;
+    try {
+        window.localStorage.setItem(SETTINGS_OUTPUT_DEVICE_KEY, device);
+    } catch (_) {
+        // Ignore localStorage failures (e.g., privacy mode, or /demo's shim).
+    }
+}
+
+function initializeOutputDevice() {
+    let stored = null;
+    try {
+        stored = window.localStorage.getItem(SETTINGS_OUTPUT_DEVICE_KEY);
+    } catch (_) {
+        stored = null;
+    }
+    if (OUTPUT_DEVICES.includes(stored)) viewerState.currentOutputDevice = stored;
+    syncRadios();
+}
+
+/** The tutorial's first question is which display someone uses. The answer is
+ * their setting from then on, saved as a choice made in Settings is, and not
+ * put back when the tutorial ends (#245 review). Quiet: the tutorial says what
+ * it noted. */
+function setOutputDevicePreference(device) {
+    if (!OUTPUT_DEVICES.includes(device)) return false;
+    saveOutputDevice(device);
+    if (viewerState.currentOutputDevice === device) return false;
+    viewerState.currentOutputDevice = device;
+    syncRadios();
+    sendStateToServer();
+    return true;
+}
+window.setOutputDevicePreference = setOutputDevicePreference;
 
 // Helper to update viewerState.composeScrollbar and viewerState.composeSliceGraph based on view mode
 function updateDisplayOptions() {
@@ -2050,8 +2807,8 @@ function updateSideBySideAxisLabels() {
     if (viewerState.currentRepresentationMode === 'side-by-side') {
         const rightAxis = viewerState.currentView;
         const leftAxis = getLegendAxisForSliceAxis(rightAxis);
-        leftLabel.textContent = `Left view: ${leftAxis}`;
-        rightLabel.textContent = `Right view: ${rightAxis}`;
+        leftLabel.textContent = `Left panel: ${viewName(leftAxis)} view`;
+        rightLabel.textContent = `Right panel: ${viewName(rightAxis)} view`;
         labelsContainer.hidden = false;
     } else {
         labelsContainer.hidden = true;
@@ -2067,7 +2824,7 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
         setOrientationFromView(viewerState.currentView);
         syncSliceDepthFromPlanes();
     }
-    if (currentViewSpan) currentViewSpan.textContent = viewerState.currentView;
+    if (currentViewSpan) currentViewSpan.textContent = viewName();
     refreshViewInfoSummary();
     updateButtonLabels();
     updateSideBySideAxisLabels();
@@ -2075,7 +2832,7 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
     if (oldView !== viewerState.currentView && shouldAnnounce) {
         // Only real caller: the WitMotion orientation-cube hardware reporting a
         // new face (applyRelativeRotation and page-load both call with false/no-op).
-        announceAlert(`${viewerState.currentView.toLowerCase()} view`);
+        announceAlert(`${viewName()} view`);
     }
 
     // Send state to server if changed
@@ -2090,11 +2847,21 @@ function updateView(newView, shouldAnnounce = true, options = {}) {
     return oldView !== viewerState.currentView;
 }
 
+/** What either preview shows, in words, for its alt text. */
+function previewDescription() {
+    if (isXyzMode()) {
+        return `View from ${axisSide().speech}, ${viewerState.currentSliceDepth}% depth, ${renderModeLabel()}`;
+    }
+    return `${viewName()} view, ${viewerState.currentSliceDepth}% depth, ${renderModeLabel()}`;
+}
+
 /** Caption for either preview. Both go through this so they cannot disagree
  * about the order of the dimensions, or about which display they describe.
  * `shape` is [height, width], as numpy reports it. */
 function previewCaption(shape) {
-    const parts = [viewerState.currentView, `${viewerState.currentSliceDepth}%`, renderModeLabel()];
+    const parts = isXyzMode()
+        ? [axisSide().braille, `${viewerState.currentSliceDepth}%`, renderModeLabel()]
+        : [viewName(), `${viewerState.currentSliceDepth}%`, renderModeLabel()];
     if (shape && shape.length > 1) {
         parts.push(`${shape[1]}\u00d7${shape[0]}px`);
     }
@@ -2113,7 +2880,7 @@ function updateTactilePreview(base64, shape) {
     const img = document.getElementById('tactile-display-img');
     const meta = document.getElementById('tactile-preview-meta');
     img.src = 'data:image/png;base64,' + base64;
-    img.alt = `Tactile display: ${viewerState.currentView} view, ${viewerState.currentSliceDepth}% depth, ${renderModeLabel()}`;
+    img.alt = `Tactile display: ${previewDescription()}`;
     meta.textContent = previewCaption(shape);
 }
 
@@ -2142,21 +2909,33 @@ function updateBoundingBox(bbox) {
 }
 
 function _visibleModelEntries(model_list) {
-    // Before builtinModelStems arrives, show the full list unfiltered.
-    if (!builtinModelStems) {
-        return model_list.map((stem, i) => ({ stem, i }));
-    }
-    const builtinSet = new Set(builtinModelStems);
+    // The server sends only the built-ins and this tab's own uploads (#237), so
+    // there is nothing here to hide. This used to be the only filter, and it
+    // showed everyone's uploads until the list of built-ins arrived.
     const ownedStems = new Set([...sessionOwnedModels].map(fn => fn.replace(/\.[^.]+$/, '')));
     // The demo offers the study's own objects rather than everything on the
     // server. Narrows what is listed and nothing else: the models are loaded from
     // the same place, render the same way, and an upload is still the uploader's
     // to see. Anything outside the list is simply not offered.
     const demoSet = demoMode && demoModelStems ? new Set(demoModelStems) : null;
+    // The tutorial's mug stays listed on /demo while the tutorial runs, and
+    // while it is still the model on the display after it: otherwise the next
+    // rebuild would swap the selection to the first listed model behind the
+    // reader's back. The server's demo list itself stays at the study's six.
+    const tutorialMugListed = Boolean(window.cadTutorial && window.cadTutorial.running)
+        || viewerState.currentModel === TUTORIAL_MODEL_STEM;
     return model_list
         .map((stem, i) => ({ stem, i }))
-        .filter(({ stem }) => builtinSet.has(stem) || ownedStems.has(stem))
-        .filter(({ stem }) => !demoSet || demoSet.has(stem) || ownedStems.has(stem));
+        .filter(({ stem }) => !demoSet || demoSet.has(stem) || ownedStems.has(stem)
+            || (stem === TUTORIAL_MODEL_STEM && tutorialMugListed));
+}
+
+// The tutorial's practice model (static/js/tutorial.js).
+const TUTORIAL_MODEL_STEM = 'tutorial_mug';
+
+/** Whether the tutorial has the model chooser locked for the current lesson. */
+function tutorialLocksControls() {
+    return Boolean(window.cadTutorial && window.cadTutorial.locked);
 }
 
 function updateModelList(model_list) {
@@ -2204,7 +2983,9 @@ function updateModelList(model_list) {
         return;
     }
 
-    dropdown.disabled = false;
+    // A rebuild used to re-enable the chooser unconditionally, which undid the
+    // tutorial's lock on every render that carried a model list.
+    dropdown.disabled = tutorialLocksControls();
 
     entries.forEach(({ stem, i }) => {
         const option = document.createElement("option");
@@ -2227,11 +3008,66 @@ function updateModelList(model_list) {
         dropdown.value = viewerState.currentModel;
         if (sbModel) sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
     } else {
+        const gone = viewerState.currentModel;
         dropdown.selectedIndex = 0;
         viewerState.currentModel = dropdown.value;
         if (sbModel && dropdown.options.length > 0) sbModel.textContent = dropdown.options[0].text;
+        // The model this window chose is no longer in the list. If it was the
+        // one on the display, the display is about to change under the reader:
+        // say so, say what replaces it, and show it now (#238).
+        if (gone && gone !== viewerState.currentModel) {
+            const wasShown = gone === lastShownModel;
+            // A load still in flight was for the model that has gone; it must
+            // not be announced as loaded when its response arrives.
+            modelLoadAnnouncement = null;
+            announceModelUnavailable(gone, wasShown ? viewerState.currentModel : null);
+            // Always, so a response still in flight for the model that has gone
+            // is followed by one for the model the list now names.
+            sendStateToServer();
+        }
     }
     refreshDeleteButton();
+}
+
+// Puts the given model in the list, the status bar and the delete button,
+// without sending anything. null leaves the choice to the next render, which
+// names whatever the server shows.
+function showModelInControls(stem) {
+    viewerState.currentModel = stem;
+    if (!stem) return;
+    const dropdown = document.getElementById('model-list-dropdown');
+    const option = dropdown ? [...dropdown.options].find(o => o.value === stem) : null;
+    if (option) dropdown.value = stem;
+    if (sbModel) sbModel.textContent = option ? option.text : stem;
+    refreshDeleteButton();
+}
+
+// Says once that a model can't be shown, however the viewer found out: a render
+// was refused, or the list dropped it. It adds what is shown instead only when
+// the display moves off a model the reader was exploring, the one time it
+// changes under them.
+function announceModelUnavailable(name, showing = null) {
+    if (!name || name === lastUnavailableModel) return;
+    lastUnavailableModel = name;
+    // In study mode the name is the answer to the task, so it is never said.
+    const label = studyMode ? 'This model' : name;
+    announceAlert(showing && !studyMode
+        ? `${label} isn't available. Showing ${showing}.`
+        : `${label} isn't available.`);
+}
+
+// A render was refused for the model asked for. The display was not touched, so
+// the controls go back to the model it shows, unless the reader has chosen
+// another since this request went out.
+function handleModelNotAvailable(missing, task) {
+    clearModelLoadTask(task);
+    if (viewerState.currentModel === missing) showModelInControls(lastShownModel);
+    announceModelUnavailable(missing);
+    // The list offered something that could not be shown, so it is out of date.
+    pollServerState();
+    // Nothing shown yet, from a link to a model that has gone: start where a
+    // fresh page does, on the default model.
+    if (!lastShownModel) sendStateToServer();
 }
 
 document.getElementById("model-list-dropdown").addEventListener("input", function() {
@@ -2292,7 +3128,11 @@ async function initSessionModels() {
         if (!resp.ok) return;
         const data = await resp.json();
         const available = (data.models || []).filter(m => m.available);
-        sessionOwnedModels = new Set(available.map(m => m.filename));
+        // This tab's own uploads stay. Without a cookie they are in no session,
+        // so replacing the set dropped them from the list. That never showed
+        // while this ran only at page load; it now runs whenever the models
+        // change, which includes the upload itself (#238).
+        sessionOwnedModels = new Set([...tabUploadedModels, ...available.map(m => m.filename)]);
         // Force a full rebuild so the filter and annotations are applied correctly.
         lastModelListSignature = null;
         if (lastFullModelList.length > 0) updateModelList(lastFullModelList);
@@ -2316,10 +3156,15 @@ document.getElementById('delete-model-btn').addEventListener('click', async func
         });
         if (resp.ok) {
             sessionOwnedModels.delete(filename);
+            tabUploadedModels.delete(filename);
             dropdown.remove(dropdown.selectedIndex);
             if (dropdown.options.length > 0) {
                 dropdown.selectedIndex = 0;
                 viewerState.currentModel = dropdown.value;
+                // The model now showing starts with the slice in the middle, like
+                // one chosen from the list, not where the removed one was left.
+                resetSlicePlanes();
+                syncSliceDepthFromPlanes();
                 sendStateToServer();
             }
             refreshDeleteButton();
@@ -2328,9 +3173,13 @@ document.getElementById('delete-model-btn').addEventListener('click', async func
         } else {
             const errData = await resp.json().catch(() => ({}));
             statusEl.textContent = `Delete failed: ${errData.message || resp.status}`;
+            // Said as well as shown: the status line is not a live region, so a
+            // refused delete was silent to a screen reader (#243 review).
+            announceAlert(statusEl.textContent);
         }
     } catch (err) {
         statusEl.textContent = `Delete error: ${err.message}`;
+        announceAlert(statusEl.textContent);
     } finally {
         this.disabled = false;
     }
@@ -2355,13 +3204,17 @@ document.getElementById('upload-model-input').addEventListener('change', async f
     try {
         const resp = await fetch(`${SERVER_URL}/upload`, {
             method: 'POST',
+            headers: uploadSessionHeaders(),
             body: formData,
             mode: 'cors',
         });
         const data = await resp.json();
 
         if (data.status === 'success') {
-            if (data.filename) sessionOwnedModels.add(data.filename);
+            if (data.filename) {
+                sessionOwnedModels.add(data.filename);
+                tabUploadedModels.add(data.filename);
+            }
             updateModelList(data.model_list);
             // Select the newly uploaded model
             const dropdown = document.getElementById('model-list-dropdown');
@@ -2411,11 +3264,13 @@ document.getElementById('upload-model-input').addEventListener('change', async f
 // message to one window: the client registry is a list of queues with nothing
 // attached to say who is who.
 function applyServerState(data) {
-    if (Array.isArray(data.builtin_model_stems) && data.builtin_model_stems.length && !builtinModelStems) {
-        builtinModelStems = data.builtin_model_stems;
-        // Force a rebuild now that the filter is known.
-        lastModelListSignature = null;
-        if (lastFullModelList.length > 0) updateModelList(lastFullModelList);
+    // Something was uploaded or removed, here or in another window, or a file
+    // changed on disk. Ask for this window's own list now, so it doesn't go on
+    // offering a model that has gone (#238). The signal names no model.
+    if (data.models_changed) {
+        pollServerState();
+        if (!window.CAD_DEMO_MODE) initSessionModels();
+        return;
     }
     const modelDropdown = document.getElementById("model-list-dropdown");
     const dropdownFocused = document.activeElement === modelDropdown;
@@ -2431,8 +3286,12 @@ function applyServerState(data) {
     if (data.load_model) {
         if (data.load_model !== viewerState.currentModel) {
             viewerState.currentModel = data.load_model;
+            refreshStatusBar();
             clearCameraCenterState();
             resetSlicePlanes();
+            // The planes alone are not what a render sends: the depth read off
+            // them is, and it used to keep the previous model's.
+            syncSliceDepthFromPlanes();
             pendingInputSource = 'ingest';
             sendStateToServer();
         }
@@ -2442,6 +3301,10 @@ function applyServerState(data) {
 // SSE: server pushes hardware state changes (WitMotion IMU, Slider) immediately
 // instead of the client polling every second — reduces latency from ~1000 ms to ~10 ms.
 (function connectSSE() {
+    // No tab id: EventSource cannot set a header, and the id grants access to this
+    // tab's uploads, so it must not sit in an address that ends up in access logs
+    // (#243 review). The stream carries nothing that depends on who is asking; the
+    // model list comes from /get_data and /render, which send the id in a header.
     const evtSource = new EventSource(`${SERVER_URL}/events`);
     evtSource.onmessage = function(event) {
         try {
@@ -2474,10 +3337,11 @@ let pollFailCount = 0;
 const POLL_FAIL_THRESHOLD = 2;
 
 // Slow fallback poll: the sole authority for serverConnected state changes.
-// Keeps model list and bbox in sync for state that isn't pushed over SSE
-// (e.g. model uploads). Runs every 5 s.
-setInterval(() => {
-    fetch(`${SERVER_URL}/get_data`)
+// Keeps model list and bbox in sync for state that isn't pushed over SSE. Runs
+// once at load, since the event stream no longer sends the list, every 5 s after
+// that, and at once when the server says the set of models changed.
+function pollServerState() {
+    fetch(`${SERVER_URL}/get_data`, { headers: uploadSessionHeaders() })
         .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
         .then(data => {
             pollFailCount = 0;
@@ -2497,7 +3361,9 @@ setInterval(() => {
                 announceAlert('Server unavailable — rendering paused.');
             }
         });
-}, 5000);
+}
+pollServerState();
+setInterval(pollServerState, 5000);
 
 // Update zoom information
 function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
@@ -2538,6 +3404,10 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
 async function fitCurrentViewToDevice() {
     const renderPipelineParams = getRenderPipelineParams(viewerState.currentRenderMode);
     const orientationPayload = getOrientationPayload();
+    // Fit to the grid the render is drawn at. Without it the server fitted to
+    // its 96x40 default whatever was attached, so on a DotPad (60x40) or with
+    // nothing connected (78x40) the fitted slice did not fill the display.
+    const grid = activeTactileGrid();
 
     const payload = {
         view: viewerState.currentView,
@@ -2553,11 +3423,13 @@ async function fitCurrentViewToDevice() {
         compose_scrollbar: viewerState.composeScrollbar,
         compose_slicegraph: viewerState.composeSliceGraph,
         show_view_info_box: viewerState.showViewInfoBox,
+        target_pixel_width: grid.pixelWidth,
+        target_pixel_height: grid.pixelHeight,
     };
 
     const response = await fetch(`${SERVER_URL}/render/fit-view`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: uploadSessionHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(payload),
     });
 
@@ -2576,8 +3448,13 @@ async function fitCurrentViewToDevice() {
 
     updateZoom(data.zoom, false, false);
     sendStateToServer();
-    // Only reachable via the 'f' keyboard shortcut — no on-screen button.
-    announceAlert(`View fitted to ${payload.output_device}`);
+    // Only reachable via the 'f' keyboard shortcut; there is no on-screen
+    // button. This used to read out the internal device key ("monarch_hid").
+    // A display is named only when it is actually connected: a Monarch's grid
+    // stays registered after it is unplugged, so the grid alone cannot say.
+    const connectedDisplay = (grid.type === 'Monarch' && monarchHidConnected)
+        || (grid.type === 'DotPad' && dotpadConnected) ? grid.type : null;
+    announceAlert(connectedDisplay ? `View fitted to the ${connectedDisplay}` : 'View fitted to the display');
 
 }
 
@@ -2699,7 +3576,13 @@ function cycleRepresentationMode(shouldAnnounce = true) {
 
 // Announce a change: updates the message window, speaks via the SR live region,
 // echoes to the tactile display.
-function emitAnnouncement(message, politeness) {
+//
+// `braille` is what the tactile display's text line shows instead of the
+// spoken message: a line (or lines, most important first) of 20 cells or fewer,
+// written for the fingers rather than cut from the speech, e.g. "Z 31%" for
+// "Z slice at 31 percent". Without it the display shows the start of the message,
+// as it always has.
+function emitAnnouncement(message, politeness, braille = null) {
     const normalizedMessage = String(message);
     // Any announcement ends the current zoom/depth run: the next such change
     // re-includes its label, since the context is no longer obvious. A parameter
@@ -2717,7 +3600,8 @@ function emitAnnouncement(message, politeness) {
         try {
             window.onTactileAnnouncement({
                 message: normalizedMessage,
-                politeness
+                politeness,
+                braille: brailleLines(braille),
             });
         } catch (err) {
             console.warn('Tactile announcement failed:', err);
@@ -2730,30 +3614,79 @@ function emitAnnouncement(message, politeness) {
     reportStudyInteraction('announcement', { message: normalizedMessage, politeness });
 }
 
+/** A braille option as a list of lines, or null when there is none. */
+function brailleLines(braille) {
+    if (braille === null || braille === undefined || braille === '') return null;
+    const lines = (Array.isArray(braille) ? braille : [braille])
+        .map(line => String(line).trim())
+        .filter(Boolean);
+    return lines.length ? lines : null;
+}
+
 /**
  * Announce a background/system event politely: it waits for the user to pause
  * rather than interrupting. Reserve for things not tied to an immediate action —
  * a server reconnecting, a model finishing a load that was kicked off moments
  * ago — since the user may be doing something else entirely when it lands.
  */
-function announce(message) {
-    emitAnnouncement(message, 'polite');
+function announce(message, options = {}) {
+    emitAnnouncement(message, 'polite', options && options.braille);
 }
 
 /**
  * Announce assertively, interrupting whatever the AT is currently speaking.
  */
-function announceAlert(message) {
-    emitAnnouncement(message, 'assertive');
+function announceAlert(message, options = {}) {
+    emitAnnouncement(message, 'assertive', options && options.braille);
+}
+
+// Hardware modules say what triggered the next render through this. They used
+// to assign window.pendingInputSource, which is not the variable
+// sendStateToServer reads (a top-level let is not a property of window), so
+// every cube and slider render was logged as keyboard.
+function setPendingInputSource(source) {
+    pendingInputSource = String(source || 'keyboard');
+}
+
+/** The cube reporting which face is up. In Turn mode that named view, as it
+ * always was. In XYZ mode the face pointing up is the axis coming out of the
+ * display, so it picks the axis and the side and keeps that axis's slice. */
+function selectViewFromCube(viewToken) {
+    if (!VIEW_BASIS[viewToken]) return;
+    pendingInputSource = 'witmotion';
+    if (isXyzMode()) {
+        if (viewToken === viewerState.currentView) return;
+        showXyzView(viewToken, announceAlert);
+        return;
+    }
+    updateView(viewToken);
+}
+
+/** A braille display's X, Y or Z command: the same as the keyboard's, including
+ * saying whose mode it is when pressed in Turn mode, and including the other side
+ * on the second press. One chord per axis is all either display needs, which
+ * suits the DotPad, where x, y and z already use all six dots. */
+function axisCommandFromDevice(axis, source) {
+    if (!XYZ_AXES[axis]) return;
+    pendingInputSource = String(source || 'device');
+    if (!isXyzMode()) {
+        announceWrongModeKey(axis, 'xyz');
+        return;
+    }
+    selectAxis(axis);
 }
 
 // External API used by hardware integration modules.
+window.setPendingInputSource = setPendingInputSource;
+window.selectViewFromCube = selectViewFromCube;
+window.axisCommandFromDevice = axisCommandFromDevice;
 window.moveCursor = moveCursor;
 window.cycleCursorState = cycleCursorState;
 window.whichCursor = whichCursor;
 window.getCurrentSliceDepth = getCurrentSliceDepth;
 window.updateSliceDepth = updateSliceDepth;
 window.announceDepthValue = announceDepthValue;
+window.stepSliceDepth = stepSliceDepth;
 
 // ---------------------------------------------------------------------------
 // Study mode API, used by static/js/study.js.
@@ -2772,6 +3705,13 @@ window.announceDepthValue = announceDepthValue;
 function applyStudyDefaults(defaults) {
     const wanted = defaults || {};
 
+    // The protocol's axis mode (Turn, until XYZ has been piloted). Applied at
+    // every load like the rest, and not saved: this is the study's choice, not
+    // the participant's browser's.
+    if (AXIS_MODES.some(m => m.key === wanted.axis_mode)) {
+        viewerState.axisMode = wanted.axis_mode;
+    }
+
     if (wanted.view && VIEW_BASIS[wanted.view]) {
         viewerState.currentView = wanted.view;
         setOrientationFromView(viewerState.currentView);
@@ -2787,6 +3727,9 @@ function applyStudyDefaults(defaults) {
         writeDisplayDepthToPlanes(viewerState.currentSliceDepth);
     }
     if (renderModeByKey(wanted.render_mode)) viewerState.currentRenderMode = wanted.render_mode;
+    // The protocol may turn the view label on or off for a study. Like the axis
+    // mode it is the study's choice, so it is not saved.
+    if (typeof wanted.view_info_box === 'boolean') viewerState.showViewInfoBox = wanted.view_info_box;
     if (representationModeByKey(wanted.representation_mode)) {
         viewerState.currentRepresentationMode = wanted.representation_mode;
     }
@@ -2802,15 +3745,59 @@ function applyStudyDefaults(defaults) {
         viewerState.composeScrollbar = wanted.compose_scrollbar;
     }
 
-    if (sliceSlider) sliceSlider.value = viewerState.currentSliceDepth;
-    if (slicePercentage) slicePercentage.textContent = viewerState.currentSliceDepth;
+    if (wanted.restore) restoreViewState(wanted.restore);
+
+    refreshDepthControls();
     if (zoomInput) zoomInput.value = viewerState.currentZoom;
     if (zoomLevelValue) zoomLevelValue.textContent = Number(viewerState.currentZoom).toFixed(1);
-    if (currentViewSpan) currentViewSpan.textContent = viewerState.currentView;
+    if (currentViewSpan) currentViewSpan.textContent = viewName();
     syncRadios();
+    syncAxisModeUI();
     updateButtonLabels();
     refreshViewInfoSummary();
     refreshStatusBar();
+}
+
+/** What a model's defaults do not hold: the orientation, the cut on every axis
+ * and where each view is panned to. The tutorial takes this when a lesson is
+ * opened from the menu and gives it back on exit, so the person returns to the
+ * view they left and not just the same model and side (#245 review). A plain
+ * copy, so nothing the caller does to it reaches the viewer. */
+function captureViewState() {
+    return JSON.parse(JSON.stringify({
+        orientation: currentBasis(),
+        slice_planes: viewerState.slicePlanes,
+        camera_centers: [...viewerState.cameraCenterByViewOrientation.entries()],
+        world_camera_center: viewerState.currentWorldCameraCenter || null,
+    }));
+}
+
+/** Put back what captureViewState took. Each part is checked and skipped if
+ * it is not what was taken, so a stored record from an older page cannot
+ * leave the viewer half turned. */
+function restoreViewState(saved) {
+    const isAxis = (v) => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite)
+        && v.reduce((sum, c) => sum + Math.abs(c), 0) === 1;
+    const o = saved && saved.orientation;
+    if (o && isAxis(o.right) && isAxis(o.up) && isAxis(o.depth)) {
+        viewerState.orientationRight = [...o.right];
+        viewerState.orientationUp = [...o.up];
+        viewerState.orientationDepth = [...o.depth];
+        viewerState.currentView = orientationViewFromDepth(viewerState.orientationDepth);
+    }
+    const planes = saved && saved.slice_planes;
+    if (planes && ['x', 'y', 'z'].every(a => Number.isFinite(planes[a]) && planes[a] >= 0 && planes[a] <= 1)) {
+        viewerState.slicePlanes = { x: planes.x, y: planes.y, z: planes.z };
+        syncSliceDepthFromPlanes();
+    }
+    if (saved && Array.isArray(saved.camera_centers)) {
+        viewerState.cameraCenterByViewOrientation = new Map(
+            saved.camera_centers.filter(entry => Array.isArray(entry) && entry.length === 2),
+        );
+    }
+    if (saved && Array.isArray(saved.world_camera_center)) {
+        viewerState.currentWorldCameraCenter = [...saved.world_camera_center];
+    }
 }
 
 /** Load the model for the current protocol step.
@@ -2818,8 +3805,12 @@ function applyStudyDefaults(defaults) {
  * `stem` is the model's real name, which is how a model has to be addressed --
  * a position in the server's list means a different file after anyone uploads
  * one (#123). It is never displayed: `label` is the neutral name the participant
- * hears, and updateModelList keeps the stem out of the status bar. */
-function loadStudyModel(stem, label, defaults) {
+ * hears, and updateModelList keeps the stem out of the status bar.
+ *
+ * `source` is what the render is logged as, "study" unless a caller says
+ * otherwise; the tutorial passes "tutorial". It changes nothing else: the load
+ * is silent either way, and a caller that wants it said says it itself. */
+function loadStudyModel(stem, label, defaults, source) {
     if (!stem) return false;
 
     studyModelLabel = label || 'Model';
@@ -2831,11 +3822,39 @@ function loadStudyModel(stem, label, defaults) {
     beginModelLoadAnnouncement(studyModelLabel, 'study');
     // "reset" centres the object, the last of the study defaults. It is a render
     // parameter rather than viewer state, so it is set for this one request and
-    // reset inside sendStateToServer itself once actually consumed 
-    pendingInputSource = 'study';
-    viewerState.currentMoveCamera = 'reset';
+    // reset inside sendStateToServer itself once actually consumed. A view being
+    // put back keeps the pan it had.
+    pendingInputSource = source ? String(source) : 'study';
+    viewerState.currentMoveCamera = defaults && defaults.restore ? 'none' : 'reset';
     sendStateToServer();
     return true;
+}
+
+/** Move the object one step, as W, A, S or D does, without saying anything: the
+ * tutorial moves the mug out of place before it asks for Reset, and says so
+ * itself. `direction` is where the object goes: up, down, left or right. */
+function moveObjectQuietly(direction) {
+    // The same pairing as the W/A/S/D cases: moving the object up moves the
+    // viewport down.
+    const camera = { up: 'down', down: 'up', left: 'right', right: 'left' }[direction];
+    if (!camera) return false;
+    viewerState.currentMoveCamera = camera;
+    sendStateToServer();
+    return true;
+}
+
+/** The axis mode and where the slice is along its axis, for the study log: the
+ * axis it slices along, the side it is seen from, and how far along the object
+ * (percent from its lowest coordinate, the same from either side). Sent with
+ * every render too, so the render rows and the CSV carry it. */
+function axisLogFields() {
+    const axis = currentCutAxis();
+    return {
+        axis_mode: viewerState.axisMode,
+        cut_axis: axis,
+        cut_side: VIEW_SIDES_BRAILLE[viewerState.currentView] || null,
+        cut_percent: Math.round(viewerState.slicePlanes[axis] * 10000) / 100,
+    };
 }
 
 /** The viewer state at this instant, attached to every reported event so a study
@@ -2851,16 +3870,50 @@ function viewerStateSnapshot() {
         orientation: getOrientationPayload(),
         cursor_state: whichCursor(),
         output_device: getEffectiveOutputDevice(),
+        ...axisLogFields(),
+    };
+}
+
+/** The snapshot plus what the tutorial's step checks read (static/js/
+ * tutorial.js): the model by name, the cursor, the overlays, which displays are
+ * connected, whether single-key shortcuts are on, and the last render that
+ * reached the display. A fresh object each call, so a check cannot change the
+ * viewer by writing to it. */
+function tutorialStateSnapshot() {
+    const { axis, sign } = activeSliceAxis();
+    return {
+        ...viewerStateSnapshot(),
+        // How far the cut is from the surface nearest the reader, 0 to 100, in
+        // either axis mode. cut_percent runs along the axis instead, and from
+        // the right, the back or above going deeper lowers it, so a lesson
+        // that asks for "the far side" cannot tell from cut_percent alone.
+        reader_depth: Math.round(depthFromPlanePosition(viewerState.slicePlanes[axis], sign) * 100) / 100,
+        model: viewerState.currentModel,
+        cursor_col: viewerState.currentCursorCol,
+        cursor_row: viewerState.currentCursorRow,
+        compose_scrollbar: viewerState.composeScrollbar,
+        compose_slicegraph: viewerState.composeSliceGraph,
+        slicegraph_locked: viewerState.sliceGraphLocked,
+        camera_center: getCurrentCameraCenter(viewerState.currentView, getOrientationPayload()),
+        display_connected: monarchHidConnected || dotpadConnected,
+        monarch_connected: monarchHidConnected,
+        dotpad_connected: dotpadConnected,
+        single_key_shortcuts: viewerState.singleKeyShortcuts,
+        last_render_state: lastRenderedState ? JSON.parse(JSON.stringify(lastRenderedState)) : null,
     };
 }
 
 window.cadStudy = {
     isStudyMode: () => studyMode,
-    setSessionId: (id) => { studySessionId = id ? Number(id) : null; },
-    getSessionId: () => studySessionId,
+    // Where this study's participant API lives: /studies/<slug>.
+    basePath: () => (studySlug ? `/studies/${studySlug}` : null),
+    setSessionKey: (key) => { studySessionKey = key ? String(key).toUpperCase() : null; },
+    getSessionKey: () => studySessionKey,
     applyDefaults: applyStudyDefaults,
     loadModel: loadStudyModel,
     snapshot: viewerStateSnapshot,
+    getState: tutorialStateSnapshot,
+    moveObject: moveObjectQuietly,
     // study.js subscribes; kept as a list so nothing here needs to know about it.
     onInteraction: [],
     // The real polite-announcement pipeline (status bar refresh, tactile/
@@ -2873,14 +3926,22 @@ window.cadStudy = {
     // by either, and both must reach the same function.
     announce: announce,
     announcePolite: announce,
+    // The tutorial writes through the same window as the viewer's answers to
+    // keys, so the next key's answer replaces what it was reading (#245 review).
+    announceAlert: announceAlert,
+    captureView: captureViewState,
 };
 
-/** Report an interaction to study.js, if study mode is running. Deliberately
- * tolerant: a listener that throws must not stop the key from doing its job.
+/** Report an interaction to every listener on window.cadStudy.onInteraction, on
+ * every page: study.js subscribes on a study's pages and tutorial.js everywhere
+ * else, and each is inert where it does not belong, so there is nothing to gate
+ * here. It used to return early off the study page, which left the tutorial
+ * deaf. Deliberately tolerant: a listener that throws must not stop the key from
+ * doing its job.
  * Callable from anything hoisted above the assignment above, so it must also
  * tolerate being reached before that has run. */
 function reportStudyInteraction(eventType, eventData) {
-    if (!studyMode || !window.cadStudy) return;
+    if (!window.cadStudy) return;
     for (const listener of window.cadStudy.onInteraction) {
         try {
             listener(eventType, eventData, viewerStateSnapshot());
@@ -2895,13 +3956,16 @@ function reportStudyInteraction(eventType, eventData) {
 // Slice depth slider with enhanced feedback
 let sliderUpdateTimeout = null;
 
+// Dragging moves the plane as it goes, without a render per step; the render
+// comes once, on release. The plane used to be left behind -- only the number
+// moved -- so the next turn of the model jumped back to wherever it had been.
 sliceSlider.addEventListener('input', function() {
-    const newValue = parseInt(this.value);
-    viewerState.currentSliceDepth = newValue;
-    slicePercentage.textContent = viewerState.currentSliceDepth;
-
-    // Update button labels immediately
-    updateButtonLabels();
+    const newValue = parseInt(this.value, 10);
+    if (!Number.isFinite(newValue)) return;
+    viewerState.currentSliceDepth = Math.max(0, Math.min(100, newValue));
+    writeDisplayDepthToPlanes(viewerState.currentSliceDepth);
+    refreshDepthControls();
+    refreshViewInfoSummary();
 });
 
 sliceSlider.addEventListener('change', function() {
@@ -2976,17 +4040,17 @@ zoomInBtn.addEventListener('click', function() {
 
 showViewInfoBoxCheckbox.addEventListener('change', function() {
     viewerState.showViewInfoBox = this.checked;
+    persistSetting(SETTINGS_VIEW_INFO_BOX_KEY, this.checked);
     pendingInputSource = 'ui';
     sendStateToServer();
 });
 
-// Deeper depth button
+// Deeper and Shallower: Page Up and Page Down, in either mode.
 deeperBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
     updateSliceDepth(viewerState.currentSliceDepth + 10, true);
 });
 
-// Shallower depth button
 shallowerBtn.addEventListener('click', function() {
     pendingInputSource = 'ui';
     updateSliceDepth(viewerState.currentSliceDepth - 10, true);
@@ -3015,14 +4079,14 @@ sliceGraphModeRadios().forEach((radio) => {
 if (resetPositionBtn) {
     resetPositionBtn.addEventListener('click', function() {
         pendingInputSource = 'ui';
-        // Drop the remembered per-view centre -- see the 'z' case in the
+        // Drop the remembered per-view centre -- see the '0' case in the
         // keydown handler for why.
         clearCameraCenterState();
         // "Position reset" also means undoing any roll/pitch/yaw, zoom, and
         // slice depth, not just pan -- see resetOrientationZoomAndDepth.
         resetOrientationZoomAndDepth();
         // currentMoveCamera is reset inside sendStateToServer itself, only
-        // once actually consumed -- see the 'z' case in the keydown handler.
+        // once actually consumed -- see the '0' case in the keydown handler.
         viewerState.currentMoveCamera = "reset";
         sendStateToServer();
         announce('Position reset');
@@ -3046,12 +4110,91 @@ for (const [buttonId, rotationName] of Object.entries(ORIENTATION_BUTTONS)) {
     const button = document.getElementById(buttonId);
     if (!button) continue;
     button.addEventListener('click', function() {
+        // Hidden in XYZ mode; refused as well, so no control acts in both.
+        if (isXyzMode()) return;
         pendingInputSource = 'ui';
         applyRelativeRotation(rotationName, announce);
     });
 }
 
+// XYZ mode's six view buttons (#235 review): each shows its axis from its side,
+// and pressing the one showing says it again rather than turning round. Turning
+// round is the keys' job: X then X again.
+for (const button of viewButtons()) {
+    button.addEventListener('click', function() {
+        if (!isXyzMode()) return;
+        pendingInputSource = 'ui';
+        showXyzView(viewFrom(this.dataset.axis, this.dataset.side === 'plus' ? 1 : -1), announce);
+    });
+}
+
+// --- Axis mode and the settings that go with it (#185) ---------------------
+
+axisModeRadios().forEach((radio) => {
+    radio.addEventListener('change', function() {
+        if (!this.checked) return;
+        pendingInputSource = 'ui';
+        setAxisMode(this.value);
+    });
+});
+
+function persistSetting(key, value) {
+    try {
+        window.localStorage.setItem(key, value ? '1' : '0');
+    } catch (_) {
+        // Ignore localStorage failures (e.g., privacy mode, or /demo's shim).
+    }
+}
+
+if (settingsAxisLettersCheckbox) {
+    settingsAxisLettersCheckbox.addEventListener('change', function() {
+        viewerState.showAxisLetters = this.checked;
+        persistSetting(SETTINGS_AXIS_LETTERS_KEY, this.checked);
+        sendStateToServer();
+    });
+}
+if (settingsSingleKeyCheckbox) {
+    settingsSingleKeyCheckbox.addEventListener('change', function() {
+        viewerState.singleKeyShortcuts = this.checked;
+        persistSetting(SETTINGS_SINGLE_KEY_SHORTCUTS_KEY, this.checked);
+    });
+}
+
+/** Read the axis settings back, before the first render so it draws in the
+ * saved mode. Unset means the default: XYZ, with the edge letters and the
+ * view label, and single-key shortcuts on. */
+function initializeAxisSettings() {
+    const read = (key) => {
+        try {
+            return window.localStorage.getItem(key);
+        } catch (_) {
+            return null;
+        }
+    };
+    viewerState.showAxisLetters = read(SETTINGS_AXIS_LETTERS_KEY) !== '0';
+    viewerState.showViewInfoBox = read(SETTINGS_VIEW_INFO_BOX_KEY) !== '0';
+    viewerState.singleKeyShortcuts = read(SETTINGS_SINGLE_KEY_SHORTCUTS_KEY) !== '0';
+    if (settingsAxisLettersCheckbox) settingsAxisLettersCheckbox.checked = viewerState.showAxisLetters;
+    if (showViewInfoBoxCheckbox) showViewInfoBoxCheckbox.checked = viewerState.showViewInfoBox;
+    if (settingsSingleKeyCheckbox) settingsSingleKeyCheckbox.checked = viewerState.singleKeyShortcuts;
+    // XYZ unless Turn was chosen (#235 review). In study mode the protocol owns
+    // the axis mode (Turn, see VIEWER_DEFAULTS), and nothing may render before
+    // the protocol loads its first model.
+    const startMode = (studyMode || read(SETTINGS_AXIS_MODE_KEY) === 'turn') ? 'turn' : 'xyz';
+    if (startMode === 'xyz') {
+        // A page opening in XYZ mode starts looking down at the print bed, Z from
+        // above, rather than squaring up the Turn-mode default: that is the view
+        // from -X, where Y runs to the left, and nothing has been shown yet.
+        viewerState.currentView = 'z+';
+        setOrientationFromView('z+');
+    }
+    // No render of its own: the page's first render follows, and it may be for
+    // a model named in the address that this one would not know about yet.
+    setAxisMode(startMode, { announce: false, persist: false, render: false });
+}
+
 exportSliceSvgBtn.addEventListener('click', function() {
+    reportStudyInteraction('ui_action', { name: 'export', action: 'click' });
     exportCurrentSliceAsPng();
 });
 
@@ -3082,6 +4225,31 @@ document.addEventListener('keydown', function(e) {
         return;
     }
 
+    // Nor for a list, radio group or slider: there the arrows, Page Up and Down,
+    // Home and End move within the control, and screen reader users rely on that
+    // to get to the first or last option, with no setting to get it back (#235
+    // review). The depth slider is the exception, handled below: its keys move
+    // the slice the way the slider's own would, and say where it landed.
+    const NATIVE_NAVIGATION_KEYS = ['arrowup', 'arrowdown', 'pageup', 'pagedown', 'home', 'end'];
+    const ownsNavigationKeys = Boolean(
+        target && target !== sliceSlider && typeof target.closest === 'function' &&
+        target.closest('select, input[type="radio"], input[type="range"], [role="radio"], [role="listbox"], [role="option"], [role="slider"]')
+    );
+    if (ownsNavigationKeys && NATIVE_NAVIGATION_KEYS.includes(String(e.key || '').toLowerCase())) {
+        return;
+    }
+
+    // A list keeps its letters and digits too: typing jumps to the option that
+    // starts with them, which is how screen reader users get through a long
+    // model list, and the tutorial's last lesson asks for exactly that (#245
+    // review).
+    const ownsTypeAhead = Boolean(
+        target && typeof target.closest === 'function' && target.closest('select, [role="listbox"]')
+    );
+    if (ownsTypeAhead && String(e.key || '').length === 1) {
+        return;
+    }
+
     // A modal dialog (shortcuts help, session consent) makes the rest of the page
     // inert — Escape and Tab must stay scoped to it, not also fire a background
     // shortcut underneath.
@@ -3098,6 +4266,7 @@ document.addEventListener('keydown', function(e) {
     const key = rawKey.toLowerCase();
     const code = String(e.code || '');
     const normalizedKey = (
+        code === 'Digit0' || code === 'Numpad0' ? '0' :
         code === 'Digit2' || code === 'Numpad2' ? '2' :
         code === 'Digit3' || code === 'Numpad3' ? '3' :
         code === 'Digit4' || code === 'Numpad4' ? '4' :
@@ -3105,15 +4274,40 @@ document.addEventListener('keydown', function(e) {
         key
     );
     const supportedShortcuts = new Set([
-        'arrowup', 'arrowdown', 'pageup', 'pagedown',
+        'arrowup', 'arrowdown', 'pageup', 'pagedown', 'home', 'end',
          '2', '3', 'q', 'e',
         'u', 'i', 'o', 'j', 'k', 'l',
-        '4', '5',
-        'r', 't', 'g', 'v', 'z',
-        'w', 'a', 's', 'd', '[', ']', 'h', '?', 'p', '.', 'escape', 'f'
+        'x', 'y', 'z', ',', 'm',
+        '4', '5', '0',
+        'r', 't', 'g', 'v',
+        'w', 'a', 's', 'd', '[', ']', 'h', '?', '.', 'escape', 'f'
     ]);
 
     if (!supportedShortcuts.has(normalizedKey)) {
+        return;
+    }
+
+    // The tutorial's Key help mode, like VoiceOver's VO-K or NVDA's input help:
+    // the key is described and does nothing else, so it is not reported as
+    // having acted either. Before the guards below (#245 review): a letter is
+    // described even with single-key shortcuts off, saying it does nothing now,
+    // and a held key is described once rather than on every repeat.
+    if (window.cadTutorial && window.cadTutorial.keyHelpActive) {
+        e.preventDefault();
+        if (e.repeat) return;
+        if (typeof window.cadTutorial.describeKey === 'function') {
+            window.cadTutorial.describeKey(normalizedKey, {
+                inactive: !viewerState.singleKeyShortcuts && normalizedKey.length === 1,
+            });
+        }
+        return;
+    }
+
+    // WCAG 2.1.4: single-character shortcuts can be switched off in Settings,
+    // for anyone whose screen reader or speech input sends letters the viewer
+    // would otherwise act on. The named keys (arrows, Page Up/Down, Home/End,
+    // Escape) are not character keys and keep working.
+    if (!viewerState.singleKeyShortcuts && normalizedKey.length === 1) {
         return;
     }
 
@@ -3123,7 +4317,7 @@ document.addEventListener('keydown', function(e) {
     const repeatableShortcuts = new Set([
         'pageup', 'pagedown',
         'arrowup', 'arrowdown', '2', '3',
-        '4', '5', 'n', 'm'
+        '4', '5', 'n'
     ]);
     // R is not a continuous control, but a fast burst of real presses can reach
     // this handler flagged as repeat, and dropping those is the bug that leaves
@@ -3148,49 +4342,64 @@ document.addEventListener('keydown', function(e) {
         raw_key: rawKey,
         code,
         repeat: Boolean(e.repeat),
+        // Shift is a coarser step for zoom and pan; the axis letters ignore it.
+        shift: Boolean(e.shiftKey),
         active_element_id: document.activeElement?.id || null,
     });
 
+    // A key that belongs to the other axis mode says so and does nothing else.
+    const keyMode = axisModeForKey(normalizedKey);
+    if (keyMode && keyMode !== viewerState.axisMode) {
+        e.preventDefault();
+        announceWrongModeKey(normalizedKey, keyMode);
+        return;
+    }
+
     switch(normalizedKey) {
-        case 'arrowup':
-            // Go deeper (increase depth by 1%)
+        case 'x':
+        case 'y':
+        case 'z':
+            // The same letter again gives the other side, so there is no
+            // modifier to hold and Caps Lock cannot matter. The letter is read
+            // from e.key, so a QWERTZ keyboard's swapped Y and Z still name the
+            // axis on the keycap.
             e.preventDefault();
-            {
-                const previousDepth = viewerState.currentSliceDepth;
-                const nextDepth = Math.min(100, viewerState.currentSliceDepth + 1);
-                updateSliceDepth(nextDepth, false);
-                announceDepthValue(nextDepth, previousDepth);
-            }
+            selectAxis(normalizedKey);
+            break;
+
+        case ',':
+            e.preventDefault();
+            announceOrigin();
+            break;
+
+        case 'm':
+            e.preventDefault();
+            toggleOriginMarker();
+            break;
+
+        // The depth keys, the same in both modes (#235 review): Up and Page Up go
+        // deeper, away from the reader; Home is the surface nearest them, End the
+        // far side.
+        case 'home':
+        case 'end':
+            e.preventDefault();
+            goToSliceEnd(normalizedKey === 'end');
+            break;
+        case 'arrowup':
+            e.preventDefault();
+            stepSliceDepth(1);
             break;
         case 'arrowdown':
-            // Go shallower (decrease depth by 1%)
             e.preventDefault();
-            {
-                const previousDepth = viewerState.currentSliceDepth;
-                const nextDepth = Math.max(0, viewerState.currentSliceDepth - 1);
-                updateSliceDepth(nextDepth, false);
-                announceDepthValue(nextDepth, previousDepth);
-            }
+            stepSliceDepth(-1);
             break;
         case 'pageup':
-            // Go deeper (increase depth by 10%)
             e.preventDefault();
-            {
-                const previousDeeperDepth = viewerState.currentSliceDepth;
-                const newDeeperDepth = Math.min(100, viewerState.currentSliceDepth + 10);
-                updateSliceDepth(newDeeperDepth, false);
-                announceDepthValue(newDeeperDepth, previousDeeperDepth);
-            }
+            stepSliceDepth(10);
             break;
         case 'pagedown':
-            // Go shallower (decrease depth by 10%)
             e.preventDefault();
-            {
-                const previousShallowerDepth = viewerState.currentSliceDepth;
-                const newShallowerDepth = Math.max(0, viewerState.currentSliceDepth - 10);
-                updateSliceDepth(newShallowerDepth, false);
-                announceDepthValue(newShallowerDepth, previousShallowerDepth);
-            }
+            stepSliceDepth(-10);
             break;
 
         case '2':
@@ -3269,9 +4478,10 @@ document.addEventListener('keydown', function(e) {
             break;
 
         case '.':
-            // Read the full top-of-page status bar.
+            // Where am I: which way the model faces and where the slice is, then
+            // the rest of the status bar.
             e.preventDefault();
-            announceAlert(getStatusBarAnnouncement());
+            announceWhereAmI();
             break;
 
         case 'g':
@@ -3282,7 +4492,7 @@ document.addEventListener('keydown', function(e) {
             }
             captureSliceGraphAnchor(true);
             sendStateToServer();
-            announceAlert(`view ${viewerState.sliceGraphAnchorView}, depth ${viewerState.sliceGraphAnchorDepth}%`);
+            announceAlert(`${viewName(viewerState.sliceGraphAnchorView)} view, depth ${viewerState.sliceGraphAnchorDepth}%`);
             break;
 
         case 'v':
@@ -3369,12 +4579,10 @@ document.addEventListener('keydown', function(e) {
             openShortcutsDialog();
             break;
 
-        case 'p':
-            announceAlert('Printing current render');
-            print_view();
-            break;
-
-        case 'z':
+        case '0':
+            // Reset, for everyone, in both modes. It was Z, which cannot mean
+            // "reset" in one mode and "slice along Z" in the other; 0 is what
+            // resets zoom in a browser (Ctrl+0).
             e.preventDefault();
             // Drop the remembered per-view centre so this request omits
             // camera_center entirely. Without this, the stale remembered centre still went out on
@@ -3497,12 +4705,17 @@ async function refreshDemoIndicator({ spoken }) {
 }
 
 function focusTopOfPage() {
-    const pageTitle = document.getElementById('page-title');
-    if (!pageTitle) {
-        return;
-    }
     // Delay one frame so layout is ready before moving focus.
     requestAnimationFrame(() => {
+        // While the tutorial is showing, the top of the page for this person is
+        // its current lesson, not the page title above the menu. Looked up in the
+        // frame rather than before it, so a tutorial that opened in between keeps
+        // the focus it gave its own heading.
+        const tutorialHeading = document.querySelector('#tutorial-region:not([hidden]) h2');
+        const pageTitle = tutorialHeading || document.getElementById('page-title');
+        if (!pageTitle) {
+            return;
+        }
         pageTitle.focus({ preventScroll: true });
         // Scrolling the title to the top pushed the demo indicator off screen,
         // which defeats the point of an indicator you are supposed to be able to
@@ -3569,6 +4782,8 @@ document.addEventListener('DOMContentLoaded', async function() {
     initializeDebugPipelineVisibility();
     initializeOptionalSectionVisibility();
     initializeSliceGraphMode();
+    initializeAxisSettings();
+    initializeOutputDevice();
     updateGenericDeviceConnectUI();
 
     // Pre-select a model when opened via /workshop?model=<stem> or ?model=<stem>.
@@ -3589,14 +4804,24 @@ document.addEventListener('DOMContentLoaded', async function() {
     if (studyMode) return;
 
     // Send initial state to server
+    // The page is set up. The tutorial waits for this before it applies a
+    // lesson's view, since everything above would otherwise overwrite it.
+    document.dispatchEvent(new CustomEvent('cad:viewer-ready'));
+    // When the tutorial is about to start, its practice mug is the first render,
+    // so the default model never reaches the display first. The tutorial always
+    // hands this back, rendering itself if it decides not to start.
+    if (window.cadTutorial && window.cadTutorial.ownsFirstRender) return;
     pendingInputSource = 'init';
     sendStateToServer();
 
 });
 
-// Ensure top focus is restored when returning via browser history cache.
-window.addEventListener('pageshow', function() {
-    focusTopOfPage();
+// Ensure top focus is restored when returning via browser history cache. Only
+// then: pageshow also fires on an ordinary load, after DOMContentLoaded, and
+// moving focus again there took it off whatever the page had since focused,
+// such as the tutorial's first lesson.
+window.addEventListener('pageshow', function(event) {
+    if (event.persisted) focusTopOfPage();
 });
 
 // Tell the server to delete this tab's uploads when the tab goes away.

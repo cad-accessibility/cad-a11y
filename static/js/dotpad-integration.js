@@ -288,6 +288,24 @@ function disconnectDotpad() {
 window.connectDotpad = connectDotpad;
 window.disconnectDotpad = disconnectDotpad;
 
+// The tutorial's name for a key (static/js/tutorial.js), in the same order onKey
+// below reads them: a whole x, y or z chord before the single dots it contains.
+const DOTPAD_TUTORIAL_LETTERS = { x: 'axis-x', y: 'axis-y', z: 'axis-z', v: 'cursor' };
+const DOTPAD_TUTORIAL_DOTS = { 1: 'dot1', 8: 'dot4' };
+const DOTPAD_TUTORIAL_KEYS = {
+    KeyFunction1: 'move-up',
+    KeyFunction4: 'move-down',
+    PanningLeft: 'move-left',
+    PanningRight: 'move-right',
+};
+
+function dotpadTutorialName(currKeyCode, byte6, letter) {
+    return DOTPAD_TUTORIAL_LETTERS[letter]
+        || DOTPAD_TUTORIAL_DOTS[byte6]
+        || DOTPAD_TUTORIAL_KEYS[currKeyCode]
+        || 'other';
+}
+
 // --- SDK callbacks ---
 function onMessage(device, dataCode, msg) {
     if (dataCode === DataCodes.Disconnected) {
@@ -310,17 +328,34 @@ function onKey(device, currKeyCode, keyMsg) {
     const label = keyMsg || currKeyCode;
     const byte6 = labelToByte6(label);
     const letter = byte6ToLetter(byte6);
+    // First, before the key does anything: the tutorial may take it as an
+    // answer (dot 1 left, dot 4 right, during the test pattern) or, in Key help
+    // mode, describe it instead of acting on it.
+    if (window.cadTutorial?.captureDeviceKey?.({
+        device: 'dotpad',
+        name: dotpadTutorialName(currKeyCode, byte6, letter),
+    })) return;
     const cursorState = window.whichCursor ? window.whichCursor() : 'none';
     const n = 10; // TODO: make this global and dynamic
-    if (
-        typeof window.getCurrentSliceDepth !== 'function' ||
-        typeof window.updateSliceDepth !== 'function' ||
-        typeof window.announceDepthValue !== 'function'
-    ) {
+    if (typeof window.stepSliceDepth !== 'function') {
         console.warn('DotPad depth controls are unavailable because viewer depth helpers are not exposed.');
         return;
     }
 
+    // X, Y and Z spelled as braille chords pick the axis in XYZ mode (#185):
+    // dots 1346, 13456 and 1356, the letters themselves, from the home view, and
+    // the chord for the axis already showing flips it to the other side, as the
+    // same letter pressed again does on the keyboard. Each chord contains shorter ones that mean
+    // something else (dot 1 alone is shallower), so this relies on the SDK
+    // reporting a chord once it is complete, as the "v" chord below already
+    // does. If a sub-chord is seen firing first, decode on key release instead
+    // (SDK 3.0.1+ reports key up with the raw key state).
+    if (letter === 'x' || letter === 'y' || letter === 'z') {
+        if (typeof window.axisCommandFromDevice === 'function') {
+            window.axisCommandFromDevice(letter, 'dotpad');
+        }
+        return;
+    }
     if (letter === 'v'){
         if (typeof window.cycleCursorState === 'function') {
             window.cycleCursorState();
@@ -329,20 +364,16 @@ function onKey(device, currKeyCode, keyMsg) {
         }
         return;
     }
+    // Dots 1 and 4 step the depth like Arrow Down and Arrow Up, through the same
+    // function, so deeper is away from the reader in both modes (#235 review).
     if (byte6 === 0x01){
-        // Go shallower (decrease depth by 100/N)
-        const previousDepth = window.getCurrentSliceDepth();
-        const nextDepth = Math.max(0, previousDepth - 100/n); // TODO: calculate integer value
-        window.updateSliceDepth(nextDepth, false);
-        window.announceDepthValue(nextDepth, previousDepth);
+        // Go shallower by 100/N
+        window.stepSliceDepth(-100/n);
         return;
     }
     if (byte6 === 0x08){
-        // Go deeper (increase depth by 100/N)
-        const previousDepth = window.getCurrentSliceDepth();
-        const nextDepth = Math.min(100, previousDepth + 100/n); // TODO: calculate integer value
-        window.updateSliceDepth(nextDepth, false);
-        window.announceDepthValue(nextDepth, previousDepth);
+        // Go deeper by 100/N
+        window.stepSliceDepth(100/n);
         return;
     }
     if (typeof window.moveCursor != 'function') return;
@@ -478,7 +509,9 @@ async function sendHexToDotPad(renderParams) {
     try {
         const resp = await fetch(`${SERVER_URL}/render/dotpad-hex`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            // viewer.js's, so the server lets this tab render its own upload.
+            headers: window.uploadSessionHeaders?.({ 'Content-Type': 'application/json' })
+                ?? { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ...renderParams, dotpad_cols: dotpadCols, dotpad_rows: dotpadRows }),
             mode: 'cors',
         });
@@ -496,6 +529,15 @@ async function sendHexToDotPad(renderParams) {
 // Hook into the main render cycle
 window._dotpadOnRender = sendHexToDotPad;
 
+// Put a ready-made graphic on the pins, for the tutorial's test pattern, which
+// the server has already drawn at this display's size. Returns whether it was
+// sent: false with no DotPad connected.
+window._dotpadShowHex = function (graphicHex) {
+    if (!connectedDevice || !graphicHex) return false;
+    sdk.displayGraphicData(String(graphicHex), connectedDevice, DisplayMode.GraphicMode);
+    return true;
+};
+
 
 // --- Send announcements to DotPad ---
 
@@ -510,11 +552,20 @@ function encodeAnnouncementForDotPad(message, cellCount) {
     return hex;
 }
 
-function sendAnnouncementToDotPad({message}) {
+// The lines behind the one on the text line now, most important first. The
+// viewer writes a braille form for announcements that need one ("Z 31%" for
+// "Z cut at 31 percent"), sometimes over more than one 20-cell line; only
+// the first fits. Kept so a text-scroll control (PR #166) can page through the
+// rest, as #154 asks.
+window._dotpadBrailleLines = [];
+
+function sendAnnouncementToDotPad({message, braille}) {
     if (!connectedDevice) return;
 
     const cellCount = connectedDevice.numberBrailleCellColumns || 20;
-    const textHex = encodeAnnouncementForDotPad(message, cellCount);
+    const lines = Array.isArray(braille) && braille.length ? braille : [message];
+    window._dotpadBrailleLines = lines.slice();
+    const textHex = encodeAnnouncementForDotPad(String(lines[0]), cellCount);
     sdk.displayTextData(textHex, connectedDevice, DisplayMode.TextMode);
 }
 
