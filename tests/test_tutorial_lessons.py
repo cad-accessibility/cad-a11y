@@ -119,9 +119,10 @@ CAPTURE_NAMES = {
 TUTORIAL_KEY_NAMES = {"tutorial_continue", "tutorial_back", "tutorial_repeat", "tutorial_show_me"}
 
 # Words that assume sight. "Seen from" is allowed: it is the viewer's own phrase
-# for which side a view is from, and a lesson has to quote what people hear. The
-# same goes for "Visual previews", the name of the page's region that holds
-# Export, which a screen reader reads out among the landmarks.
+# for which side a view is from, and a lesson has to quote what people hear.
+# PAGE_NAMES holds the names of page parts a lesson may quote although they
+# contain one of these words; there are none since the "Visual previews"
+# landmark went (Josh's alpha review).
 VISUAL_WORDS = re.compile(
     r"\b(see|sees|seeing|saw|look|looks|looked|looking|click|clicks|clicked|clicking|watch|"
     r"watches|watching|glance|glances|visible|visibly|visibility|invisible|visual|visually|"
@@ -129,7 +130,7 @@ VISUAL_WORDS = re.compile(
     re.IGNORECASE,
 )
 SEEN_NOT_FROM = re.compile(r"\bseen\b(?!\s+from)", re.IGNORECASE)
-PAGE_NAMES = ("Visual previews",)
+PAGE_NAMES: tuple[str, ...] = ()
 DASHES = ("\u2014", "\u2013", " -- ")
 
 KEY_PLACEHOLDER = re.compile(r"\{key:([a-z0-9_]+)\}")
@@ -639,9 +640,10 @@ def test_single_character_key_checks_offer_skip_when_shortcuts_are_off():
         )
         if needs_key:
             assert step["key_only"], f"{lesson['id']}.{step['id']} needs a single key"
-    # Panning has no button, only W, A, S and D.
+    # Panning is something to try, not a task to finish (Josh's alpha review), so
+    # its step waits for Next and needs no key to pass.
     centre = next(s for s in _lesson("zoom_and_move")["steps"] if s["id"] == "centre_handle")
-    assert centre["key_only"]
+    assert centre["check"]["type"] == "manual" and not centre["key_only"]
 
 
 def test_ui_checks_name_real_dialogs():
@@ -832,12 +834,17 @@ def test_keys_are_named_only_through_placeholders():
     # of the viewer and stay as they are.
     pressed = re.compile(r"\bpress (?:[A-Z0-9]\b(?![+-])|Period\b|Comma\b|Home\b|End\b|Escape\b|Space\b)",
                          re.IGNORECASE)
+    # A step only DotPad users get may name the DotPad's dots: the one that
+    # introduces its buttons has to (Josh's alpha review).
+    dotpad_only = tuple(f"{lesson['id']}.{step['id']}." for lesson, step in _steps()
+                        if step["when"] == {"stored": "display", "equals": "dotpad"})
     for where, text in _all_user_strings():
         if where.startswith("KEYS.") or where.endswith("braille"):
             continue
         for inside in ANY_BRACES.findall(text):
             assert inside.startswith("key:") or inside in tl.RUNTIME_TOKENS, f"{where}: {{{inside}}}"
-        assert not spelled.search(text), f"{where} spells a key out: {text!r}"
+        if not where.startswith(dotpad_only):
+            assert not spelled.search(text), f"{where} spells a key out: {text!r}"
         assert not pressed.search(text), f"{where} spells a key out: {text!r}"
 
 
@@ -1055,14 +1062,12 @@ def test_lesson_8_answers_follow_from_the_mug():
     landmarks = _landmarks()
     handle = landmarks["handle_direction"]
     steps = {step["id"]: step for step in _lesson("axes")["steps"]}
-    # The handle lies across Y and Z, so a slice along X shows its whole curve.
-    assert handle[0] == 0 and steps["which_axis_loop"]["check"]["correct"] == "x"
-    assert steps["handle_sign"]["check"]["correct"] == ("negative" if handle[1] < 0 else "positive")
-    # "Viewing from X plus, the viewer said Y right, and the handle was on the
-    # left."
-    right = _view_bases()[_home_views()["x"]]["right"]
-    assert right == [0, 1, 0] and sum(h * r for h, r in zip(handle, right)) < 0
-    assert "X plus, the viewer said Y right, and the handle was on the left" in steps["handle_sign"]["hints"][1]
+    # Its two questions became statements (Josh's alpha review): the handle lies
+    # across Y and Z, so a slice along X shows its whole curve, and it points
+    # toward negative Y.
+    assert "which_axis_loop" not in steps and "handle_sign" not in steps
+    assert handle[0] == 0 and "Sliced along X, you feel the handle's whole curve" in steps["cut_x_handle"]["done"]
+    assert handle[1] < 0 and "It points toward negative Y" in steps["cut_y_arms"]["done"]
     # "The mug base is centered on the origin in X and Y": the body reaches as
     # far each way along X, and as far along plus Y, and its base is at Z 0.
     box = landmarks["bbox_mm"]
@@ -1096,11 +1101,17 @@ def test_every_placeholder_resolves(display):
 
 def test_display_buttons_are_named_only_for_that_display():
     assert tl.key_name("depth_deeper_10", "none") == "Page Up"
-    assert tl.key_name("depth_deeper_10", "monarch") == "dot 4 or Page Up"
-    assert tl.key_name("depth_deeper_10", "dotpad") == "dot 4 or Page Up"
-    assert tl.key_name("depth_deeper_1", "dotpad") == "Arrow Up"
-    assert tl.key_name("cursor_mode", "monarch") == "Space"
-    assert tl.key_name("cursor_mode", "dotpad") == "dots 1 2 3 6"
+    # With a display, each half says where it is, so a digit is never taken for a
+    # dot (Josh's alpha review).
+    assert tl.key_name("depth_deeper_10", "monarch") == "dot 4 on the Monarch or Page Up on the computer keyboard"
+    assert tl.key_name("depth_deeper_10", "dotpad") == "dot 4 on the DotPad or Page Up on the computer keyboard"
+    assert tl.key_name("depth_deeper_1", "dotpad") == "Arrow Up on the computer keyboard"
+    assert tl.key_name("reset", "dotpad") == "0 on the computer keyboard"
+    assert tl.key_name("reset", "none") == "0"
+    assert tl.key_name("cursor_mode", "monarch") == "Space on the Monarch"
+    assert tl.key_name("cursor_mode", "dotpad") == "dots 1 2 3 6 on the DotPad"
+    # The tutorial's own keys stay short: lesson 1 says where they are.
+    assert tl.key_name("tutorial_continue", "dotpad") == "N"
     assert tl.key_name("cursor_mode", "none") == "Space on the Monarch, dots 1 2 3 6 on the DotPad"
     assert tl.key_name("pattern_left", "none") == "dot 1"
     with pytest.raises(ValueError):
@@ -1113,10 +1124,11 @@ def test_payload_resolves_the_same_step_differently_per_display():
         depth = next(l for l in tl.lessons_payload(display)["lessons"] if l["id"] == "depth")
         texts[display] = next(s for s in depth["steps"] if s["id"] == "to_the_far_side")["text"]
     assert "Press Page Up to move it" in texts["none"]
-    assert "Press dot 4 or Page Up to move it" in texts["monarch"]
+    assert "Press dot 4 on the Monarch or Page Up on the computer keyboard to move it" in texts["monarch"]
     assert texts["none"] != texts["monarch"]
     pattern = next(l for l in tl.lessons_payload("dotpad")["lessons"] if l["id"] == "test_pattern")
-    assert "If it is on the left half, press dot 1;" in pattern["steps"][0]["text"]
+    feel = next(s for s in pattern["steps"] if s["id"] == "feel")
+    assert "If it is on the left half, press dot 1 on the DotPad;" in feel["text"]
 
 
 def test_payload_leaves_runtime_tokens_and_data_alone():
@@ -1405,6 +1417,8 @@ CONTROLS_NOT_TAUGHT = {
     "nav-settings-btn",
     "settings-dialog",
     "session-consent-dialog",
+    # A notice in a browser that can't connect, not a control to learn.
+    "browser-support-dialog",
     "settings-axis-letters",
     "output-device-dotpad",
     "output-device-monarch",

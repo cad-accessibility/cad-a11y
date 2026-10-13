@@ -422,6 +422,11 @@ def _framing(engine: Any, params: dict[str, Any], grid: tuple[int, int] | None) 
     )
 
     screen_w, screen_h = grid if grid is not None else DEFAULT_SCREEN_SIZE
+    # With labels, render() draws the model inside their strips (Josh's alpha
+    # review), so the pins it frames are those, counted from the strips' corner.
+    strips = engine._label_strips(params, (screen_w, screen_h))
+    if strips is not None:
+        screen_w, screen_h = strips["inner"]
     zoom_level = max(0.0, min(10.0, float(params.get("zoom", 0.0))))
     mode = str(params.get("mode", "single")).lower()
 

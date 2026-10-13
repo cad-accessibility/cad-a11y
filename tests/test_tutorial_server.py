@@ -331,6 +331,12 @@ FRAMINGS = {
     "slice graph, no display": pose(
         mode="slice-graph", compose_slicegraph=True, zoom=0.2, target_pixel_width=78, target_pixel_height=40,
     ),
+    # The labels' strips leave the model a smaller area (Josh's alpha review).
+    "labels on a DotPad": pose(
+        view="y-", zoom=0.5, target_pixel_width=60, target_pixel_height=40,
+        show_axis_letters=True, show_view_info_box=True,
+    ),
+    "view label alone, from below": pose(view="z-", zoom=0.3, show_view_info_box=True),
 }
 
 

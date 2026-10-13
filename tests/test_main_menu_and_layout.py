@@ -374,18 +374,48 @@ def test_the_browser_is_judged_by_the_apis_that_connect_a_display():
     """Web HID for the Monarch and Web Bluetooth for the DotPad, rather than the
     browser's name, so a Chromium browser that has them is not told to switch."""
     js = VIEWER_JS.read_text(encoding="utf-8")
-    body = re.search(r"function noteWhenThisBrowserCannotConnect\(\) \{.*?\n\}", js, re.DOTALL)
-    assert body, "noteWhenThisBrowserCannotConnect not found"
-    assert "'hid' in navigator" in body.group(0)
-    assert "'bluetooth' in navigator" in body.group(0)
-    assert "userAgent" not in body.group(0)
+    problem = re.search(r"function browserConnectProblem\(\) \{.*?\n\}", js, re.DOTALL)
+    assert problem, "browserConnectProblem not found"
+    assert "'hid' in navigator" in problem.group(0)
+    assert "'bluetooth' in navigator" in problem.group(0)
+    assert "userAgent" not in problem.group(0)
     # Over plain http neither API exists in any browser, so the address is
     # checked first and the note says what to do about it (#244 review).
-    secure = body.group(0).index("if (!window.isSecureContext) {")
-    assert secure < body.group(0).index("'hid' in navigator")
-    assert "Open it over https, or at localhost on this computer." in body.group(0)
+    secure = problem.group(0).index("if (!window.isSecureContext) {")
+    assert secure < problem.group(0).index("'hid' in navigator")
+    assert "Open it over https, or at localhost on this computer." in problem.group(0)
+    body = re.search(r"function noteWhenThisBrowserCannotConnect\(\) \{.*?\n\}", js, re.DOTALL)
+    assert body, "noteWhenThisBrowserCannotConnect not found"
+    assert "browserConnectProblem()" in body.group(0)
     assert "aria-describedby" in body.group(0), "Connect is not described by the note"
     assert "\nnoteWhenThisBrowserCannotConnect();" in js
+
+
+def test_a_browser_that_cannot_connect_says_so_in_a_dialog():
+    """The note by Connect was easy to miss in Firefox (Josh's alpha review). A
+    dialog says the same, once per browser before the tutorial starts, and
+    whenever Connect is pressed in that browser."""
+    by_id = _by_id()
+    assert by_id["browser-support-dialog"]["tag"] == "dialog"
+    assert by_id["browser-support-heading"]["tabindex"] == "-1"
+    assert by_id["browser-support-ok-btn"]["tag"] == "button"
+    html = VIEWER_HTML.read_text(encoding="utf-8")
+    dialog = html[html.index('id="browser-support-dialog"'):]
+    assert dialog.index('aria-labelledby="browser-support-heading"') < dialog.index(">")
+    js = VIEWER_JS.read_text(encoding="utf-8")
+    once = re.search(r"window\.showBrowserNoteOnce = function \(then\) \{.*?\n\};", js, re.DOTALL)
+    assert once, "showBrowserNoteOnce not found"
+    assert "BROWSER_NOTE_SHOWN_KEY" in once.group(0) and "openBrowserNote(then);" in once.group(0)
+    assert "if (shown || !browserConnectProblem()) {" in once.group(0)
+    opener = re.search(r"function openBrowserNote\(then\) \{.*?\n\}", js, re.DOTALL)
+    assert opener, "openBrowserNote not found"
+    assert "browserSupportDialog.addEventListener('close', () => then(), { once: true });" in opener.group(0)
+    click = js[js.index("deviceConnectBtn.addEventListener('click', () => {"):]
+    assert click.index("if (openBrowserNote()) return;") < click.index("window.connectDotpad?.();")
+    # The tutorial starts on consent settling, so the dialog comes first.
+    settle = html[html.index("function settleConsent(reason, consentGiven) {"):]
+    settle = settle[:settle.index("\n        }\n")]
+    assert "window.showBrowserNoteOnce(settled);" in settle
 
 
 VIEWER_CSS = Path(__file__).resolve().parent.parent / "static" / "css" / "viewer.css"

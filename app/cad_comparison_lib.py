@@ -294,11 +294,20 @@ def _decimate_for_display(mesh):
 # Six-dot computer braille: see _draw_axis_label.
 _AXIS_LETTER_DOTS = {"x": [1, 3, 4, 6], "y": [1, 3, 4, 5, 6], "z": [1, 3, 5, 6]}
 
-# The view label's sign: dots 346 for a plus and 36 for a minus. How far the label
-# sits from the top left corner of the display, in pins, which keeps the origin
-# marker's blank patch and #266's corner marks clear of it.
+# The view label's sign: dots 346 for a plus and 36 for a minus.
 _VIEW_SIGN_DOTS = {True: [3, 4, 6], False: [3, 6]}
-_VIEW_LABEL_OFFSET = 3
+
+# Label strips (Josh's alpha review). The labels used to be drawn over the
+# model, which hid what was under them and could give a wrong idea of its shape.
+# Whenever the edge letters or the view label are drawn, render() now keeps a
+# strip along each edge a label sits on and draws the model in what is left, so
+# nothing of the model is ever under a label and each label is hard against its
+# edge. A letter is one cell of computer braille, dots 1 to 6: two pins wide and
+# three tall. Its strip adds a blank column or row between it and the model.
+_STRIP_SIDE = 3        # a letter and a blank column
+_STRIP_EDGE = 4        # a letter and a blank row
+_STRIP_VIEW_AXES = 7   # the view label with its axis marks, 7x6, and a blank row
+_STRIP_MIN_MODEL = 8   # with fewer pins left for the model, no labels are drawn
 
 
 class CADComparisonRenderer:
@@ -977,6 +986,10 @@ class CADComparisonRenderer:
         slice_aspect = slice_width / slice_height
 
         screen_size = list(screen_size) if screen_size else list(self.screen_size)
+        # Fitted into the area render() leaves the model inside any label strips.
+        strips = self._label_strips(params, screen_size)
+        if strips is not None:
+            screen_size = list(strips["inner"])
         render_screen_size = [screen_size[0], screen_size[1]]
         if bool(params.get("compose_scrollbar", False)):
             render_screen_size = [
@@ -1149,55 +1162,51 @@ class CADComparisonRenderer:
     def _overlay_view_info_box(self, img_array, right_axis, up_axis, toward_reader,
                                drawable_size, show_axes=True):
         """The view info box, now the view label (#267): the axis you are looking down
-        and the side you look from, as a braille letter and sign. In Turn mode, and
-        in XYZ mode with the edge letters off, it also says which way the display's
-        two axes run. XYZ mode's edge letters say that already, so with them drawn
-        (show_axes False) the label is just the letter and sign.
+        and the side you look from, as a braille letter and sign, in the top left
+        corner of the frame, inside the top strip that _label_strips keeps for it.
+        With the edge letters drawn (show_axes False), which say which way the
+        display's axes run, it is just the letter and sign, hard against the
+        corner (Josh's alpha review).
 
-        The label is a 6x5 box (a lowercase letter, a gap, a plus or minus sign,
-        and a blank pin around them). With show_axes there is one extra column and
-        one extra row outside it, 7x6 in all. The column goes on the side the
-        display's horizontal axis increases toward and holds one, two or three pins
-        for X, Y or Z; the row goes on the side the vertical axis increases toward
-        and says the same of that axis. Both start next to the corner they share,
-        which stays blank.
-
-        A one-pin blank border goes all round the footprint, so nothing of the
-        label touches the model: drawn straight onto a filled model, the letter's
-        left dots and the extra row ran into the fill.
-
-        It sits at a fixed offset from the top left corner, which leaves room for
-        the origin direction marker when the origin lands in that corner."""
+        Without them it also says which way the axes run: a 6x5 box (the letter, a
+        gap, the sign, and a blank pin round them) with one extra column and one
+        extra row outside it, 7x6 in all, from the corner. The column goes on the
+        side the display's horizontal axis increases toward and holds one, two or
+        three pins for X, Y or Z; the row goes on the side the vertical axis
+        increases toward and says the same of that axis. Both start next to the
+        corner they share, which stays blank."""
         w, h = int(drawable_size[0]), int(drawable_size[1])
-        offset = _VIEW_LABEL_OFFSET
-        label_w, label_h = (7, 6) if show_axes else (6, 5)
-        if w < offset + label_w + 1 or h < offset + label_h + 1:
-            return
 
         def signed(vec):
             index = int(np.argmax(np.abs(vec)))
             return index, float(np.sign(vec[index]))
 
         look_index, look_sign = signed(toward_reader)
+        if not show_axes:
+            if w >= 5 and h >= 3:
+                self._draw_braille_cell(img_array, 0, 0, _AXIS_LETTER_DOTS["xyz"[look_index]])
+                self._draw_braille_cell(img_array, 3, 0, _VIEW_SIGN_DOTS[look_sign > 0])
+            return
+        label_w, label_h = 7, 6
+        if w < label_w or h < label_h:
+            return
         across_index, across_sign = signed(right_axis)
         vertical_index, vertical_sign = signed(up_axis)
 
-        column_right = across_sign > 0 or not show_axes
-        row_above = vertical_sign > 0 or not show_axes
-        x0 = y0 = offset
-        self._clear_box(img_array, x0 - 1, y0 - 1, label_w + 2, label_h + 2)
+        column_right = across_sign > 0
+        row_above = vertical_sign > 0
+        x0 = y0 = 0
+        self._clear_box(img_array, x0, y0, label_w, label_h)
 
         # The 6x5 box sits inside the footprint, away from the extra column and
         # row; its blank pin on the column's side stays between the two.
         box_x = x0 if column_right else x0 + 1
-        box_y = y0 + 1 if row_above and show_axes else y0
+        box_y = y0 + 1 if row_above else y0
         letter_x = box_x if column_right else box_x + 1
         sign_x = letter_x + 3
         cell_y = box_y + 1
         self._draw_braille_cell(img_array, letter_x, cell_y, _AXIS_LETTER_DOTS["xyz"[look_index]])
         self._draw_braille_cell(img_array, sign_x, cell_y, _VIEW_SIGN_DOTS[look_sign > 0])
-        if not show_axes:
-            return
 
         def mark(px, py):
             if 0 <= px < w and 0 <= py < h:
@@ -1214,33 +1223,105 @@ class CADComparisonRenderer:
         for step in range(vertical_index + 1):
             mark(column_x - 1 - step if column_right else column_x + 1 + step, row_y)
 
-    def _overlay_axis_letters(self, img_array, right_axis, up_axis, drawable_size):
-        """XYZ mode's edge letters: each display axis labelled at the middle of
-        the edge it increases toward. With Top, Front and Right that is the right
-        edge and the top edge, where a reader expects X and Y on a flat board;
-        seen from the other side a letter moves to the opposite edge, so where it
-        sits shows the direction without a sign. Projecting targets onto the
-        edges helped blind users with layout (Kane et al., Access Overlays)."""
-        w, h = int(drawable_size[0]), int(drawable_size[1])
-        box_w, box_h = 4, 6  # a 2x4 label and a one-pin blank margin
-        if w < 2 * box_w + 2 or h < 2 * box_h + 2:
-            return
+    def _overlay_axis_letters(self, img_array, right_axis, up_axis, strips):
+        """The edge letters: each display axis labelled at the edge it increases
+        toward, hard against that edge in the strip _label_strips keeps for it,
+        level with the middle of the model's area. With Top, Front and Right that
+        is the right edge and the top edge, where a reader expects X and Y on a
+        flat board; seen from the other side a letter moves to the opposite edge,
+        so where it sits shows the direction without a sign. Projecting targets
+        onto the edges helped blind users with layout (Kane et al., Access
+        Overlays)."""
+        h, w = img_array.shape[0], img_array.shape[1]
+        inner_w, inner_h = strips["inner"]
 
         def signed(vec):
             index = int(np.argmax(np.abs(vec)))
             return "xyz"[index], float(np.sign(vec[index]))
 
         across, across_sign = signed(right_axis)
-        x0 = w - box_w if across_sign > 0 else 0
-        y0 = (h - box_h) // 2
-        self._clear_box(img_array, x0, y0, box_w, box_h)
-        self._draw_axis_label(img_array, across, x0 + 1, y0 + 1)
+        x = w - 2 if across_sign > 0 else 0
+        y = strips["top"] + max(0, (inner_h - 3) // 2)
+        self._draw_axis_label(img_array, across, x, y)
 
         vertical, vertical_sign = signed(up_axis)
-        x0 = (w - box_w) // 2
-        y0 = 0 if vertical_sign > 0 else h - box_h
-        self._clear_box(img_array, x0, y0, box_w, box_h)
-        self._draw_axis_label(img_array, vertical, x0 + 1, y0 + 1)
+        x = strips["left"] + max(0, (inner_w - 2) // 2)
+        y = 0 if vertical_sign > 0 else h - 3
+        self._draw_axis_label(img_array, vertical, x, y)
+
+    def _label_strips(self, params, screen_size):
+        """The strips a render keeps for its labels (Josh's alpha review), in pins
+        along each edge, with the area left for the model and the view's axes; or
+        None when it draws no label. render(), compute_fit_view() and the
+        tutorial's framing (app/tutorial.py) all size the model by this, so they
+        agree on where it is.
+
+        A side strip for the letter of the axis that increases toward that side,
+        a top or bottom strip for the up letter, and the top strip whenever the
+        view label is drawn, in its top left corner. Side by side draws no labels,
+        and nor does a frame too small to leave the model room."""
+        if str(params.get("mode", "single")).lower() == "side-by-side":
+            return None
+        letters = bool(params.get("show_axis_letters", False))
+        label = bool(params.get("show_view_info_box", False))
+        if not (letters or label):
+            return None
+        w, h = int(screen_size[0]), int(screen_size[1])
+        view_name = self._map_view_name(params.get("view", "Top"))
+        right_axis, up_axis, toward_reader = _get_view_basis(
+            view_name, orientation_basis=params.get("orientation"))
+        across_right = float(right_axis[int(np.argmax(np.abs(right_axis)))]) > 0
+        up_top = float(up_axis[int(np.argmax(np.abs(up_axis)))]) > 0
+        strips = {"left": 0, "top": 0, "right": 0, "bottom": 0}
+        if letters:
+            strips["right" if across_right else "left"] = _STRIP_SIDE
+            strips["top" if up_top else "bottom"] = _STRIP_EDGE
+        if label:
+            strips["top"] = max(strips["top"], _STRIP_EDGE if letters else _STRIP_VIEW_AXES)
+        inner = [w - strips["left"] - strips["right"], h - strips["top"] - strips["bottom"]]
+        if min(inner) < _STRIP_MIN_MODEL:
+            return None
+        return {**strips, "inner": inner, "letters": letters, "label": label,
+                "axes": (right_axis, up_axis, toward_reader)}
+
+    def _render_in_label_strips(self, params, screen_size, strips):
+        """render() with the labels in strips of their own: the model, with its
+        scrollbars, slice graph, cursor and origin marker, is rendered into the
+        area inside the strips and set into the full frame, and the labels are
+        drawn in the strips. Where the origin lands is given back as a fraction of
+        the whole display, which is what "," reads out."""
+        w, h = int(screen_size[0]), int(screen_size[1])
+        inner_w, inner_h = strips["inner"]
+        inner = self.render({**params, "show_axis_letters": False, "show_view_info_box": False},
+                            screen_size=[inner_w, inner_h])
+        image = inner.image
+        full = np.full((h, w) + image.shape[2:], 255, dtype=image.dtype)
+        left, top = strips["left"], strips["top"]
+        rows, cols = min(image.shape[0], h - top), min(image.shape[1], w - left)
+        full[top:top + rows, left:left + cols] = image[:rows, :cols]
+        right_axis, up_axis, toward_reader = strips["axes"]
+        if strips["letters"]:
+            self._overlay_axis_letters(full, right_axis, up_axis, strips)
+        if strips["label"]:
+            self._overlay_view_info_box(full, right_axis, up_axis, toward_reader, (w, h),
+                                        show_axes=not strips["letters"])
+        origin = inner.origin_display
+        if origin is not None:
+            origin = ((left + float(origin[0]) * inner_w) / w,
+                      (strips["bottom"] + float(origin[1]) * inner_h) / h)
+        return RenderResult(
+            full,
+            camera_center=inner.camera_center,
+            framing_bounds=inner.framing_bounds,
+            view_axis=inner.view_axis,
+            cut_depth=inner.cut_depth,
+            render_mode=inner.render_mode,
+            zoom_level=inner.zoom_level,
+            screen_size=[w, h],
+            object_out_of_frame=inner.object_out_of_frame,
+            pan_guidance_directions=inner.pan_guidance_directions,
+            origin_display=origin,
+        )
 
     def origin_display_fraction(self, right_axis, up_axis, limits):
         """Where the model's origin lands on the display, as (across, up): the
@@ -1353,6 +1434,13 @@ class CADComparisonRenderer:
             result = renderer.render(params)
             img_array = result.image
         """
+        # The labels have strips of their own (Josh's alpha review): with them,
+        # the model is rendered into the area left and set into the full frame.
+        strips = self._label_strips(params, list(screen_size) if screen_size else list(self.screen_size))
+        if strips is not None:
+            return self._render_in_label_strips(
+                params, list(screen_size) if screen_size else list(self.screen_size), strips)
+
         # Extract and map parameters
         view_name = self._map_view_name(params.get("view", "Top"))
         depth_percent = params.get("depth", 0)
@@ -1821,41 +1909,23 @@ class CADComparisonRenderer:
         if comparison_mode == "side-by-side":
             self._overlay_side_by_side_view_labels(img_array, view_legend, view_cut)
 
-        # XYZ mode's marks (#185): where the model's origin is, and which way the
-        # display's two axes run. The viewer asks for them only in XYZ mode. In
-        # the single view only, and not over a slice graph, which owns the bottom
-        # rows; side by side has two frames and neither mark would say which.
-        # Where the origin lands is worked out for that view in either mode,
-        # marked or not, since "," and "." read it out (#235 review).
+        # Where the model's origin is (#185, #266): in the single view only, and
+        # not over a slice graph, which owns the bottom rows; side by side has two
+        # frames and the mark would not say which. Where the origin lands is
+        # worked out for that view marked or not, since "," and "." read it out
+        # (#235 review). The edge letters and the view label are drawn by
+        # _render_in_label_strips, in strips of their own, never here.
         show_origin_marker = bool(params.get("show_origin_marker", False))
-        show_axis_letters = bool(params.get("show_axis_letters", False))
         origin_display = None
-        right_axis, up_axis, toward_reader = _get_view_basis(
+        right_axis, up_axis, _ = _get_view_basis(
             view_name, orientation_basis=params.get("orientation"))
         marker_shown = comparison_mode == "single" and not compose_slice_graph
         if marker_shown:
             origin_display = self.origin_display_fraction(right_axis, up_axis, imposed_zoom_ax_limits)
 
-        # The edge letters, then the origin marker, then the view label (#267),
-        # each drawn over the one before: the marker over the letters, since
-        # finding the origin is what someone turned it on for, and the label over
-        # the marker, which keeps clear of it by the label's offset from the
-        # corner. The letters and label are drawn in every layout but side by
-        # side, whose two frames neither could name. With a slice graph the
-        # letters keep to the rows above it, which it owns from its divider down.
-        # The label leaves out which way the axes run where the letters say.
-        edge_letters = show_axis_letters and comparison_mode != "side-by-side"
-        if edge_letters:
-            drawable_size = list(render_screen_size)
-            if compose_slice_graph:
-                drawable_size[1] = max(0, img_array.shape[0] - graph_height_px - 1)
-            self._overlay_axis_letters(img_array, right_axis, up_axis, drawable_size)
         if marker_shown and show_origin_marker:
             self._overlay_origin_marker(img_array, right_axis, up_axis,
                                         imposed_zoom_ax_limits, render_screen_size)
-        if params.get("show_view_info_box") and comparison_mode != "side-by-side":
-            self._overlay_view_info_box(img_array, right_axis, up_axis, toward_reader,
-                                        render_screen_size, show_axes=not edge_letters)
 
         return RenderResult(
             img_array,

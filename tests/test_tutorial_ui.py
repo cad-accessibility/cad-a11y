@@ -120,7 +120,7 @@ class TestRegion:
         assert region is not None, "missing #tutorial-region"
         assert region["tag"] == "section"
         assert "hidden" in region["attrs"], "it opens only when the tutorial runs"
-        assert region["attrs"].get("aria-labelledby") == "tutorial-heading"
+        assert region["attrs"].get("aria-labelledby") == "tutorial-title"
         assert "study-region" in region["attrs"].get("class", "").split()
 
     def test_region_is_first_in_main_right_after_the_study_region(self):
@@ -134,11 +134,16 @@ class TestRegion:
         between = html[study_end + len("</section>"):html.index("<section", study_end)]
         assert "<button" not in between and "<input" not in between
 
-    def test_the_first_heading_is_the_focusable_h2(self):
+    def test_a_fixed_tutorial_h2_then_the_focusable_h3_that_says_where_you_are(self):
+        """Heading navigation finds "Tutorial", then where you are in it, the same
+        way on every step (Josh's alpha review)."""
         headings = [el for el in _parse(_region_markup()).elements if re.fullmatch(r"h[1-6]", el["tag"])]
-        first = headings[0]
-        assert first["tag"] == "h2" and first["id"] == "tutorial-heading"
-        assert first["attrs"].get("tabindex") == "-1", "focus moves here without joining the tab order"
+        title, where = headings[0], headings[1]
+        assert title["tag"] == "h2" and title["id"] == "tutorial-title"
+        assert "tabindex" not in title["attrs"]
+        assert where["tag"] == "h3" and where["id"] == "tutorial-heading"
+        assert where["attrs"].get("tabindex") == "-1", "focus moves here without joining the tab order"
+        assert '<h2 id="tutorial-title">Tutorial</h2>' in _region_markup()
 
     def test_nothing_in_the_region_is_a_live_region_a_form_or_a_dialog(self):
         """One polite announcement per change goes through the page's shared
@@ -606,10 +611,19 @@ class TestReviewRegressions:
         # region's own toggle is too.
         assert "!(cadTutorial.running && runner.view === 'lesson')" in source
 
-    def test_the_heading_and_so_the_region_says_tutorial(self):
+    def test_key_names_say_which_keyboard_as_the_server_does(self):
+        """tutorial.js names keys for the phrases it builds itself by the rule
+        app/tutorial_lessons.py key_name uses (Josh's alpha review)."""
+        name = _function(_js(), "function keyName(")
+        assert "if (where && !name.startsWith('tutorial_')) {" in name
+        assert "return `${device} on ${where} or ${key.keyboard} on the computer keyboard`;" in name
+        assert "if (key.keyboard) return `${key.keyboard} on the computer keyboard`;" in name
+        assert "const DISPLAY_NAMES = { monarch: 'the Monarch', dotpad: 'the DotPad' };" in _js()
+
+    def test_the_sub_heading_starts_with_the_lesson(self):
         heading = _function(_js(), "function headingText(")
-        assert ("const where = `lesson ${runner.lessonIndex + 1} of ${lessons().length}: "
-                "${lesson.title} (Tutorial)`;") in heading
+        assert ("const where = `Lesson ${runner.lessonIndex + 1} of ${lessons().length}: "
+                "${lesson.title}`;") in heading
 
     def test_the_dialogs_tutorial_buttons_are_a_labelled_group(self):
         html = VIEWER_HTML.read_text(encoding="utf-8")
@@ -780,7 +794,7 @@ class TestThirdReview:
 
     def test_the_heading_changes_with_every_step(self):
         heading = _function(_js(), "function headingText(")
-        assert "return `${stepNumberText()}, ${where}`;" in heading
+        assert "return `${where}, ${stepNumberText().toLowerCase()}`;" in heading
         assert "if (runner.phase === 'done')" in heading and "if (runner.phase === 'blocked')" in heading
 
     def test_p_is_show_me(self):

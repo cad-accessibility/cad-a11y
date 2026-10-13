@@ -603,11 +603,21 @@ const CHECKS = {
     // -----------------------------------------------------------------------
 
     /** A key's name for this display, if the server left a placeholder: the
-     * same rule app/tutorial_lessons.py resolves them by. */
+     * same rule app/tutorial_lessons.py resolves them by (key_name). With a
+     * display, each half says where it is, "dot 4 on the DotPad or Page Up on the
+     * computer keyboard" (Josh's alpha review); the tutorial's own keys stay
+     * short. */
+    const DISPLAY_NAMES = { monarch: 'the Monarch', dotpad: 'the DotPad' };
     function keyName(name) {
         const key = payload && payload.keys && payload.keys[name];
         if (!key) return name;
         const device = payloadDisplay === 'monarch' ? key.monarch : payloadDisplay === 'dotpad' ? key.dotpad : null;
+        const where = DISPLAY_NAMES[payloadDisplay];
+        if (where && !name.startsWith('tutorial_')) {
+            if (key.keyboard && device) return `${device} on ${where} or ${key.keyboard} on the computer keyboard`;
+            if (key.keyboard) return `${key.keyboard} on the computer keyboard`;
+            if (device) return `${device} on ${where}`;
+        }
         if (key.keyboard && device) return `${device} or ${key.keyboard}`;
         return key.keyboard || device || name;
     }
@@ -764,11 +774,14 @@ const CHECKS = {
     // landmark list or a first focus that said only "Lesson 4 of 15" never said
     // "tutorial". It changes with every step, since the same heading page after
     // page is not good practice (#245 review).
+    /** The sub-heading under the fixed "Tutorial" heading: the lesson first,
+     * then where in it, in the same form on every step, so heading navigation
+     * says where you are (Josh's alpha review). */
     function headingText(lesson) {
-        const where = `lesson ${runner.lessonIndex + 1} of ${lessons().length}: ${lesson.title} (Tutorial)`;
-        if (runner.phase === 'done') return `Done, ${where}`;
-        if (runner.phase === 'blocked') return `Cannot start yet, ${where}`;
-        return `${stepNumberText()}, ${where}`;
+        const where = `Lesson ${runner.lessonIndex + 1} of ${lessons().length}: ${lesson.title}`;
+        if (runner.phase === 'done') return `${where}, done`;
+        if (runner.phase === 'blocked') return `${where}, cannot start yet`;
+        return `${where}, ${stepNumberText().toLowerCase()}`;
     }
 
     function stepNumberText() {
@@ -2341,7 +2354,7 @@ const CHECKS = {
         keepingFocus(() => {
             el.lessonView.hidden = true;
             el.menuView.hidden = false;
-            heading.textContent = `Tutorial lessons: ${doneCount} of ${all.length} done`;
+            heading.textContent = `Lessons: ${doneCount} of ${all.length} done`;
 
             const index = resumeIndex();
             const canResume = index >= 0 && (route.resume || runner.runActive) && record.status !== 'completed';

@@ -159,17 +159,21 @@ def test_origin_beyond_one_edge_is_a_t_with_its_stem_at_that_edge(tmp_path_facto
     assert len(pins) == 4
 
 
-def test_the_origin_marker_is_drawn_over_the_edge_letters(tmp_path_factory):
-    """With the origin level with the middle of the right edge, the T lands where
-    the edge letter X is. The marker wins: its pins are all raised and the patch
-    around them holds nothing of the letter."""
+def test_the_origin_marker_and_the_edge_letters_never_meet(tmp_path_factory):
+    """With the origin level with the middle of the right edge, the T and the
+    letter X used to land on the same pins. The letter has a strip of its own
+    now (Josh's alpha review), so the marker is drawn whole inside the model's
+    area and the letter whole in its strip."""
     renderer = _plate_at(tmp_path_factory, -80.0, -15.0, "over_letters")
-    pins, (x0, y0, pw, ph) = _expected_marker(renderer, "right")
-    letters_only = _raised(renderer, renderMode="Outline", show_axis_letters=True)
-    assert letters_only[y0:y0 + ph, x0:x0 + pw].any(), "the letter is not under the marker here"
-    both = _raised(renderer, renderMode="Outline", show_axis_letters=True, show_origin_marker=True)
-    in_patch = {(c, r) for r in range(y0, y0 + ph) for c in range(x0, x0 + pw) if both[r, c]}
-    assert in_patch == pins
+    params = {"renderMode": "Outline", "show_axis_letters": True}
+    strips = _strips(renderer, **params)
+    both = _raised(renderer, show_origin_marker=True, **params)
+    letters_only = _raised(renderer, **params)
+    marker_only = _raised_at(renderer, strips["inner"], renderMode="Outline", show_origin_marker=True)
+    assert np.array_equal(_model_area(both, strips), marker_only)
+    outside = np.ones(both.shape, dtype=bool)
+    outside[strips["top"]:strips["top"] + strips["inner"][1], strips["left"]:strips["left"] + strips["inner"][0]] = False
+    assert np.array_equal(both[outside], letters_only[outside])
 
 
 def test_the_marker_is_not_drawn_unless_asked(far_plate):
@@ -236,8 +240,9 @@ def test_no_marks_unless_asked(plate):
 
 # --- The view label ---------------------------------------------------------------
 
-# 7 wide and 6 tall, 3 pins in from the top left corner (_VIEW_LABEL_OFFSET).
-LABEL_X, LABEL_Y, LABEL_W, LABEL_H = 3, 3, 7, 6
+# The view label, in the top left corner of the frame (Josh's alpha review). With
+# its axis marks it is 7 wide and 6 tall.
+LABEL_X, LABEL_Y, LABEL_W, LABEL_H = 0, 0, 7, 6
 PLUS, MINUS = [3, 4, 6], [3, 6]
 
 
@@ -266,6 +271,23 @@ def _cell3(dots):
     return _cell(dots)[:3]
 
 
+def _strips(renderer, **params):
+    base = {"view": "z+", "depth": 50, "renderMode": "Filled", "mode": "single", "zoom": 0}
+    base.update(params)
+    return renderer._label_strips(base, GRID)
+
+
+def _raised_at(renderer, size, **params):
+    base = {"view": "z+", "depth": 50, "renderMode": "Filled", "mode": "single", "zoom": 0}
+    base.update(params)
+    return renderer.render(base, screen_size=list(size)).image[..., 0] < 128
+
+
+def _model_area(raised, strips):
+    width, height = strips["inner"]
+    return raised[strips["top"]:strips["top"] + height, strips["left"]:strips["left"] + width]
+
+
 @pytest.mark.parametrize("token,look,sign,column_right,row_above,across,vertical", [
     ("z+", "z", PLUS, True, True, 1, 2),    # Top: from above, X right, Y up
     ("z-", "z", MINUS, True, False, 1, 2),  # Bottom: Y increases toward the bottom
@@ -291,26 +313,39 @@ def test_the_view_label_leaves_a_blank_pin_between_its_extra_column_and_the_lett
         assert not beside_column.any()
 
 
-def test_the_view_label_wins_over_the_model_and_the_origin_marker(plate):
-    """The plate's origin is at its corner, which lands near the top left or
-    bottom left, and the label is drawn last."""
-    with_label = _raised(plate, show_view_info_box=True)
-    both = _raised(plate, show_view_info_box=True, show_origin_marker=True)
-    assert np.array_equal(_footprint(with_label), _footprint(both))
+@pytest.mark.parametrize("labels", [
+    {"show_view_info_box": True},
+    {"show_axis_letters": True},
+    {"show_view_info_box": True, "show_axis_letters": True},
+    {"show_view_info_box": True, "show_axis_letters": True, "view": "z-"},
+    {"show_view_info_box": True, "show_axis_letters": True, "view": "y+", "show_origin_marker": True},
+    {"show_axis_letters": True, "compose_slicegraph": True, "compose_scrollbar": False},
+])
+def test_no_label_is_ever_drawn_over_the_model(plate, labels):
+    """The labels have strips of their own (Josh's alpha review): the model,
+    with its origin marker or slice graph, is the render of the area left inside
+    them, pin for pin, so nothing of it is ever under a label."""
+    params = {"zoom": 3, **labels}
+    strips = _strips(plate, **params)
+    assert strips is not None
+    unlabelled = {k: v for k, v in params.items() if k not in ("show_view_info_box", "show_axis_letters")}
+    assert np.array_equal(_model_area(_raised(plate, **params), strips),
+                          _raised_at(plate, strips["inner"], **unlabelled))
 
 
 @pytest.mark.parametrize("letters", [False, True])
-def test_the_view_label_has_a_blank_pin_all_round_it_over_a_filled_model(plate, letters):
-    """Zoomed in until the plate fills the corner, nothing of the label may
-    touch the model, or the letter's left dots read as part of the fill."""
-    raised = _raised(plate, zoom=3, show_view_info_box=True, show_axis_letters=letters)
-    width, height = (6, 5) if letters else (LABEL_W, LABEL_H)
-    ring = np.zeros_like(raised)
-    ring[LABEL_Y - 1:LABEL_Y + height + 1, LABEL_X - 1:LABEL_X + width + 1] = True
-    ring[LABEL_Y:LABEL_Y + height, LABEL_X:LABEL_X + width] = False
-    assert raised[LABEL_Y + 2, LABEL_X - 2], "the model does not reach the label, so this proves nothing"
-    assert not raised[ring].any()
-    assert raised[LABEL_Y:LABEL_Y + height, LABEL_X:LABEL_X + width].any()
+def test_a_blank_row_or_column_parts_each_strip_from_the_model(plate, letters):
+    """Zoomed in until the plate fills the frame, the model runs right up to the
+    strips, and the row or column next to it in each strip stays blank."""
+    params = {"zoom": 3, "show_view_info_box": True, "show_axis_letters": letters}
+    raised = _raised(plate, **params)
+    strips = _strips(plate, **params)
+    top, left = strips["top"], strips["left"]
+    width = strips["inner"][0]
+    assert raised[top, left + width // 2], "the model does not reach the strip, so this proves nothing"
+    assert not raised[top - 1, :].any()
+    if strips["right"]:
+        assert not raised[:, left + width].any()
 
 
 def test_the_view_label_is_drawn_whatever_the_origin_marker_setting(plate):
@@ -319,31 +354,17 @@ def test_the_view_label_is_drawn_whatever_the_origin_marker_setting(plate):
 
 
 @pytest.mark.parametrize("token", ["z+", "z-", "y-", "y+", "x-", "x+"])
-def test_with_the_edge_letters_the_label_is_only_the_letter_and_sign(plate, token):
-    """The edge letters say which way the axes run, so the label leaves out its
-    extra column and row, and the letter and sign sit where they do with them."""
+def test_with_the_edge_letters_the_label_is_only_the_letter_and_sign_in_the_corner(plate, token):
+    """The edge letters say which way the axes run, so the label is just the
+    letter and sign, hard against the top left corner (Josh's alpha review)."""
     look = {"z+": "z", "z-": "z", "y-": "y", "y+": "y", "x-": "x", "x+": "x"}[token]
     sign = PLUS if token in ("z+", "y+", "x-") else MINUS
     raised = _raised(plate, view=token, show_view_info_box=True, show_axis_letters=True)
-    box = raised[LABEL_Y:LABEL_Y + 5, LABEL_X:LABEL_X + 6]
-    expected = np.zeros((5, 6), dtype=bool)
-    expected[1:4, 0:2] = _cell3(LETTERS[look])
-    expected[1:4, 3:5] = _cell3(sign)
+    box = raised[0:4, 0:6]
+    expected = np.zeros((4, 6), dtype=bool)
+    expected[0:3, 0:2] = _cell3(LETTERS[look])
+    expected[0:3, 3:5] = _cell3(sign)
     assert np.array_equal(box, expected)
-    # Nothing else of the label: the pins beside and above the box are blank.
-    assert not raised[LABEL_Y - 1:LABEL_Y + 6, LABEL_X + 6:LABEL_X + 7].any()
-    assert not raised[LABEL_Y + 5:LABEL_Y + 6, LABEL_X:LABEL_X + 7].any()
-
-
-@pytest.mark.parametrize("token", ["z+", "z-"])
-def test_the_edge_letters_keep_clear_of_a_slice_graph(plate, token):
-    """They are drawn over a slice graph's layout too, but only above its divider."""
-    plain = _raised(plate, view=token, compose_slicegraph=True, compose_scrollbar=False)
-    lettered = _raised(plate, view=token, compose_slicegraph=True, compose_scrollbar=False,
-                       show_axis_letters=True)
-    graph_rows = 11  # the graph's 10 rows and its divider
-    assert not np.array_equal(plain[:-graph_rows], lettered[:-graph_rows])
-    assert np.array_equal(plain[-graph_rows:], lettered[-graph_rows:])
 
 
 def test_the_edge_letters_are_not_drawn_side_by_side(plate):
@@ -358,27 +379,43 @@ def test_the_view_label_is_not_drawn_side_by_side(plate):
     )
 
 
+def test_with_labels_the_origin_is_still_a_fraction_of_the_whole_display(plate):
+    """"," says where the origin is from the display's own edges, so with strips
+    its place in the model's area is counted from the full frame."""
+    base = {"view": "z+", "depth": 50, "renderMode": "Filled", "mode": "single", "zoom": 0}
+    labelled = {**base, "show_axis_letters": True, "show_view_info_box": True}
+    strips = plate._label_strips(labelled, GRID)
+    inner = plate.render(base, screen_size=list(strips["inner"])).origin_display
+    whole = plate.render(labelled, screen_size=list(GRID)).origin_display
+    width, height = GRID
+    assert whole[0] == pytest.approx((strips["left"] + inner[0] * strips["inner"][0]) / width)
+    assert whole[1] == pytest.approx((strips["bottom"] + inner[1] * strips["inner"][1]) / height)
+
+
 # --- The edge letters --------------------------------------------------------------
 
 
 def _label_at(raised, x, y):
     """Which axis letter, if any, is drawn with its top-left at (x, y)."""
-    letter = raised[y:y + 4, x:x + 2]
+    letter = raised[y:y + 3, x:x + 2]
     for name, dots in LETTERS.items():
-        if np.array_equal(letter, _cell(dots)):
+        if np.array_equal(letter, _cell3(dots)):
             return name
     return None
 
 
-def _edges(raised):
-    """The letter at the middle of each edge, where _overlay_axis_letters puts them."""
+def _edges(raised, strips):
+    """The letter hard against each edge, level with the middle of the model's
+    area, where _overlay_axis_letters puts them."""
     width, height = GRID
-    box_w, box_h = 4, 6
+    inner_w, inner_h = strips["inner"]
+    middle_row = strips["top"] + (inner_h - 3) // 2
+    middle_col = strips["left"] + (inner_w - 2) // 2
     return {
-        "right": _label_at(raised, width - box_w + 1, (height - box_h) // 2 + 1),
-        "left": _label_at(raised, 1, (height - box_h) // 2 + 1),
-        "top": _label_at(raised, (width - box_w) // 2 + 1, 1),
-        "bottom": _label_at(raised, (width - box_w) // 2 + 1, height - box_h + 1),
+        "right": _label_at(raised, width - 2, middle_row),
+        "left": _label_at(raised, 0, middle_row),
+        "top": _label_at(raised, middle_col, 0),
+        "bottom": _label_at(raised, middle_col, height - 3),
     }
 
 
@@ -390,8 +427,9 @@ def _edges(raised):
     ("x-", {"right": "y", "top": "z"}),     # Right
     ("x+", {"left": "y", "top": "z"}),      # Left: Y increases to the left
 ])
-def test_each_axis_letter_sits_at_the_edge_it_increases_toward(plate, token, expected):
-    found = {edge: letter for edge, letter in _edges(_raised(plate, view=token, show_axis_letters=True)).items()
+def test_each_axis_letter_sits_hard_against_the_edge_it_increases_toward(plate, token, expected):
+    raised = _raised(plate, view=token, show_axis_letters=True)
+    found = {edge: letter for edge, letter in _edges(raised, _strips(plate, view=token, show_axis_letters=True)).items()
              if letter}
     assert found == expected
 

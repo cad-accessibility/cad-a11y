@@ -106,13 +106,16 @@ side: its bar runs along the edge, and its stem indicates the
 direction to the origin. If the origin is outside two sides
 at once, a square of four pins is drawn in that corner.
 
-Axis labels on the pins, the letters at the display edges and the view info box,
-are x, y and z in computer braille.
+Axis labels on the pins, the letters at the display edges and the view label in
+the top left corner, are x, y and z in computer braille. They sit in strips of
+their own, hard against the edges, and the model is drawn in the area left, so a
+label never covers any of the model.
 
 ## The tutorial
 
 The first time someone opens `/viewer` in a browser, a tutorial starts in a region at the top of
-the page, after the consent dialog. It teaches every feature on a practice mug in 16 lessons
+the page, after the consent dialog, and in a browser that can't connect a display, after a dialog
+saying so. It teaches every feature on a practice mug in 15 lessons
 (setup, core, optional and wrap-up), using the real viewer controls. Exit tutorial is on every
 step and pauses it: the viewer is then yours, and the Tutorial button in the main menu (or the
 top of the keyboard shortcuts list) resumes at the same lesson and step, starts over, or opens

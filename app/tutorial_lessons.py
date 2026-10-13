@@ -477,7 +477,8 @@ LESSONS: list[dict[str, Any]] = [
                 "keys_reach",
                 "This tutorial teaches key commands and concepts. You can press "
                 "{key:shortcuts_question} at any time for a list of every key command. The tutorial "
-                "has four commands of its own: {key:tutorial_continue} is Next, {key:tutorial_back} "
+                "has four commands of its own, on the computer keyboard: {key:tutorial_continue} is "
+                "Next, {key:tutorial_back} "
                 "is Back, {key:tutorial_repeat} is Repeat and {key:tutorial_show_me} is Show me. "
                 "Some steps move forward by themselves when you complete them. Some wait for you to "
                 "press Next (N). They always end with the sentence 'Press Next (N) when ready'. "
@@ -485,7 +486,8 @@ LESSONS: list[dict[str, Any]] = [
                 "the next step. Key commands can conflict with a screen reader in browse mode, so "
                 "switch to focus or forms mode, then press {key:where_am_i} now. If nothing "
                 "happens, choose Keys aren't working.",
-                sr="The tutorial's own keys are {key:tutorial_continue} for Next, {key:tutorial_back} "
+                sr="The tutorial's own keys, on the computer keyboard, are {key:tutorial_continue} "
+                   "for Next, {key:tutorial_back} "
                    "for Back, {key:tutorial_repeat} for Repeat and {key:tutorial_show_me} for Show me. "
                    "Some steps move forward by themselves when you complete them. Some wait for you "
                    "to press Next (N). They always end with the sentence 'Press Next (N) when ready'. "
@@ -520,11 +522,18 @@ LESSONS: list[dict[str, Any]] = [
         steps=[
             _step(
                 "connect",
-                "Now connect your display. Turn it on, then choose Connect and Disconnect in the main "
-                "menu, which shows Connect while nothing is connected. The browser shows a list of "
-                "devices in a popup. Choose yours and press Enter.",
-                sr="Turn your display on, choose Connect in the main menu, "
-                   "and choose your display in the browser's popup.",
+                "Now connect your display. Turn it on first and wait until it is ready: the DotPad "
+                "shows its name on its braille line, and the Monarch has to be plugged in by USB and "
+                "in Braille Terminal. Here is what happens next. When you choose Connect and "
+                "Disconnect in the main menu, which shows Connect while nothing is connected, the "
+                "browser opens its own list of devices in a small popup. The popup is not part of "
+                "this page, and some screen readers say little or nothing when it opens. Press Down "
+                "Arrow to move through the list until you hear your display's name, then press "
+                "Enter. Connecting can take a few seconds, and the tutorial goes on by itself once it "
+                "has. Escape closes the list without connecting, and you can choose Connect again.",
+                sr="Turn your display on, then choose Connect in the main menu. The browser opens its "
+                   "own list of devices, which a screen reader may not announce: press Down Arrow "
+                   "until you hear your display, then press Enter.",
                 braille="Connect display",
                 check=_device("any"),
                 done="Your display is connected.",
@@ -546,6 +555,32 @@ LESSONS: list[dict[str, Any]] = [
     _lesson(
         "test_pattern", "setup", "Test your display", minutes=3, requires=("display",),
         steps=[
+            # Before the first button named by dot: what the six are and what the
+            # tutorial calls them (Josh's alpha review). DotPad only, so it may
+            # spell dots out.
+            _step(
+                "dotpad_buttons",
+                "First, the DotPad's buttons. It has six in a row, labelled from left to right LP, "
+                "F1, F2, F3, F4 and RP. This tutorial calls them by braille dot number, laid out like "
+                "the keys of a Perkins brailler: LP is dot 3, F1 is dot 2 and F2 is dot 1, under "
+                "your left hand, and F3 is dot 4, F4 is dot 5 and RP is dot 6, under your right "
+                "hand. Pressing several at once makes a braille letter: dots 1, 3, 4 and 6 together "
+                "are the letter x. Press Next (N) when ready.",
+                sr="The DotPad's six buttons, LP, F1, F2, F3, F4 and RP from left to right, are "
+                   "called by braille dot here, as on a Perkins brailler: LP dot 3, F1 dot 2, F2 dot "
+                   "1, F3 dot 4, F4 dot 5 and RP dot 6. Press Next (N) when ready.",
+                braille="LP F1 F2 F3 F4 RP",
+                check=_manual(),
+                when={"stored": "display", "equals": "dotpad"},
+                done="Next, the test pattern.",
+                hints=(
+                    ("Rest the three fingers of your left hand on LP, F1 and F2, and the three of "
+                     "your right hand on F3, F4 and RP."),
+                    ("Your left index finger is dot 1, middle finger dot 2 and ring finger dot 3; "
+                     "your right index finger is dot 4, middle finger dot 5 and ring finger dot 6."),
+                    "Press Next, or {key:tutorial_continue}, to go on.",
+                ),
+            ),
             _step(
                 "feel",
                 "This checks that your display shows what the viewer sends. Each frame has a "
@@ -580,10 +615,13 @@ LESSONS: list[dict[str, Any]] = [
                 "Raised pins show where the mug touches the slice, lowered pins are air. The slice is not to scale; "
                 "it is scaled so the whole mug fits in the middle of the display. Right now the "
                 "slice plane touches the rim and "
-                "the base, through the middle of the mug. If you have the printed mug, hold it "
+                "the base, through the middle of the mug. Braille letters at the edges and in the "
+                "top left corner of the display label its axes; the X, Y and Z lesson explains "
+                "them. If you have the printed mug, hold it "
                 "upright with the handle to your left. Press Next (N) when ready.",
                 sr="The display shows one slice through the mug, as if you sliced it with a knife. "
-                   "It is scaled to fit the display. Press Next (N) when ready.",
+                   "It is scaled to fit the display, and braille letters at its edges label the "
+                   "axes. Press Next (N) when ready.",
                 braille="Mug slice. N: next.",
                 check=_manual(),
                 done="Next, find the handle.",
@@ -710,6 +748,30 @@ LESSONS: list[dict[str, Any]] = [
                     "Press {key:depth_deeper_10} again and again until the number stops changing.",
                 ),
             ),
+            # Where the DotPad says the depth, and what stays still while it
+            # changes (Josh's alpha review).
+            _step(
+                "text_line",
+                "Each time the slice plane moves, the DotPad's braille text line shows where it is, "
+                "for example Depth 40%. The text line is in US 8-dot computer braille, "
+                "uncontracted, so numbers and symbols read as they would on a computer. The braille "
+                "letters at the edges and in the top left corner stay where they are as you go "
+                "deeper: they label the axes of the display, not the slice. Press Next (N) when "
+                "ready.",
+                sr="The DotPad's braille text line shows the depth, in US 8-dot uncontracted "
+                   "computer braille. The letters at the edges label the display's axes and stay "
+                   "put. Press Next (N) when ready.",
+                braille="Depth on text line",
+                check=_manual(),
+                when={"stored": "display", "equals": "dotpad"},
+                done="Next, find the handle.",
+                hints=(
+                    "The text line is the row of braille cells apart from the pins.",
+                    ("Move the slice plane once and read the text line: it says the new depth, as "
+                     "speech does."),
+                    "Press Next, or {key:tutorial_continue}, to go on.",
+                ),
+            ),
             _step(
                 "mark_handle",
                 "Now find the handle. Press {key:depth_shallower_10} until you feel the handle "
@@ -781,11 +843,15 @@ LESSONS: list[dict[str, Any]] = [
         steps=[
             _step(
                 "zoom_in",
-                "Zoom in 10% with {key:zoom_in_10} or 1% with {key:zoom_in_1}, and out 10% with {key:zoom_out_10}. Press "
+                "Zoom uses number keys on the computer keyboard. Zoom in 10% with {key:zoom_in_10} "
+                "or 1% with {key:zoom_in_1}, and out 10% with {key:zoom_out_10}. Press "
                 "{key:zoom_in_10} twice.",
                 braille="Zoom twice",
                 check=_zoom_by(0.2),
-                done="Zoomed in 20%. The mug now fills the display from top to bottom.",
+                done="Zoomed in 20%. The mug now fills the display from top to bottom. Zoom in "
+                     "further and it no longer fits: the parts past the edges of the display are "
+                     "cut off by the frame, but they are still part of the mug. Where the mug "
+                     "stops at the edge of the display, that is the frame, not the end of the mug.",
                 hints=(
                     "Zoom makes the mug bigger so you can feel details.",
                     "Each press of {key:zoom_in_10} adds 10%.",
@@ -794,21 +860,21 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "centre_handle",
-                "To pan the mug, press {key:pan_up}, {key:pan_left}, {key:pan_down} or "
-                "{key:pan_right}: up, left, down or right, a quarter of the display at a time. "
-                "The handle is on the {handle_side} side of the mug. To bring it to the center, "
-                "press {pan_toward_handle}.",
-                sr="Move the mug with {key:pan_up}, {key:pan_left}, {key:pan_down} and "
-                   "{key:pan_right} until the tutorial says the handle is in the middle.",
-                braille="Handle to center",
-                check=_centred("handle"),
-                key_only=True,
-                done="Handle centered",
+                "Panning brings a part that is cut off back onto the display. Press "
+                "{key:pan_up}, {key:pan_left}, {key:pan_down} or {key:pan_right} to move the mug "
+                "up, left, down or right, a quarter of the display at a time. The handle is on the "
+                "{handle_side} side of the mug: try bringing it toward the middle with "
+                "{pan_toward_handle}, then move around as you like. Press Next (N) when ready.",
+                sr="Pan the mug with {key:pan_up}, {key:pan_left}, {key:pan_down} and "
+                   "{key:pan_right}, a quarter of the display at a time. Press Next (N) when ready.",
+                braille="Try panning",
+                check=_manual(),
+                done="Next, zoom back out.",
                 hints=(
                     ("The keys move the object, not the window."),
                     ("Each press moves the mug a quarter of the display."),
-                    ("With the handle near the left edge, press {key:pan_right}. With it near the "
-                     "right edge, press {key:pan_left}."),
+                    ("With the handle near the left edge, press {key:pan_right}; with it near the "
+                     "right edge, press {key:pan_left}. Then press Next."),
                 ),
             ),
             _step(
@@ -934,7 +1000,8 @@ LESSONS: list[dict[str, Any]] = [
                    "handle loop.",
                 braille="Find handle on X",
                 check=_all(_state("cut_axis", equals="x"), _in_band("x", "handle_loop")),
-                done="That is the handle loop.",
+                done="That is the handle loop. Sliced along X, you feel the handle's whole curve at "
+                     "once, from the side.",
                 hints=(
                     "From the X axis, the slice plane divides the mug vertically across the handle.",
                     ("Each press moves the slice plane a tenth of the way through the mug, and the "
@@ -953,40 +1020,13 @@ LESSONS: list[dict[str, Any]] = [
                    "separate pieces, the arms of the handle.",
                 braille="Find the handle arms",
                 check=_all(_state("cut_axis", equals="y"), _in_band("y", "handle_arms")),
-                done="You are slicing through the handle.",
+                done="You are slicing through the handle. It points toward negative Y, the low end "
+                     "of the Y numbers.",
                 hints=(
                     "From the front the handle points at you, so it is on the near side of the mug.",
                     "The arms are near the end of the handle, most of the way toward you.",
                     ("Press {key:axis_y} until you hear Y from minus, then press "
                      "{key:depth_shallower_10} three times."),
-                ),
-            ),
-            _step(
-                "which_axis_loop",
-                "Which axis showed the handle from the side, so you can feel its whole curve at once?",
-                braille="Axis: handle side?",
-                check=_answer("x"),
-                answers=_answers(("X", "x"), ("Y", "y"), ("Z", "z")),
-                done="Yes, X. Viewed from the X axis, the slice plane cuts through the handle from the side.",
-                on_fail="Not that one. Think of the slice plane that showed you the handle's full curve.",
-                hints=(
-                    "Along Z you felt rings, and along Y the two small arms.",
-                    "The handle's curve is only on screen when the slice plane is in the middle of the mug.",
-                    "Choose X.",
-                ),
-            ),
-            _step(
-                "handle_sign",
-                "Which way does the handle currently point: toward positive Y or toward negative Y?",
-                braille="Which way on Y?",
-                check=_answer("negative"),
-                answers=_answers(("Positive Y", "positive"), ("Negative Y", "negative")),
-                done="Yes. The handle points toward negative Y, the low end of the Y numbers.",
-                on_fail="Think of where the handle's arms were on the Y numbers.",
-                hints=(
-                    "The {key:where_am_i} key may help.",
-                    "Viewing from X plus, the viewer said Y right, and the handle was on the left.",
-                    "Choose Negative Y.",
                 ),
             ),
             _step(
@@ -1109,6 +1149,32 @@ LESSONS: list[dict[str, Any]] = [
                     "Press {key:shortcuts}, then press {key:escape}.",
                 ),
             ),
+            # How the page is laid out, for heading navigation (Josh's alpha
+            # review). Hidden sections are left out.
+            _step(
+                "page_headings",
+                "The page is divided by headings, and heading navigation, H in NVDA's or JAWS's "
+                "browse mode, moves between them. Under the Tutorial heading is this tutorial, and "
+                "the heading after it says which lesson and step you are on, so it is your way back "
+                "here. Then come Orientation, with the view buttons; Depth, with the slider; "
+                "Rendering Mode, with the render modes and the layouts; Zoom; Model, with the list "
+                "of models and Upload model; and Export, near the end. The cube's and the slider's "
+                "sections appear once they are turned on in Settings. Switch back to focus mode "
+                "before using the viewer's keys. Press Next (N) when ready.",
+                sr="Heading navigation moves between the page's parts: Tutorial, then Orientation, "
+                   "Depth, Rendering Mode, Zoom, Model and Export. The heading under Tutorial says "
+                   "which lesson and step you are on. Press Next (N) when ready.",
+                braille="Page headings",
+                check=_manual(),
+                done="Next, some practice.",
+                hints=(
+                    ("Heading navigation works in browse mode. Switch back to focus mode to use the "
+                     "viewer's keys again."),
+                    ("The Tutorial heading never changes; the one under it changes with every "
+                     "step."),
+                    "Press Next, or {key:tutorial_continue}, to go on.",
+                ),
+            ),
         ],
     ),
     _lesson(
@@ -1116,7 +1182,8 @@ LESSONS: list[dict[str, Any]] = [
         steps=[
             _step(
                 "which_axis",
-                "Time to practice. The tutorial has moved the slice plane to an unknown axis and "
+                "Time to practice. These exercises are optional: Skip lesson moves on whenever you "
+                "like. The tutorial has moved the slice plane to an unknown axis and "
                 "position without saying which. You are in {axis_mode_name} mode. Which axis are "
                 "you on?",
                 sr="Which axis are you on?",
@@ -1225,8 +1292,11 @@ LESSONS: list[dict[str, Any]] = [
         steps=[
             _step(
                 "pick_model",
-                "Choose a model from the Model list, or upload an STL or STEP file of your own. "
-                "An upload lasts until this tab closes or reloads.",
+                "Under the Model heading is the Model list, named Select a 3D model. In focus "
+                "mode, Alt+Down Arrow opens it; move through the models with the arrow keys and "
+                "press Enter to load one. Choose any model other than the tutorial mug now.",
+                sr="Under the Model heading, open Select a 3D model with Alt+Down Arrow, choose a "
+                   "model with the arrow keys and press Enter.",
                 braille="Pick a model",
                 check=_model_changed(),
                 done="Your model is loaded.",
@@ -1239,6 +1309,28 @@ LESSONS: list[dict[str, Any]] = [
                 ),
             ),
             _step(
+                "upload",
+                "You can also use a model of your own. Upload model, right after the Model list, "
+                "opens your browser's file dialog: choose an STL or STEP file and press Enter. The "
+                "upload is processed on the server, which can take a moment for a big file, and then "
+                "it loads by itself and the list names it as your upload. An upload belongs to this "
+                "tab and lasts until the tab closes or reloads; Remove uploaded model deletes it "
+                "sooner. If you have no file to hand, leave it for another time. Press Next (N) when "
+                "ready.",
+                sr="Upload model, after the Model list, opens a file dialog for an STL or STEP file. "
+                   "It loads by itself once uploaded, and lasts until this tab closes or reloads. "
+                   "Press Next (N) when ready.",
+                braille="Your own file",
+                check=_manual(),
+                done="Next, saving a picture of the slice.",
+                hints=(
+                    "STL and STEP are the files most CAD programs and OpenSCAD can export.",
+                    ("The viewer says Model uploaded when the file has arrived, and the list shows "
+                     "it with your upload after its name."),
+                    "Press Next, or {key:tutorial_continue}, to go on.",
+                ),
+            ),
+            _step(
                 "export",
                 "Export Current View as Image, in the Export section, saves the current slice as "
                 "a picture file, for a sighted helper or a document. Choose it now.",
@@ -1246,7 +1338,7 @@ LESSONS: list[dict[str, Any]] = [
                 check=_ui("export", "click"),
                 done="The viewer says slice exported as png when the file is saved.",
                 hints=(
-                    "The Export section is near the end of the page, in the Visual previews area.",
+                    "The Export section is near the end of the page, under the Export heading.",
                     "The file is a PNG, named after the view, the depth and the render mode.",
                     "Choose the Export Current View as Image button.",
                 ),
@@ -1280,16 +1372,21 @@ LESSONS: list[dict[str, Any]] = [
             ),
             _step(
                 "props_and_end",
-                "One last thing: if you want the printed mug, the link after this text has the files "
-                "for a 3D printer. That is the end of the main tutorial. Three extra lessons follow, "
-                "on the slice graph, the cube and the slider: Next starts them, and Exit tutorial "
-                "leaves them for another time. To return or redo any lesson, choose the Tutorial "
-                "button in the main menu and pick it from the list of lessons, or use Choose a "
-                "lesson in the keyboard shortcuts list; Start over runs the whole tutorial again. "
-                "Press Next (N) when ready.",
-                sr="That is the end of the tutorial. Three extra lessons follow: Next starts them, "
-                   "and Exit tutorial leaves them. To redo any lesson, choose the Tutorial button in "
-                   "the main menu. Press Next (N) when ready.",
+                "That is the end of the tutorial's main lessons. You have learned to move the slice "
+                "plane and feel each slice, change the render mode, zoom and pan, slice along X, Y "
+                "and Z and find the origin, reset and fit, find help, and load a model of your own. "
+                "To keep going, the keyboard shortcuts list, {key:shortcuts_question}, has every "
+                "key, and the page's headings take you to each set of controls. To return or redo "
+                "any lesson, choose the Tutorial button in the main menu and pick it from the list "
+                "of lessons, or use Choose a lesson in the keyboard shortcuts list; Start over runs "
+                "the whole tutorial again. If you want the printed mug, the link after this text has "
+                "the files for a 3D printer. Three extra lessons follow, for when you want them: "
+                "layouts and the slice graph, the cube and the slider. Next starts them, and Exit "
+                "tutorial leaves them for another time. Press Next (N) when ready.",
+                sr="That is the end of the tutorial's main lessons. The keyboard shortcuts list has "
+                   "every key, and the Tutorial button in the main menu opens any lesson again. Three "
+                   "extra lessons follow: Next starts them, and Exit tutorial leaves them. Press Next "
+                   "(N) when ready.",
                 braille="Tutorial complete",
                 check=_manual(),
                 links=[PRINT_FILES_LINK],
@@ -1560,14 +1657,32 @@ _KEY_PLACEHOLDER = re.compile(r"\{key:([a-z0-9_]+)\}")
 _DATA_FIELDS = frozenset({"id", "check", "when", "store", "requires", "braille", "pose", "part"})
 
 
+# What a display is called when a key is named for it.
+DISPLAY_NAMES = {"monarch": "the Monarch", "dotpad": "the DotPad"}
+
+
 def key_name(name: str, display: str = "none") -> str:
     """What to call KEYS[name] for someone using this display: the keyboard key,
-    the display's button or both, "dot 4 or Page Up"."""
+    the display's button or both. With a display, each says where it is, "dot 4
+    on the DotPad, or Page Up on the computer keyboard", so a digit is never taken
+    for a dot and a keyboard key never for a button (Josh's alpha review). The
+    tutorial's own keys stay short: lesson 1 says once that they are on the
+    computer keyboard. No comma before the keyboard's half, so the name reads
+    straight on in "Press dot 4 on the DotPad or Page Up on the computer keyboard
+    to move it"."""
     if name not in KEYS:
         raise ValueError(f"unknown key name {name!r}")
     entry = KEYS[name]
     keyboard = entry["keyboard"]
-    device = entry.get(display) if display in ("monarch", "dotpad") else None
+    device = entry.get(display) if display in DISPLAY_NAMES else None
+    if display in DISPLAY_NAMES and not name.startswith("tutorial_"):
+        where = DISPLAY_NAMES[display]
+        if keyboard and device:
+            return f"{device} on {where} or {keyboard} on the computer keyboard"
+        if keyboard:
+            return f"{keyboard} on the computer keyboard"
+        if device:
+            return f"{device} on {where}"
     if keyboard and device:
         return f"{device} or {keyboard}"
     if keyboard:

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-10-13
+
+From the alpha review.
+
+#### Changed
+*   The axis labels never cover the model. The edge letters and the view label sit in strips of their own along the edges, hard against them, and the model is drawn in the area left, with a blank row or column between it and each strip. On a DotPad, with both labels on, the model has 57 by 36 pins instead of 60 by 40. The view label is in the very corner, where it used to sit three pins in.
+*   The tutorial has a heading that always says Tutorial, and under it one that says the lesson and the step, such as "Lesson 8 of 15: X, Y and Z, step 4 of 10", so heading navigation finds it again and says where you are.
+*   With a display chosen, the tutorial says where each key is: "dot 4 on the DotPad or Page Up on the computer keyboard", and "0 on the computer keyboard" where only the keyboard has it, so a number key is never taken for a dot. Its own keys, N, B, C and P, are on the computer keyboard, and lesson 1 says so.
+*   Before naming any DotPad button by dot, the tutorial says what its six buttons are: LP, F1, F2, F3, F4 and RP, dots 3, 2, 1, 4, 5 and 6, as on a Perkins brailler.
+*   Connecting a display: the tutorial says what will happen before it happens, that the browser's list of devices is its own popup that a screen reader may not announce, and how to move through it.
+*   The tutorial mentions the axis labels when it introduces the mug and again while moving the slice plane, and on a DotPad points out the depth on the braille text line, in US 8-dot uncontracted computer braille.
+*   Zooming in explains that the edges of the display are the frame, not the end of the mug, and panning is something to try, no longer a task to finish.
+*   Lesson 8 asks no questions: what they asked is said instead. The Mug detective lesson says its exercises are optional.
+*   Lesson 12 says how to choose a model from the list and how to upload one of your own, and the main tutorial ends with a summary of what it taught and where to go next before the extra lessons.
+*   A new step in lesson 10 goes through the page's headings and what is under each.
+
+#### Added
+*   In a browser that can't connect a display, a dialog says so once, after the welcome dialog and before the tutorial, and again whenever Connect is pressed. The note by Connect stays.
+
+#### Removed
+*   The "Visual previews" landmark, which was read out before the Export heading. Its headings mark that part of the page now.
+
 ## [v1.0.0-alpha] - 2026-10-12
 
 ### 2026-10-05

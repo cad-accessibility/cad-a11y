@@ -2161,20 +2161,28 @@ function updateGenericDeviceConnectUI() {
 // display, so say so before anyone tries, as part of what Connect is described
 // by (#232). Asked of the browser rather than read from its name, so a
 // Chromium browser that has the APIs is not told to switch.
+/** Why this browser can't connect a display, in words for the note by Connect
+ * and its dialog, or null when it can. Web HID and Web Bluetooth exist only on
+ * a secure address, https or localhost, so over plain http they are missing in
+ * every browser, and "open this page in Chrome or Edge" would send someone to
+ * the wrong fix (#244 review). The DotPad connects only over Bluetooth here, so
+ * Web Serial is not asked about. */
+function browserConnectProblem() {
+    if (!window.isSecureContext) {
+        return "This page can't connect to a braille display at this address. "
+            + 'Open it over https, or at localhost on this computer.';
+    }
+    if ('hid' in navigator || 'bluetooth' in navigator) return null;
+    return "This browser can't connect to a braille display. To use a DotPad or a Monarch, "
+        + 'open the viewer in Chrome or Edge on a computer. You can still explore models here with the keyboard.';
+}
+
 function noteWhenThisBrowserCannotConnect() {
     const note = document.getElementById('browser-support-note');
     if (!note || !deviceConnectBtn) return;
-    // Web HID and Web Bluetooth exist only on a secure address, https or
-    // localhost, so over plain http they are missing in every browser, and
-    // "open this page in Chrome or Edge" would send someone to the wrong fix
-    // (#244 review). The DotPad connects only over Bluetooth here, so Web
-    // Serial is not asked about.
-    if (!window.isSecureContext) {
-        note.textContent = "This page can't connect to a braille display at this address. "
-            + 'Open it over https, or at localhost on this computer.';
-    } else if ('hid' in navigator || 'bluetooth' in navigator) {
-        return;
-    }
+    const problem = browserConnectProblem();
+    if (!problem) return;
+    note.textContent = problem;
     note.hidden = false;
     const describedBy = (deviceConnectBtn.getAttribute('aria-describedby') || '').split(/\s+/);
     if (!describedBy.includes(note.id)) {
@@ -2213,8 +2221,54 @@ function describeConnectWithFocusNoteOnce() {
 }
 describeConnectWithFocusNoteOnce();
 
+// The note by Connect as a dialog, which is harder to miss (Josh's alpha
+// review): once per browser before the tutorial starts (the consent script calls
+// showBrowserNoteOnce as it settles), and every time Connect is pressed in a
+// browser that can't connect.
+const BROWSER_NOTE_SHOWN_KEY = 'browserNoteShown';
+const browserSupportDialog = document.getElementById('browser-support-dialog');
+const browserSupportDialogController = makeInfoDialogController(
+    browserSupportDialog, document.getElementById('browser-support-heading'));
+document.getElementById('browser-support-ok-btn')?.addEventListener('click', () => {
+    browserSupportDialogController.close();
+});
+
+function openBrowserNote(then) {
+    const problem = browserConnectProblem();
+    if (!problem || !browserSupportDialog) {
+        if (then) then();
+        return false;
+    }
+    const text = document.getElementById('browser-support-text');
+    if (text) text.textContent = problem;
+    if (then) browserSupportDialog.addEventListener('close', () => then(), { once: true });
+    browserSupportDialogController.open();
+    return true;
+}
+
+window.showBrowserNoteOnce = function (then) {
+    let shown = false;
+    try {
+        shown = window.localStorage.getItem(BROWSER_NOTE_SHOWN_KEY) === '1';
+    } catch (_) {
+        // Blocked storage: it shows on each visit instead.
+    }
+    if (shown || !browserConnectProblem()) {
+        then();
+        return;
+    }
+    try {
+        window.localStorage.setItem(BROWSER_NOTE_SHOWN_KEY, '1');
+    } catch (_) {
+        // As above.
+    }
+    openBrowserNote(then);
+};
+
 if (deviceConnectBtn) {
     deviceConnectBtn.addEventListener('click', () => {
+        // Nothing to try in a browser that can't connect: say why instead.
+        if (openBrowserNote()) return;
         // Calls the real connect logic directly (exposed by monarch-hid.js /
         // dotpad-integration.js) rather than clicking a per-device button.
         if (viewerState.currentOutputDevice === 'dotpad') {

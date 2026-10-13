@@ -235,8 +235,13 @@
                 missed it, and lesson 1 says so. Every answer is a button, never a
                 radio, so one press answers.
             -->
-            <section id="tutorial-region" class="study-region tutorial-region" aria-labelledby="tutorial-heading" hidden>
-                <h2 id="tutorial-heading" tabindex="-1">Tutorial</h2>
+            <!-- Two headings, so heading navigation finds the tutorial and says where
+                 you are in it, the same way on every step (Josh's alpha review): the
+                 h2 is always "Tutorial", and the h3 under it, where focus goes, names
+                 the lesson and the step, or the lesson list. -->
+            <section id="tutorial-region" class="study-region tutorial-region" aria-labelledby="tutorial-title" hidden>
+                <h2 id="tutorial-title">Tutorial</h2>
+                <h3 id="tutorial-heading" tabindex="-1">Lessons</h3>
 
                 <div id="tutorial-lesson-view">
                     <p id="tutorial-progress" class="tutorial-progress">Step 1 of 1</p>
@@ -560,11 +565,13 @@
                 <div class="col-divider" id="col-divider" role="separator" aria-label="Resize columns" tabindex="0" aria-valuenow="50" aria-valuemin="0" aria-valuemax="100"></div>
 
                 <!--
-                    RIGHT COLUMN: visual previews for sighted users.
-                    Hidden from screen readers — braille users read the physical display,
-                    not a bitmap on screen.
+                    RIGHT COLUMN: Export and the visual previews for sighted users.
+                    A plain div, not a landmark: a labelled complementary region was
+                    announced before the Export heading, so someone moving by heading
+                    heard "Visual previews" and could miss Export (Josh's alpha review).
+                    Its headings are what mark it.
                 -->
-                <aside class="right-col" id="right-col" aria-label="Visual previews">
+                <div class="right-col" id="right-col">
 
                     <section class="section">
                         <h2 id="tactile-preview-heading">Export</h2>
@@ -589,7 +596,7 @@
                         <div id="high-fidelity-preview-meta" class="help-text">Waiting for high-fidelity render&hellip;</div>
                     </section>
 
-                </aside><!-- end right-col -->
+                </div><!-- end right-col -->
             </div><!-- end layout -->
 
 
@@ -770,6 +777,27 @@
         </p>
         <div class="consent-actions">
             <button type="button" id="about-close-btn">Close</button>
+        </div>
+    </dialog>
+
+    <!-- The browser note as a dialog (Josh's alpha review): in a browser that
+         can't connect a display, the note by Connect was easy to miss. It opens
+         once per browser, after the welcome dialog and before the tutorial, and
+         again whenever Connect is pressed in that browser. viewer.js writes the
+         reason into it, the same one the note gives. -->
+    <dialog
+        id="browser-support-dialog"
+        class="info-dialog"
+        aria-labelledby="browser-support-heading"
+    >
+        <h2 id="browser-support-heading" tabindex="-1">Can't connect a display in this browser</h2>
+        <p id="browser-support-text">
+            This browser can't connect to a braille display. To use a DotPad or a Monarch,
+            open the viewer in Chrome or Edge on a computer. You can still explore models
+            here with the keyboard.
+        </p>
+        <div class="consent-actions">
+            <button type="button" id="browser-support-ok-btn">OK</button>
         </div>
     </dialog>
 
@@ -972,9 +1000,16 @@
         function settleConsent(reason, consentGiven) {
             if (consentSettled) return;
             consentSettled = true;
-            document.dispatchEvent(new CustomEvent('cad:consent-settled', {
-                detail: { reason: reason, consent_given: consentGiven },
-            }));
+            function settled() {
+                document.dispatchEvent(new CustomEvent('cad:consent-settled', {
+                    detail: { reason: reason, consent_given: consentGiven },
+                }));
+            }
+            // In a browser that can't connect a display, its dialog comes first,
+            // once per browser, so the tutorial starts after it rather than under
+            // it (viewer.js, showBrowserNoteOnce).
+            if (typeof window.showBrowserNoteOnce === 'function') window.showBrowserNoteOnce(settled);
+            else settled();
         }
 
         // ---------------------------------------------------------------------------
