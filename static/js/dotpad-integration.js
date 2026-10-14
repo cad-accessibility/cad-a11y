@@ -128,6 +128,11 @@ const DOTPAD_KEY_ACTIONS = {
     PanningLeft: [-1, 0],
     PanningRight: [1, 0],
 };
+// The panning keys while the cursor is off: back or forward a page of the text line.
+const DOTPAD_TEXT_SCROLL = {
+    PanningLeft: -1,
+    PanningRight: 1,
+};
 const DOTPAD_ONE_STEP = 1;
 const DOTPAD_HOLD_START_MS = 350;
 const DOTPAD_HOLD_REPEAT_MS = 100;
@@ -290,8 +295,21 @@ window.disconnectDotpad = disconnectDotpad;
 
 // The tutorial's name for a key (static/js/tutorial.js), in the same order onKey
 // below reads them: a whole x, y or z chord before the single dots it contains.
-const DOTPAD_TUTORIAL_LETTERS = { x: 'axis-x', y: 'axis-y', z: 'axis-z', v: 'cursor' };
-const DOTPAD_TUTORIAL_DOTS = { 1: 'dot1', 8: 'dot4' };
+// The panning keys scroll the text line while the cursor is off and move the
+// cursor while it is on, so they have a name for each.
+const DOTPAD_TUTORIAL_LETTERS = { x: 'axis-x', y: 'axis-y', z: 'axis-z', v: 'cursor', f: 'fit' };
+const DOTPAD_TUTORIAL_DOTS = {
+    0x01: 'dot1',
+    0x08: 'dot4',
+    0x03: 'depth-shallower-1',
+    0x18: 'depth-deeper-1',
+    0x07: 'depth-near',
+    0x38: 'depth-far',
+};
+const DOTPAD_TUTORIAL_TEXT_KEYS = {
+    PanningLeft: 'text-back',
+    PanningRight: 'text-forward',
+};
 const DOTPAD_TUTORIAL_KEYS = {
     KeyFunction1: 'move-up',
     KeyFunction4: 'move-down',
@@ -299,9 +317,10 @@ const DOTPAD_TUTORIAL_KEYS = {
     PanningRight: 'move-right',
 };
 
-function dotpadTutorialName(currKeyCode, byte6, letter) {
+function dotpadTutorialName(currKeyCode, byte6, letter, cursorState) {
     return DOTPAD_TUTORIAL_LETTERS[letter]
         || DOTPAD_TUTORIAL_DOTS[byte6]
+        || (cursorState === 'none' ? DOTPAD_TUTORIAL_TEXT_KEYS[currKeyCode] : null)
         || DOTPAD_TUTORIAL_KEYS[currKeyCode]
         || 'other';
 }
@@ -328,14 +347,14 @@ function onKey(device, currKeyCode, keyMsg) {
     const label = keyMsg || currKeyCode;
     const byte6 = labelToByte6(label);
     const letter = byte6ToLetter(byte6);
+    const cursorState = window.whichCursor ? window.whichCursor() : 'none';
     // First, before the key does anything: the tutorial may take it as an
     // answer (dot 1 left, dot 4 right, during the test pattern) or, in Key help
     // mode, describe it instead of acting on it.
     if (window.cadTutorial?.captureDeviceKey?.({
         device: 'dotpad',
-        name: dotpadTutorialName(currKeyCode, byte6, letter),
+        name: dotpadTutorialName(currKeyCode, byte6, letter, cursorState),
     })) return;
-    const cursorState = window.whichCursor ? window.whichCursor() : 'none';
     const n = 10; // TODO: make this global and dynamic
     if (typeof window.stepSliceDepth !== 'function') {
         console.warn('DotPad depth controls are unavailable because viewer depth helpers are not exposed.');
@@ -364,7 +383,14 @@ function onKey(device, currKeyCode, keyMsg) {
         }
         return;
     }
-    // Dots 1 and 4 step the depth like Arrow Down and Arrow Up, through the same
+    // F fits the current slice to the display, as it does on the keyboard.
+    if (letter === 'f'){
+        if (typeof window.fitCurrentViewToDevice === 'function') {
+            window.fitCurrentViewToDevice();
+        }
+        return;
+    }
+    // Dots 1 and 4 step the depth like Page Down and Page Up, through the same
     // function, so deeper is away from the reader in both modes (#235 review).
     if (byte6 === 0x01){
         // Go shallower by 100/N
@@ -374,6 +400,33 @@ function onKey(device, currKeyCode, keyMsg) {
     if (byte6 === 0x08){
         // Go deeper by 100/N
         window.stepSliceDepth(100/n);
+        return;
+    }
+    // Dots 1 2 and 4 5 are the 1% steps, like Arrow Down and Arrow Up.
+    if (byte6 === 0x03){
+        window.stepSliceDepth(-1);
+        return;
+    }
+    if (byte6 === 0x18){
+        window.stepSliceDepth(1);
+        return;
+    }
+    // Dots 1 2 3 and 4 5 6 are Home and End: the surface nearest the reader and
+    // the far side (#280). The left hand's keys move toward the reader and the
+    // right hand's away, a step, a fine step or all the way.
+    if (byte6 === 0x07){
+        if (typeof window.goToSliceEnd === 'function') window.goToSliceEnd(false);
+        return;
+    }
+    if (byte6 === 0x38){
+        if (typeof window.goToSliceEnd === 'function') window.goToSliceEnd(true);
+        return;
+    }
+    // With the cursor off, the panning keys scroll the text line through a
+    // message longer than it, as a braille display's panning keys do (#154).
+    // With the cursor on they move it, below.
+    if (cursorState === 'none' && DOTPAD_TEXT_SCROLL[currKeyCode]) {
+        scrollTactileText(DOTPAD_TEXT_SCROLL[currKeyCode]);
         return;
     }
     if (typeof window.moveCursor != 'function') return;
@@ -541,6 +594,52 @@ window._dotpadShowHex = function (graphicHex) {
 
 // --- Send announcements to DotPad ---
 
+// The text line shows one page of the latest announcement at a time. The pages
+// are the braille lines the viewer wrote for it ("Z 31%" for "Z slice at 31
+// percent"), or the spoken message when it wrote none, each broken at spaces
+// into pieces that fit; a word longer than the line, such as a file name, is
+// split. A new announcement starts on its first page, and the panning keys move
+// between pages while the cursor is off (#154).
+let tactileTextPages = [];
+let tactileTextPageIndex = 0;
+
+function buildTactileTextPages(message, cellCount) {
+    const text = String(message || '').replace(/\s+/g, ' ').trim();
+    const pages = [];
+    let remaining = text;
+
+    while (remaining.length > 0) {
+        if (remaining.length <= cellCount) {
+            pages.push(remaining);
+            break;
+        }
+
+        const candidate = remaining.slice(0, cellCount);
+        const nextChar = remaining.slice(cellCount, cellCount + 1);
+
+        if (/\s/.test(nextChar)) {
+            pages.push(candidate);
+            remaining = remaining.slice(cellCount).trimStart();
+            continue;
+        }
+
+        const breakIndex = candidate.lastIndexOf(' ');
+        if (breakIndex > 0) {
+            pages.push(remaining.slice(0, breakIndex));
+            remaining = remaining.slice(breakIndex).trimStart();
+        } else {
+            pages.push(remaining.slice(0, cellCount));
+            remaining = remaining.slice(cellCount).trimStart();
+        }
+    }
+
+    return pages.length ? pages : [''];
+}
+
+function getDotPadTextCellCount() {
+    return connectedDevice?.numberBrailleCellColumns || 20;
+}
+
 function encodeAnnouncementForDotPad(message, cellCount) {
     let hex = '';
     for (let i = 0; i < cellCount; i++) {
@@ -552,21 +651,39 @@ function encodeAnnouncementForDotPad(message, cellCount) {
     return hex;
 }
 
-// The lines behind the one on the text line now, most important first. The
-// viewer writes a braille form for announcements that need one ("Z 31%" for
-// "Z cut at 31 percent"), sometimes over more than one 20-cell line; only
-// the first fits. Kept so a text-scroll control (PR #166) can page through the
-// rest, as #154 asks.
-window._dotpadBrailleLines = [];
+function renderTactileTextWindow() {
+    if (!connectedDevice) return;
+
+    const cellCount = getDotPadTextCellCount();
+    const visibleText = tactileTextPages[tactileTextPageIndex] || '';
+    const textHex = encodeAnnouncementForDotPad(visibleText, cellCount);
+
+    sdk.displayTextData(textHex, connectedDevice, DisplayMode.TextMode);
+}
+
+function setTactileTextLines(lines) {
+    const cellCount = getDotPadTextCellCount();
+    tactileTextPages = lines.flatMap(line => buildTactileTextPages(line, cellCount));
+    tactileTextPageIndex = 0;
+    renderTactileTextWindow();
+}
+
+function scrollTactileText(deltaPages) {
+    if (!tactileTextPages.length) return;
+
+    const maxPageIndex = Math.max(0, tactileTextPages.length - 1);
+    tactileTextPageIndex = Math.max(
+        0,
+        Math.min(maxPageIndex, tactileTextPageIndex + deltaPages)
+    );
+
+    renderTactileTextWindow();
+}
 
 function sendAnnouncementToDotPad({message, braille}) {
     if (!connectedDevice) return;
-
-    const cellCount = connectedDevice.numberBrailleCellColumns || 20;
     const lines = Array.isArray(braille) && braille.length ? braille : [message];
-    window._dotpadBrailleLines = lines.slice();
-    const textHex = encodeAnnouncementForDotPad(String(lines[0]), cellCount);
-    sdk.displayTextData(textHex, connectedDevice, DisplayMode.TextMode);
+    setTactileTextLines(lines);
 }
 
 window.onTactileAnnouncement = sendAnnouncementToDotPad;

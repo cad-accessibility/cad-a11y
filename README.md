@@ -219,6 +219,11 @@ The DotPad supports cursor controls and depth changes with the following inputs:
 
 - dot 1: change depth shallower by 10%.
 - dot 4: change depth deeper by 10%.
+- dots 1 2: change depth shallower by 1%.
+- dots 4 5: change depth deeper by 1%.
+- dots 1 2 3: move the slice plane to the surface nearest you, like Home on the keyboard.
+- dots 4 5 6: move the slice plane to the far side, like End on the keyboard.
+- letter `f` (dots 1 2 4): fit the current slice to the display, like `f` on the keyboard.
 - letters `x`, `y` and `z` (dot chords 1 3 4 6, 1 3 4 5 6 and 1 3 5 6): slice along that axis in XYZ mode; repeating toggles direction. The chord is read as a whole letter, the way `v` is.
 - letter `v` or dot chord 1 2 3 6: cycles through these cursor modes
     - `none`: hides the cursor and disables cursor movement.
@@ -226,12 +231,14 @@ The DotPad supports cursor controls and depth changes with the following inputs:
     - `guidelines`: shows horizontal and vertical guide lines through the cursor.
     - `horizontal-line`: shows only the horizontal guide line; left and right movement are disabled, since the line spans the full width and is repositioned by moving it up and down.
     - `vertical-line`: shows only the vertical guide line; up and down movement are disabled, since the line spans the full height and is repositioned by moving it left and right.
-- dot 3: move cursor or vertical line left
-- dot 6: move cursor or vertical line right
+- dot 3 (the left panning key): move cursor or vertical line left, or with the cursor off, scroll the text line back
+- dot 6 (the right panning key): move cursor or vertical line right, or with the cursor off, scroll the text line forward
 - dot 2: move cursor or horizontal line up
 - dot 5: move cursor or horizontal line down
 
 NOTE: Cursor or guideline movements will only work when the cursor or guidelines are active. A single button press will move one pixel. A double or triple button press will move the line five or twelve pixels respectively.
+
+The braille text line shows 20 cells of the latest message at a time. When a message is longer, the panning keys scroll through it while the cursor is off. It breaks at spaces where it can, and a word longer than the line, such as a file name, is split. Each new message starts at its beginning.
 
 
 ## Running a demo session (nothing is recorded)

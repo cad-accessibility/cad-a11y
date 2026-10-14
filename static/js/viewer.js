@@ -3634,8 +3634,8 @@ function cycleRepresentationMode(shouldAnnounce = true) {
 // `braille` is what the tactile display's text line shows instead of the
 // spoken message: a line (or lines, most important first) of 20 cells or fewer,
 // written for the fingers rather than cut from the speech, e.g. "Z 31%" for
-// "Z slice at 31 percent". Without it the display shows the start of the message,
-// as it always has.
+// "Z slice at 31 percent". Without it the display shows the message itself,
+// a page at a time.
 function emitAnnouncement(message, politeness, braille = null) {
     const normalizedMessage = String(message);
     // Any announcement ends the current zoom/depth run: the next such change
@@ -3741,6 +3741,8 @@ window.getCurrentSliceDepth = getCurrentSliceDepth;
 window.updateSliceDepth = updateSliceDepth;
 window.announceDepthValue = announceDepthValue;
 window.stepSliceDepth = stepSliceDepth;
+window.goToSliceEnd = goToSliceEnd;
+window.fitCurrentViewToDevice = fitCurrentViewToDevice;
 
 // ---------------------------------------------------------------------------
 // Study mode API, used by static/js/study.js.

@@ -572,6 +572,21 @@ class TestDeviceHooks:
             found = set(re.findall(r"'(dot[14]|cursor|axis-[xyz]|move-(?:left|right|up|down)|other)'", _js(path)))
             found |= {f"axis-{a}" for a in "xyz"} if "`axis-${command.axis}`" in _js(path) else set()
             assert found == names, f"{path.name}: {sorted(names - found)} missing"
+        # The DotPad's 1% steps, Home, End, F and text line paging (#166).
+        dotpad_only = {"depth-shallower-1", "depth-deeper-1", "depth-near", "depth-far", "fit", "text-back", "text-forward"}
+        for name in dotpad_only:
+            assert f"'{name}'" in _js(DOTPAD_JS), name
+            assert f"'{name}'" not in _js(MONARCH_JS), name
+
+    def test_a_display_button_counts_as_the_key_it_does_the_work_of(self):
+        """A step waiting for Home takes dots 1 2 3 on the DotPad, queued before the
+        button acts, as viewer.js reports a key before it acts."""
+        body = _function(_js(TUTORIAL_JS), "cadTutorial.captureDeviceKey = function (cmd) {")
+        pattern = body.index("if (testPattern.active")
+        queue = body.index("queueEvent({ type: 'keyboard', data: { key: code, device: cmd.device } });")
+        assert pattern < queue
+        assert "payload.device_keys[`${cmd.device}:${name}`]" in body
+        assert body.rstrip().endswith("return false;"), "the button must still act"
 
 
 class TestContinuousIntegration:

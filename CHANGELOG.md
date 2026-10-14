@@ -17,7 +17,7 @@ From the alpha review.
 *   With a display chosen, the tutorial says where each key is: "dot 4 on the DotPad or Page Up on the computer keyboard", and "0 on the computer keyboard" where only the keyboard has it, so a number key is never taken for a dot. Its own keys, N, B, C and P, are on the computer keyboard, and lesson 1 says so.
 *   Before naming any DotPad button by dot, the tutorial says what its six buttons are: LP, F1, F2, F3, F4 and RP, dots 3, 2, 1, 4, 5 and 6, as on a Perkins brailler.
 *   Connecting a display: the tutorial says what will happen before it happens, that the browser's list of devices is its own popup that a screen reader may not announce, and how to move through it.
-*   The tutorial mentions the axis labels when it introduces the mug and again while moving the slice plane, and on a DotPad points out the depth on the braille text line, in US 8-dot uncontracted computer braille.
+*   The tutorial mentions the axis labels when it introduces the mug and again while moving the slice plane, and on a DotPad points out the depth on the braille text line, in US 8-dot uncontracted computer braille, and how the panning keys scroll a longer message. Before naming dots it says that LP and RP are the panning keys.
 *   Zooming in explains that the edges of the display are the frame, not the end of the mug, and panning is something to try, no longer a task to finish.
 *   Lesson 8 asks no questions: what they asked is said instead. The Mug detective lesson says its exercises are optional.
 *   Lesson 12 says how to choose a model from the list and how to upload one of your own, and the main tutorial ends with a summary of what it taught and where to go next before the extra lessons.
@@ -25,6 +25,9 @@ From the alpha review.
 
 #### Added
 *   In a browser that can't connect a display, a dialog says so once, after the welcome dialog and before the tutorial, and again whenever Connect is pressed. The note by Connect stays.
+*   The DotPad's braille text line scrolls (#154). A message longer than its 20 cells is shown a page at a time, broken at spaces, and with the cursor off the panning keys, LP and RP, move back and forward through it. Each new message starts on its first page. Where the viewer has a short braille form of a message, such as "Z 31%", that is what the line shows.
+*   More DotPad buttons: dots 1 2 and 4 5 move the slice plane 1% shallower or deeper, dots 1 2 3 and 4 5 6 move it to the surface nearest you or the far side, as Home and End do (#280), and braille f fits the slice to the display.
+*   In the tutorial, a display button counts as the key it does the work of, so a step that asks for Home also takes dots 1 2 3 on the DotPad, and key help names the new buttons.
 
 #### Removed
 *   The "Visual previews" landmark, which was read out before the Export heading. Its headings mark that part of the page now.

@@ -2271,6 +2271,11 @@ const CHECKS = {
             if (testPattern.awaiting) answerTestPattern(name === 'dot1' ? 'left' : 'right');
             return true;
         }
+        // Otherwise the button acts, and a step waiting for the key it does the
+        // work of takes it as that key: dots 1 2 3 on the DotPad count as Home.
+        // It is queued before the button acts, as viewer.js reports a key.
+        const code = payload && payload.device_keys && payload.device_keys[`${cmd.device}:${name}`];
+        if (code) queueEvent({ type: 'keyboard', data: { key: code, device: cmd.device } });
         return false;
     };
 
