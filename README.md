@@ -107,9 +107,12 @@ direction to the origin. If the origin is outside two sides
 at once, a square of four pins is drawn in that corner.
 
 Axis labels on the pins, the letters at the display edges and the view label in
-the top left corner, are x, y and z in computer braille. They sit in strips of
-their own, hard against the edges, and the model is drawn in the area left, so a
-label never covers any of the model.
+the top left corner, are x, y and z in computer braille. The edge letters sit in
+strips of their own, hard against the edges, and the model is drawn in the area
+left, so a letter never covers any of the model. With the edge letters on, the
+view label sits in the top strip. With them off, the view label keeps only the
+8x8 pins of the top left corner, a blank pin round it included, and the model is
+drawn everywhere else.
 
 ## The tutorial
 
@@ -164,7 +167,7 @@ The viewer works without any hardware. Connect devices for full tactile and brai
 
 #### Monarch controls
 
-The Monarch supports cursor controls and depth changes with the following inputs:
+The Monarch supports cursor controls and depth changes with the following inputs. While a Monarch is connected, the keyboard shortcuts dialog (H) lists them too:
 
 - dot 1: change depth shallower by 10%.
 - dot 4: change depth deeper by 10%.
@@ -215,7 +218,7 @@ today means a Chromium-based browser.
 
 #### DotPad controls
 
-The DotPad supports cursor controls and depth changes with the following inputs:
+The DotPad supports cursor controls and depth changes with the following inputs. While a DotPad is connected, the keyboard shortcuts dialog (H) lists them too:
 
 - dot 1: change depth shallower by 10%.
 - dot 4: change depth deeper by 10%.

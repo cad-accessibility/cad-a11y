@@ -750,6 +750,40 @@
             <li><kbd>]</kbd> Toggle slice-graph overlay</li>
         </ul>
 
+        <!-- The buttons of a connected display (Carlos, after the alpha), from
+             onKey in dotpad-integration.js and MONARCH_COMMANDS in
+             monarch-hid.js. Each section is shown only while its display is
+             connected (syncDisplayShortcuts in viewer.js), so with none connected
+             there is nothing here. -->
+        <div id="dotpad-shortcuts-section" hidden>
+            <h3>DotPad buttons</h3>
+            <p class="help-text">The six buttons, LP, F1, F2, F3, F4 and RP from left to right, are dots 3, 2, 1, 4, 5 and 6, as on a Perkins brailler. Pressing several together makes a braille letter.</p>
+            <ul class="shortcuts-list">
+                <li><kbd>Dot 1</kbd> Shallower 10%</li>
+                <li><kbd>Dot 4</kbd> Deeper 10%</li>
+                <li><kbd>Dots 1 2</kbd> Shallower 1%</li>
+                <li><kbd>Dots 4 5</kbd> Deeper 1%</li>
+                <li><kbd>Dots 1 2 3</kbd> The surface nearest you</li>
+                <li><kbd>Dots 4 5 6</kbd> The far side</li>
+                <li><kbd>x</kbd>, <kbd>y</kbd>, <kbd>z</kbd> (dots 1 3 4 6, 1 3 4 5 6 and 1 3 5 6) Slice along that axis, in XYZ mode; the same letter again for the other side</li>
+                <li><kbd>f</kbd> (dots 1 2 4) Fit current slice to the display</li>
+                <li><kbd>v</kbd> (dots 1 2 3 6) Cycle the cursor: crosshair, guidelines, horizontal line, vertical line, then off</li>
+                <li><kbd>LP</kbd> and <kbd>RP</kbd> (dots 3 and 6) With the cursor off, scroll the braille text line back and forward through a long message; with it on, move the cursor left and right</li>
+                <li><kbd>F1</kbd> and <kbd>F4</kbd> (dots 2 and 5) With the cursor on, move it up and down</li>
+            </ul>
+            <p class="help-text">The cursor moves one pin a press, five for two quick presses and twelve for three.</p>
+        </div>
+        <div id="monarch-shortcuts-section" hidden>
+            <h3>Monarch keys</h3>
+            <ul class="shortcuts-list">
+                <li><kbd>Dot 1</kbd> Shallower 10%</li>
+                <li><kbd>Dot 4</kbd> Deeper 10%</li>
+                <li><kbd>x</kbd>, <kbd>y</kbd>, <kbd>z</kbd> (dots 1 3 4 6, 1 3 4 5 6 and 1 3 5 6) Slice along that axis, in XYZ mode; the same letter again for the other side</li>
+                <li><kbd>Space</kbd> Cycle the cursor: crosshair, guidelines, horizontal line, vertical line, then off</li>
+                <li><kbd>D-pad</kbd> With the cursor on, move it one pin a press</li>
+            </ul>
+        </div>
+
         <h3>This Dialog</h3>
         <ul class="shortcuts-list">
             <li><kbd>H</kbd> or <kbd>?</kbd> Open keyboard shortcuts</li>
@@ -831,6 +865,10 @@
             <label class="checkbox-label" for="settings-axis-letters">
                 <input type="checkbox" id="settings-axis-letters" checked>
                 Axis letters at the display edges, in computer braille
+            </label>
+            <label class="checkbox-label" for="settings-origin-marker">
+                <input type="checkbox" id="settings-origin-marker">
+                Origin mark on the display, the same as the M key
             </label>
         </div>
 

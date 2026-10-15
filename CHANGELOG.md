@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-10-15
+
+Follow-ups to the alpha.
+
+#### Added
+*   The keyboard shortcuts dialog lists the buttons of a connected display: a DotPad section while a DotPad is connected, a Monarch section while a Monarch is, and neither with no display connected.
+*   The origin mark is in Settings again, as a checkbox beside the axis letters. It does what M does, switching to Outline and saying where the origin is, and M ticks or clears it.
+
+#### Changed
+*   With the edge letters off, the view label keeps only the top left corner of the display, 8 by 8 pins with a blank pin round the label, rather than the top seven rows, and the model is drawn everywhere else.
+*   The pan arrow, drawn at the edge of the display when the model is out of frame, has a blank pin all round it, so in Side by side it no longer merges with the model in the left panel. Its redesign is #282.
+
 ## [v1.0.0-alpha.1] - 2026-10-13
 
 ### 2026-10-13

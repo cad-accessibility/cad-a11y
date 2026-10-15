@@ -314,7 +314,6 @@ def test_the_view_label_leaves_a_blank_pin_between_its_extra_column_and_the_lett
 
 
 @pytest.mark.parametrize("labels", [
-    {"show_view_info_box": True},
     {"show_axis_letters": True},
     {"show_view_info_box": True, "show_axis_letters": True},
     {"show_view_info_box": True, "show_axis_letters": True, "view": "z-"},
@@ -333,11 +332,10 @@ def test_no_label_is_ever_drawn_over_the_model(plate, labels):
                           _raised_at(plate, strips["inner"], **unlabelled))
 
 
-@pytest.mark.parametrize("letters", [False, True])
-def test_a_blank_row_or_column_parts_each_strip_from_the_model(plate, letters):
+def test_a_blank_row_or_column_parts_each_strip_from_the_model(plate):
     """Zoomed in until the plate fills the frame, the model runs right up to the
     strips, and the row or column next to it in each strip stays blank."""
-    params = {"zoom": 3, "show_view_info_box": True, "show_axis_letters": letters}
+    params = {"zoom": 3, "show_view_info_box": True, "show_axis_letters": True}
     raised = _raised(plate, **params)
     strips = _strips(plate, **params)
     top, left = strips["top"], strips["left"]
@@ -346,6 +344,32 @@ def test_a_blank_row_or_column_parts_each_strip_from_the_model(plate, letters):
     assert not raised[top - 1, :].any()
     if strips["right"]:
         assert not raised[:, left + width].any()
+
+
+def test_without_the_edge_letters_the_view_label_keeps_only_its_corner(plate):
+    """Without the edge letters the view label keeps the top left corner, not a
+    strip across the top that cost the model seven rows (Carlos, after the
+    alpha). The model has the whole frame and is blanked in an 8x8 corner: the
+    7x6 label, the blank row under it, and a blank pin of padding round them."""
+    params = {"zoom": 3, "show_view_info_box": True}
+    strips = _strips(plate, **params)
+    assert strips["corner"] == 8
+    assert strips["inner"] == list(GRID)
+    assert (strips["top"], strips["left"], strips["right"], strips["bottom"]) == (0, 0, 0, 0)
+    labelled = _raised(plate, **params)
+    model = _raised_at(plate, GRID, zoom=3)
+    assert model[:8, :8].any(), "the model does not reach the corner, so this proves nothing"
+    outside = np.ones_like(model)
+    outside[:8, :8] = False
+    assert np.array_equal(labelled[outside], model[outside])
+    assert labelled[:6, :7].any()
+    assert not labelled[6:8, :8].any()
+    assert not labelled[:8, 7].any()
+
+
+def test_with_the_edge_letters_the_view_label_keeps_no_corner(plate):
+    strips = _strips(plate, show_view_info_box=True, show_axis_letters=True)
+    assert strips["corner"] == 0
 
 
 def test_the_view_label_is_drawn_whatever_the_origin_marker_setting(plate):

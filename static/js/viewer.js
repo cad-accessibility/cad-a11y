@@ -1189,8 +1189,8 @@ const SETTINGS_SINGLE_KEY_SHORTCUTS_KEY = 'settingsSingleKeyShortcuts';
 // Settings that shape what the pins draw, on unless turned off: the view label
 // (the "view info box" setting) and the axis letters at the display edges, both
 // in either axis mode. With the axis letters drawn the label leaves out which
-// way the axes run. The origin marker is not a setting: the M key turns it on
-// and off, in either mode, and it starts off (#266).
+// way the axes run. The origin marker starts off (#266) and is not kept between
+// visits: the M key and its Settings checkbox turn it on and off, in either mode.
 // Single-key shortcuts are on too, with a way to turn them off (WCAG 2.1.4).
 viewerState.showAxisLetters = true;
 viewerState.showViewInfoBox = true;
@@ -1492,6 +1492,7 @@ function announceOrigin(emit = announceAlert) {
 function toggleOriginMarker(emit = announceAlert) {
     const on = !viewerState.showOriginMarker;
     viewerState.showOriginMarker = on;
+    if (settingsOriginMarkerCheckbox) settingsOriginMarkerCheckbox.checked = on;
     let changedMode = false;
     if (on) {
         if (viewerState.currentRenderMode !== 'outline') {
@@ -1599,9 +1600,12 @@ const xyzPosition = document.getElementById('xyz-position');
 // the side it looks from.
 const viewButtons = () => document.querySelectorAll('#xyz-controls button[data-axis][data-side]');
 const turnShortcutsSection = document.getElementById('turn-shortcuts-section');
+const dotpadShortcutsSection = document.getElementById('dotpad-shortcuts-section');
+const monarchShortcutsSection = document.getElementById('monarch-shortcuts-section');
 const xyzShortcutsSection = document.getElementById('xyz-shortcuts-section');
 const axisModeRadios = () => document.querySelectorAll('input[name="axis-mode"]');
 const settingsAxisLettersCheckbox = document.getElementById('settings-axis-letters');
+const settingsOriginMarkerCheckbox = document.getElementById('settings-origin-marker');
 const settingsSingleKeyCheckbox = document.getElementById('settings-single-key-shortcuts');
 const zoomInput = document.getElementById('zoom-input');
 const zoomLevelValue = document.getElementById('zoom-level-value');
@@ -2643,6 +2647,7 @@ function setMonarchHidConnected(connected) {
         syncRadios();
     }
     updateGenericDeviceConnectUI();
+    syncDisplayShortcuts();
     reportDeviceConnection('monarch', connected);
 }
 
@@ -2655,9 +2660,18 @@ function setDotpadConnected(connected) {
         syncRadios();
     }
     updateGenericDeviceConnectUI();
+    syncDisplayShortcuts();
     reportDeviceConnection('dotpad', connected);
 }
 window.setDotpadConnected = setDotpadConnected;
+
+/** The keyboard shortcuts dialog lists a display's buttons only while that
+ * display is connected, and with none connected, no display at all (Carlos,
+ * after the alpha). */
+function syncDisplayShortcuts() {
+    if (dotpadShortcutsSection) dotpadShortcutsSection.hidden = !dotpadConnected;
+    if (monarchShortcutsSection) monarchShortcutsSection.hidden = !monarchHidConnected;
+}
 
 /** A device connecting or dropping, as an interaction event: the study log has
  * always had a place for it, and the tutorial's Connect lesson waits on it. The
@@ -4207,6 +4221,12 @@ if (settingsAxisLettersCheckbox) {
         viewerState.showAxisLetters = this.checked;
         persistSetting(SETTINGS_AXIS_LETTERS_KEY, this.checked);
         sendStateToServer();
+    });
+}
+// The same as M, so it says the same and switches to Outline the same way.
+if (settingsOriginMarkerCheckbox) {
+    settingsOriginMarkerCheckbox.addEventListener('change', function() {
+        if (this.checked !== viewerState.showOriginMarker) toggleOriginMarker();
     });
 }
 if (settingsSingleKeyCheckbox) {

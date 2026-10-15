@@ -279,12 +279,12 @@ def test_xyz_is_the_default_and_turn_is_kept_when_chosen():
 def test_the_view_label_and_xyz_marks_are_on_unless_turned_off():
     """The label and the edge letters are drawn in either mode and are on by
     default: a stored "0" is the only thing that turns either off. The origin
-    marker is not a setting: it starts off, and the M key turns it on (#266)."""
+    marker starts off (#266) and is not stored."""
     js = _js()
     assert "viewerState.showViewInfoBox = true;" in js
     assert "viewerState.showAxisLetters = true;" in js
     assert "viewerState.showOriginMarker = false;" in js
-    assert "settings-origin-marker" not in js and "SETTINGS_ORIGIN_MARKER_KEY" not in js
+    assert "SETTINGS_ORIGIN_MARKER_KEY" not in js
     init = js[js.index("function initializeAxisSettings()"):]
     init = init[:init.index("\n}\n")]
     assert "read(SETTINGS_VIEW_INFO_BOX_KEY) !== '0'" in init
@@ -292,7 +292,7 @@ def test_the_view_label_and_xyz_marks_are_on_unless_turned_off():
     html = _html()
     assert 'id="show-view-info-box" checked' in html
     assert 'id="settings-axis-letters" checked' in html
-    assert "settings-origin-marker" not in html
+    assert re.search(r'id="settings-origin-marker">', html), "the origin checkbox starts unchecked"
     assert "show_view_info_box: viewerState.showViewInfoBox" in js
     assert "show_axis_letters: viewerState.showAxisLetters" in js
 
@@ -683,3 +683,19 @@ def test_the_help_says_the_axis_labels_are_computer_braille():
     of contracted braille would not expect, so the help and the README say so."""
     assert "computer braille" in _html()
     assert "computer braille" in (ROOT / "README.md").read_text()
+
+
+def test_the_origin_mark_has_a_settings_checkbox_that_does_what_m_does():
+    """Carlos, after the alpha: the mark is in Settings as well as on M. The
+    checkbox goes through the same function as M, so it switches to Outline and
+    says the same, and M ticks or clears the checkbox."""
+    js = _js()
+    toggle = _function("toggleOriginMarker")
+    assert "if (settingsOriginMarkerCheckbox) settingsOriginMarkerCheckbox.checked = on;" in toggle
+    wiring = js[js.index("if (settingsOriginMarkerCheckbox) {"):]
+    wiring = wiring[:wiring.index("\n}\n")]
+    assert "addEventListener('change'" in wiring
+    assert "if (this.checked !== viewerState.showOriginMarker) toggleOriginMarker();" in wiring
+    label = _html()[_html().index('for="settings-origin-marker"'):]
+    assert "M key" in label[:label.index("</label>")]
+

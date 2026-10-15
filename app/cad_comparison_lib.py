@@ -306,8 +306,13 @@ _VIEW_SIGN_DOTS = {True: [3, 4, 6], False: [3, 6]}
 # three tall. Its strip adds a blank column or row between it and the model.
 _STRIP_SIDE = 3        # a letter and a blank column
 _STRIP_EDGE = 4        # a letter and a blank row
-_STRIP_VIEW_AXES = 7   # the view label with its axis marks, 7x6, and a blank row
 _STRIP_MIN_MODEL = 8   # with fewer pins left for the model, no labels are drawn
+# Without the edge letters the view label also says which way the axes run, 7x6.
+# It keeps only the top left corner, not a strip across the top, which cost the
+# model seven rows (Carlos, after the alpha): 7x7 with the blank row under it,
+# and a blank pin of padding round that. The model is drawn everywhere else and
+# blanked in the corner.
+_VIEW_LABEL_CORNER = 8
 
 
 class CADComparisonRenderer:
@@ -550,13 +555,17 @@ class CADComparisonRenderer:
         """Draw a small filled-triangle arrow at the edge of the frame, tip
         pointing the way to pan to bring the object back into view.
 
-        Sighted-preview only — a blind/low-vision user gets this from the
-        announcement built from pan_guidance_directions in the server
-        response, not from the image. Called once per direction when the
-        object is out on both axes, so two arrows (e.g. one at the top edge,
-        one at the right edge) rather than a single diagonal one: the
-        controls are strictly up/down/left/right, so a diagonal arrow would
-        point somewhere no single keypress reaches.
+        The announcement built from pan_guidance_directions in the server
+        response says this in words, but the arrow is on the pins too: its red
+        is darker than the raised-ink threshold. So it gets a blank pin all
+        round it, as the origin mark does, and never merges with what is next
+        to it. In Side by side the left panel always shows the whole model, and
+        an arrow at the left edge used to land on its outline. A stopgap until
+        the mark itself is redesigned (#282). Called once per
+        direction when the object is out on both axes, so two arrows (e.g. one
+        at the top edge, one at the right edge) rather than a single diagonal
+        one: the controls are strictly up/down/left/right, so a diagonal arrow
+        would point somewhere no single keypress reaches.
         """
         draw_w, draw_h = render_screen_size[0], render_screen_size[1]
         if draw_w < 4 or draw_h < 4:
@@ -571,6 +580,19 @@ class CADComparisonRenderer:
             img_array[y0:y1, x0:x1, 0:3] = color
             if has_alpha:
                 img_array[y0:y1, x0:x1, 3] = 255
+
+        # The arrow's own box, then one blank pin round it, kept inside the frame.
+        if direction in ("right", "left"):
+            tip_x = (draw_w - 1 - margin) if direction == "right" else margin
+            box_x = (tip_x - size + 1, tip_x) if direction == "right" else (tip_x, tip_x + size - 1)
+            box_y = (mid_y - (size - 1), mid_y + (size - 1))
+        else:
+            tip_y = margin if direction == "up" else (draw_h - 1 - margin)
+            box_x = (mid_x - (size - 1), mid_x + (size - 1))
+            box_y = (tip_y, tip_y + size - 1) if direction == "up" else (tip_y - size + 1, tip_y)
+        clear_x0, clear_y0 = max(0, box_x[0] - 1), max(0, box_y[0] - 1)
+        clear_x1, clear_y1 = min(draw_w - 1, box_x[1] + 1), min(draw_h - 1, box_y[1] + 1)
+        self._clear_box(img_array, clear_x0, clear_y0, clear_x1 - clear_x0 + 1, clear_y1 - clear_y0 + 1)
 
         if direction in ("right", "left"):
             tip_x = (draw_w - 1 - margin) if direction == "right" else margin
@@ -1163,8 +1185,8 @@ class CADComparisonRenderer:
                                drawable_size, show_axes=True):
         """The view info box, now the view label (#267): the axis you are looking down
         and the side you look from, as a braille letter and sign, in the top left
-        corner of the frame, inside the top strip that _label_strips keeps for it.
-        With the edge letters drawn (show_axes False), which say which way the
+        corner of the frame, inside the top strip or the corner that _label_strips
+        keeps for it. With the edge letters drawn (show_axes False), which say which way the
         display's axes run, it is just the letter and sign, hard against the
         corner (Josh's alpha review).
 
@@ -1257,9 +1279,11 @@ class CADComparisonRenderer:
         agree on where it is.
 
         A side strip for the letter of the axis that increases toward that side,
-        a top or bottom strip for the up letter, and the top strip whenever the
-        view label is drawn, in its top left corner. Side by side draws no labels,
-        and nor does a frame too small to leave the model room."""
+        a top or bottom strip for the up letter, and with the letters, the top
+        strip for the view label, in its top left corner. Without them the label
+        keeps only that corner, `corner` pins square, and the model has the rest
+        of the frame. Side by side draws no labels, and nor does a frame too small
+        to leave the model room."""
         if str(params.get("mode", "single")).lower() == "side-by-side":
             return None
         letters = bool(params.get("show_axis_letters", False))
@@ -1276,12 +1300,13 @@ class CADComparisonRenderer:
         if letters:
             strips["right" if across_right else "left"] = _STRIP_SIDE
             strips["top" if up_top else "bottom"] = _STRIP_EDGE
-        if label:
-            strips["top"] = max(strips["top"], _STRIP_EDGE if letters else _STRIP_VIEW_AXES)
+        if label and letters:
+            strips["top"] = max(strips["top"], _STRIP_EDGE)
+        corner = _VIEW_LABEL_CORNER if label and not letters else 0
         inner = [w - strips["left"] - strips["right"], h - strips["top"] - strips["bottom"]]
-        if min(inner) < _STRIP_MIN_MODEL:
+        if min(inner) < corner + _STRIP_MIN_MODEL:
             return None
-        return {**strips, "inner": inner, "letters": letters, "label": label,
+        return {**strips, "inner": inner, "letters": letters, "label": label, "corner": corner,
                 "axes": (right_axis, up_axis, toward_reader)}
 
     def _render_in_label_strips(self, params, screen_size, strips):
@@ -1299,6 +1324,8 @@ class CADComparisonRenderer:
         left, top = strips["left"], strips["top"]
         rows, cols = min(image.shape[0], h - top), min(image.shape[1], w - left)
         full[top:top + rows, left:left + cols] = image[:rows, :cols]
+        if strips["corner"]:
+            self._clear_box(full, 0, 0, strips["corner"], strips["corner"])
         right_axis, up_axis, toward_reader = strips["axes"]
         if strips["letters"]:
             self._overlay_axis_letters(full, right_axis, up_axis, strips)

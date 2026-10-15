@@ -461,3 +461,77 @@ def test_the_side_by_side_labels_stay_hidden_outside_side_by_side():
     css = VIEWER_CSS.read_text(encoding="utf-8")
     assert ".side-by-side-axis-labels[hidden]" in css
     assert "side-by-side-axis-labels" in _hidden_classes()
+
+
+# ---------------------------------------------------------------------------
+# The display buttons in the keyboard shortcuts dialog (Carlos, after the alpha)
+# ---------------------------------------------------------------------------
+
+
+def _shortcuts_section(section_id: str) -> str:
+    html = VIEWER_HTML.read_text(encoding="utf-8")
+    start = html.index(f'id="{section_id}"')
+    return html[start:html.index("</div>", start)]
+
+
+def _help_forms(button: str) -> list[str]:
+    """How the dialog writes a button the tutorial's key table names."""
+    dots = re.fullmatch(r"dots? ([1-6](?: [1-6])*)", button)
+    if dots:
+        word = "Dot" if " " not in dots.group(1) else "Dots"
+        return [f"<kbd>{word} {dots.group(1)}</kbd>", f"(dots {dots.group(1)})"]
+    letter = re.fullmatch(r"braille ([a-z])", button)
+    if letter:
+        return [f"<kbd>{letter.group(1)}</kbd>"]
+    named = {
+        "the left panning key": ["<kbd>LP</kbd>"],
+        "the right panning key": ["<kbd>RP</kbd>"],
+        "function key 1": ["<kbd>F1</kbd>"],
+        "function key 4": ["<kbd>F4</kbd>"],
+        "Space": ["<kbd>Space</kbd>"],
+    }
+    if button in named:
+        return named[button]
+    if "D-pad" in button:
+        return ["<kbd>D-pad</kbd>"]
+    if button == "the function and panning keys":
+        return ["<kbd>LP</kbd>"]
+    raise AssertionError(f"no help form for {button!r}")
+
+
+def test_each_display_has_a_hidden_section_in_the_shortcuts_dialog():
+    html = VIEWER_HTML.read_text(encoding="utf-8")
+    dialog_start = html.index('id="shortcuts-dialog"')
+    dialog_end = html.index("</dialog>", dialog_start)
+    by_id = _by_id()
+    for section_id in ("dotpad-shortcuts-section", "monarch-shortcuts-section"):
+        assert dialog_start < html.index(f'id="{section_id}"') < dialog_end
+        assert by_id[section_id]["hidden"], f"{section_id} shows before a display connects"
+
+
+def test_a_display_section_shows_only_while_that_display_is_connected():
+    js = VIEWER_JS.read_text(encoding="utf-8")
+    sync = js[js.index("function syncDisplayShortcuts()"):]
+    sync = sync[:sync.index("\n}\n")]
+    assert "dotpadShortcutsSection.hidden = !dotpadConnected;" in sync
+    assert "monarchShortcutsSection.hidden = !monarchHidConnected;" in sync
+    for setter in ("function setMonarchHidConnected(", "function setDotpadConnected("):
+        body = js[js.index(setter):]
+        body = body[:body.index("\n}\n")]
+        assert "syncDisplayShortcuts();" in body, f"{setter} does not update the dialog"
+
+
+def test_the_display_sections_list_every_button_the_key_table_names():
+    """The tutorial's key table is checked against dotpad-integration.js and
+    monarch-hid.js (test_tutorial_lessons.py), so a button there and missing
+    here is one the dialog forgot."""
+    from app import tutorial_lessons as tl
+
+    for device, section_id in (("dotpad", "dotpad-shortcuts-section"), ("monarch", "monarch-shortcuts-section")):
+        section = _shortcuts_section(section_id)
+        for name, entry in tl.KEYS.items():
+            button = entry[device]
+            if not button or name.startswith("pattern_"):
+                continue
+            forms = _help_forms(button)
+            assert any(form in section for form in forms), f"{device} section is missing {name}: {button!r}"

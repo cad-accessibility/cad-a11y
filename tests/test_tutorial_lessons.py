@@ -1505,6 +1505,8 @@ CONTROLS_NOT_TAUGHT = {
     # A notice in a browser that can't connect, not a control to learn.
     "browser-support-dialog",
     "settings-axis-letters",
+    # M, which lesson 8 teaches, does the same.
+    "settings-origin-marker",
     "output-device-dotpad",
     "output-device-monarch",
     "settings-enable-debug-panel",

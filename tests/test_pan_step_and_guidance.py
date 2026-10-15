@@ -317,3 +317,32 @@ def test_panning_back_the_other_way_clears_the_out_of_frame_flag(renderer):
 
     assert result.object_out_of_frame is False
     assert result.pan_guidance_directions == []
+
+
+@pytest.mark.parametrize("direction", ["left", "right", "up", "down"])
+def test_the_arrow_has_a_blank_pin_all_round_it(renderer, direction):
+    """The arrow is on the pins, not only in the preview, so it gets a blank pin
+    all round it, as the origin mark does. Drawn over solid ink, the stand-in for
+    Side by side's left panel, which always shows the whole model: inside the
+    ring there is only the arrow, the ring is blank, and the ink outside it is
+    untouched."""
+    w, h = 60, 40
+    image = np.zeros((h, w, 4), dtype=np.uint8)
+    image[:, :, 3] = 255
+    renderer._draw_pan_guidance_arrow(image, [w, h], direction)
+
+    arrow = np.all(image[:, :, 0:3] == [220, 30, 30], axis=-1)
+    blank = np.all(image[:, :, 0:3] == 255, axis=-1)
+    rows, cols = np.nonzero(arrow)
+    top, bottom, left, right = rows.min(), rows.max(), cols.min(), cols.max()
+    ring_top, ring_bottom = max(0, top - 1), min(h - 1, bottom + 1)
+    ring_left, ring_right = max(0, left - 1), min(w - 1, right + 1)
+
+    inside = np.zeros_like(arrow)
+    inside[ring_top:ring_bottom + 1, ring_left:ring_right + 1] = True
+    assert np.all(arrow | blank | ~inside), "something other than the arrow is inside its ring"
+    assert blank[ring_top, ring_left:ring_right + 1].all() or ring_top == top
+    assert blank[ring_bottom, ring_left:ring_right + 1].all() or ring_bottom == bottom
+    assert blank[ring_top:ring_bottom + 1, ring_left].all() or ring_left == left
+    assert blank[ring_top:ring_bottom + 1, ring_right].all() or ring_right == right
+    assert not (blank | arrow)[~inside].any(), "the ink outside the ring was touched"
