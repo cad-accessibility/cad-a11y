@@ -472,7 +472,8 @@ def _rank(item: tuple[Any, float]) -> tuple[bool, float, str]:
 
 def _top(totals: Counter, limit: int) -> Callable[[Any], Any]:
     """A label mapper keeping the ``limit`` largest and turning the rest into Other."""
-    largest = sorted(totals.items(), key=lambda item: (-item[1], str(item[0])))
+    named = (item for item in totals.items() if item[0] != _OTHER)
+    largest = sorted(named, key=lambda item: (-item[1], str(item[0])))
     keep = {label for label, _ in largest[:limit]}
     return lambda label: label if label in keep else _OTHER
 

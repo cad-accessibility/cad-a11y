@@ -11,6 +11,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -1220,3 +1221,11 @@ def test_start_message_says_whether_the_report_is_on(monkeypatch):
         "/usage" in usage_routes.start_message()
         and "off" not in usage_routes.start_message()
     )
+
+
+def test_an_existing_other_bucket_does_not_take_a_named_slot():
+    counts = Counter({f"device{i}": 50 - i for i in range(10)})
+    counts["Other"] = 100
+    rows = usage_report._ranked(counts, limit=10)
+    assert [row[0] for row in rows[:10]] == [f"device{i}" for i in range(10)]
+    assert rows[-1] == ("Other", 100)
