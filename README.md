@@ -419,6 +419,21 @@ docker compose exec app python scripts/cleanup_ingest_models.py
 
 That reports only. Re-run with `--apply` to delete. It never touches anything shipped in `builtin_models/`, and it warns about models that share a stem, since a stem names one model to the client.
 
+## Usage report
+
+`/usage` shows what the analytics database has recorded: sessions, renders, interaction events, the tutorial and uploads, as charts with a data table under each. `/usage.json` gives the same report as data, and `?workshop=exclude` leaves out workshop sessions. Neither shows session ids, workshop participants' names, uploaded file names or contacts. A value the browser sends, such as a key, an export format or a section's name, is shown only when the viewer itself sends that value or, where the viewer keeps no list of them, when at least two sessions sent it. Anything else reads "Other", and a long table keeps its largest rows and adds up the rest as "Other". A demo station does not serve it.
+
+It is off until a password is set. On the servers, the password is the GitHub Actions secret `CAD_A11Y_USAGE_PASSWORD` (Settings > Secrets and variables > Actions). To set or change it:
+
+1. Store the password in the secret, for example with `gh secret set CAD_A11Y_USAGE_PASSWORD`, which reads it without echoing it. Use a long random password, for example one from a password manager. The secret starts out holding a random placeholder that nobody knows, so the report is wired up but cannot be opened until it is replaced.
+2. Deploy as usual. On each push to `master` or a `v*` tag, the Mirror to GitLab workflow hashes the password with `python -m app.usage_report hash --stdin` and passes only the scrypt hash, base64-encoded, to the GitLab deploy pipeline as the variable `CAD_A11Y_USAGE_PASSWORD_HASH_B64`. `scripts/docker_compose_build.sh` decodes it into `CAD_A11Y_USAGE_PASSWORD_HASH`, and `docker-compose.yml` passes that into the container. A changed secret takes effect at the next deploy, or by re-running the workflow from the Actions tab.
+3. Check the server's log. It says `Usage report: on, at /usage.` when the hash is accepted, and `Usage report: off` otherwise.
+4. Open `/usage`. The browser asks for a username and password; the username is ignored.
+
+A pipeline started any other way, such as "Run pipeline" in GitLab, carries no hash, and the report it deploys is off. With no hash, or a value that is not a hash from the command above, both addresses answer 404.
+
+On your own machine, make a hash with `python -m app.usage_report hash` (it asks for the password twice, needs none of the app's dependencies, and prints only the hash), and put it in `.env` beside `docker-compose.yml`, in single quotes: `CAD_A11Y_USAGE_PASSWORD_HASH='scrypt$32768$8$1$...'`. The quotes matter: the hash contains `$`, and Compose interpolates unquoted and double-quoted values in `.env`.
+
 ## License
 
 BSD 3-Clause, in the University of Washington's wording: see [LICENSE](LICENSE). It covers this project's own code. The libraries it depends on keep their own licenses.

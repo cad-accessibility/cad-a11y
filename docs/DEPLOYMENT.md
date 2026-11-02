@@ -69,6 +69,34 @@ The credential chain:
 This is a **service-account credential** not tied to any individual person's GitLab account.
 Individual maintainers use their own personal SSH keys for manual deployments (see below).
 
+### The usage report's password
+
+The workflow reads one more secret, `CAD_A11Y_USAGE_PASSWORD`: the password for `/usage` (see the README's
+"Usage report" section). The password itself never leaves the GitHub runner. The workflow hashes it with
+scrypt and sends the hash, base64-encoded, as a push option
+(`-o ci.variable=CAD_A11Y_USAGE_PASSWORD_HASH_B64=...`), which sets that variable on the GitLab pipelines the
+push starts. Base64 because GitLab expands the `$name` parts of a raw hash. `scripts/docker_compose_build.sh`
+decodes it and `docker-compose.yml` passes it into the container. With the secret unset the workflow sends no
+push option and the report is off.
+
+This only works if GitLab lets the mirror's token set pipeline variables. Check both before relying on it:
+
+- `Settings > CI/CD > Variables > Minimum role to use pipeline variables`. GitLab's default for self-managed
+  projects is Maintainer. A group Owner can switch projects that have never used pipeline variables to
+  "No one allowed" (GitLab 18.4 and later), and only an Owner can change it back from that or from Owner.
+- `Settings > Access Tokens`: the `github-actions-mirror` token's role must be at least that minimum.
+
+If either falls short, GitLab refuses the variable ("Insufficient permissions to set pipeline variables")
+and creates no deploy pipeline, while the GitHub push itself succeeds, so the mirror job can stay green with
+nothing deployed. After the first merge that sends the hash, check `CI/CD > Pipelines` for a `master`
+pipeline whose `deploy_research_test` job ran, and after the first release tag, for the tag's
+`deploy_research_prod` job. To stop sending the hash, delete the `CAD_A11Y_USAGE_PASSWORD` secret: the
+workflow then pushes exactly as before.
+
+The hash is visible to anyone who can see the pipeline's variables in GitLab. That is the same exposure the
+study panels' token hashes already have in this repository: scrypt makes guessing a long random password from
+its hash impractical.
+
 ## Manual deployment (using your own GitLab access)
 
 If you need to deploy outside the normal PR-merge flow — for example to roll back quickly or test a hotfix
@@ -101,6 +129,24 @@ git push gitlab master
 
 ```bash
 git push gitlab v0.x.y
+```
+
+A manual push carries no usage-report hash, so the deploy it starts turns `/usage` off. To keep it on, send
+the hash the way the workflow does. The first line asks for the password twice and stops if they differ.
+Your own GitLab role has to meet the minimum role for pipeline variables described above, and the push has to
+carry a new commit or tag: one GitLab already has starts no pipeline.
+
+```bash
+usage_hash="$(python3 -m app.usage_report hash)" && \
+  usage_option="ci.variable=CAD_A11Y_USAGE_PASSWORD_HASH_B64=$(printf '%s' "$usage_hash" | base64 | tr -d '\n')" && \
+  echo "Hash ready."
+```
+
+Once that prints `Hash ready.`, push in the same shell:
+
+```bash
+git push -o "$usage_option" gitlab master    # staging
+git push -o "$usage_option" gitlab v0.x.y    # production
 ```
 
 ### Roll back staging

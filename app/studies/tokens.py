@@ -39,6 +39,8 @@ _DKLEN = 32
 # that counts its own overhead against it.
 _MAXMEM = 64 * 1024 * 1024
 _PREFIX = "scrypt"
+_MAX_N = 2**20
+_MAX_RP = 16
 
 _verified: dict[tuple[str, str], bool] = {}
 _verified_lock = threading.Lock()
@@ -93,7 +95,10 @@ def _parse(token_hash: str) -> tuple[int, int, int, bytes, bytes]:
         salt, key = _unb64(parts[4]), _unb64(parts[5])
     except (ValueError, TypeError) as error:
         raise ValueError(f"malformed token hash: {error}") from error
-    if n < 2 or n & (n - 1) or r < 1 or p < 1 or not salt or len(key) != _DKLEN:
+    # Bounded, so a hash cannot ask scrypt for a cost it cannot even take: an n
+    # past 64 bits made verify raise TypeError rather than refuse.
+    in_range = 2 <= n <= _MAX_N and not n & (n - 1) and 1 <= r <= _MAX_RP and 1 <= p <= _MAX_RP
+    if not in_range or not salt or len(key) != _DKLEN:
         raise ValueError("token hash parameters are out of range")
     return n, r, p, salt, key
 
@@ -118,7 +123,7 @@ def verify(token: str | None, token_hash: str | None) -> bool:
             actual = hashlib.scrypt(
                 token.encode("utf-8"), salt=salt, n=n, r=r, p=p, maxmem=_MAXMEM, dklen=len(expected)
             )
-    except (ValueError, MemoryError):
+    except (ValueError, TypeError, OverflowError, MemoryError):
         return False
     ok = hmac.compare_digest(actual, expected)
     if ok:

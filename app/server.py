@@ -44,7 +44,7 @@ from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
 
-from . import api, db, email_address, recording, tutorial
+from . import api, db, email_address, recording, tutorial, usage_routes
 from .studies import engine as studies_engine
 from .studies import registry as studies_registry
 from .braille_display import (
@@ -523,6 +523,12 @@ STUDY_LOAD_MESSAGES: list[str] = []
 if not DEMO_ONLY:
     app.register_blueprint(studies_engine.studies_bp)
     STUDY_LOAD_MESSAGES = studies_registry.load()
+
+# The usage report reads what the analytics database recorded, so a demo
+# station, which records nothing and has nothing to show, does not serve it.
+usage_routes.configure(builtin_dir=lambda: BUILTIN_SOURCE_DIR)
+if not DEMO_ONLY:
+    app.register_blueprint(usage_routes.usage_bp)
 
 # The tutorial's endpoints, on every server a demo station included: they write
 # nothing and record nothing, so there is nothing for a demo to be kept away
@@ -1581,7 +1587,9 @@ else:
 # /api is closed too. It only describes itself today, but the routes coming to
 # it take models in from other tools, and a demo station takes nothing in (#244
 # review).
-_CLOSED_TO_DEMO = ("/studies", "/ingest", "/api")
+#
+# /usage is the usage report: it shows what other people did with the viewer.
+_CLOSED_TO_DEMO = ("/studies", "/ingest", "/api", "/usage", "/usage.json")
 
 
 @app.before_request
@@ -2809,6 +2817,8 @@ def main() -> int:
     # which studies are served and which definitions were refused.
     for message in STUDY_LOAD_MESSAGES or ["No studies are served by this process."]:
         _log(message, force=True)
+    if not DEMO_ONLY:
+        _log(usage_routes.start_message(), force=True)
     # Backgrounded rather than awaited: this used to run before app.run(), so
     # nothing -- not even /health -- answered until the first default-params
     # render finished. A cold model's mesh load and slice precompute is easily

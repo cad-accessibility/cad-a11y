@@ -30,6 +30,10 @@ services:
       # which this file never passes, because its panel token is published; only
       # docker-compose.example-study.yml, for CI and development, sets it.
       CAD_A11Y_OPEN_STUDIES: "${CAD_A11Y_OPEN_STUDIES:-}"
+      # The scrypt hash of the /usage password. On the servers it comes from
+      # the GitHub secret CAD_A11Y_USAGE_PASSWORD, by way of the mirror workflow
+      # and scripts/docker_compose_build.sh. Unset, the report answers 404.
+      CAD_A11Y_USAGE_PASSWORD_HASH: "${CAD_A11Y_USAGE_PASSWORD_HASH:-}"
     volumes:
       # Docker-managed named volumes (not host bind mounts). On first mount,
       # Docker seeds each volume from the image's /project/data/<name>, which
