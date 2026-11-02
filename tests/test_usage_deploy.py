@@ -130,17 +130,39 @@ def test_compose_passes_the_hash_into_the_container_as_written():
     assert environment["CAD_A11Y_USAGE_PASSWORD_HASH"].replace("$$", "$") == HASH
 
 
-def test_hash_from_stdin_ignores_one_trailing_newline():
-    # A secret stored from `echo password | ...` ends in a newline that no
+@pytest.mark.parametrize(
+    "piped, password",
+    [
+        (PASSWORD + "\n", PASSWORD),
+        (PASSWORD + "\r\n", PASSWORD),
+        (" pw \r\n", " pw "),
+        ("pw\n\n", "pw\n"),
+    ],
+)
+def test_hash_from_stdin_drops_one_line_ending(piped, password):
+    # A secret stored from `echo password | ...` ends in a line ending that no
     # browser's password prompt can send.
     result = subprocess.run(
         [sys.executable, "-m", "app.usage_report", "hash", "--stdin"],
         cwd=ROOT,
-        input=PASSWORD + "\n",
+        input=piped.encode(),
         capture_output=True,
-        text=True,
         check=False,
     )
 
     assert result.returncode == 0, result.stderr
-    assert tokens.verify(PASSWORD, result.stdout.strip())
+    assert tokens.verify(password, result.stdout.decode().strip())
+
+
+@pytest.mark.parametrize("piped", ["\n", "\r\n"])
+def test_hash_from_stdin_refuses_a_bare_line_ending(piped):
+    result = subprocess.run(
+        [sys.executable, "-m", "app.usage_report", "hash", "--stdin"],
+        cwd=ROOT,
+        input=piped.encode(),
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert result.stdout == b""
