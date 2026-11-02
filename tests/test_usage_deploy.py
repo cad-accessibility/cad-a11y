@@ -128,3 +128,19 @@ def test_compose_passes_the_hash_into_the_container_as_written():
     # config prints each literal "$" as "$$" so its output reads back the same;
     # a value Compose had expanded would have lost the "$aGho..." part instead.
     assert environment["CAD_A11Y_USAGE_PASSWORD_HASH"].replace("$$", "$") == HASH
+
+
+def test_hash_from_stdin_ignores_one_trailing_newline():
+    # A secret stored from `echo password | ...` ends in a newline that no
+    # browser's password prompt can send.
+    result = subprocess.run(
+        [sys.executable, "-m", "app.usage_report", "hash", "--stdin"],
+        cwd=ROOT,
+        input=PASSWORD + "\n",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert tokens.verify(PASSWORD, result.stdout.strip())

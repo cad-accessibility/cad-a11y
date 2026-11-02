@@ -1369,7 +1369,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.stdin:
-            password = again = sys.stdin.read()
+            # One line ending dropped: a browser's prompt cannot send it back.
+            password = again = sys.stdin.read().removesuffix("\n").removesuffix("\r")
         else:
             password = getpass.getpass("Password for /usage: ")
             again = getpass.getpass("The same password again: ") if password else ""
