@@ -1356,15 +1356,23 @@ def main(argv: list[str] | None = None) -> int:
         description="Tools for the usage report at /usage.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser(
+    hash_command = commands.add_parser(
         "hash",
         help="Ask for a password twice and print the hash to set as CAD_A11Y_USAGE_PASSWORD_HASH.",
     )
-    parser.parse_args(argv)
+    hash_command.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read the password from standard input instead, for the deploy workflow.",
+    )
+    args = parser.parse_args(argv)
 
     try:
-        password = getpass.getpass("Password for /usage: ")
-        again = getpass.getpass("The same password again: ") if password else ""
+        if args.stdin:
+            password = again = sys.stdin.read()
+        else:
+            password = getpass.getpass("Password for /usage: ")
+            again = getpass.getpass("The same password again: ") if password else ""
     except (EOFError, KeyboardInterrupt):
         print("\nNo password read; nothing printed.", file=sys.stderr)
         return 1

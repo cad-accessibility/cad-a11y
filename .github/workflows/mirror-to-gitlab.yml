@@ -16,9 +16,22 @@ jobs:
           fetch-depth: 0
 
       - name: Push to GitLab
+        env:
+          # The /usage report's password. Only its scrypt hash leaves this job,
+          # as a variable on the deploy pipelines this push starts; see
+          # scripts/docker_compose_build.sh. Unset, the report stays off.
+          USAGE_PASSWORD: ${{ secrets.CAD_A11Y_USAGE_PASSWORD }}
         run: |
+          push_options=()
+          if [ -n "$USAGE_PASSWORD" ]; then
+            usage_hash="$(printf '%s' "$USAGE_PASSWORD" | python3 -m app.usage_report hash --stdin)"
+            # Base64, because GitLab expands the "$name" parts of a raw hash.
+            usage_hash_b64="$(printf '%s' "$usage_hash" | base64 -w0)"
+            echo "::add-mask::$usage_hash_b64"
+            push_options=(-o "ci.variable=CAD_A11Y_USAGE_PASSWORD_HASH_B64=$usage_hash_b64")
+          fi
           git remote add gitlab "https://oauth2:${{ secrets.GITLAB_HTTPS_TOKEN }}@gitlab.cs.washington.edu/make4all/cad-a11y.git"
-          git push gitlab HEAD:master --follow-tags
+          git push "${push_options[@]}" gitlab HEAD:master --follow-tags
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            git push gitlab "$GITHUB_REF"
+            git push "${push_options[@]}" gitlab "$GITHUB_REF"
           fi

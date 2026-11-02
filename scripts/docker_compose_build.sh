@@ -25,6 +25,16 @@ if [ -z "${CAD_A11Y_VERSION:-}" ]; then
 fi
 export CAD_A11Y_VERSION
 
+# The usage report's password hash. The mirror workflow sends it base64-encoded
+# as a pipeline variable, because GitLab would expand the "$name" parts of a raw
+# scrypt hash; docker-compose.yml passes the decoded value into the container.
+# Without it the report stays off.
+if [ -n "${CAD_A11Y_USAGE_PASSWORD_HASH_B64:-}" ]; then
+    CAD_A11Y_USAGE_PASSWORD_HASH="$(printf '%s' "$CAD_A11Y_USAGE_PASSWORD_HASH_B64" | base64 -d)" \
+        || { echo "CAD_A11Y_USAGE_PASSWORD_HASH_B64 is not base64; the usage report stays off." >&2; CAD_A11Y_USAGE_PASSWORD_HASH=""; }
+    export CAD_A11Y_USAGE_PASSWORD_HASH
+fi
+
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 

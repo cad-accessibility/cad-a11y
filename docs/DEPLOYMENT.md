@@ -69,6 +69,20 @@ The credential chain:
 This is a **service-account credential** not tied to any individual person's GitLab account.
 Individual maintainers use their own personal SSH keys for manual deployments (see below).
 
+### The usage report's password
+
+The workflow reads one more secret, `CAD_A11Y_USAGE_PASSWORD`: the password for `/usage` (see the README's
+"Usage report" section). The password itself never leaves the GitHub runner. The workflow hashes it with
+scrypt and sends the hash, base64-encoded, as a push option
+(`-o ci.variable=CAD_A11Y_USAGE_PASSWORD_HASH_B64=...`), which sets that variable on the GitLab pipelines the
+push starts. Base64 because GitLab expands the `$name` parts of a raw hash. `scripts/docker_compose_build.sh`
+decodes it and `docker-compose.yml` passes it into the container. With the secret unset the workflow sends no
+push option and the report is off.
+
+The hash is visible to anyone who can see the pipeline's variables in GitLab. That is the same exposure the
+study panels' token hashes already have in this repository: scrypt makes guessing a long random password from
+its hash impractical.
+
 ## Manual deployment (using your own GitLab access)
 
 If you need to deploy outside the normal PR-merge flow — for example to roll back quickly or test a hotfix
@@ -101,6 +115,13 @@ git push gitlab master
 
 ```bash
 git push gitlab v0.x.y
+```
+
+A manual push carries no usage-report hash, so the deploy it starts turns `/usage` off. To keep it on, send
+the hash the way the workflow does (the command asks for the password twice):
+
+```bash
+git push -o ci.variable="CAD_A11Y_USAGE_PASSWORD_HASH_B64=$(python -m app.usage_report hash | base64 | tr -d '\n')" gitlab master
 ```
 
 ### Roll back staging
