@@ -419,6 +419,34 @@ docker compose exec app python scripts/cleanup_ingest_models.py
 
 That reports only. Re-run with `--apply` to delete. It never touches anything shipped in `builtin_models/`, and it warns about models that share a stem, since a stem names one model to the client.
 
+## Usage report
+
+`/usage` shows what the analytics database has recorded: sessions, renders, interaction events, the tutorial and uploads, as charts with a data table under each. `/usage.json` gives the same report as data, and `?workshop=exclude` leaves out workshop sessions. Neither shows session ids, workshop participants' names, uploaded file names or contacts. A demo station does not serve it.
+
+It is off until a password is set. To turn it on:
+
+1. Make a hash of the password, from a checkout of this repository with Python 3.12 (it needs none of the app's dependencies). It asks for the password twice and prints only the hash, so the password stays out of your shell history:
+
+   ```bash
+   python -m app.usage_report hash
+   ```
+
+   Use a long random password, for example one from a password manager.
+
+2. Put the hash in the deployment's `.env`, beside `docker-compose.yml`, in single quotes:
+
+   ```bash
+   CAD_A11Y_USAGE_PASSWORD_HASH='scrypt$32768$8$1$...'
+   ```
+
+   The quotes matter. The hash contains `$`, and Compose interpolates unquoted and double-quoted values in `.env`; single-quoted values are used as written.
+
+3. Recreate the container so it reads the new value (`docker compose up -d --force-recreate app`). The server's log says `Usage report: on, at /usage.` when the hash is accepted, and `Usage report: off` otherwise.
+
+4. Open `/usage`. The browser asks for a username and password; the username is ignored.
+
+With no hash, or a value that is not a hash from the command above, both addresses answer 404.
+
 ## License
 
 BSD 3-Clause, in the University of Washington's wording: see [LICENSE](LICENSE). It covers this project's own code. The libraries it depends on keep their own licenses.
