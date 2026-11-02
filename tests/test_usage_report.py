@@ -180,6 +180,7 @@ def _seed(path):
                 "2026-01-02T10:01:00Z",
             ),
             event(REGULAR, "export", {"format": "pdf"}, "2026-01-02T10:02:00Z"),
+            event(DISTINCTIVE, "export", {"format": "pdf"}, "2026-01-01T09:07:00Z"),
             event(
                 REGULAR,
                 "model_select",
@@ -422,8 +423,8 @@ def test_report_counts_usage(client, usage_db, enabled):
         "mug": 1,
     }
     assert _tile(interaction, "Malformed event data") == 1
-    assert _rows(_chart(interaction, "Event types"))["export"] == 2
-    assert _rows(_chart(interaction, "Exports")) == {"pdf": 1}
+    assert _rows(_chart(interaction, "Event types"))["export"] == 3
+    assert _rows(_chart(interaction, "Exports")) == {"pdf": 2}
     engagement = _section(document, "Engagement")
     assert _tile(engagement, "Returning sessions") == 1
 
@@ -559,8 +560,627 @@ def test_the_html_is_built_from_the_same_report_as_the_json(usage_db):
 
 
 # ---------------------------------------------------------------------------
+# Building a database row by row
+# ---------------------------------------------------------------------------
+
+S1 = "11111111-1111-4111-8111-111111111111"
+S2 = "22222222-2222-4222-8222-222222222222"
+S3 = "33333333-3333-4333-8333-333333333333"
+DEFAULT_AT = "2026-03-02T10:00:00Z"
+_RENDER_COLUMNS = (
+    "session_id",
+    "view",
+    "render_mode",
+    "depth",
+    "zoom",
+    "layout_mode",
+    "input_source",
+    "created_at",
+)
+
+
+def _sessions(path, *ids):
+    conn = sqlite3.connect(path)
+    conn.executemany(
+        "INSERT INTO sessions (id, consent_given, is_workshop, created_at) VALUES (?, 1, 0, ?)",
+        [(session_id, DEFAULT_AT) for session_id in ids],
+    )
+    conn.commit()
+    conn.close()
+
+
+def _events(path, rows):
+    """``rows`` are (session, event_type, data) or (session, event_type, data, created_at)."""
+    conn = sqlite3.connect(path)
+    conn.executemany(
+        "INSERT INTO page_events (session_id, event_type, event_data, created_at) VALUES (?, ?, ?, ?)",
+        [
+            (
+                row[0],
+                row[1],
+                row[2] if isinstance(row[2], str) else json.dumps(row[2]),
+                row[3] if len(row) > 3 else DEFAULT_AT,
+            )
+            for row in rows
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+
+def _renders(path, rows):
+    """Each row names the render_stats columns it sets; the rest are an ordinary render."""
+    plain = {
+        "session_id": S1,
+        "view": "y-",
+        "render_mode": "Filled",
+        "depth": 0.5,
+        "zoom": 1.0,
+        "layout_mode": "single",
+        "input_source": "http_render",
+        "created_at": DEFAULT_AT,
+    }
+    conn = sqlite3.connect(path)
+    conn.executemany(
+        f"INSERT INTO render_stats ({', '.join(_RENDER_COLUMNS)}) VALUES ({', '.join('?' * len(_RENDER_COLUMNS))})",
+        [tuple({**plain, **row}[column] for column in _RENDER_COLUMNS) for row in rows],
+    )
+    conn.commit()
+    conn.close()
+
+
+def _build(path, **options):
+    """The report as /usage.json serves it."""
+    report = usage_report.build_report(path, **options)
+    return json.loads(json.dumps(usage_report.report_to_json(report)))
+
+
+def _labels(chart):
+    return [row[0] for row in chart["rows"]]
+
+
+# ---------------------------------------------------------------------------
+# What the browser can make the report say
+# ---------------------------------------------------------------------------
+
+
+def test_a_free_form_value_is_shown_only_once_two_sessions_sent_it(usage_db):
+    _sessions(usage_db, S1, S2)
+    too_long = "x" * 61
+    _events(
+        usage_db,
+        [
+            (S1, "export", {"format": "stl"}),
+            (S2, "export", {"format": "stl"}),
+            (S1, "export", {"format": "Jane Doe thesis"}),
+            (S1, "export", {"format": "Jane Doe thesis"}),
+            (S1, "export", {"format": too_long}),
+            (S2, "export", {"format": too_long}),
+            (S1, "export", {"format": "bell\x07"}),
+            (S2, "export", {"format": "bell\x07"}),
+            (S1, "export", {"format": 7}),
+            (S2, "export", {"format": 7}),
+            (S1, "device_connect", {"device_type": "dotpad", "status": "connected"}),
+            (S2, "device_connect", {"device_type": "dotpad", "status": "Jane's pad"}),
+            (
+                S1,
+                "section_dwell",
+                {"section_label": "Jane's notes", "duration_ms": 1000},
+            ),
+            (S1, "section_dwell", {"section_label": "Render", "duration_ms": 1000}),
+            (S2, "section_dwell", {"section_label": "Render", "duration_ms": 1000}),
+        ],
+    )
+
+    document = _build(usage_db)
+
+    interaction = _section(document, "Interaction")
+    assert _rows(_chart(interaction, "Exports")) == {"stl": 2, "Other": 8}
+    devices = _chart(interaction, "Device connections")
+    assert devices["columns"] == ["Device", "Other"]
+    assert devices["rows"] == [["dotpad", 2]]
+    assert _labels(_chart(interaction, "Time in each section")) == ["Render", "Other"]
+    assert "Jane" not in json.dumps(document)
+
+
+def test_a_value_typed_into_a_real_request_never_reaches_the_report(
+    client, usage_db, enabled
+):
+    assert (
+        client.post(
+            "/session/identify", json={"email": None, "consent": True}
+        ).status_code
+        == 200
+    )
+    typed = "Jane Doe thesis draft"
+    for body in (
+        {"event_type": "export", "event_data": {"format": typed}},
+        {
+            "event_type": "device_connect",
+            "event_data": {"device_type": typed, "status": typed},
+        },
+        {
+            "event_type": "section_dwell",
+            "event_data": {"section_label": typed, "duration_ms": 1200},
+        },
+        {"event_type": "keyboard_shortcut", "event_data": {"key": typed}},
+        {"event_type": "model_select", "event_data": {"model_name": typed}},
+    ):
+        assert client.post("/events/track", json=body).status_code == 200
+    conn = sqlite3.connect(usage_db)
+    assert conn.execute("SELECT COUNT(*) FROM page_events").fetchone()[0] == 5
+    conn.close()
+
+    for path in ("/usage", "/usage.json"):
+        body = client.get(path, headers=AUTH).get_data(as_text=True)
+        assert "Jane" not in body, path
+    interaction = _section(
+        client.get("/usage.json", headers=AUTH).get_json(), "Interaction"
+    )
+    assert _rows(_chart(interaction, "Exports")) == {"Other": 1}
+    assert _rows(_chart(interaction, "Keyboard shortcuts")) == {"Other": 1}
+    assert _rows(_chart(interaction, "Models selected")) == {"Uploaded model": 1}
+
+
+def test_a_key_the_viewer_does_not_track_reads_other(usage_db):
+    _sessions(usage_db, S1, S2)
+    _events(
+        usage_db,
+        [
+            (S1, "keyboard_shortcut", {"key": "q"}),
+            (S2, "keyboard_shortcut", {"key": "q"}),
+            (S1, "keyboard_shortcut", {"key": "PageUp", "ctrl": True}),
+        ],
+    )
+
+    interaction = _section(_build(usage_db), "Interaction")
+
+    assert _rows(_chart(interaction, "Keyboard shortcuts")) == {
+        "Other": 2,
+        "Ctrl+PageUp": 1,
+    }
+
+
+def test_rendering_choices_name_only_what_the_viewer_sends(usage_db):
+    _sessions(usage_db, S1, S2)
+    _renders(
+        usage_db,
+        [
+            {"view": "z+", "render_mode": "Filled"},
+            {"view": "y-", "render_mode": "filled", "session_id": S2},
+            {"view": "front", "render_mode": "Shaded"},
+            {
+                "view": "Jane",
+                "render_mode": "Jane",
+                "layout_mode": "Jane",
+                "input_source": "Jane",
+                "session_id": S2,
+            },
+            {"view": None, "render_mode": " ", "layout_mode": "side-by-side"},
+            {"view": " ", "render_mode": None},
+        ],
+    )
+
+    choices = _section(_build(usage_db), "Rendering choices")
+
+    assert _rows(_chart(choices, "View")) == {
+        "Top (z+)": 1,
+        "Front (y-)": 1,
+        "Other": 2,
+        "(not recorded)": 2,
+    }
+    assert _rows(_chart(choices, "Render mode")) == {
+        "Filled": 3,
+        "Other": 1,
+        "(not recorded)": 2,
+    }
+    assert _rows(_chart(choices, "Layout")) == {
+        "single": 4,
+        "side-by-side": 1,
+        "Other": 1,
+    }
+    assert _rows(_chart(choices, "Input source")) == {"http_render": 5, "Other": 1}
+
+
+def test_event_types_the_report_does_not_read_are_counted_but_not_parsed(usage_db):
+    _sessions(usage_db, S1)
+    _events(
+        usage_db,
+        [
+            (S1, "page_view", "{not json"),
+            (S1, "export", "[" * 100_000 + "]" * 100_000),
+        ],
+    )
+
+    document = _build(usage_db)
+
+    assert _tile(_section(document, "Overview"), "Interaction events") == 2
+    interaction = _section(document, "Interaction")
+    assert _tile(interaction, "Malformed event data") == 1
+    assert _rows(_chart(interaction, "Event types")) == {"export": 1, "Other": 1}
+
+
+def test_the_shortcut_keys_are_the_ones_the_viewer_tracks():
+    page = (
+        Path(__file__).resolve().parents[1] / "accessible-3d-viewer.html"
+    ).read_text()
+    listener = re.search(r"const shortcuts = new Set\(\[(.*?)\]\)", page, re.DOTALL)
+    assert listener, "the viewer's keydown listener moved"
+    assert set(re.findall(r"'([^']*)'", listener.group(1))) == set(
+        usage_report.SHORTCUT_KEYS
+    )
+
+
+def test_the_event_types_are_the_ones_the_server_accepts():
+    from app import server
+
+    assert frozenset(usage_report.EVENT_TYPES) == server._ALLOWED_EVENT_TYPES
+
+
+def _renderer_mapping(method, name):
+    import ast
+
+    source = (
+        Path(__file__).resolve().parents[1] / "app" / "cad_comparison_lib.py"
+    ).read_text()
+    function = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == method
+    )
+    assignment = next(
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Assign) and node.targets[0].id == name
+    )
+    return ast.literal_eval(assignment.value)
+
+
+def test_the_views_and_render_modes_are_the_ones_the_renderer_reads():
+    assert usage_report.RENDERER_VIEWS == _renderer_mapping(
+        "_map_view_name", "view_mapping"
+    )
+    assert usage_report.RENDERER_MODES == _renderer_mapping(
+        "_map_render_mode", "mode_mapping"
+    )
+
+
+def test_the_layouts_are_the_ones_the_viewer_sends():
+    script = (
+        Path(__file__).resolve().parents[1] / "static" / "js" / "viewer.js"
+    ).read_text()
+    modes = re.search(r"const representationModes = \[(.*?)\];", script, re.DOTALL)
+    assert modes, "viewer.js no longer lists its view modes there"
+    assert tuple(re.findall(r"wire: '([^']+)'", modes.group(1))) == usage_report.LAYOUTS
+
+
+# ---------------------------------------------------------------------------
+# Tables stay small, whatever is sent
+# ---------------------------------------------------------------------------
+
+
+def test_a_flood_of_distinct_labels_is_cut_to_the_largest_and_other(usage_db):
+    _sessions(usage_db, S1, S2)
+    rows = []
+    for i in range(40):
+        for session_id in (S1, S2):
+            rows.append(
+                (
+                    session_id,
+                    "device_connect",
+                    {"device_type": f"device {i}", "status": f"status {i}"},
+                )
+            )
+            rows.append(
+                (
+                    session_id,
+                    "section_dwell",
+                    {"section_label": f"section {i}", "duration_ms": 1000 + i},
+                )
+            )
+    _events(usage_db, rows)
+
+    report = usage_report.build_report(usage_db)
+
+    interaction = _section(usage_report.report_to_json(report), "Interaction")
+    devices = _chart(interaction, "Device connections")
+    assert len(devices["rows"]) == 11 and devices["rows"][-1][0] == "Other"
+    assert len(devices["columns"]) == 8 and devices["columns"][-1] == "Other"
+    assert sum(sum(row[1:]) for row in devices["rows"]) == 80
+    dwell = _chart(interaction, "Time in each section")
+    assert len(dwell["rows"]) == 16 and dwell["rows"][-1][0] == "Other"
+    assert sum(row[2] for row in dwell["rows"]) == 80
+    assert len(usage_report.render_html(report)) < 100_000
+
+
+# ---------------------------------------------------------------------------
+# Numbers
+# ---------------------------------------------------------------------------
+
+
+def test_a_histogram_counts_renders_by_range(usage_db):
+    _sessions(usage_db, S1)
+    _renders(usage_db, [{"depth": float(depth)} for depth in range(0, 101, 10)])
+
+    depth = _chart(_section(_build(usage_db), "Rendering choices"), "Depth")
+
+    assert depth["rows"] == [
+        [f"{low} to {low + 10}", 2 if low == 90 else 1] for low in range(0, 100, 10)
+    ]
+
+
+def test_histogram_edges_are_told_apart_when_three_digits_cannot(usage_db):
+    _sessions(usage_db, S1)
+    _renders(usage_db, [{"depth": 1000.0}, {"depth": 1000.5}])
+
+    depth = _chart(_section(_build(usage_db), "Rendering choices"), "Depth")
+
+    edges = [label.split(" to ") for label in _labels(depth)]
+    assert len(edges) == 10 and all(low != high for low, high in edges)
+    assert len({label for label in _labels(depth)}) == 10
+
+
+def test_values_that_are_not_finite_numbers_are_left_out(usage_db):
+    _sessions(usage_db, S1)
+    _renders(
+        usage_db,
+        [
+            {"zoom": float("inf")},
+            {"zoom": 1.0},
+            {"zoom": 2.0},
+            {"depth": -1e308},
+            {"depth": 1e308},
+        ],
+    )
+
+    report = usage_report.build_report(usage_db)
+
+    choices = _section(usage_report.report_to_json(report), "Rendering choices")
+    zoom = _chart(choices, "Zoom")
+    assert sum(_rows(zoom).values()) == 4
+    assert "1 render" in zoom["caption"] and "left out" in zoom["caption"]
+    depth = _chart(choices, "Depth")
+    assert len(depth["rows"]) == 10
+    assert depth["rows"][0][1] == 1 and depth["rows"][-1][1] == 1
+    assert sum(_rows(depth).values()) == 5
+    assert "<svg" in usage_report.render_html(report)
+
+
+def test_values_that_read_the_same_are_counted_together(usage_db):
+    _sessions(usage_db, S1, S2)
+    _renders(
+        usage_db,
+        [{"input_source": None}, {"input_source": " "}, {"input_source": "  "}],
+    )
+
+    choices = _section(_build(usage_db), "Rendering choices")
+
+    assert _rows(_chart(choices, "Input source")) == {"(not recorded)": 3}
+
+
+def test_buckets_take_out_of_range_values_and_leave_out_non_finite_ones():
+    rows = usage_report._bucket_rows(
+        [-1.0, 0.5, float("inf"), float("nan")], usage_report._MINUTE_BUCKETS
+    )
+
+    assert dict(rows) == {
+        "under 1 min": 1,
+        "1-5 min": 0,
+        "5-15 min": 0,
+        "15-60 min": 0,
+        "60+ min": 1,
+    }
+
+
+def test_a_value_in_a_table_cell_is_escaped():
+    chart = usage_report.Chart("T", "Caption.", "table", (("row", "<b>bold</b>"),), "V")
+    report = usage_report.Report(
+        "now", False, (usage_report.Section("S", "Summary.", (chart,)),)
+    )
+
+    html = usage_report.render_html(report)
+
+    assert "<b>bold</b>" not in html and "&lt;b&gt;bold&lt;/b&gt;" in html
+
+
+def test_axis_lines_reach_three_to_one_against_the_background():
+    def luminance(hex_colour):
+        if len(hex_colour) == 4:
+            hex_colour = "#" + "".join(digit * 2 for digit in hex_colour[1:])
+        channels = [int(hex_colour[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+        linear = [
+            c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+            for c in channels
+        ]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    light, dark = usage_report._CSS.split("@media")
+    for block in (light, dark):
+        colours = dict(re.findall(r"--(bg|line):(#[0-9a-f]{6}|#[0-9a-f]{3})\b", block))
+        lighter, darker = sorted(
+            (luminance(colours["bg"]), luminance(colours["line"])), reverse=True
+        )
+        assert (lighter + 0.05) / (darker + 0.05) >= 3, colours
+
+
+# ---------------------------------------------------------------------------
+# Sections the seed above does not reach
+# ---------------------------------------------------------------------------
+
+
+def test_a_span_over_ninety_days_is_shown_by_week(usage_db):
+    _sessions(usage_db, S1)
+    _renders(
+        usage_db,
+        [
+            {"created_at": "2026-01-05T10:00:00Z"},
+            {"created_at": "2026-05-01T10:00:00Z"},
+        ],
+    )
+
+    section = _section(_build(usage_db), "Activity over time")
+
+    chart = section["charts"][0]
+    assert chart["title"] == "Active sessions per week"
+    assert chart["rows"][0][0] == "2026-W02" and chart["rows"][-1][0] == "2026-W18"
+    assert len(chart["rows"]) == 17
+    assert "ISO week" in section["summary"]
+
+
+def test_section_dwell_noise_is_left_out(usage_db):
+    _sessions(usage_db, S1, S2)
+    _events(
+        usage_db,
+        [
+            (S1, "section_dwell", {"section_label": "Render", "duration_ms": -5}),
+            (
+                S1,
+                "section_dwell",
+                {"section_label": "Render", "duration_ms": 7 * 3600 * 1000},
+            ),
+            (S1, "section_dwell", {"section_label": "Render", "duration_ms": "1500"}),
+            (S1, "section_dwell", {"section_label": "Render", "duration_ms": True}),
+            (S1, "section_dwell", {"section_label": "Render", "duration_ms": 1500}),
+            (S2, "section_dwell", {"section_label": "Render", "duration_ms": 4500}),
+        ],
+    )
+
+    interaction = _section(_build(usage_db), "Interaction")
+
+    assert _chart(interaction, "Time in each section")["rows"] == [
+        ["Render", 0.1, 2, 3.0]
+    ]
+    assert "4 section dwell times" in interaction["summary"]
+
+
+def test_activity_is_charted_by_hour_and_weekday(usage_db):
+    _sessions(usage_db, S1)
+    _renders(
+        usage_db,
+        [
+            {"created_at": "2026-03-02T10:15:00Z"},
+            {"created_at": "2026-03-02T10:45:00Z"},
+            {"created_at": "2026-03-04T23:00:00Z"},
+        ],
+    )
+
+    section = _section(_build(usage_db), "When people use it")
+
+    hours = _chart(section, "Activity by hour of day (UTC)")
+    assert len(hours["rows"]) == 24
+    assert {k: v for k, v in _rows(hours).items() if v} == {"10:00": 2, "23:00": 1}
+    weekdays = _chart(section, "Activity by weekday (UTC)")
+    assert _labels(weekdays)[0] == "Monday" and len(weekdays["rows"]) == 7
+    assert {k: v for k, v in _rows(weekdays).items() if v} == {
+        "Monday": 2,
+        "Wednesday": 1,
+    }
+
+
+def test_the_session_span_is_named_for_what_it_measures(usage_db):
+    _seed(usage_db)
+
+    engagement = _section(_build(usage_db), "Engagement")
+
+    assert _tile(engagement, "Median minutes from first to last activity") is not None
+
+
+# ---------------------------------------------------------------------------
+# The tutorial
+# ---------------------------------------------------------------------------
+
+
+def test_a_tutorial_started_from_the_menu_counts_as_entered(usage_db):
+    _sessions(usage_db, S1, S2)
+    _events(
+        usage_db,
+        [
+            (S1, "tutorial", {"action": "lesson_completed", "lesson": "connect"}),
+            (S1, "tutorial", {"action": "completed", "lesson": None}),
+            (S2, "tutorial", {"action": "loaded", "lesson": None}),
+        ],
+    )
+
+    funnel = _section(_build(usage_db), "Tutorial funnel")
+
+    assert _chart(funnel, "Tutorial progress")["rows"] == [
+        ["Entered the tutorial", 2],
+        ["Completed a lesson", 1],
+        ["Completed the tutorial", 1],
+    ]
+    assert _tile(funnel, "Completion rate") == "50%"
+
+
+def test_lessons_are_listed_in_the_tutorials_order(usage_db):
+    from app import tutorial_lessons
+
+    order = [lesson["id"] for lesson in tutorial_lessons.LESSONS]
+    _sessions(usage_db, S1, S2, S3)
+    _events(
+        usage_db,
+        [
+            (S1, "tutorial", {"action": "lesson_completed", "lesson": order[4]}),
+            (S2, "tutorial", {"action": "lesson_skipped", "lesson": order[1]}),
+            (S3, "tutorial", {"action": "lesson_completed", "lesson": "not_a_lesson"}),
+            (S1, "tutorial", {"action": "exited", "lesson": order[0]}),
+            (S2, "tutorial", {"action": "lesson_completed", "lesson": order[1]}),
+        ],
+    )
+
+    funnel = _section(_build(usage_db), "Tutorial funnel")
+
+    assert _chart(funnel, "Lessons")["rows"] == [
+        [order[0], 0, 0, 1],
+        [order[1], 1, 1, 0],
+        [order[4], 1, 0, 0],
+        ["Other", 1, 0, 0],
+    ]
+    assert _rows(_chart(funnel, "Tutorial progress"))["Completed a lesson"] == 3
+
+
+# ---------------------------------------------------------------------------
+# A hash that cannot be checked
+# ---------------------------------------------------------------------------
+
+HUGE_N_HASH = "scrypt$18446744073709551616$1$1$YQ$" + base64.urlsafe_b64encode(
+    b"k" * 32
+).decode("ascii").rstrip("=")
+
+
+def test_a_hash_whose_cost_cannot_be_computed_turns_the_report_off(
+    client, usage_db, monkeypatch
+):
+    monkeypatch.setenv(ENV, HUGE_N_HASH)
+
+    for path in ("/usage", "/usage.json"):
+        assert client.get(path, headers=AUTH).status_code == 404, path
+
+
+# ---------------------------------------------------------------------------
 # Making the hash
 # ---------------------------------------------------------------------------
+
+
+def test_the_hash_command_needs_none_of_the_apps_dependencies():
+    blocked = ("flask", "numpy", "trimesh", "shapely", "PIL", "matplotlib", "OCC")
+    code = (
+        "import getpass, runpy, sys\n"
+        f"for name in {blocked!r}: sys.modules[name] = None\n"
+        "getpass.getpass = lambda prompt='': ''\n"
+        "sys.argv = ['usage_report', 'hash']\n"
+        "runpy.run_module('app.usage_report', run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parents[1],
+        input="",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1, result.stderr
+    assert "nothing printed" in result.stderr and "Error" not in result.stderr
 
 
 def test_hash_command_prints_a_hash_of_the_typed_password(monkeypatch, capsys):

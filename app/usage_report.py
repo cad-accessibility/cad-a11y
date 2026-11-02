@@ -17,9 +17,13 @@ version of the schema it is looking at. A column that could identify someone
 section can show it. Session ids are in the views, to count and join on, and
 never become a label.
 
-Labels that come from the browser (section labels, keys, formats) are shown,
-escaped and shortened. A model name is shown only when it names a built-in
-model; anything else may be an uploaded file's name, and reads "Uploaded model".
+A value the browser chose (a key, an export format, a section's name) is shown
+only when the app itself could have sent it or, for the few where the app keeps
+no list, once two sessions have sent it, so nothing one person typed is ever
+shown. Anything else reads "Other". ``_Field`` is that rule, and every section
+names its values through it. A model name is shown only when it names a
+built-in model; anything else may be an uploaded file's name, and reads
+"Uploaded model".
 """
 
 from __future__ import annotations
@@ -27,19 +31,22 @@ from __future__ import annotations
 import argparse
 import getpass
 import html
+import itertools
 import json
 import math
 import sqlite3
 import statistics
 import sys
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from operator import itemgetter
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from . import tutorial_lessons
 from .studies import tokens
 
 Value = int | float | str
@@ -82,19 +89,235 @@ class Report:
     sections: tuple[Section, ...]
 
 
-@dataclass(frozen=True)
-class Event:
-    session_id: str | None
-    event_type: str
-    data: dict[str, Any] | None  # None when event_data was not a JSON object
+_OTHER = "Other"
+_NOT_RECORDED = "(not recorded)"
+_LABEL_LIMIT = 60
+
+# What the app itself sends for the values the browser fills in. Each is a copy
+# of its source, which tests/test_usage_report.py compares it with: importing
+# the source would bring Flask or the renderer into `python -m app.usage_report
+# hash`.
+
+# The keydown listener's shortcuts in accessible-3d-viewer.html.
+SHORTCUT_KEYS = (
+    "ArrowUp",
+    "ArrowDown",
+    "ArrowLeft",
+    "ArrowRight",
+    "PageUp",
+    "PageDown",
+    "Home",
+    "End",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "0",
+)
+# server._ALLOWED_EVENT_TYPES: every type /events/track takes, and the ones
+# this report reads.
+EVENT_TYPES = (
+    "section_dwell",
+    "keyboard_shortcut",
+    "device_connect",
+    "export",
+    "model_select",
+    "tutorial",
+)
+# CADComparisonRenderer._map_view_name and _map_render_mode.
+RENDERER_VIEWS = {
+    "z+": "top",
+    "z-": "bottom",
+    "y-": "front",
+    "y+": "back",
+    "x-": "right",
+    "x+": "left",
+}
+RENDERER_MODES = {
+    "outline": "outline",
+    "x-ray": "x-ray",
+    "filled": "filled",
+    "shaded": "filled",
+    "slice": "cut",
+    "cut": "cut",
+}
+_MODE_LABELS = {
+    "outline": "Outline",
+    "x-ray": "X-ray",
+    "filled": "Filled",
+    "cut": "Cut",
+}
+# The wire values of representationModes in static/js/viewer.js.
+LAYOUTS = ("single", "side-by-side", "slice-graph")
+
+
+class _Field:
+    """One value the browser fills in, and the rule for showing it.
+
+    With a ``vocabulary`` (what the app sends, mapped to its label) only those
+    values are shown. Without one, a value is shown once two sessions have sent
+    it. Either way a value that is long, holds a control character (anything
+    ``str.isprintable`` refuses) or is not a string reads Other. Values are counted under the key ``saw`` returns while
+    the rows are read, and named by ``label`` once they all have been.
+    """
+
+    def __init__(
+        self, vocabulary: Mapping[str, str] | None = None, *, casefold: bool = False
+    ) -> None:
+        self.vocabulary = vocabulary
+        self._casefold = casefold
+        self._first_session: dict[str, str] = {}
+        self._shared: set[str] = set()
+
+    def saw(self, value: Any, session_id: str | None) -> str:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return _NOT_RECORDED
+        if (
+            not isinstance(value, str)
+            or len(value) > _LABEL_LIMIT
+            or not value.isprintable()
+        ):
+            return _OTHER
+        key = " ".join(value.split())
+        if self._casefold:
+            key = key.casefold()
+        if (
+            self.vocabulary is None
+            and session_id is not None
+            and self._first_session.setdefault(key, session_id) != session_id
+        ):
+            self._shared.add(key)
+        return key
+
+    def label(self, key: str) -> str:
+        if key in (_NOT_RECORDED, _OTHER):
+            return key
+        if self.vocabulary is not None:
+            return self.vocabulary.get(key, _OTHER)
+        return key if key in self._shared else _OTHER
+
+
+def _fields() -> dict[str, _Field]:
+    """A fresh rule for each value the browser fills in, for one report."""
+    # Here rather than at the top: app.tutorial brings in numpy and trimesh,
+    # which `python -m app.usage_report hash` must not need.
+    from .tutorial import EVENT_ACTIONS
+
+    def known(values: Iterable[str]) -> dict[str, str]:
+        return {value: value for value in values}
+
+    return {
+        "event_type": _Field(known(EVENT_TYPES)),
+        "key": _Field(known(SHORTCUT_KEYS)),
+        "action": _Field(known(sorted(EVENT_ACTIONS))),
+        "lesson": _Field(known(lesson["id"] for lesson in tutorial_lessons.LESSONS)),
+        "view": _Field(
+            {
+                token: f"{name.capitalize()} ({token})"
+                for token, name in RENDERER_VIEWS.items()
+            },
+            casefold=True,
+        ),
+        "render_mode": _Field(
+            {wire: _MODE_LABELS[mode] for wire, mode in RENDERER_MODES.items()},
+            casefold=True,
+        ),
+        "layout_mode": _Field(known(LAYOUTS), casefold=True),
+        "input_source": _Field(),
+        "format": _Field(),
+        "device_type": _Field(),
+        "status": _Field(),
+        "section_label": _Field(),
+    }
+
+
+_DWELL_LIMIT_MS = 6 * 3600 * 1000
+_MODIFIERS = (("ctrl", "Ctrl"), ("alt", "Alt"), ("shift", "Shift"))
+_LESSON_ACTIONS = ("lesson_completed", "lesson_skipped", "exited")
+
+
+def _model_label(name: Any, builtin_names: frozenset[str]) -> str:
+    if not isinstance(name, str) or not name.strip():
+        return _NOT_RECORDED
+    name = name.strip()
+    return Path(name).stem if name in builtin_names else "Uploaded model"
+
+
+def _is_duration(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and 0 <= value <= _DWELL_LIMIT_MS
+    )
+
+
+@dataclass
+class _Events:
+    """What the report needs from page_events, counted as the rows go past,
+    so no request holds every event at once. Browser values are counted under
+    their ``_Field`` keys and named when a section is built."""
+
+    fields: dict[str, _Field]
+    builtin_names: frozenset[str]
+    malformed: int = 0
+    dwell: defaultdict[str, list[float]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
+    dwell_dropped: int = 0
+    shortcuts: Counter = field(default_factory=Counter)
+    devices: Counter = field(default_factory=Counter)
+    exports: Counter = field(default_factory=Counter)
+    models: Counter = field(default_factory=Counter)
+    # Every session that sent a tutorial event, then the sessions per action
+    # and per (lesson, action).
+    tutorial: set[str] = field(default_factory=set)
+    actions: defaultdict[str, set[str]] = field(
+        default_factory=lambda: defaultdict(set)
+    )
+    lessons: defaultdict[tuple[str, str], set[str]] = field(
+        default_factory=lambda: defaultdict(set)
+    )
+
+    def add(
+        self, session_id: str | None, event_type: str, data: dict[str, Any]
+    ) -> None:
+        def key(name: str, value: Any) -> str:
+            return self.fields[name].saw(value, session_id)
+
+        if event_type == "section_dwell":
+            duration = data.get("duration_ms")
+            if _is_duration(duration):
+                section = data.get("section_label") or data.get("section_id")
+                self.dwell[key("section_label", section)].append(duration / 1000)
+            else:
+                self.dwell_dropped += 1
+        elif event_type == "keyboard_shortcut":
+            held = tuple(name for flag, name in _MODIFIERS if data.get(flag) is True)
+            self.shortcuts[held, key("key", data.get("key"))] += 1
+        elif event_type == "device_connect":
+            device = key("device_type", data.get("device_type"))
+            self.devices[device, key("status", data.get("status"))] += 1
+        elif event_type == "export":
+            self.exports[key("format", data.get("format"))] += 1
+        elif event_type == "model_select":
+            self.models[_model_label(data.get("model_name"), self.builtin_names)] += 1
+        elif event_type == "tutorial" and session_id is not None:
+            action = key("action", data.get("action"))
+            self.actions[action].add(session_id)
+            if action in _LESSON_ACTIONS:
+                self.lessons[key("lesson", data.get("lesson")), action].add(session_id)
 
 
 @dataclass(frozen=True)
 class Context:
     exclude_workshop: bool
-    builtin_names: frozenset[str]
-    events: tuple[Event, ...]
-    malformed_events: int
+    fields: dict[str, _Field]
+    events: _Events
 
 
 # ---------------------------------------------------------------------------
@@ -153,21 +376,26 @@ def _create_views(conn: sqlite3.Connection, exclude_workshop: bool) -> None:
         )
 
 
-def _load_events(conn: sqlite3.Connection) -> tuple[tuple[Event, ...], int]:
-    events: list[Event] = []
-    malformed = 0
+def _read_events(
+    conn: sqlite3.Connection, fields: dict[str, _Field], builtin_names: frozenset[str]
+) -> _Events:
+    events = _Events(fields, builtin_names)
+    marks = ", ".join("?" * len(EVENT_TYPES))
     for session_id, event_type, blob in conn.execute(
-        "SELECT session_id, event_type, event_data FROM e"
+        f"SELECT session_id, event_type, event_data FROM e WHERE event_type IN ({marks})",
+        EVENT_TYPES,
     ):
+        if event_type == "tutorial" and session_id is not None:
+            events.tutorial.add(session_id)
         try:
             data = json.loads(blob) if blob else {}
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, RecursionError):
             data = None
-        if not isinstance(data, dict):
-            malformed += 1
-            data = None
-        events.append(Event(session_id, str(event_type), data))
-    return tuple(events), malformed
+        if isinstance(data, dict):
+            events.add(session_id, event_type, data)
+        else:
+            events.malformed += 1
+    return events
 
 
 def build_report(
@@ -193,8 +421,9 @@ def build_report(
     conn = sqlite3.connect(f"file:{quote(str(path.resolve()))}?mode=ro", uri=True)
     try:
         _create_views(conn, exclude_workshop)
-        events, malformed = _load_events(conn)
-        ctx = Context(exclude_workshop, frozenset(builtin_names), events, malformed)
+        fields = _fields()
+        events = _read_events(conn, fields, frozenset(builtin_names))
+        ctx = Context(exclude_workshop, fields, events)
         sections = tuple(builder(conn, ctx) for builder in SECTIONS)
     finally:
         conn.close()
@@ -209,9 +438,6 @@ def report_to_json(report: Report) -> dict[str, Any]:
 # Small helpers the sections share
 # ---------------------------------------------------------------------------
 
-_NOT_RECORDED = "(not recorded)"
-_LABEL_LIMIT = 60
-
 
 def _scalar(conn: sqlite3.Connection, sql: str) -> Any:
     return conn.execute(sql).fetchone()[0]
@@ -221,22 +447,39 @@ def _pct(part: float, whole: float) -> str:
     return f"{part / whole:.0%}" if whole else "0%"
 
 
-def _label(value: Any) -> str:
-    """A label from the browser: one line, short, never empty."""
-    text = " ".join(str(value).split()) if value is not None else ""
-    if not text:
-        return _NOT_RECORDED
-    return text if len(text) <= _LABEL_LIMIT else text[: _LABEL_LIMIT - 1] + "…"
+def _relabel(counts: Counter, label: Callable[[Any], Any]) -> Counter:
+    """``counts`` under new labels, adding up keys that get the same one."""
+    relabelled: Counter = Counter()
+    for key, count in counts.items():
+        relabelled[label(key)] += count
+    return relabelled
+
+
+def _merge(
+    groups: Mapping[Any, list[float]], label: Callable[[Any], Any]
+) -> dict[Any, list[float]]:
+    """``_relabel`` for groups of values rather than counts."""
+    merged: dict[Any, list[float]] = defaultdict(list)
+    for key, values in groups.items():
+        merged[label(key)].extend(values)
+    return merged
+
+
+def _rank(item: tuple[Any, float]) -> tuple[bool, float, str]:
+    """Sort key for (label, size): largest first, Other last."""
+    return (item[0] == _OTHER, -item[1], str(item[0]))
+
+
+def _top(totals: Counter, limit: int) -> Callable[[Any], Any]:
+    """A label mapper keeping the ``limit`` largest and turning the rest into Other."""
+    largest = sorted(totals.items(), key=lambda item: (-item[1], str(item[0])))
+    keep = {label for label, _ in largest[:limit]}
+    return lambda label: label if label in keep else _OTHER
 
 
 def _ranked(counts: Counter, limit: int = 10) -> tuple[tuple[Value, ...], ...]:
     """Largest first, the first ``limit`` of them, the rest summed as Other."""
-    ranked = sorted(counts.items(), key=lambda item: (-item[1], str(item[0])))
-    rows = [(label, count) for label, count in ranked[:limit]]
-    rest = sum(count for _, count in ranked[limit:])
-    if rest:
-        rows.append(("Other", rest))
-    return tuple(rows)
+    return tuple(sorted(_relabel(counts, _top(counts, limit)).items(), key=_rank))
 
 
 def _lead(rows: tuple[tuple[Value, ...], ...], phrase: str, unit: str) -> str:
@@ -277,13 +520,17 @@ def _days(first: date, last: date) -> Iterable[date]:
 
 
 def _bucket(value: float, buckets: tuple[tuple[str, float, float], ...]) -> str:
-    return next(label for label, low, high in buckets if low <= value < high)
+    return next(
+        (label for label, low, high in buckets if low <= value < high), buckets[-1][0]
+    )
 
 
 def _bucket_rows(
     values: Iterable[float], buckets: tuple[tuple[str, float, float], ...]
 ) -> tuple:
-    counts = Counter(_bucket(value, buckets) for value in values)
+    counts = Counter(
+        _bucket(value, buckets) for value in values if math.isfinite(value)
+    )
     return tuple((label, counts[label]) for label, _, _ in buckets)
 
 
@@ -309,7 +556,7 @@ def overview(conn: sqlite3.Connection, ctx: Context) -> Section:
     )
     active = _scalar(conn, f"SELECT COUNT(DISTINCT session_id) FROM ({_ACTIVITY})")
     renders = _scalar(conn, "SELECT COUNT(*) FROM r")
-    events = len(ctx.events)
+    events = _scalar(conn, "SELECT COUNT(*) FROM e")
     live = _scalar(conn, "SELECT COUNT(*) FROM u WHERE deleted_at IS NULL")
     deleted = _scalar(conn, "SELECT COUNT(*) FROM u WHERE deleted_at IS NOT NULL")
     first, last, days = conn.execute(
@@ -511,7 +758,10 @@ def engagement(conn: sqlite3.Connection, ctx: Context) -> Section:
             "Median renders per active session",
             round(statistics.median(render_counts), 1),
         ),
-        ("Median active minutes per session", round(statistics.median(minutes), 1)),
+        (
+            "Median minutes from first to last activity",
+            round(statistics.median(minutes), 1),
+        ),
         ("Returning sessions", returning),
     )
     charts = (
@@ -524,7 +774,7 @@ def engagement(conn: sqlite3.Connection, ctx: Context) -> Section:
             ("Renders", "Sessions"),
         ),
         Chart(
-            "Active time per session",
+            "Time from first to last activity",
             _top_bucket_caption(minute_rows, "active sessions"),
             "columns",
             minute_rows,
@@ -548,32 +798,57 @@ _RENDER_CHOICES = (
 _HISTOGRAM_BINS = 10
 
 
+def _edge_labels(edges: list[float]) -> list[str]:
+    """Three significant digits, or as many more as tell neighbouring edges apart."""
+    for digits in range(3, 18):
+        labels = [f"{edge:.{digits}g}" for edge in edges]
+        if all(left != right for left, right in itertools.pairwise(labels)):
+            break
+    return labels
+
+
 def _histogram(conn: sqlite3.Connection, column: str, title: str) -> Chart:
-    numeric = f"typeof({column}) IN ('integer', 'real')"
-    low, high = conn.execute(
-        f"SELECT MIN({column}), MAX({column}) FROM r WHERE {numeric}"
+    # SQLite keeps an infinity as a real and a NaN as NULL.
+    finite = f"typeof({column}) IN ('integer', 'real') AND abs({column}) <= ?"
+    low, high, left_out = conn.execute(
+        f"SELECT MIN(CASE WHEN {finite} THEN {column} END),"
+        f" MAX(CASE WHEN {finite} THEN {column} END),"
+        f" COUNT(*) FILTER (WHERE typeof({column}) = 'real' AND NOT abs({column}) <= ?) FROM r",
+        (sys.float_info.max,) * 3,
     ).fetchone()
+    note = (
+        f" {left_out:,} {'render' if left_out == 1 else 'renders'} with a {title.lower()}"
+        " that is not a finite number left out."
+        if left_out
+        else ""
+    )
     if low is None:
-        return Chart(title, f"No {title.lower()} recorded.", "columns", (), "Renders")
-    width = (high - low) / _HISTOGRAM_BINS or 1.0
+        return Chart(
+            title, f"No {title.lower()} recorded.{note}", "columns", (), "Renders"
+        )
     bins = 1 if high == low else _HISTOGRAM_BINS
+    # Each end divided first, so the full range of a double cannot overflow.
+    width = high / bins - low / bins or 1.0
     counts = Counter()
     for index, count in conn.execute(
-        f"SELECT CAST(({column} - ?) / ? AS INTEGER), COUNT(*) FROM r WHERE {numeric} GROUP BY 1",
-        (low, width),
+        f"SELECT CAST({column} / ? - ? / ? AS INTEGER), COUNT(*) FROM r WHERE {finite} GROUP BY 1",
+        (width, low, width, sys.float_info.max),
     ):
-        counts[min(int(index), bins - 1)] += count
+        counts[min(max(int(index), 0), bins - 1)] += count
 
-    def edge(i: int) -> str:
-        return f"{low + i * width:.3g}"
-
-    rows = tuple(
-        (f"{edge(i)} to {edge(i + 1)}" if bins > 1 else f"{low:.3g}", counts[i])
-        for i in range(bins)
-    )
+    if bins == 1:
+        rows = ((f"{low:.3g}", counts[0]),)
+    else:
+        edges = _edge_labels(
+            [low * (1 - i / bins) + high * (i / bins) for i in range(bins + 1)]
+        )
+        rows = tuple((f"{edges[i]} to {edges[i + 1]}", counts[i]) for i in range(bins))
     top = max(rows, key=lambda row: row[1])
     total = sum(counts.values())
-    caption = f"Most renders were at {title.lower()} {top[0]}: {top[1]:,} of {total:,} ({_pct(top[1], total)})."
+    caption = (
+        f"Most renders were at {title.lower()} {top[0]}: {top[1]:,} of {total:,}"
+        f" ({_pct(top[1], total)}).{note}"
+    )
     return Chart(
         title, caption, "columns", rows, "Renders", (f"{title} range", "Renders")
     )
@@ -586,61 +861,58 @@ def rendering_choices(conn: sqlite3.Connection, ctx: Context) -> Section:
         return Section(title, "No renders recorded.")
     charts = []
     for column, name in _RENDER_CHOICES:
-        counts = Counter(
-            {
-                _label(value): count
-                for value, count in conn.execute(
-                    f"SELECT {column}, COUNT(*) FROM r GROUP BY 1"
-                )
-            }
-        )
+        values = ctx.fields[column]
+        counts = Counter()
+        for value, session_id, count in conn.execute(
+            f"SELECT {column}, session_id, COUNT(*) FROM r GROUP BY 1, 2"
+        ):
+            counts[values.saw(value, session_id)] += count
         charts.append(
-            _hbar(name, counts, f"the most used {name.lower()}", "renders", "")
+            _hbar(
+                name,
+                _relabel(counts, values.label),
+                f"the most used {name.lower()}",
+                "renders",
+                "",
+            )
         )
     charts.append(_histogram(conn, "depth", "Depth"))
     charts.append(_histogram(conn, "zoom", "Zoom"))
     return Section(title, f"What the {total:,} renders asked for.", tuple(charts))
 
 
-_DWELL_LIMIT_MS = 6 * 3600 * 1000
-_MODIFIERS = (("ctrl", "Ctrl"), ("alt", "Alt"), ("shift", "Shift"))
-
-
-def _shortcut(data: dict[str, Any]) -> str:
-    held = [name for flag, name in _MODIFIERS if data.get(flag) is True]
-    return "+".join(held + [_label(data.get("key"))])
-
-
-def _model_label(name: Any, builtin_names: frozenset[str]) -> str:
-    if not isinstance(name, str) or not name.strip():
-        return _NOT_RECORDED
-    name = name.strip()
-    return Path(name).stem if name in builtin_names else "Uploaded model"
+_DEVICE_ROWS = 10
+_STATUS_COLUMNS = 6
+_DWELL_ROWS = 15
 
 
 def interaction(conn: sqlite3.Connection, ctx: Context) -> Section:
     title = "Interaction"
-    if not ctx.events:
+    total = _scalar(conn, "SELECT COUNT(*) FROM e")
+    if not total:
         return Section(title, "No interaction events recorded.")
-    by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for event in ctx.events:
-        if event.data is not None:
-            by_type[event.event_type].append(event.data)
+    events, fields = ctx.events, ctx.fields
 
-    dwell: dict[str, list[float]] = defaultdict(list)
-    dropped = 0
-    for data in by_type["section_dwell"]:
-        duration = data.get("duration_ms")
-        if (
-            isinstance(duration, (int, float))
-            and not isinstance(duration, bool)
-            and 0 <= duration <= _DWELL_LIMIT_MS
-        ):
-            dwell[_label(data.get("section_label") or data.get("section_id"))].append(
-                duration / 1000
-            )
-        else:
-            dropped += 1
+    types = Counter()
+    for event_type, count in conn.execute(
+        "SELECT event_type, COUNT(*) FROM e GROUP BY 1"
+    ):
+        types[fields["event_type"].saw(event_type, None)] += count
+
+    key = fields["key"].label
+
+    def shortcut(pressed: tuple[tuple[str, ...], str]) -> str:
+        held, name = pressed[0], key(pressed[1])
+        return name if name == _OTHER else "+".join((*held, name))
+
+    dwell = _merge(events.dwell, fields["section_label"].label)
+    dwell = _merge(
+        dwell,
+        _top(
+            Counter({label: sum(values) for label, values in dwell.items()}),
+            _DWELL_ROWS,
+        ),
+    )
     dwell_rows = tuple(
         sorted(
             (
@@ -652,7 +924,7 @@ def interaction(conn: sqlite3.Connection, ctx: Context) -> Section:
                 )
                 for label, seconds in dwell.items()
             ),
-            key=lambda row: (-row[1], row[0]),
+            key=_rank,
         )
     )
     if dwell_rows:
@@ -665,22 +937,23 @@ def interaction(conn: sqlite3.Connection, ctx: Context) -> Section:
     else:
         dwell_caption = "No section dwell times recorded."
 
-    devices: dict[str, Counter] = defaultdict(Counter)
-    for data in by_type["device_connect"]:
-        devices[_label(data.get("device_type"))][_label(data.get("status"))] += 1
-    statuses = sorted({status for counts in devices.values() for status in counts})
+    device, status = fields["device_type"].label, fields["status"].label
+    pairs = _relabel(events.devices, lambda pair: (device(pair[0]), status(pair[1])))
+    row_of = _top(_relabel(pairs, itemgetter(0)), _DEVICE_ROWS)
+    column_of = _top(_relabel(pairs, itemgetter(1)), _STATUS_COLUMNS)
+    pairs = _relabel(pairs, lambda pair: (row_of(pair[0]), column_of(pair[1])))
+    statuses = [
+        label for label, _ in sorted(_relabel(pairs, itemgetter(1)).items(), key=_rank)
+    ]
     device_rows = tuple(
-        (device, *(devices[device][status] for status in statuses))
-        for device in sorted(devices, key=lambda d: (-sum(devices[d].values()), d))
+        (label, *(pairs[label, column] for column in statuses))
+        for label, _ in sorted(_relabel(pairs, itemgetter(0)).items(), key=_rank)
     )
     if device_rows:
-        device, status = max(
-            ((d, s) for d in devices for s in devices[d]),
-            key=lambda pair: devices[pair[0]][pair[1]],
-        )
+        (top_device, top_status), count = max(pairs.items(), key=itemgetter(1))
         device_caption = (
-            f"{sum(sum(c.values()) for c in devices.values()):,} device events across {len(devices):,}"
-            f" device types. The most frequent is {device} {status}: {devices[device][status]:,}."
+            f"{sum(pairs.values()):,} device events. The most frequent is"
+            f" {top_device} with status {top_status}: {count:,}."
         )
     else:
         device_caption = "No device connections recorded."
@@ -688,14 +961,14 @@ def interaction(conn: sqlite3.Connection, ctx: Context) -> Section:
     charts = (
         _hbar(
             "Event types",
-            Counter(event.event_type for event in ctx.events),
+            _relabel(types, fields["event_type"].label),
             "the most frequent event type",
             "events",
             "",
         ),
         _hbar(
             "Keyboard shortcuts",
-            Counter(_shortcut(data) for data in by_type["keyboard_shortcut"]),
+            _relabel(events.shortcuts, shortcut),
             "the most used shortcut",
             "shortcut presses",
             "No keyboard shortcuts recorded.",
@@ -718,63 +991,67 @@ def interaction(conn: sqlite3.Connection, ctx: Context) -> Section:
         ),
         _hbar(
             "Exports",
-            Counter(_label(data.get("format")) for data in by_type["export"]),
+            _relabel(events.exports, fields["format"].label),
             "the most exported format",
             "exports",
             "No exports recorded.",
         ),
         _hbar(
             "Models selected",
-            Counter(
-                _model_label(data.get("model_name"), ctx.builtin_names)
-                for data in by_type["model_select"]
-            ),
+            events.models,
             "the most selected model",
             "selections",
             "No model selections recorded.",
         ),
     )
-    summary = f"{len(ctx.events):,} interaction events sent by the viewer."
-    if dropped:
-        summary += f" {dropped:,} section dwell times under 0 or over 6 hours, or not a number, were left out as noise."
-    if ctx.malformed_events:
-        summary += f" {ctx.malformed_events:,} events had event data that was not a JSON object, and count only by type."
+    summary = f"{total:,} interaction events sent by the viewer."
+    if events.dwell_dropped:
+        summary += f" {events.dwell_dropped:,} section dwell times under 0 or over 6 hours, or not a number, were left out as noise."
+    if events.malformed:
+        summary += f" {events.malformed:,} events had event data that was not a JSON object, and count only by type."
     tiles = (
-        ("Interaction events", len(ctx.events)),
-        ("Malformed event data", ctx.malformed_events),
+        ("Interaction events", total),
+        ("Malformed event data", events.malformed),
     )
     return Section(title, summary, charts, tiles)
 
 
 def tutorial_funnel(conn: sqlite3.Connection, ctx: Context) -> Section:
     title = "Tutorial funnel"
-    sessions: dict[str, set] = defaultdict(set)
-    lessons: dict[str, dict[str, set]] = defaultdict(lambda: defaultdict(set))
-    for event in ctx.events:
-        if event.event_type != "tutorial" or event.data is None:
-            continue
-        action = event.data.get("action")
-        sessions[str(action)].add(event.session_id)
-        if action in ("lesson_completed", "lesson_skipped", "exited"):
-            lessons[_label(event.data.get("lesson"))][action].add(event.session_id)
-    if not sessions:
+    events, fields = ctx.events, ctx.fields
+    # Any tutorial event, not "loaded": the tutorial sends that only when it
+    # starts by itself, not when it is started from its menu.
+    entered = len(events.tutorial)
+    if not entered:
         return Section(title, "No tutorial activity recorded.")
 
-    loaded, completed = len(sessions["loaded"]), len(sessions["completed"])
-    finished_one = len(sessions["lesson_completed"])
+    action = fields["action"].label
+    steps: dict[str, set[str]] = defaultdict(set)
+    for key, sessions in events.actions.items():
+        steps[action(key)] |= sessions
+    completed, finished_one = len(steps["completed"]), len(steps["lesson_completed"])
     funnel = (
-        ("Loaded the tutorial", loaded),
+        ("Entered the tutorial", entered),
         ("Completed a lesson", finished_one),
         ("Completed the tutorial", completed),
     )
+
+    lesson = fields["lesson"]
+    lessons: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+    for (key, step), sessions in events.lessons.items():
+        lessons[lesson.label(key)][step] |= sessions
+    position = {name: index for index, name in enumerate(lesson.vocabulary or {})}
     lesson_rows = tuple(
         (
-            lesson,
+            name,
             len(actions["lesson_completed"]),
             len(actions["lesson_skipped"]),
             len(actions["exited"]),
         )
-        for lesson, actions in lessons.items()
+        for name, actions in sorted(
+            lessons.items(),
+            key=lambda item: (position.get(item[0], len(position)), item[0]),
+        )
     )
     skipped = max(lesson_rows, key=lambda row: row[2], default=None)
     if not lesson_rows:
@@ -786,7 +1063,7 @@ def tutorial_funnel(conn: sqlite3.Connection, ctx: Context) -> Section:
     charts = (
         Chart(
             "Tutorial progress",
-            f"{completed:,} of {loaded:,} sessions that loaded the tutorial completed it ({_pct(completed, loaded)}).",
+            f"{completed:,} of {entered:,} sessions that entered the tutorial completed it ({_pct(completed, entered)}).",
             "columns",
             funnel,
             "Sessions",
@@ -802,13 +1079,14 @@ def tutorial_funnel(conn: sqlite3.Connection, ctx: Context) -> Section:
         ),
     )
     tiles = (
-        ("Sessions that loaded the tutorial", loaded),
+        ("Sessions that entered the tutorial", entered),
         ("Sessions that completed the tutorial", completed),
-        ("Completion rate", _pct(completed, loaded)),
+        ("Completion rate", _pct(completed, entered)),
     )
     return Section(
         title,
-        "Sessions, not events: a session that repeats a step counts once.",
+        "Sessions, not events: a session that repeats a step counts once. A session"
+        " entered the tutorial if it sent any tutorial event.",
         charts,
         tiles,
     )
@@ -898,7 +1176,7 @@ SECTIONS: tuple[Callable[[sqlite3.Connection, Context], Section], ...] = (
 # ---------------------------------------------------------------------------
 
 _CSS = """
-:root{color-scheme:light dark;--bg:#fff;--fg:#1a1a1a;--muted:#4a4a4a;--bar:#1f5fa8;--line:#9a9a9a;
+:root{color-scheme:light dark;--bg:#fff;--fg:#1a1a1a;--muted:#4a4a4a;--bar:#1f5fa8;--line:#767676;
 --link:#0b57d0;--tile:#f2f4f7}
 @media (prefers-color-scheme:dark){:root{--bg:#121212;--fg:#f0f0f0;--muted:#c8c8c8;--bar:#7fb2ff;
 --line:#6a6a6a;--link:#9cc3ff;--tile:#1e2329}}
@@ -948,7 +1226,7 @@ def _svg_hbar(chart: Chart) -> str:
         parts.append(
             f'<text x="{label_width - 8}" y="{y + 17}" text-anchor="end">{_esc(label)}</text>'
             f'<rect class="bar" x="{label_width}" y="{y + 4}" width="{width:.1f}" height="{row_height - 8}"/>'
-            f'<text x="{label_width + width + 6:.1f}" y="{y + 17}">{_number(row[1])}</text>'
+            f'<text x="{label_width + width + 6:.1f}" y="{y + 17}">{_esc(_number(row[1]))}</text>'
         )
     height = len(chart.rows) * row_height
     return (
@@ -979,7 +1257,7 @@ def _svg_columns(chart: Chart) -> str:
         if count <= 24:
             parts.append(
                 f'<text x="{x + step / 2:.1f}" y="{baseline - height - 4:.1f}"'
-                f' text-anchor="middle">{_number(row[1])}</text>'
+                f' text-anchor="middle">{_esc(_number(row[1]))}</text>'
             )
         if index % every == 0:
             parts.append(
@@ -1002,7 +1280,7 @@ _SVG: dict[str, Callable[[Chart], str]] = {
 def _table(chart: Chart) -> str:
     head = "".join(f'<th scope="col">{_esc(name)}</th>' for name in chart.headers)
     body = "".join(
-        f'<tr><th scope="row">{_esc(row[0])}</th>{"".join(f"<td>{_number(v)}</td>" for v in row[1:])}</tr>'
+        f'<tr><th scope="row">{_esc(row[0])}</th>{"".join(f"<td>{_esc(_number(v))}</td>" for v in row[1:])}</tr>'
         for row in chart.rows
     )
     return f"<table><caption>{_esc(chart.title)}</caption><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"

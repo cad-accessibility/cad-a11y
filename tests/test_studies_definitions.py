@@ -259,6 +259,17 @@ class TestTokens:
         assert not tokens.is_well_formed(stored)
         assert tokens.verify("anything", stored) is False
 
+    @pytest.mark.parametrize(
+        "cost",
+        ["18446744073709551616$1$1", f"{2**21}$8$1", "32768$17$1", "32768$8$17"],
+        ids=["n-past-64-bits", "n-too-large", "r-too-large", "p-too-large"],
+    )
+    def test_a_hash_with_a_cost_out_of_range_refuses_rather_than_raising(self, cost):
+        key = "k" * 43  # 32 bytes, base64 without padding
+        stored = f"scrypt${cost}$YQ${key}"
+        assert not tokens.is_well_formed(stored)
+        assert tokens.verify("anything", stored) is False
+
     def test_remembering_a_good_token_does_not_let_a_wrong_one_through(self):
         token = tokens.generate()
         stored = tokens.hash_token(token)

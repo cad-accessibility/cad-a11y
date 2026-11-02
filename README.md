@@ -421,7 +421,7 @@ That reports only. Re-run with `--apply` to delete. It never touches anything sh
 
 ## Usage report
 
-`/usage` shows what the analytics database has recorded: sessions, renders, interaction events, the tutorial and uploads, as charts with a data table under each. `/usage.json` gives the same report as data, and `?workshop=exclude` leaves out workshop sessions. Neither shows session ids, workshop participants' names, uploaded file names or contacts. A demo station does not serve it.
+`/usage` shows what the analytics database has recorded: sessions, renders, interaction events, the tutorial and uploads, as charts with a data table under each. `/usage.json` gives the same report as data, and `?workshop=exclude` leaves out workshop sessions. Neither shows session ids, workshop participants' names, uploaded file names or contacts. A value the browser sends, such as a key, an export format or a section's name, is shown only when the viewer itself sends that value or, where the viewer keeps no list of them, when at least two sessions sent it. Anything else reads "Other", and a long table keeps its largest rows and adds up the rest as "Other". A demo station does not serve it.
 
 It is off until a password is set. To turn it on:
 
