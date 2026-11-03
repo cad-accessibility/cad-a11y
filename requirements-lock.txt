@@ -18,7 +18,7 @@
 bleak==3.0.2
 blinker==1.9.0
 cascadio==0.1.1
-certifi==2026.7.22
+certifi==2026.10.18
 charset_normalizer==3.5.1
 click==8.5.0
 dbus-fast==5.0.22
