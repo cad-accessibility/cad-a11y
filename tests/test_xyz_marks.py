@@ -145,27 +145,6 @@ def test_no_marker_when_the_origin_is_off_the_display(far_plate):
     assert np.array_equal(_raised(far_plate), _raised(far_plate, show_origin_marker=True))
 
 
-def test_the_origin_is_reported_as_a_fraction_of_the_object(plate, far_plate):
-    """What "," and "where am I" read: along each axis, 0 at the object's lowest
-    coordinate and 1 at its highest. cube([40,30,5]) has its origin at the low
-    corner; the far plate's origin lies beyond its low corner on X and Y."""
-    assert plate.origin_fraction() == pytest.approx([0.0, 0.0, 0.0], abs=1e-9)
-    x, y, z = far_plate.origin_fraction()
-    assert x == pytest.approx(-100.0 / 40.0) and y == pytest.approx(-100.0 / 30.0)
-    assert z == pytest.approx(0.0, abs=1e-9)
-
-
-def test_every_render_tells_the_viewer_where_the_origin_is():
-    flask_app.config["TESTING"] = True
-    with flask_app.test_client() as client:
-        body = client.post("/render", json={
-            "view": "z+", "renderMode": "Cut", "mode": "single", "depth": 50, "zoom": 0,
-            "current_model": 0, "target_pixel_width": 96, "target_pixel_height": 40,
-        }).get_json()
-    assert len(body["origin_fraction"]) == 3
-    assert all(value is None or isinstance(value, float) for value in body["origin_fraction"])
-
-
 def test_the_origin_s_place_on_the_display_is_where_the_marker_goes(plate, far_plate):
     """What "," and "." read (#235 review): across from the left edge and up from
     the bottom, as fractions of the display, so the pin the marker is drawn on

@@ -915,8 +915,8 @@ function setOrientationFromView(viewToken) {
 // basis for whatever view is currently selected, zoom back out to 0, and
 // bring the slice plane back to the middle (50%) of every axis, in both axis
 // modes -- otherwise a rotated, zoomed-in, or deeply-sliced view came back
-// centred on itself rather than on the object. Does not touch which named view is selected, or
-// send anything to the server itself -- callers still own
+// centred on itself rather than on the object. Does not touch which named
+// view is selected, or send anything to the server itself -- callers still own
 // clearCameraCenterState(), setting currentMoveCamera = "reset", and the
 // single sendStateToServer() call, same as before.
 function resetOrientationZoomAndDepth() {
@@ -1102,11 +1102,6 @@ viewerState.showAxisLetters = true;
 viewerState.showOriginMarker = true;
 viewerState.singleKeyShortcuts = true;
 
-/** The model axis the current view slices along: 'x', 'y' or 'z'. */
-function currentCutAxis() {
-    return activeSliceAxis().axis;
-}
-
 function currentBasis() {
     return {
         right: viewerState.orientationRight,
@@ -1219,21 +1214,6 @@ function turnDescription() {
 
 function capitalize(text) {
     return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
-}
-
-/** Put the plane along `axis` at a position from its lowest coordinate (0) to
- * its highest (1), render and, unless told not to, say the depth it is at. The
- * tutorial's landmarks are positions along the object, so it puts the slice on
- * one through this (#245). */
-function setCutPosition(axis, position, emit = announceAlert, { render = true, announce: shouldAnnounce = true } = {}) {
-    const clamped = Math.min(1, Math.max(0, position));
-    const changed = clamped !== viewerState.slicePlanes[axis];
-    viewerState.slicePlanes[axis] = clamped;
-    syncSliceDepthFromPlanes();
-    refreshViewInfoSummary();
-    if (render && changed) sendStateToServer();
-    if (shouldAnnounce) announceDepthValue(viewerState.currentSliceDepth, null, emit);
-    return changed;
 }
 
 /** Move the slice deltaPercent deeper, away from the reader, or shallower when it
@@ -3438,12 +3418,12 @@ function loadStudyModel(stem, label, defaults) {
  * (percent from its lowest coordinate, the same from either side). Sent with
  * every render too, so the render rows and the CSV carry it. */
 function axisLogFields() {
-    const axis = currentCutAxis();
+    const axis = activeSliceAxis().axis;
     return {
         axis_mode: viewerState.axisMode,
-        cut_axis: axis,
-        cut_side: VIEW_SIDES_BRAILLE[viewerState.currentView] || null,
-        cut_percent: Math.round(viewerState.slicePlanes[axis] * 10000) / 100,
+        slice_axis: axis,
+        slice_side: VIEW_SIDES_BRAILLE[viewerState.currentView] || null,
+        slice_percent: Math.round(viewerState.slicePlanes[axis] * 10000) / 100,
     };
 }
 

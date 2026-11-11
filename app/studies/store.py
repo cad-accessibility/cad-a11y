@@ -198,9 +198,9 @@ CREATE TABLE IF NOT EXISTS study_renders (
     -- sliced along, the side it was seen from, and how far along the object from its
     -- lowest coordinate. Blank for renders recorded before these existed.
     axis_mode        TEXT,
-    cut_axis         TEXT,
-    cut_side         TEXT,
-    cut_percent      REAL
+    slice_axis         TEXT,
+    slice_side         TEXT,
+    slice_percent      REAL
 );
 CREATE INDEX IF NOT EXISTS idx_study_renders_session ON study_renders(study_session_id, seq);
 
@@ -215,9 +215,9 @@ CREATE INDEX IF NOT EXISTS idx_study_renders_session ON study_renders(study_sess
 # database that predates them.
 AXIS_RENDER_COLUMNS = (
     ("axis_mode", "TEXT"),
-    ("cut_axis", "TEXT"),
-    ("cut_side", "TEXT"),
-    ("cut_percent", "REAL"),
+    ("slice_axis", "TEXT"),
+    ("slice_side", "TEXT"),
+    ("slice_percent", "REAL"),
 )
 
 
@@ -323,6 +323,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     # --- study_renders: the axis mode and the slice (#185) ----------------------
     render_columns = {row["name"] for row in conn.execute("PRAGMA table_info(study_renders)")}
+    # These were first called cut_axis, cut_side and cut_percent. Renaming keeps
+    # the values already recorded under the old names.
+    for old_name, new_name in (
+        ("cut_axis", "slice_axis"),
+        ("cut_side", "slice_side"),
+        ("cut_percent", "slice_percent"),
+    ):
+        if old_name in render_columns and new_name not in render_columns:
+            conn.execute(f"ALTER TABLE study_renders RENAME COLUMN {old_name} TO {new_name}")
+            render_columns.discard(old_name)
+            render_columns.add(new_name)
     for name, kind in AXIS_RENDER_COLUMNS:
         if render_columns and name not in render_columns:
             conn.execute(f"ALTER TABLE study_renders ADD COLUMN {name} {kind}")
@@ -464,9 +475,9 @@ LONG_EXPORT_COLUMNS: tuple[str, ...] = (
     # Appended rather than placed beside `view`, so a script reading columns by
     # position keeps working. Blank for sessions recorded before #185.
     "axis_mode",
-    "cut_axis",
-    "cut_side",
-    "cut_percent",
+    "slice_axis",
+    "slice_side",
+    "slice_percent",
     # Whether Shift was held: Shift+Z is Z seen from the other side, and `key`
     # reads "z" for both. Blank on anything that is not a key, and on keys
     # recorded before it was.
@@ -1340,9 +1351,9 @@ class StudyStore:
         step_id: str | None = None,
         step_index: int | None = None,
         axis_mode: str | None = None,
-        cut_axis: str | None = None,
-        cut_side: str | None = None,
-        cut_percent: float | None = None,
+        slice_axis: str | None = None,
+        slice_side: str | None = None,
+        slice_percent: float | None = None,
         resolve_step: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
         only_if_active: bool = False,
     ) -> int | None:
@@ -1380,7 +1391,7 @@ class StudyStore:
                        (study_session_id, participant_id, participant_code, seq, part_id,
                         step_id, step_index, model, view, render_mode, layout_mode, depth,
                         zoom, input_source, cache_hit, orientation, created_at, elapsed_ms,
-                        step_elapsed_ms, axis_mode, cut_axis, cut_side, cut_percent)
+                        step_elapsed_ms, axis_mode, slice_axis, slice_side, slice_percent)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                                ?, ?, ?, ?)""",
                     (
@@ -1404,9 +1415,9 @@ class StudyStore:
                         elapsed,
                         step_elapsed,
                         axis_mode,
-                        cut_axis,
-                        cut_side,
-                        None if cut_percent is None else float(cut_percent),
+                        slice_axis,
+                        slice_side,
+                        None if slice_percent is None else float(slice_percent),
                     ),
                 )
                 conn.commit()
@@ -1437,9 +1448,9 @@ class StudyStore:
                         "zoom": zoom,
                         "orientation": orientation,
                         "axis_mode": axis_mode,
-                        "cut_axis": cut_axis,
-                        "cut_side": cut_side,
-                        "cut_percent": cut_percent,
+                        "slice_axis": slice_axis,
+                        "slice_side": slice_side,
+                        "slice_percent": slice_percent,
                     },
                     "event_data": {"input_source": input_source, "cache_hit": bool(cache_hit)},
                 },

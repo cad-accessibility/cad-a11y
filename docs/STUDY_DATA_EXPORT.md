@@ -62,7 +62,7 @@ choose rather than baked into the file.
 | `input_source` | on render rows, what triggered the render |
 | `model`, `view`, `render_mode`, `layout_mode`, `depth`, `zoom`, `cache_hit` | the state of the viewer at that moment |
 | `orientation_x`, `orientation_y`, `orientation_z`, `orientation_basis` | how the object was turned. See below |
-| `axis_mode`, `cut_axis`, `cut_side`, `cut_percent` | the axis mode and where the slice was along its axis. See below |
+| `axis_mode`, `slice_axis`, `slice_side`, `slice_percent` | the axis mode and where the slice was along its axis. See below |
 
 Only `render` rows record viewer state directly. On every other row the state
 columns show the most recent render in the same session, meaning what was on the
@@ -85,7 +85,7 @@ XYZ mode (`axis_mode` `xyz`, added for #185) is the exception: `x`, `y` and `z`
 pick the axis and the side directly, the letter alone for the view from the
 right, the front or above, and the same letter again for the other side. `key`
 reads the same for both presses, and `key_shift` does not tell them apart, so
-read the side off the row itself: `cut_side` says which side the slice was seen
+read the side off the row itself: `slice_side` says which side the slice was seen
 from. The comparison study ran in Turn mode, so its sessions only contain XYZ
 rows if someone changed the setting mid-session. A study's `viewer_defaults` set
 the mode each of its models loads in.
@@ -98,7 +98,7 @@ the mode each of its models loads in.
 | `arrowup`, `arrowdown` | depth by 1%, deeper for `arrowup`, in both axis modes |
 | `pageup`, `pagedown` | depth by 10%, in both axis modes |
 | `home`, `end` | depth to the surface or the far side, in both axis modes |
-| `x`, `y`, `z` | XYZ mode: slice along that axis, from the right, the front or above; the same key again, from the other side (see `cut_side`). In Turn mode: nothing but a message saying so |
+| `x`, `y`, `z` | XYZ mode: slice along that axis, from the right, the front or above; the same key again, from the other side (see `slice_side`). In Turn mode: nothing but a message saying so |
 | `,` | where the origin is, in both modes (XYZ names its coordinate on the axis) |
 | `2`, `3` | zoom out, zoom in |
 | `4`, `5` | zoom out, zoom in, fine |
@@ -165,10 +165,14 @@ cannot go quietly missing from the analysis; its rows are in
 `axis_mode` is `turn` or `xyz`. The other three describe the slice, in either
 mode:
 
-* `cut_axis` is the model axis the slices are taken along, `x`, `y` or `z`.
-* `cut_side` is the side it is seen from: `above` or `below` for Z, `front` or
+* These three columns were called `cut_axis`, `cut_side` and `cut_percent` before
+  the slice wording replaced "cut". A database that has the old names is renamed
+  in place on start-up, so earlier sessions keep their values; only a CSV already
+  exported carries the old headers.
+* `slice_axis` is the model axis the slices are taken along, `x`, `y` or `z`.
+* `slice_side` is the side it is seen from: `above` or `below` for Z, `front` or
   `back` for Y, `right` or `left` for X.
-* `cut_percent` is how far along the object the slice is, from its lowest
+* `slice_percent` is how far along the object the slice is, from its lowest
   coordinate on that axis (0) to its highest (100). Unlike `depth`, it does not
   change when the same plane is seen from the other side.
 
@@ -196,7 +200,7 @@ same as zero.
 `view` holds the token the viewer has used since long before #185. For Y and Z it
 names the side the reader is on; for X it names the opposite one:
 
-| `view` | Reader is on | OpenSCAD view | `cut_side` |
+| `view` | Reader is on | OpenSCAD view | `slice_side` |
 |---|---|---|---|
 | `z+` | +Z | Top | `above` |
 | `z-` | −Z | Bottom | `below` |
@@ -209,7 +213,7 @@ So an `x-` row is the view from the +X side, not the −X side. Nobody hears the
 tokens — the viewer says "seen from the right" and never "x minus" — but they are
 in this data, so anyone filtering on `view` has to know about the flip. Renaming
 them would silently change what every stored row means, including the sessions
-already collected, which is why they stand. Use `cut_side` where you want a name
+already collected, which is why they stand. Use `slice_side` where you want a name
 that reads the way it sounds.
 
 ### Sessions from before the orientation fix (#185) read differently

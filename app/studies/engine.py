@@ -730,21 +730,27 @@ def _axis_fields(params: dict[str, Any]) -> dict[str, Any]:
     else is left blank rather than stored: a column is only worth grouping on if
     its values are the ones the viewer can actually send."""
 
+    # A viewer page loaded before the rename still sends the cut_* names.
+    legacy = {"slice_axis": "cut_axis", "slice_side": "cut_side", "slice_percent": "cut_percent"}
+
+    def raw(key: str) -> Any:
+        return params.get(key, params.get(legacy.get(key, key)))
+
     def pick(key: str, allowed: set[str]) -> str | None:
-        value = params.get(key)
+        value = raw(key)
         return value if isinstance(value, str) and value in allowed else None
 
     def number(key: str) -> float | None:
-        value = params.get(key)
+        value = raw(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
         return float(value) if math.isfinite(value) else None
 
     return {
         "axis_mode": pick("axis_mode", {"turn", "xyz"}),
-        "cut_axis": pick("cut_axis", {"x", "y", "z"}),
-        "cut_side": pick("cut_side", {"above", "below", "front", "back", "right", "left"}),
-        "cut_percent": number("cut_percent"),
+        "slice_axis": pick("slice_axis", {"x", "y", "z"}),
+        "slice_side": pick("slice_side", {"above", "below", "front", "back", "right", "left"}),
+        "slice_percent": number("slice_percent"),
     }
 
 

@@ -445,22 +445,6 @@ class CADComparisonRenderer:
         v = np.asarray(point, dtype=float)
         return self.model_scale * v + self.model_offset * (1.0 - self.model_scale)
 
-    def origin_fraction(self):
-        """Where the model's origin lies along each axis, as a fraction of the
-        object's extent: 0 at its lowest coordinate, 1 at its highest, outside
-        that range when the origin is beyond the object. The same in the model's
-        own space and the normalised one, since normalising is a uniform scale
-        and shift. None for an axis the object has no extent along."""
-        if self.bbox is None:
-            return None
-        origin = self.to_render_space([0.0, 0.0, 0.0])
-        lo, hi = np.asarray(self.bbox[:3], dtype=float), np.asarray(self.bbox[3:], dtype=float)
-        fractions = []
-        for axis in range(3):
-            extent = hi[axis] - lo[axis]
-            fractions.append(float((origin[axis] - lo[axis]) / extent) if extent > 0 else None)
-        return fractions
-
     def _limits_for_orientation(self, orientation_basis, view_index, view_key):
         """The window to draw, for this view at this orientation.
 

@@ -33,7 +33,7 @@ STUDY = dataclasses.replace(
     token_hash=tokens.hash_token(TOKEN),
     storage=None,
 )
-AXIS_COLUMNS = ["axis_mode", "cut_axis", "cut_side", "cut_percent"]
+AXIS_COLUMNS = ["axis_mode", "slice_axis", "slice_side", "slice_percent"]
 
 store: StudyStore
 
@@ -81,7 +81,7 @@ def _rows():
         conn.close()
 
 
-XYZ_CUT = {"axis_mode": "xyz", "cut_axis": "z", "cut_side": "above", "cut_percent": 40.0}
+XYZ_CUT = {"axis_mode": "xyz", "slice_axis": "z", "slice_side": "above", "slice_percent": 40.0}
 
 
 def test_a_render_row_records_the_axis_mode_and_the_cut(client):
@@ -173,8 +173,8 @@ def test_the_render_request_is_what_fills_them(client):
 
 
 @pytest.mark.parametrize("field,bad", [
-    ("axis_mode", "spin"), ("cut_axis", "w"), ("cut_side", "sideways"),
-    ("cut_percent", "40"), ("cut_percent", float("nan")), ("cut_percent", True),
+    ("axis_mode", "spin"), ("slice_axis", "w"), ("slice_side", "sideways"),
+    ("slice_percent", "40"), ("slice_percent", float("nan")), ("slice_percent", True),
 ])
 def test_values_the_viewer_cannot_send_are_left_blank(field, bad):
     """A column is only worth grouping on if it holds the values the viewer

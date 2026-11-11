@@ -1331,15 +1331,6 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     }
     if bbox is not None:
         response["bbox"] = bbox
-    # Where the model's origin lies along each axis, as a fraction of the object's
-    # extent, for XYZ mode's "," and "where am I". The render just done cached
-    # the engine, so this is a lookup rather than a build.
-    with models_lock:
-        engine = renderers_by_model.get(str(_path_for_stem(model_stem)))
-    if engine is not None and hasattr(engine, "origin_fraction"):
-        origin_fraction = engine.origin_fraction()
-        if origin_fraction is not None:
-            response["origin_fraction"] = origin_fraction
     # Where the origin landed on this frame, across from the left edge and up
     # from the bottom, as fractions of the display: what "," and "." say
     # (#235 review). Absent when the layout has no single view to place it in.
