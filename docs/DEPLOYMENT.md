@@ -44,16 +44,15 @@ GitLab CI: deploy_research_prod fires -> production server updated
 
 ## Credentials used by the automated mirror
 
-The `mirror-to-gitlab.yml` GitHub Actions workflow authenticates to GitLab using a **project access token**
-called `github-actions-mirror`. SSH is not used because the UW CS GitLab server blocks authentication
+The `mirror-to-gitlab.yml` GitHub Actions workflow authenticates to GitLab using a GitLab **project access token**.
+SSH is not used because the UW CS GitLab server blocks authentication
 from GitHub Actions runner IPs (Azure data-center ranges) on port 22.
 
 The credential chain:
 
-1. **Project access token created on GitLab** — a project-scoped token with `write_repository` access
-   was created at `GitLab repo > Settings > Access Tokens` under the name `github-actions-mirror`
-   (current token ID: `10330`, expires: 2027-06-23).
-   It can push to this repository and nothing else.
+1. **Project access token created on GitLab** — a project-scoped token with `write_repository` access,
+   created at `GitLab repo > Settings > Access Tokens`. It can push to this repository and nothing else.
+   Project access tokens expire, so it has to be rotated before its expiry date.
 
 2. **Token stored as a GitHub Actions secret** — the token value is stored in the GitHub repository
    at `Settings > Secrets and variables > Actions` under the name `GITLAB_HTTPS_TOKEN`.
@@ -84,7 +83,7 @@ This only works if GitLab lets the mirror's token set pipeline variables. Check 
 - `Settings > CI/CD > Variables > Minimum role to use pipeline variables`. GitLab's default for self-managed
   projects is Maintainer. A group Owner can switch projects that have never used pipeline variables to
   "No one allowed" (GitLab 18.4 and later), and only an Owner can change it back from that or from Owner.
-- `Settings > Access Tokens`: the `github-actions-mirror` token's role must be at least that minimum.
+- `Settings > Access Tokens`: the mirror's project access token's role must be at least that minimum.
 
 If either falls short, GitLab refuses the variable ("Insufficient permissions to set pipeline variables")
 and creates no deploy pipeline, while the GitHub push itself succeeds, so the mirror job can stay green with
@@ -165,38 +164,16 @@ git push gitlab v0.3.0   # last known-good tag
 
 Check GitHub Actions > "Mirror to GitLab" for the failure reason. Common causes:
 
-- The project access token expired or was revoked — rotate it using the script below
-- The token stored in `GITLAB_HTTPS_TOKEN` does not match the active token on GitLab — re-run the rotation script
+- The project access token expired or was revoked — rotate it (see below)
+- The token stored in `GITLAB_HTTPS_TOKEN` does not match the active token on GitLab — rotate it again
 - GitLab HTTPS is unreachable from GitHub Actions — check `gitlab.cs.washington.edu` status
 
 While the mirror is broken, maintainers can deploy manually using their own GitLab SSH access.
 
 ## Rotating the mirror credentials
 
-Use the script `scripts/replace-deploy-key.sh` to rotate the project access token automatically.
-
-**Dependencies** (install before running):
-- `jq` — `brew install jq`
-- `gh` — `brew install gh`, then `gh auth login`
-- `curl`, `ssh` — already available on macOS and Linux
-
-**Requirements before running:**
-- Your personal SSH key must be registered on your GitLab account:
-  `ssh -T git@gitlab.cs.washington.edu` should greet you by name
-- The `gh` CLI must be logged into a GitHub account with write access to `cad-accessibility/cad-a11y`
-
-```bash
-bash scripts/replace-deploy-key.sh
-```
-
-The script will:
-1. Use your personal GitLab SSH key to obtain a short-lived API token
-2. Create a new project access token called `github-actions-mirror` (expires in 1 year)
-3. Store the new token as the `GITLAB_HTTPS_TOKEN` GitHub Actions secret
-4. Revoke the old `github-actions-mirror` token on GitLab
-5. Revoke the short-lived API token
-
-It prompts for confirmation before making any changes.
+The rotation procedure, and the details of the token currently in use, are kept with the maintainers rather than
+in this public repository. Ask a maintainer if you need them.
 
 ## GitLab CI configuration reference
 
