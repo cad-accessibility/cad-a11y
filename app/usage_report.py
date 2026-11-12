@@ -33,6 +33,7 @@ import getpass
 import html
 import itertools
 import json
+import logging
 import math
 import sqlite3
 import statistics
@@ -48,6 +49,8 @@ from urllib.parse import quote
 
 from . import tutorial_lessons
 from .studies import tokens
+
+logger = logging.getLogger(__name__)
 
 Value = int | float | str
 
@@ -385,13 +388,13 @@ def _read_events(
         f"SELECT session_id, event_type, event_data FROM e WHERE event_type IN ({marks})",
         EVENT_TYPES,
     ):
-        if event_type == "tutorial" and session_id is not None:
-            events.tutorial.add(session_id)
         try:
             data = json.loads(blob) if blob else {}
         except (TypeError, ValueError, RecursionError):
             data = None
         if isinstance(data, dict):
+            if event_type == "tutorial" and session_id is not None:
+                events.tutorial.add(session_id)
             events.add(session_id, event_type, data)
         else:
             events.malformed += 1
@@ -418,15 +421,26 @@ def build_report(
                 ),
             ),
         )
-    conn = sqlite3.connect(f"file:{quote(str(path.resolve()))}?mode=ro", uri=True)
     try:
-        _create_views(conn, exclude_workshop)
-        fields = _fields()
-        events = _read_events(conn, fields, frozenset(builtin_names))
-        ctx = Context(exclude_workshop, fields, events)
-        sections = tuple(builder(conn, ctx) for builder in SECTIONS)
-    finally:
-        conn.close()
+        conn = sqlite3.connect(f"file:{quote(str(path.resolve()))}?mode=ro", uri=True)
+        try:
+            _create_views(conn, exclude_workshop)
+            fields = _fields()
+            events = _read_events(conn, fields, frozenset(builtin_names))
+            ctx = Context(exclude_workshop, fields, events)
+            sections = tuple(builder(conn, ctx) for builder in SECTIONS)
+        finally:
+            conn.close()
+    except sqlite3.Error as error:
+        # A corrupt file, or a WAL database whose -shm a read-only connection
+        # cannot create.
+        logger.warning("The usage report could not read %s: %s", path, error)
+        sections = (
+            Section(
+                "Overview",
+                f"The usage database could not be read ({type(error).__name__}).",
+            ),
+        )
     return Report(generated_at, exclude_workshop, sections)
 
 

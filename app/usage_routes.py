@@ -9,16 +9,21 @@ The browser's own Basic auth prompt asks for the password, so there is no
 sign-in page, cookie or session to build, and the prompt is one screen readers
 already know. The username is ignored. The check is ``tokens.verify``, the one
 the study panels use, with its cache of passwords that have verified and its
-limit on how many checks run at once.
+limit on how many checks run at once. After ``FAILURE_LIMIT`` wrong passwords
+within ``FAILURE_WINDOW`` seconds, every password is refused with 429 until the
+oldest of them is that old, so guessing runs at that rate and costs no scrypt.
 
-Not registered on a demo station, and closed to demo requests on any other
-server (``_CLOSED_TO_DEMO`` in server.py).
+Not registered on a demo station, and every route in ``usage_bp`` is closed to
+demo requests on any other server (``_bind_recorder_for_request`` in server.py).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import threading
+import time
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
@@ -39,7 +44,14 @@ _HEADERS = {
     ),
 }
 
+FAILURE_LIMIT = 10
+FAILURE_WINDOW = 60
+
 usage_bp = Blueprint("usage", __name__)
+
+_now: Callable[[], float] = time.monotonic
+_failures: deque[float] = deque()
+_failures_lock = threading.Lock()
 
 _builtin_dir: Callable[[], Path] = (
     lambda: Path(__file__).resolve().parent.parent / "builtin_models"
@@ -74,7 +86,22 @@ def _require_password():
         if credentials is not None and credentials.type == "basic"
         else None
     )
+    if password:
+        with _failures_lock:
+            while _failures and _now() - _failures[0] >= FAILURE_WINDOW:
+                _failures.popleft()
+            if len(_failures) >= FAILURE_LIMIT:
+                wait = FAILURE_WINDOW - (_now() - _failures[0])
+                return Response(
+                    "Too many wrong passwords. Try again later.\n",
+                    429,
+                    {"Retry-After": str(max(1, round(wait)))},
+                    mimetype="text/plain",
+                )
     if not tokens.verify(password, expected):
+        if password:
+            with _failures_lock:
+                _failures.append(_now())
         return Response(
             "Authentication required.\n",
             401,

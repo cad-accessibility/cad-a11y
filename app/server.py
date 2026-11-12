@@ -1589,7 +1589,7 @@ else:
 # review).
 #
 # /usage is the usage report: it shows what other people did with the viewer.
-_CLOSED_TO_DEMO = ("/studies", "/ingest", "/api", "/usage", "/usage.json")
+_CLOSED_TO_DEMO = ("/studies", "/ingest", "/api")
 
 
 @app.before_request
@@ -1605,7 +1605,9 @@ def _bind_recorder_for_request():
     recording.bind_null()
 
     path = request.path
-    if any(path == closed or path.startswith(closed + "/") for closed in _CLOSED_TO_DEMO):
+    if request.blueprint == usage_routes.usage_bp.name or any(
+        path == closed or path.startswith(closed + "/") for closed in _CLOSED_TO_DEMO
+    ):
         return jsonify(
             {
                 "status": "error",

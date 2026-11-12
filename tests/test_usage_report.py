@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 import app.db as db_module
-from app import recording, usage_report
+from app import recording, usage_report, usage_routes
 from app.server import app as flask_app
 from app.studies import tokens
 
@@ -73,8 +73,10 @@ def usage_db(tmp_path, monkeypatch):
 def enabled(monkeypatch):
     monkeypatch.setenv(ENV, PASSWORD_HASH)
     tokens.forget_verified()
+    usage_routes._failures.clear()
     yield
     tokens.forget_verified()
+    usage_routes._failures.clear()
 
 
 @pytest.fixture()
@@ -373,6 +375,49 @@ def test_a_demo_station_does_not_register_the_report(tmp_path, data_env):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().endswith("[]"), result.stdout
+
+
+def test_wrong_passwords_are_throttled_and_the_right_one_waits_too(
+    client, usage_db, enabled, monkeypatch
+):
+    clock = [1000.0]
+    monkeypatch.setattr(usage_routes, "_now", lambda: clock[0])
+    for _ in range(usage_routes.FAILURE_LIMIT):
+        assert client.get("/usage.json", headers=_basic("wrong")).status_code == 401
+
+    verified = []
+    monkeypatch.setattr(
+        tokens, "verify", lambda *args: verified.append(args) or True
+    )
+    refused = client.get("/usage.json", headers=AUTH)
+    assert refused.status_code == 429
+    assert 0 < int(refused.headers["Retry-After"]) <= usage_routes.FAILURE_WINDOW
+    assert refused.headers["Cache-Control"] == "no-store"
+    assert verified == []
+
+    clock[0] += usage_routes.FAILURE_WINDOW + 1
+    assert client.get("/usage.json", headers=AUTH).status_code == 200
+
+
+def test_a_request_without_a_password_is_not_a_failed_attempt(
+    client, usage_db, enabled
+):
+    for _ in range(usage_routes.FAILURE_LIMIT + 5):
+        assert client.get("/usage").status_code == 401
+    assert client.get("/usage.json", headers=AUTH).status_code == 200
+
+
+def test_every_usage_route_is_closed_to_demo_requests(client, usage_db, enabled):
+    paths = [
+        rule.rule
+        for rule in flask_app.url_map.iter_rules()
+        if rule.endpoint.startswith(usage_routes.usage_bp.name + ".")
+    ]
+    assert paths
+    for path in paths:
+        response = client.get(path, headers={**AUTH, recording.DEMO_HEADER: "1"})
+        assert response.status_code == 404, path
+        assert response.get_json()["message"] == "Not available in demo mode."
 
 
 def test_a_demo_request_is_refused(client, usage_db, enabled):
@@ -1229,3 +1274,49 @@ def test_an_existing_other_bucket_does_not_take_a_named_slot():
     rows = usage_report._ranked(counts, limit=10)
     assert [row[0] for row in rows[:10]] == [f"device{i}" for i in range(10)]
     assert rows[-1] == ("Other", 100)
+
+
+def test_a_database_sqlite_cannot_read_reports_that_instead_of_failing(tmp_path):
+    unreadable = tmp_path / "usage.db"
+    unreadable.write_bytes(b"not a database" * 100)
+
+    overview = _section(_build(unreadable), "Overview")
+
+    assert overview["summary"] == "The usage database could not be read (DatabaseError)."
+
+
+def test_a_tutorial_event_that_cannot_be_read_does_not_count_as_entered(usage_db):
+    _sessions(usage_db, S1, S2)
+    _events(
+        usage_db,
+        [
+            (S1, "tutorial", "{not json"),
+            (S2, "tutorial", {"action": "completed", "lesson": None}),
+        ],
+    )
+
+    funnel = _section(_build(usage_db), "Tutorial funnel")
+
+    assert _chart(funnel, "Tutorial progress")["rows"][0] == [
+        "Entered the tutorial",
+        1,
+    ]
+    assert _tile(funnel, "Completion rate") == "100%"
+
+
+@pytest.mark.parametrize(
+    "low, high",
+    [
+        (-sys.float_info.max, sys.float_info.max),
+        (sys.float_info.max * 0.9, sys.float_info.max),
+        (sys.float_info.max * (1 - 2**-50), sys.float_info.max),
+    ],
+)
+def test_histogram_edges_near_the_largest_double_stay_finite(usage_db, low, high):
+    _sessions(usage_db, S1)
+    _renders(usage_db, [{"depth": low}, {"depth": high}])
+
+    depth = _chart(_section(_build(usage_db), "Rendering choices"), "Depth")
+
+    assert sum(row[1] for row in depth["rows"]) == 2
+    assert not any("inf" in label for label in _labels(depth))

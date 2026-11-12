@@ -430,6 +430,8 @@ It is off until a password is set. On the servers, the password is the GitHub Ac
 3. Check the server's log. It says `Usage report: on, at /usage.` when the hash is accepted, and `Usage report: off` otherwise.
 4. Open `/usage`. The browser asks for a username and password; the username is ignored.
 
+After 10 wrong passwords within a minute, `/usage` refuses every password, the right one included, with 429 until the oldest of them is a minute old.
+
 A pipeline started any other way, such as "Run pipeline" in GitLab, carries no hash, and the report it deploys is off. With no hash, or a value that is not a hash from the command above, both addresses answer 404.
 
 On your own machine, make a hash with `python -m app.usage_report hash` (it asks for the password twice, needs none of the app's dependencies, and prints only the hash), and put it in `.env` beside `docker-compose.yml`, in single quotes: `CAD_A11Y_USAGE_PASSWORD_HASH='scrypt$32768$8$1$...'`. The quotes matter: the hash contains `$`, and Compose interpolates unquoted and double-quoted values in `.env`.
