@@ -1590,6 +1590,13 @@ else:
 #
 # /usage is the usage report: it shows what other people did with the viewer.
 _CLOSED_TO_DEMO = ("/studies", "/ingest", "/api")
+# By path, not request.blueprint: a method the route does not take fails routing,
+# which leaves the blueprint unset.
+_USAGE_PATHS = frozenset(
+    rule.rule
+    for rule in app.url_map.iter_rules()
+    if rule.endpoint.startswith(usage_routes.usage_bp.name + ".")
+)
 
 
 @app.before_request
@@ -1605,7 +1612,7 @@ def _bind_recorder_for_request():
     recording.bind_null()
 
     path = request.path
-    if request.blueprint == usage_routes.usage_bp.name or any(
+    if path in _USAGE_PATHS or any(
         path == closed or path.startswith(closed + "/") for closed in _CLOSED_TO_DEMO
     ):
         return jsonify(

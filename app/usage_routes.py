@@ -13,13 +13,15 @@ limit on how many checks run at once. After ``FAILURE_LIMIT`` wrong passwords
 within ``FAILURE_WINDOW`` seconds, every password is refused with 429 until the
 oldest of them is that old, so guessing runs at that rate and costs no scrypt.
 
-Not registered on a demo station, and every route in ``usage_bp`` is closed to
+Not registered on a demo station, and every path in ``usage_bp`` is closed to
 demo requests on any other server (``_bind_recorder_for_request`` in server.py).
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
+import math
 import os
 import threading
 import time
@@ -95,20 +97,23 @@ def _require_password():
                 return Response(
                     "Too many wrong passwords. Try again later.\n",
                     429,
-                    {"Retry-After": str(max(1, round(wait)))},
+                    {"Retry-After": str(max(1, math.ceil(wait)))},
                     mimetype="text/plain",
                 )
-    if not tokens.verify(password, expected):
+            # Counted before the check, so attempts sent at once cannot all pass.
+            attempt = _now()
+            _failures.append(attempt)
+    if tokens.verify(password, expected):
         if password:
-            with _failures_lock:
-                _failures.append(_now())
-        return Response(
-            "Authentication required.\n",
-            401,
-            {"WWW-Authenticate": _CHALLENGE},
-            mimetype="text/plain",
-        )
-    return None
+            with _failures_lock, contextlib.suppress(ValueError):
+                _failures.remove(attempt)
+        return None
+    return Response(
+        "Authentication required.\n",
+        401,
+        {"WWW-Authenticate": _CHALLENGE},
+        mimetype="text/plain",
+    )
 
 
 @usage_bp.after_request

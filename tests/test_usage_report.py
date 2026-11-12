@@ -389,14 +389,51 @@ def test_wrong_passwords_are_throttled_and_the_right_one_waits_too(
     monkeypatch.setattr(
         tokens, "verify", lambda *args: verified.append(args) or True
     )
+    clock[0] += 0.6
     refused = client.get("/usage.json", headers=AUTH)
     assert refused.status_code == 429
-    assert 0 < int(refused.headers["Retry-After"]) <= usage_routes.FAILURE_WINDOW
+    assert refused.headers["Retry-After"] == str(usage_routes.FAILURE_WINDOW)
     assert refused.headers["Cache-Control"] == "no-store"
     assert verified == []
 
     clock[0] += usage_routes.FAILURE_WINDOW + 1
     assert client.get("/usage.json", headers=AUTH).status_code == 200
+
+
+def test_wrong_passwords_sent_at_once_are_throttled_too(usage_db, enabled, monkeypatch):
+    import threading
+
+    release = threading.Event()
+    entered = []
+
+    def slow_wrong(*args):
+        entered.append(args)
+        release.wait(5)
+        return False
+
+    monkeypatch.setattr(tokens, "verify", slow_wrong)
+    statuses = []
+
+    def attempt():
+        with flask_app.test_client() as c:
+            statuses.append(c.get("/usage.json", headers=_basic("wrong")).status_code)
+
+    threads = [
+        threading.Thread(target=attempt)
+        for _ in range(usage_routes.FAILURE_LIMIT + 1)
+    ]
+    for thread in threads:
+        thread.start()
+    for _ in range(500):
+        if len(entered) + len(statuses) > usage_routes.FAILURE_LIMIT:
+            break
+        threading.Event().wait(0.01)
+    release.set()
+    for thread in threads:
+        thread.join(5)
+
+    assert len(entered) == usage_routes.FAILURE_LIMIT
+    assert sorted(statuses) == [401] * usage_routes.FAILURE_LIMIT + [429]
 
 
 def test_a_request_without_a_password_is_not_a_failed_attempt(
@@ -414,8 +451,8 @@ def test_every_usage_route_is_closed_to_demo_requests(client, usage_db, enabled)
         if rule.endpoint.startswith(usage_routes.usage_bp.name + ".")
     ]
     assert paths
-    for path in paths:
-        response = client.get(path, headers={**AUTH, recording.DEMO_HEADER: "1"})
+    for path, send in itertools.product(paths, (client.get, client.post)):
+        response = send(path, headers={**AUTH, recording.DEMO_HEADER: "1"})
         assert response.status_code == 404, path
         assert response.get_json()["message"] == "Not available in demo mode."
 
