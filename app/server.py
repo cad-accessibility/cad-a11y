@@ -2493,15 +2493,18 @@ def delete_model(filename: str):
     if not safe_name or safe_name != filename:
         return jsonify({"status": "error", "message": "Invalid filename"}), 400
 
-    if not db.session_owns_model(session_id, safe_name):
-        return jsonify({"status": "error", "message": "Model not found or already deleted"}), 404
-
     dest = UPLOAD_DIR / safe_name
-    try:
-        if dest.exists():
-            dest.unlink()
-    except Exception as err:
-        return jsonify({"status": "error", "message": f"Could not remove file: {err}"}), 500
+    # The check and the unlink are one step under the lock an upload claims its
+    # name under, so expiry cannot free the name in between and let a new upload
+    # take it, which this would then delete (#298 review).
+    with models_lock:
+        if not db.session_owns_model(session_id, safe_name):
+            return jsonify({"status": "error", "message": "Model not found or already deleted"}), 404
+        try:
+            if dest.exists():
+                dest.unlink()
+        except Exception as err:
+            return jsonify({"status": "error", "message": f"Could not remove file: {err}"}), 500
 
     _forget_uploads([dest], recording.current())
     return jsonify({"status": "success", "filename": safe_name}), 200
@@ -2581,7 +2584,9 @@ def _expire_uploads() -> int:
                 or max(path.stat().st_mtime, started) >= cutoff
             ):
                 continue
-            path.unlink()
+            # Under the lock an upload claims its name under, as the delete route.
+            with models_lock:
+                path.unlink()
             removed.append(path)
         except Exception as error:
             _log(f"Could not remove expired upload {path.name}: {error}", force=True)
