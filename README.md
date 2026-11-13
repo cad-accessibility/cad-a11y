@@ -395,6 +395,8 @@ Models live in two directories, and which one a file is in decides who can see i
 *   `builtin_models/` holds the models that ship with the project. They are tracked in git, copied into the image, and seeded into `data/models` every time the server starts. Seeding on each start is what lets a built-in added later reach a server whose Docker volume already exists, since Docker only seeds a named volume while it is empty.
 *   `data/uploads/` holds what people upload. These are private to the person who uploaded them.
 
+An upload is deleted `UPLOAD_RETENTION_DAYS` days after it was saved: 30 unless set, and `0` keeps uploads until someone deletes them. `docker-compose.yml` passes it through. The first check leaves a `.retention-started` file in the upload directory, and no upload is counted as older than that, so uploads already on a server get the full period from the first deploy. The server checks at start and then at most hourly, and the viewer states the period next to its upload button. On a demo station a tab's uploads also go when the tab closes.
+
 To add a built-in model, put the file in `builtin_models/` and rebuild. Do not put it in `data/models` directly: that directory is runtime state and is not tracked.
 
 The two directories must never be the same. Classification is by location, so if uploads landed in the built-in directory every uploaded file would be served to every visitor. That is exactly what happened in #102 once the move to Docker named volumes made `data/models` writable. The server now refuses to start if `UPLOAD_MODEL_DIR` resolves to the built-in directory.
