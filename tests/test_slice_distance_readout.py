@@ -74,7 +74,7 @@ def test_where_am_i_says_the_slice_coordinate_or_that_the_unit_is_unknown():
     where = _function("announceWhereAmI")
     assert "Slice at ${axis} ${coordinate}." in where
     # Only once the model's own render has said so: before that it is not known yet.
-    assert "} else if (currentSliceExtent()) {" in where
+    assert "} else if (viewerState.showSliceDistance && currentSliceExtent()) {" in where
     assert "'Unit unknown.'" in where
 
 
@@ -120,14 +120,15 @@ def _view_bases() -> dict[str, dict[str, list[float]]]:
     return {name: {"right": json.loads(r), "up": json.loads(u), "depth": json.loads(d)} for name, r, u, d in found}
 
 
-def _viewer_coordinates(cases: list[dict], bounds: list[float]) -> list[float]:
+def _viewer_coordinates(cases: list[dict], bounds: list[float], shown: bool = True) -> list[float]:
     js = _js()
     names = ("activeSliceAxis", "planePositionFromDepth", "shownModel", "currentSliceExtent", "sliceCoordinate")
     functions = "\n".join(js[js.index(f"function {n}("):js.index("\n}\n", js.index(f"function {n}(")) + 2]
                           for n in names)
     script = f"""
 let lastShownModel = 'part';
-const viewerState = {{ currentModel: 'part', sliceExtent: {{ model: 'part', mm: {json.dumps(bounds)} }} }};
+const viewerState = {{ currentModel: 'part', showSliceDistance: {json.dumps(shown)},
+                       sliceExtent: {{ model: 'part', mm: {json.dumps(bounds)} }} }};
 {functions}
 const cases = {json.dumps(cases)};
 console.log(JSON.stringify(cases.map(c => {{
@@ -167,3 +168,25 @@ def test_the_coordinate_said_is_where_the_renderer_cuts_in_every_view():
     said = _viewer_coordinates(cases, bounds)
     for case, coordinate in zip(cases, said):
         assert coordinate == pytest.approx(case["expected"], abs=1e-9), case
+
+
+def test_a_study_can_turn_the_readout_off():
+    """A study running across a release would otherwise give later participants
+    the distance and earlier ones not. The protocol decides, at every model load."""
+    defaults = _function("applyStudyDefaults")
+    assert "if (typeof wanted.slice_distance === 'boolean') viewerState.showSliceDistance = wanted.slice_distance;" in defaults
+    assert "!viewerState.showSliceDistance" in _function("sliceCoordinate")
+    assert "} else if (viewerState.showSliceDistance && currentSliceExtent()) {" in _function("announceWhereAmI")
+
+
+def test_the_example_study_shows_where_the_switch_is():
+    from app.studies.definitions import example
+
+    assert example.STUDY.viewer_defaults["slice_distance"] is True
+
+
+@pytest.mark.skipif(NODE is None, reason="runs the viewer's own functions in node")
+def test_with_the_readout_off_no_distance_is_given():
+    case = {"depthVector": [0, 0, 1], "depth": 40}
+    assert _viewer_coordinates([case], [0, 0, 0, 10, 10, 10], shown=False) == [None]
+    assert _viewer_coordinates([case], [0, 0, 0, 10, 10, 10]) == [6.0]

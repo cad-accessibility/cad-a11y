@@ -1186,7 +1186,7 @@ function currentSliceExtent() {
  * (#234): a number in an unknown unit is worse than none. */
 function sliceCoordinate(depthPercent) {
     const extent = currentSliceExtent();
-    if (!extent || !extent.mm) return null;
+    if (!viewerState.showSliceDistance || !extent || !extent.mm) return null;
     const { axis, sign } = activeSliceAxis();
     const index = 'xyz'.indexOf(axis);
     const low = extent.mm[index];
@@ -1252,6 +1252,9 @@ viewerState.singleKeyShortcuts = true;
 viewerState.sayDistanceUnit = true;
 // The object's extent in millimetres and the model it belongs to; see rememberSliceExtent.
 viewerState.sliceExtent = null;
+// Whether the distance is given at all. Only a study turns it off (slice_distance
+// in its viewer_defaults), so its sessions hear the same thing before and after a release.
+viewerState.showSliceDistance = true;
 
 /** The model axis the current view slices along: 'x', 'y' or 'z'. */
 function currentCutAxis() {
@@ -1516,7 +1519,7 @@ function announceWhereAmI(emit = announceAlert) {
         const coordinate = distanceText(mm);
         speech.push(`Slice at ${axis} ${coordinate}.`);
         braille.push(`${axis} ${coordinate}`);
-    } else if (currentSliceExtent()) {
+    } else if (viewerState.showSliceDistance && currentSliceExtent()) {
         speech.push('Unit unknown.');
         braille.push('Unit unknown');
     }
@@ -3881,6 +3884,7 @@ function applyStudyDefaults(defaults) {
     // The protocol may turn the view label on or off for a study. Like the axis
     // mode it is the study's choice, so it is not saved.
     if (typeof wanted.view_info_box === 'boolean') viewerState.showViewInfoBox = wanted.view_info_box;
+    if (typeof wanted.slice_distance === 'boolean') viewerState.showSliceDistance = wanted.slice_distance;
     if (representationModeByKey(wanted.representation_mode)) {
         viewerState.currentRepresentationMode = wanted.representation_mode;
     }

@@ -70,16 +70,22 @@ starting.
    Give the token to the experimenters privately. It is not stored anywhere, and
    the hash is safe in the repository. Copying the example's hash does not work:
    that token is published, and any other study using it is refused.
-4. Write the steps and tasks (below). Run the tests: `tests/test_studies_definitions.py`
+4. Set `viewer_defaults`: what the viewer is set to at every model load, such as
+   `axis_mode`, `view`, `depth` and `render_mode`. `slice_distance` decides
+   whether the participant hears and feels where the slice is in millimetres from
+   the origin ("Depth 40%, 38mm") on models whose unit is known. A study that
+   started without it should set it to `False`, so every session gets the same.
+   The study's data records the millimetres either way, in `cut_value`.
+5. Write the steps and tasks (below). Run the tests: `tests/test_studies_definitions.py`
    checks every definition, and says what is wrong with one.
-5. Try it locally:
+6. Try it locally:
 
    ```bash
    CAD_A11Y_OPEN_STUDIES=<slug> docker compose up --build
    ```
 
    then open `http://localhost:8635/studies/<slug>/control`.
-6. When it should run on the servers, set `status=Status.OPEN` in a pull request.
+7. When it should run on the servers, set `status=Status.OPEN` in a pull request.
    Staging serves it once that merges; production, once it is in a release.
 
 ## Writing steps

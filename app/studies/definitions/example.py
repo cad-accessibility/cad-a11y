@@ -170,6 +170,9 @@ STUDY = Study(
         "compose_scrollbar": True,
         "zoom": 0.0,
         "reset_pan": True,
+        # Say where the slice is in millimetres, for a model whose unit is known
+        # (#264). False keeps a study that ran without it the same throughout.
+        "slice_distance": True,
     },
     model_labels={"a": "Object"},
     facilitator_prompts=[
