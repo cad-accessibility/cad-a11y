@@ -113,6 +113,36 @@ def test_a_render_gives_the_object_s_extent_in_millimetres():
     assert bounds == pytest.approx(list(mesh.bounds[0]) + list(mesh.bounds[1]), abs=0.05)
 
 
+def test_a_model_in_metres_is_given_in_millimetres():
+    """lego_3002 is a 2x3 brick in metres: 11.4 mm tall with its studs."""
+    flask_app.config["TESTING"] = True
+    with flask_app.test_client() as client:
+        bounds = _render(client, "lego_3002")["bounds_mm"]
+    assert bounds[5] - bounds[2] == pytest.approx(11.4, abs=0.1)
+
+
+def test_a_cached_render_still_gives_the_extent():
+    flask_app.config["TESTING"] = True
+    with flask_app.test_client() as client:
+        first = _render(client, "tutorial_mug", depth=37)["bounds_mm"]
+        again = _render(client, "tutorial_mug", depth=37)
+    assert again["debug"]["phase1_quantized_cache_hit"] is True
+    assert again["bounds_mm"] == first
+
+
+def test_the_step_loader_converts_whatever_unit_a_file_declares_to_metres(tmp_path):
+    """units_for calls every STEP file metres because the loader converts it so.
+    The same file declaring millimetres instead must load a thousand times smaller."""
+    source = ROOT / "src" / "models" / "brep" / "cube.step"
+    text = source.read_text(encoding="utf-8")
+    assert "SI_UNIT($,.METRE.)" in text
+    millimetres = tmp_path / "cube_mm.step"
+    millimetres.write_text(text.replace("SI_UNIT($,.METRE.)", "SI_UNIT(.MILLI.,.METRE.)"), encoding="utf-8")
+    as_metres = trimesh.load(source, force="mesh").extents
+    as_millimetres = trimesh.load(millimetres, force="mesh").extents
+    np.testing.assert_allclose(as_millimetres * 1000.0, as_metres, rtol=1e-3)
+
+
 def test_a_render_of_a_model_with_no_known_unit_gives_no_extent():
     flask_app.config["TESTING"] = True
     with flask_app.test_client() as client:
@@ -146,6 +176,8 @@ def test_an_upload_keeps_the_unit_the_person_chose(tmp_db, field, value, expecte
         )
     assert response.status_code == 200, response.get_data(as_text=True)
     assert model_units.units_for(server.UPLOAD_DIR / response.get_json()["filename"]) == expected
+    # Said back, so the viewer can say which unit was kept.
+    assert response.get_json()["units"] == expected
 
 
 def test_an_ingested_model_keeps_its_unit(tmp_db):

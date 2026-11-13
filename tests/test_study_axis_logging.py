@@ -229,6 +229,17 @@ def test_the_server_records_where_the_slice_was_in_millimetres(client):
     assert _slice_rows()[-1] == pytest.approx((38.0, "mm"))
 
 
+def test_a_cut_on_an_axis_whose_low_end_is_negative_counts_from_there(client):
+    """The mug spans X from -43.65 mm to 43.65 mm, so 25% along X is -21.8 mm.
+    Rendered twice, so the second row comes from the cache."""
+    session_id = _start(client)
+    cut = {**XYZ_CUT, "cut_axis": "x", "cut_side": "right", "cut_percent": 25.0}
+    _render_in_session(client, session_id, "tutorial_mug", **cut)
+    _render_in_session(client, session_id, "tutorial_mug", **cut)
+    rows = _slice_rows()[-2:]
+    assert [row[0] for row in rows] == pytest.approx([-21.83, -21.83], abs=0.02)
+
+
 def test_a_model_with_no_known_unit_leaves_them_blank(client):
     session_id = _start(client)
     _render_in_session(client, session_id, "cane_tip_fitted", **XYZ_CUT, cut_value=999.0, cut_units="mm")

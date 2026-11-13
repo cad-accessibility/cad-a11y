@@ -177,7 +177,9 @@ mode:
 All four are blank on rows recorded before they existed.
 
 `cut_value` is the same place as a coordinate on that axis, the slice's signed
-distance from the model's origin, in `cut_units`, which is always `mm`. The
+distance from the model's origin, in `cut_units`, which is always `mm`. It is
+worked out from `cut_percent` and the model's extent, so it follows `cut_percent`
+where that and the whole-number `depth` differ. The
 viewer knows a model's unit only when something says so: the choice made when
 it was uploaded, a STEP file's own declaration, OpenSCAD's stamp on an STL, or
 a built-in whose size matches a real object (the tutorial mug and the

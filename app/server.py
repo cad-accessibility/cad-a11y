@@ -1104,7 +1104,10 @@ def _render_and_send(
     recording.current().braille_event(event)
 
     bbox = getattr(engine, "bbox", None)
-    return rendered, bbox, braille_payload, result
+    # From the engine that drew this frame, not a second lookup that could find
+    # it evicted, or find another model's after a delete.
+    extent_mm = model_units.bounds_mm(getattr(engine, "raw_bbox", None), getattr(engine, "model_units", None))
+    return rendered, bbox, braille_payload, result, extent_mm
 
 
 def _save_print_if_requested(params: dict[str, Any], result: RenderResult, img_data: np.ndarray) -> None:
@@ -1433,7 +1436,7 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     # is precisely what sent it down the second-render path it was meant to avoid.
     render_size = _target_grid(params)
 
-    rendered, bbox, braille_payload, render_result = _render_and_send(
+    rendered, bbox, braille_payload, render_result, extent_mm = _render_and_send(
         params, source=source, model_stem=model_stem, render_size=render_size
     )
 
@@ -1504,9 +1507,7 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
             response["origin_fraction"] = origin_fraction
     # The object's extent in millimetres, so the viewer can say where the slice
     # is (#264). None when the model's unit is not known (#234).
-    response["bounds_mm"] = model_units.bounds_mm(
-        getattr(engine, "raw_bbox", None), getattr(engine, "model_units", None)
-    )
+    response["bounds_mm"] = extent_mm
     # Where the origin landed on this frame, across from the left edge and up
     # from the bottom, as fractions of the display: what "," and "." say
     # (#235 review). Absent when the layout has no single view to place it in.
@@ -1532,7 +1533,7 @@ def initialize_default_braille_render() -> None:
 
     try:
         merged_params, model_stem, _is_pan_request, _fingerprint = _prepare_render_params(dict(DEFAULT_RENDER_PARAMS))
-        rendered, _, _, _ = _render_and_send(merged_params, source="startup", model_stem=model_stem)
+        rendered, _, _, _, _ = _render_and_send(merged_params, source="startup", model_stem=model_stem)
         _log(f"Initial render ready: shape={tuple(rendered.shape)}", force=True)
     except Exception as error:
         _log(f"Initial render failed: {error}", force=True)
@@ -2305,6 +2306,9 @@ def upload_model():
         # the next upload renumbers.
         "model_stem": Path(filename).stem,
         "new_model_index": new_index,
+        # The unit kept for it, which for a STEP file or an OpenSCAD export may
+        # not be the one chosen; None when it is not known.
+        "units": model_units.units_for(dest),
     }), 200
 
 

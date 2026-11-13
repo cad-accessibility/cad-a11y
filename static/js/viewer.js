@@ -1174,12 +1174,19 @@ function shownModel() {
     return viewerState.currentModel || lastShownModel;
 }
 
+/** The extent of the model on show, once a render of it has arrived; its mm is
+ * null when the model's unit is not known. Null before then. */
+function currentSliceExtent() {
+    const extent = viewerState.sliceExtent;
+    return extent && extent.model === shownModel() ? extent : null;
+}
+
 /** The slice's coordinate on its axis, in millimetres from the model's origin
  * (#264), for a view-relative depth. Null when the model's unit is not known
  * (#234): a number in an unknown unit is worse than none. */
 function sliceCoordinate(depthPercent) {
-    const extent = viewerState.sliceExtent;
-    if (!extent || !extent.mm || extent.model !== shownModel()) return null;
+    const extent = currentSliceExtent();
+    if (!extent || !extent.mm) return null;
     const { axis, sign } = activeSliceAxis();
     const index = 'xyz'.indexOf(axis);
     const low = extent.mm[index];
@@ -1504,14 +1511,14 @@ function announceWhereAmI(emit = announceAlert) {
     const speech = [description.speech];
     const braille = [...description.braille];
     const mm = sliceCoordinate(viewerState.currentSliceDepth);
-    if (mm === null) {
-        speech.push('Unit unknown.');
-        braille.push('Unit unknown');
-    } else {
+    if (mm !== null) {
         const axis = activeSliceAxis().axis.toUpperCase();
         const coordinate = distanceText(mm);
         speech.push(`Slice at ${axis} ${coordinate}.`);
-        braille.push(`Slice ${axis} ${coordinate}`);
+        braille.push(`${axis} ${coordinate}`);
+    } else if (currentSliceExtent()) {
+        speech.push('Unit unknown.');
+        braille.push('Unit unknown');
     }
     const origin = originOnDisplayPhrase();
     if (origin) {
@@ -1628,7 +1635,7 @@ function refreshDepthControls() {
         sliceSlider.setAttribute('aria-valuenow', String(depth));
         sliceSlider.setAttribute('aria-valuetext', `${depth} percent depth` + distance);
     }
-    if (slicePercentage) slicePercentage.textContent = `${viewerState.currentSliceDepth}%${distance}`;
+    if (slicePercentage) slicePercentage.textContent = `${viewerState.currentSliceDepth}%`;
     if (sliceHeading) sliceHeading.textContent = 'Depth';
     if (xyzPosition) {
         xyzPosition.textContent = xyz
@@ -1795,8 +1802,11 @@ function announceDepthValue(depthValue, previousDepth = null, emit = announceAle
     // in the same words in both modes (#263).
     const to = clampDepth(depthValue);
     if (to === null) return;
-    const distance = sliceDistanceText(to);
-    announceParameterValue("depth", `Depth ${to}%${distance}`, `${to}%${distance}`, emit);
+    const mm = sliceCoordinate(to);
+    const distance = mm === null ? '' : `, ${distanceText(mm)}`;
+    // Its own braille line, so the 20-cell text line never splits "minus" from its number.
+    const options = mm === null ? {} : { braille: [`Depth ${to}%`, distanceText(mm)] };
+    announceParameterValue("depth", `Depth ${to}%${distance}`, `${to}%${distance}`, emit, options);
 }
 
 function announceZoomValue(zoomValue, previousZoom = null, emit = announceAlert) {
@@ -3316,6 +3326,7 @@ document.getElementById('delete-model-btn').addEventListener('click', async func
 
 // Handle STL/STEP file upload
 const uploadUnits = document.getElementById('upload-units');
+const UNIT_WORDS = { mm: 'millimetres', in: 'inches', m: 'metres' };
 document.getElementById('upload-model-input').addEventListener('change', async function() {
     const file = this.files[0];
     if (!file) return;
@@ -3364,8 +3375,11 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             if (sbModel && dropdown.selectedIndex >= 0) {
                 sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
             }
-            statusEl.textContent = `✓ ${data.filename} uploaded`;
-            announce(`Model ${data.filename} uploaded.`);
+            // The unit the server kept, which for a STEP file or an OpenSCAD export
+            // may not be the one chosen.
+            const unitPhrase = data.units ? `in ${UNIT_WORDS[data.units]}` : 'unit unknown';
+            statusEl.textContent = `✓ ${data.filename} uploaded, ${unitPhrase}`;
+            announce(`Model ${data.filename} uploaded, ${unitPhrase}.`);
             beginModelLoadAnnouncement(selectedLabel, 'upload');
             pendingInputSource = 'upload';
             refreshDeleteButton();
@@ -3382,6 +3396,9 @@ document.getElementById('upload-model-input').addEventListener('change', async f
         this.disabled = false;
         // Clear file input so re-uploading the same file fires change again
         this.value = '';
+        // Chosen for one file only: a unit left over from the last upload would
+        // put every distance on the next one out by 25.4 or 1000 times.
+        if (uploadUnits) uploadUnits.value = 'unknown';
     }
 });
 
