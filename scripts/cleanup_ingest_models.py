@@ -30,7 +30,9 @@ import fnmatch
 import sys
 from pathlib import Path
 
-MODEL_SUFFIXES = {".stl", ".step"}
+# Must match MODEL_SUFFIXES in app/server.py, which this script cannot import
+# without the renderer's OCC dependency.
+MODEL_SUFFIXES = {".stl", ".step", ".stp"}
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
