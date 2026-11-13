@@ -71,7 +71,9 @@ def through_waitress(tmp_path, monkeypatch):
     db_module._local.__dict__.clear()
     db_module._contacts_local.__dict__.clear()
     db_module.init_db()
-    listener = waitress.create_server(server.app, host="127.0.0.1", port=0, **server.SERVER_OPTIONS)
+    # The production options with a small pool: 256 threads per test would pile up.
+    options = {**server.SERVER_OPTIONS, "threads": 4}
+    listener = waitress.create_server(server.app, host="127.0.0.1", port=0, **options)
 
     def run():
         try:
@@ -79,9 +81,13 @@ def through_waitress(tmp_path, monkeypatch):
         except OSError:
             pass  # select() on the sockets close() has just shut, at teardown
 
-    threading.Thread(target=run, daemon=True).start()
+    runner = threading.Thread(target=run, daemon=True)
+    runner.start()
     yield f"http://127.0.0.1:{listener.effective_port}"
     listener.close()
+    # A stream's worker stays parked until its next heartbeat; don't wait for it.
+    listener.task_dispatcher.shutdown(timeout=1)
+    runner.join(timeout=5)
     db_module._local.__dict__.clear()
     db_module._contacts_local.__dict__.clear()
 
