@@ -97,4 +97,5 @@ def test_the_cleanup_script_finds_an_ingested_stp(tmp_path):
 def test_the_ingest_sample_page_offers_stp():
     html = (ROOT / "examples" / "ingest-test.html").read_text(encoding="utf-8")
     accept = re.search(r'id="file" accept="([^"]+)"', html).group(1).split(",")
-    assert ".stp" in accept
+    # Both spellings, as the viewer's chooser, for a browser that filters by case.
+    assert {".stp", ".STP"} <= set(accept)
