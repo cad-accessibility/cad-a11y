@@ -3335,7 +3335,8 @@ function applyServerState(data) {
     const retention = document.getElementById('upload-model-retention');
     if (retention && Number.isFinite(data.upload_retention_days)) {
         const days = data.upload_retention_days;
-        retention.textContent = days > 0
+        // A demo tab's uploads go when it closes, so no period is stated there.
+        retention.textContent = days > 0 && !demoMode
             ? `Uploaded models are deleted after ${days} day${days === 1 ? '' : 's'}.` : '';
     }
     // Something was uploaded or removed, here or in another window, or a file

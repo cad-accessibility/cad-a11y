@@ -21,6 +21,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import queue as _queue_module
 import re
@@ -2495,33 +2496,36 @@ def delete_model(filename: str):
     if not db.session_owns_model(session_id, safe_name):
         return jsonify({"status": "error", "message": "Model not found or already deleted"}), 404
 
+    dest = UPLOAD_DIR / safe_name
     try:
-        _remove_upload(UPLOAD_DIR / safe_name)
+        if dest.exists():
+            dest.unlink()
     except Exception as err:
         return jsonify({"status": "error", "message": f"Could not remove file: {err}"}), 500
+
+    _forget_uploads([dest], recording.current())
     return jsonify({"status": "success", "filename": safe_name}), 200
 
 
-def _remove_upload(dest: Path) -> None:
-    """Delete an upload and everything that still names it. Raises if the file
-    cannot be removed, before anything else is touched."""
-    if dest.exists():
-        dest.unlink()
-
+def _forget_uploads(removed: list[Path], recorder) -> None:
+    """Everything that still names uploads whose files are gone, then one
+    refresh and one announcement for all of them."""
     # Every row for the file, not only one session's, and every tab still
     # holding its path: either one left behind would claim the next upload of
     # the same name, and a tab's cleanup on closing would delete it (#243 review).
-    recording.current().forget_file(dest.name)
-    resolved = str(dest.resolve())
+    for dest in removed:
+        recorder.forget_file(dest.name)
+    resolved = {str(dest.resolve()) for dest in removed}
     with uploaded_models_lock:
         for paths in uploaded_models_by_session.values():
-            paths.discard(resolved)
+            paths.difference_update(resolved)
 
     global AVAILABLE_MODELS, MODEL_NAME_LIST
     with models_lock:
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
-        _forget_renderer(dest)
+        for dest in removed:
+            _forget_renderer(dest)
     with quantized_render_cache_lock:
         quantized_render_cache.clear()
     with preview_payload_cache_lock:
@@ -2530,9 +2534,24 @@ def _remove_upload(dest: Path) -> None:
     _announce_models_changed()
 
 
+def _retention_days_from_env() -> float:
+    raw = os.getenv("UPLOAD_RETENTION_DAYS", "30") or "30"
+    try:
+        days = float(raw)
+    except ValueError:
+        days = math.nan
+    # nan would make every upload look expired, and inf is not valid JSON.
+    if not math.isfinite(days) or days < 0:
+        raise RuntimeError(f"UPLOAD_RETENTION_DAYS must be a number of days, 0 or more, not {raw!r}")
+    return days
+
+
 # How long an upload is kept, in days from when it was saved; 0 keeps them all.
 # Stated next to the upload button, and enforced by _expire_uploads (#239).
-UPLOAD_RETENTION_DAYS = float(os.getenv("UPLOAD_RETENTION_DAYS", "30") or "30")
+UPLOAD_RETENTION_DAYS = _retention_days_from_env()
+# Made by the first expiry run. An upload's age counts from it at the earliest,
+# so the deploy that starts expiry gives uploads already there the full period.
+_RETENTION_START = ".retention-started"
 _UPLOAD_EXPIRY_INTERVAL = 60 * 60.0
 _uploads_last_expired = float("-inf")
 _upload_expiry_lock = threading.Lock()
@@ -2543,24 +2562,38 @@ def _expire_uploads() -> int:
     many went. Only the upload directory, and never a built-in."""
     if UPLOAD_RETENTION_DAYS <= 0 or not UPLOAD_DIR.is_dir() or UPLOAD_DIR.resolve() == _MODEL_DIR_RESOLVED:
         return 0
+    marker = UPLOAD_DIR / _RETENTION_START
+    try:
+        if not marker.exists():
+            marker.touch()
+        started = marker.stat().st_mtime
+    except OSError as error:
+        _log(f"Upload expiry skipped, cannot write {marker}: {error}", force=True)
+        return 0
     cutoff = time.time() - UPLOAD_RETENTION_DAYS * 24 * 60 * 60
-    removed = 0
+    removed: list[Path] = []
     for path in list(UPLOAD_DIR.iterdir()):
         try:
             if (
                 not path.is_file()
                 or path.suffix.lower() not in MODEL_SUFFIXES
                 or _is_builtin(path)
-                or path.stat().st_mtime >= cutoff
+                or max(path.stat().st_mtime, started) >= cutoff
             ):
                 continue
-            _remove_upload(path)
-            removed += 1
-        except OSError as error:
+            path.unlink()
+            removed.append(path)
+        except Exception as error:
             _log(f"Could not remove expired upload {path.name}: {error}", force=True)
     if removed:
-        _log(f"Expired uploads removed: {removed}", force=True)
-    return removed
+        try:
+            # The process's own recorder: a demo request that set this off is
+            # bound to the null one, and these rows are not the demo's.
+            _forget_uploads(removed, recording.process_recorder())
+        except Exception as error:
+            _log(f"Expired uploads removed but not all forgotten: {error}", force=True)
+        _log(f"Expired uploads removed: {len(removed)}", force=True)
+    return len(removed)
 
 
 def _expire_uploads_if_due() -> None:
