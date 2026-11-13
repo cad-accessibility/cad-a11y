@@ -44,7 +44,7 @@ from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
 
-from . import api, db, email_address, recording, tutorial, usage_routes
+from . import api, db, email_address, model_units, recording, tutorial, usage_routes
 from .studies import engine as studies_engine
 from .studies import registry as studies_registry
 from .braille_display import (
@@ -769,6 +769,7 @@ def _renderer_for_path(model_path: Path) -> CADComparisonRenderer:
         # (CADComparisonRenderer._get_zoom_filtered_slice_profile) on first
         # actual use instead of unconditionally here.
         renderer = CADComparisonRenderer(str(model_path), str(model_path))
+    renderer.model_units = model_units.units_for(model_path)
 
     renderers_by_model[key] = renderer
     while len(renderers_by_model) > max(1, RENDERER_CACHE_MAX):
@@ -1061,7 +1062,7 @@ def _make_hifi_preview(
 def _render_and_send(
     params: dict[str, Any], *, source: str, model_stem: str,
     render_size: tuple[int, int] | None = None,
-) -> tuple[np.ndarray, list[float] | None, np.ndarray, RenderResult]:
+) -> tuple[np.ndarray, list[float] | None, np.ndarray, RenderResult, list[float] | None]:
     engine = get_or_create_renderer(model_stem)
     out_guard, err_guard = _renderer_stdio_guard()
     grid = None
@@ -1103,7 +1104,10 @@ def _render_and_send(
     recording.current().braille_event(event)
 
     bbox = getattr(engine, "bbox", None)
-    return rendered, bbox, braille_payload, result
+    # From the engine that drew this frame, not a second lookup that could find
+    # it evicted, or find another model's after a delete.
+    extent_mm = model_units.bounds_mm(getattr(engine, "raw_bbox", None), getattr(engine, "model_units", None))
+    return rendered, bbox, braille_payload, result, extent_mm
 
 
 def _save_print_if_requested(params: dict[str, Any], result: RenderResult, img_data: np.ndarray) -> None:
@@ -1432,7 +1436,7 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     # is precisely what sent it down the second-render path it was meant to avoid.
     render_size = _target_grid(params)
 
-    rendered, bbox, braille_payload, render_result = _render_and_send(
+    rendered, bbox, braille_payload, render_result, extent_mm = _render_and_send(
         params, source=source, model_stem=model_stem, render_size=render_size
     )
 
@@ -1501,6 +1505,9 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
         origin_fraction = engine.origin_fraction()
         if origin_fraction is not None:
             response["origin_fraction"] = origin_fraction
+    # The object's extent in millimetres, so the viewer can say where the slice
+    # is (#264). None when the model's unit is not known (#234).
+    response["bounds_mm"] = extent_mm
     # Where the origin landed on this frame, across from the left edge and up
     # from the bottom, as fractions of the display: what "," and "." say
     # (#235 review). Absent when the layout has no single view to place it in.
@@ -1526,7 +1533,7 @@ def initialize_default_braille_render() -> None:
 
     try:
         merged_params, model_stem, _is_pan_request, _fingerprint = _prepare_render_params(dict(DEFAULT_RENDER_PARAMS))
-        rendered, _, _, _ = _render_and_send(merged_params, source="startup", model_stem=model_stem)
+        rendered, _, _, _, _ = _render_and_send(merged_params, source="startup", model_stem=model_stem)
         _log(f"Initial render ready: shape={tuple(rendered.shape)}", force=True)
     except Exception as error:
         _log(f"Initial render failed: {error}", force=True)
@@ -1917,7 +1924,10 @@ def render_view():
                 # Recorded on the cache path too: a cached response still put a
                 # new image under the participant's fingers, and dropping those
                 # would lose most of a fast arrow-key traversal from the record.
-                recording.current().study_render(merged_params, model_stem=model_stem, cache_hit=True)
+                recording.current().study_render(
+                    {**merged_params, **model_units.slice_coordinate_fields(merged_params, cached_response.get("bounds_mm"))},
+                    model_stem=model_stem, cache_hit=True,
+                )
                 return jsonify(cached_response), 200
 
         response = _render_response(merged_params, source="http_render")
@@ -1930,7 +1940,10 @@ def render_view():
             }
         )
         response["debug"] = debug
-        recording.current().study_render(merged_params, model_stem=model_stem, cache_hit=False)
+        recording.current().study_render(
+            {**merged_params, **model_units.slice_coordinate_fields(merged_params, response.get("bounds_mm"))},
+            model_stem=model_stem, cache_hit=False,
+        )
 
         # A pan is not cacheable in either direction. "move left" means move from
         # wherever this window already was, and neither key carries that starting
@@ -2155,6 +2168,7 @@ def _save_and_index_stl(
     session_id: str | None = None,
     original_name: str | None = None,
     public: bool = False,
+    units: str | None = None,
 ) -> tuple[str, Path, int]:
     """Persist an uploaded STL/STEP file and refresh the in-memory model list.
 
@@ -2211,6 +2225,9 @@ def _save_and_index_stl(
         dest.touch()
 
     save_fn(dest)
+    # A STEP file declares its own unit; an STL carries the one chosen for it.
+    if units and suffix == ".stl":
+        model_units.declare_stl_units(dest, units)
 
     if session_id:
         try:
@@ -2266,6 +2283,7 @@ def upload_model():
             file.filename,
             session_id=cookie_sid,
             original_name=file.filename,
+            units=model_units.parse_units(request.form.get("units")),
         )
     except ValueError as err:
         return jsonify({"status": "error", "message": str(err)}), 400
@@ -2288,6 +2306,9 @@ def upload_model():
         # the next upload renumbers.
         "model_stem": Path(filename).stem,
         "new_model_index": new_index,
+        # The unit kept for it, which for a STEP file or an OpenSCAD export may
+        # not be the one chosen; None when it is not known.
+        "units": model_units.units_for(dest),
     }), 200
 
 
@@ -2346,6 +2367,7 @@ def ingest_model():
             original_name=requested_name,
             # Ingested models stay public; see the `public` note on the helper.
             public=True,
+            units=model_units.parse_units(request.form.get("units") or request.args.get("units")),
         )
     except ValueError as err:
         return jsonify({"status": "error", "message": str(err)}), 400

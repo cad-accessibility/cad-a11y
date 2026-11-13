@@ -43,6 +43,9 @@ POST /ingest
   Body:  multipart/form-data with a "file" field   (recommended)
          OR a raw STL request body, with the name in ?filename= or the X-Filename header
   Name:  optional "first_name" (form field, ?first_name= query, or X-First-Name header)
+  Units: optional "units" (form field or ?units= query): mm, in or m. The STL's
+         length unit, so the viewer can say where the slice is in millimetres.
+         An OpenSCAD export is read as mm without it; anything else is unknown.
   Query: open=1   (optional) single-station convenience: also live-update an already
                   open viewer on this host and, if INGEST_OPEN_ON_HOST=1, pop a window
   ->  200 application/json

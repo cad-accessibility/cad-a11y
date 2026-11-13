@@ -63,6 +63,7 @@ choose rather than baked into the file.
 | `model`, `view`, `render_mode`, `layout_mode`, `depth`, `zoom`, `cache_hit` | the state of the viewer at that moment |
 | `orientation_x`, `orientation_y`, `orientation_z`, `orientation_basis` | how the object was turned. See below |
 | `axis_mode`, `cut_axis`, `cut_side`, `cut_percent` | the axis mode and where the slice was along its axis. See below |
+| `cut_value`, `cut_units` | where the slice was as a coordinate, in millimetres from the model's origin, when its unit is known. See below |
 
 Only `render` rows record viewer state directly. On every other row the state
 columns show the most recent render in the same session, meaning what was on the
@@ -174,6 +175,19 @@ mode:
   change when the same plane is seen from the other side.
 
 All four are blank on rows recorded before they existed.
+
+`cut_value` is the same place as a coordinate on that axis, the slice's signed
+distance from the model's origin, in `cut_units`, which is always `mm`. The
+server works it out from the view and `depth` it rendered and the model's
+extent, the way the renderer places the cut, so it describes the picture that
+was drawn. `cut_axis` and `cut_percent` are what the viewer reported, and can
+differ from it by up to half a percent where `depth` was rounded. The
+viewer knows a model's unit only when something says so: the choice made when
+it was uploaded, a STEP file's own declaration, OpenSCAD's stamp on an STL, or
+a built-in whose size matches a real object (the tutorial mug and the
+`lego_3002` bricks). For any other model both columns are blank, rather than
+holding a number in an unknown unit. Both are also blank on rows recorded
+before they existed.
 
 ## Orientation
 

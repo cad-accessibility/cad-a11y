@@ -772,7 +772,8 @@ LESSONS: list[dict[str, Any]] = [
             _step(
                 "text_line",
                 "Each time the slice plane moves, the DotPad's braille text line shows where it is, "
-                "for example Depth 40%. The text line is in US 8-dot computer braille, "
+                "for example Depth 40%, 8.7mm: the percentage, then the slice's distance from the origin. The "
+                "text line is in US 8-dot computer braille, "
                 "uncontracted, so numbers and symbols read as they would on a computer. A message "
                 "longer than the line's 20 cells is shown a part at a time: {key:text_forward} "
                 "moves to the next part and {key:text_back} back to the one before. The braille "

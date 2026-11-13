@@ -200,7 +200,11 @@ CREATE TABLE IF NOT EXISTS study_renders (
     axis_mode        TEXT,
     cut_axis         TEXT,
     cut_side         TEXT,
-    cut_percent      REAL
+    cut_percent      REAL,
+    -- The same place in millimetres from the model's origin, and its unit (#264),
+    -- for a model whose unit is known (#234). Blank otherwise.
+    cut_value        REAL,
+    cut_units        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_study_renders_session ON study_renders(study_session_id, seq);
 
@@ -218,6 +222,8 @@ AXIS_RENDER_COLUMNS = (
     ("cut_axis", "TEXT"),
     ("cut_side", "TEXT"),
     ("cut_percent", "REAL"),
+    ("cut_value", "REAL"),
+    ("cut_units", "TEXT"),
 )
 
 
@@ -471,6 +477,10 @@ LONG_EXPORT_COLUMNS: tuple[str, ...] = (
     # reads "z" for both. Blank on anything that is not a key, and on keys
     # recorded before it was.
     "key_shift",
+    # Where the slice was in millimetres from the origin, for a model whose unit
+    # is known (#264, #234). Blank otherwise, and before they were recorded.
+    "cut_value",
+    "cut_units",
 )
 
 
@@ -1343,6 +1353,8 @@ class StudyStore:
         cut_axis: str | None = None,
         cut_side: str | None = None,
         cut_percent: float | None = None,
+        cut_value: float | None = None,
+        cut_units: str | None = None,
         resolve_step: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
         only_if_active: bool = False,
     ) -> int | None:
@@ -1380,9 +1392,10 @@ class StudyStore:
                        (study_session_id, participant_id, participant_code, seq, part_id,
                         step_id, step_index, model, view, render_mode, layout_mode, depth,
                         zoom, input_source, cache_hit, orientation, created_at, elapsed_ms,
-                        step_elapsed_ms, axis_mode, cut_axis, cut_side, cut_percent)
+                        step_elapsed_ms, axis_mode, cut_axis, cut_side, cut_percent,
+                        cut_value, cut_units)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                               ?, ?, ?, ?)""",
+                               ?, ?, ?, ?, ?, ?)""",
                     (
                         study_session_id,
                         participant_id,
@@ -1407,6 +1420,8 @@ class StudyStore:
                         cut_axis,
                         cut_side,
                         None if cut_percent is None else float(cut_percent),
+                        None if cut_value is None else float(cut_value),
+                        cut_units,
                     ),
                 )
                 conn.commit()
@@ -1440,6 +1455,8 @@ class StudyStore:
                         "cut_axis": cut_axis,
                         "cut_side": cut_side,
                         "cut_percent": cut_percent,
+                        "cut_value": cut_value,
+                        "cut_units": cut_units,
                     },
                     "event_data": {"input_source": input_source, "cache_hit": bool(cache_hit)},
                 },
