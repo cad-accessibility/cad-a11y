@@ -77,7 +77,9 @@ def declare_stl_units(path: Path, unit: str) -> None:
         data = stamp.ljust(_STL_HEADER, b"\0") + data[_STL_HEADER:]
     elif data.startswith(b"solid"):
         end = data.find(b"\n")
-        data = b"solid " + stamp + (data[end:] if end >= 0 else b"\n")
+        if end < 0:
+            return  # No line to replace without taking the body with it.
+        data = b"solid " + stamp + data[end:]
     else:
         return  # Neither kind of STL: leave it, and its unit stays unknown.
     path.write_bytes(data)
@@ -113,7 +115,9 @@ def slice_coordinate_fields(params: dict, bounds: list[float] | None) -> dict:
         depth = float(params.get("depth"))
     except (TypeError, ValueError):
         return blank
-    if bounds is None or not math.isfinite(depth):
+    # Without an orientation _get_view_basis falls back to its default view, so
+    # the cut would be logged along the wrong axis; the viewer always sends one.
+    if bounds is None or not math.isfinite(depth) or not params.get("orientation"):
         return blank
     forward = _get_view_basis(params.get("view"), orientation_basis=params.get("orientation"))[2]
     axis = max(range(3), key=lambda i: abs(forward[i]))

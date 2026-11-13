@@ -1062,7 +1062,7 @@ def _make_hifi_preview(
 def _render_and_send(
     params: dict[str, Any], *, source: str, model_stem: str,
     render_size: tuple[int, int] | None = None,
-) -> tuple[np.ndarray, list[float] | None, np.ndarray, RenderResult]:
+) -> tuple[np.ndarray, list[float] | None, np.ndarray, RenderResult, list[float] | None]:
     engine = get_or_create_renderer(model_stem)
     out_guard, err_guard = _renderer_stdio_guard()
     grid = None

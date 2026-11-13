@@ -617,13 +617,11 @@ function buildTactileTextPages(message, cellCount) {
         const candidate = remaining.slice(0, cellCount);
         const nextChar = remaining.slice(cellCount, cellCount + 1);
 
-        if (/\s/.test(nextChar)) {
-            pages.push(candidate);
-            remaining = remaining.slice(cellCount).trimStart();
-            continue;
+        let breakIndex = /\s/.test(nextChar) ? cellCount : candidate.lastIndexOf(' ');
+        // "minus" is read as part of the number after it, so no part ends on it (#264).
+        while (breakIndex > 0 && /(^| )minus$/.test(remaining.slice(0, breakIndex))) {
+            breakIndex = remaining.lastIndexOf(' ', breakIndex - 1);
         }
-
-        const breakIndex = candidate.lastIndexOf(' ');
         if (breakIndex > 0) {
             pages.push(remaining.slice(0, breakIndex));
             remaining = remaining.slice(breakIndex).trimStart();

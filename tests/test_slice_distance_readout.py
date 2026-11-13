@@ -75,14 +75,35 @@ def test_where_am_i_says_the_slice_coordinate_or_that_the_unit_is_unknown():
     assert "Slice at ${axis} ${coordinate}." in where
     # Only once the model's own render has said so: before that it is not known yet.
     assert "} else if (viewerState.showSliceDistance && currentSliceExtent()) {" in where
-    assert "'Unit unknown.'" in where
+    assert "'Slice distance: unit unknown.'" in where
 
 
-def test_the_braille_line_keeps_the_distance_whole():
-    """The text line is 20 cells and breaks long messages at spaces, so "Depth
-    40%, minus 8.7mm" would leave "minus" on one part and the number on the next."""
+def test_the_braille_line_says_the_depth_and_distance_together():
+    """Each braille line is its own part of the text line, so a distance sent as
+    a second line was never on the line with its depth (#293 review)."""
     announce = _function("announceDepthValue")
-    assert "{ braille: [`Depth ${to}%`, distanceText(mm)] }" in announce
+    assert "braille:" not in announce
+
+
+def _pages(message: str, cells: int = 20) -> list[str]:
+    js = (ROOT / "static" / "js" / "dotpad-integration.js").read_text(encoding="utf-8")
+    start = js.index("function buildTactileTextPages(")
+    function = js[start:js.index("\n}\n", start) + 2]
+    script = f"{function}\nconsole.log(JSON.stringify(buildTactileTextPages({json.dumps(message)}, {cells})));"
+    return json.loads(subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30,
+                                     check=True).stdout)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="runs the DotPad's own paging in node")
+@pytest.mark.parametrize("message, pages", [
+    ("Depth 40%, 8.7mm", ["Depth 40%, 8.7mm"]),
+    ("Depth 40%, minus 8.7mm", ["Depth 40%,", "minus 8.7mm"]),
+    ("Depth 100%, minus 120.5mm", ["Depth 100%,", "minus 120.5mm"]),
+    ("Slice at X minus 43.6mm", ["Slice at X", "minus 43.6mm"]),
+    ("a bc minus", ["a bc minus"]),
+])
+def test_a_part_of_the_text_line_never_ends_on_minus(message, pages):
+    assert _pages(message) == pages
 
 
 def test_the_unit_word_can_be_turned_off_and_stays_off():
@@ -190,3 +211,19 @@ def test_with_the_readout_off_no_distance_is_given():
     case = {"depthVector": [0, 0, 1], "depth": 40}
     assert _viewer_coordinates([case], [0, 0, 0, 10, 10, 10], shown=False) == [None]
     assert _viewer_coordinates([case], [0, 0, 0, 10, 10, 10]) == [6.0]
+
+
+def test_a_step_upload_says_its_unit_comes_from_the_file():
+    """Every STEP file is in metres to the viewer, whatever unit was chosen, so
+    "in metres" told someone who chose millimetres that it misread their file."""
+    js = _code_only(_js())
+    assert "unit read from the file" in js
+
+
+def test_a_failed_upload_keeps_the_unit_chosen_for_the_retry():
+    js = _js()
+    start = js.index("document.getElementById('upload-model-input').addEventListener('change'")
+    handler = js[start:js.index("\n});\n", start)]
+    reset = handler.index("uploadUnits.value = 'unknown';")
+    # In the success branch, before the failure one, and so not in finally.
+    assert handler.index("if (data.status === 'success')") < reset < handler.index("`Upload failed: ")

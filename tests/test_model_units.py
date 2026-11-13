@@ -200,3 +200,18 @@ def test_an_ingested_model_keeps_its_unit(tmp_db):
         )
     assert response.status_code == 200, response.get_data(as_text=True)
     assert model_units.units_for(server.MODEL_DIR / response.get_json()["filename"]) == "mm"
+
+
+def test_an_ascii_stl_with_no_line_feed_is_left_as_it_was(tmp_path):
+    """Its whole body would go with the first line."""
+    data = _ascii_stl("Mesh").replace(b"\n", b"\r")
+    path = _write(tmp_path, data)
+    model_units.declare_stl_units(path, "mm")
+    assert path.read_bytes() == data
+
+
+def test_a_render_with_no_orientation_logs_no_slice_position():
+    """The view name alone is not something _get_view_basis knows, so the cut
+    would be logged along Z while the picture is cut along X."""
+    fields = model_units.slice_coordinate_fields({"view": "x-", "depth": 40}, [0, 0, 0, 10, 20, 30])
+    assert fields == {"cut_value": None, "cut_units": None}

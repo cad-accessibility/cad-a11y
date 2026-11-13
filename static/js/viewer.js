@@ -1520,8 +1520,8 @@ function announceWhereAmI(emit = announceAlert) {
         speech.push(`Slice at ${axis} ${coordinate}.`);
         braille.push(`${axis} ${coordinate}`);
     } else if (viewerState.showSliceDistance && currentSliceExtent()) {
-        speech.push('Unit unknown.');
-        braille.push('Unit unknown');
+        speech.push('Slice distance: unit unknown.');
+        braille.push('Slice unit unknown');
     }
     const origin = originOnDisplayPhrase();
     if (origin) {
@@ -1807,9 +1807,9 @@ function announceDepthValue(depthValue, previousDepth = null, emit = announceAle
     if (to === null) return;
     const mm = sliceCoordinate(to);
     const distance = mm === null ? '' : `, ${distanceText(mm)}`;
-    // Its own braille line, so the 20-cell text line never splits "minus" from its number.
-    const options = mm === null ? {} : { braille: [`Depth ${to}%`, distanceText(mm)] };
-    announceParameterValue("depth", `Depth ${to}%${distance}`, `${to}%${distance}`, emit, options);
+    // One braille line: each line is its own part of the text line, and the
+    // paging keeps "minus" with its number when the line is too short for both.
+    announceParameterValue("depth", `Depth ${to}%${distance}`, `${to}%${distance}`, emit);
 }
 
 function announceZoomValue(zoomValue, previousZoom = null, emit = announceAlert) {
@@ -3378,9 +3378,16 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             if (sbModel && dropdown.selectedIndex >= 0) {
                 sbModel.textContent = dropdown.options[dropdown.selectedIndex].text;
             }
-            // The unit the server kept, which for a STEP file or an OpenSCAD export
-            // may not be the one chosen.
-            const unitPhrase = data.units ? `in ${UNIT_WORDS[data.units]}` : 'unit unknown';
+            // The unit the server kept, which for an OpenSCAD export may not be the
+            // one chosen. A STEP file says its own, and the loader converts it, so
+            // naming metres would sound like the file was misread.
+            const fromFile = /\.(step|stp)$/i.test(data.filename || '');
+            const unitPhrase = fromFile ? 'unit read from the file'
+                : data.units ? `in ${UNIT_WORDS[data.units]}` : 'unit unknown';
+            // Chosen for one file only: a unit left over from this upload would
+            // put every distance on the next one out by 25.4 or 1000 times. Kept
+            // after a failure, for the retry.
+            if (uploadUnits) uploadUnits.value = 'unknown';
             statusEl.textContent = `✓ ${data.filename} uploaded, ${unitPhrase}`;
             announce(`Model ${data.filename} uploaded, ${unitPhrase}.`);
             beginModelLoadAnnouncement(selectedLabel, 'upload');
@@ -3399,9 +3406,6 @@ document.getElementById('upload-model-input').addEventListener('change', async f
         this.disabled = false;
         // Clear file input so re-uploading the same file fires change again
         this.value = '';
-        // Chosen for one file only: a unit left over from the last upload would
-        // put every distance on the next one out by 25.4 or 1000 times.
-        if (uploadUnits) uploadUnits.value = 'unknown';
     }
 });
 
