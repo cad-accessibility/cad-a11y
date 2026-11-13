@@ -92,6 +92,7 @@ from flask import (
     stream_with_context,
 )
 
+from .. import sse
 from . import export, protocol, registry, tokens
 from .registry import StudyRuntime
 from .store import idle_timeout_seconds, now
@@ -1463,6 +1464,9 @@ def _stream(runtime: StudyRuntime, role: str, session: dict[str, Any] | None) ->
     """
     session_id = int(session["id"]) if session else None
 
+    # Read now: the generator runs after this returns.
+    environ = request.environ
+
     def generate():
         client_queue: _queue_module.Queue[str] = _queue_module.Queue(maxsize=32)
         subscriber = {"queue": client_queue, "role": role, "study_session_id": session_id}
@@ -1475,11 +1479,7 @@ def _stream(runtime: StudyRuntime, role: str, session: dict[str, Any] | None) ->
                 else _participant_state(runtime, session)
             )
             yield f"data: {json.dumps(initial)}\n\n"
-            while True:
-                try:
-                    yield client_queue.get(timeout=25)
-                except _queue_module.Empty:
-                    yield ": heartbeat\n\n"  # keep the connection alive through proxies
+            yield from sse.messages(client_queue, environ)
         finally:
             with runtime.subscribers_lock:
                 if subscriber in runtime.subscribers:

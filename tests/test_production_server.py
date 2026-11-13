@@ -158,3 +158,43 @@ def test_the_server_answers_with_more_than_1024_descriptors_open(through_waitres
         for handle in held:
             handle.close()
         resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+
+def test_a_closed_stream_frees_its_thread_before_the_next_heartbeat(through_waitress):
+    """Read-ahead only lets the app see the client go; a stream blocked waiting
+    for its next message, up to 25 s, still held the thread until it looked."""
+    import http.client
+    import time
+    from urllib.parse import urlsplit
+
+    address = urlsplit(through_waitress)
+    streams = []
+    for _ in range(4):  # every thread in the fixture's pool
+        connection = http.client.HTTPConnection(address.hostname, address.port, timeout=10)
+        connection.request("GET", "/events")
+        response = connection.getresponse()
+        assert response.readline().startswith(b"data:")
+        streams.append((connection, response))
+    for connection, response in streams:
+        response.close()
+        connection.close()
+    started = time.monotonic()
+    with urllib.request.urlopen(f"{through_waitress}/health", timeout=10) as response:
+        assert response.status in (200, 503)
+    assert time.monotonic() - started < 8
+
+
+def test_the_stream_loop_sends_messages_heartbeats_and_stops_when_told():
+    import queue
+
+    from app import sse
+
+    q: queue.Queue[str] = queue.Queue()
+    q.put("data: one\n\n")
+    gone = iter([False, False, False, False, True])
+    loop = sse.messages(q, {"waitress.client_disconnected": lambda: next(gone)},
+                        heartbeat_seconds=0.02, poll_seconds=0.01)
+    assert list(loop) == ["data: one\n\n", sse.HEARTBEAT]
+    # A server that cannot say whether the client went: the loop goes on.
+    endless = sse.messages(queue.Queue(), {}, heartbeat_seconds=0.02, poll_seconds=0.01)
+    assert next(endless) == sse.HEARTBEAT

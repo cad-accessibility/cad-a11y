@@ -44,7 +44,7 @@ from flask_cors import CORS
 from PIL import Image
 from waitress import serve
 
-from . import api, db, email_address, recording, tutorial, usage_routes
+from . import api, db, email_address, recording, sse, tutorial, usage_routes
 from .studies import engine as studies_engine
 from .studies import registry as studies_registry
 from .braille_display import (
@@ -2580,6 +2580,9 @@ def sse_events():
     # which send the id in a header.
     initial: dict[str, Any] = {}
 
+    # Read now: the generator runs after this returns.
+    environ = request.environ
+
     def generate():
         client_queue = _queue_module.Queue(maxsize=20)
         with _sse_clients_lock:
@@ -2587,12 +2590,7 @@ def sse_events():
         try:
             # Send current state immediately on connect so the client is in sync.
             yield f"data: {json.dumps(initial)}\n\n"
-            while True:
-                try:
-                    msg = client_queue.get(timeout=25)
-                    yield msg
-                except _queue_module.Empty:
-                    yield ": heartbeat\n\n"  # Keep TCP alive through proxies
+            yield from sse.messages(client_queue, environ)
         finally:
             with _sse_clients_lock:
                 if client_queue in _sse_clients:
