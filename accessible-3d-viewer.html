@@ -16,8 +16,6 @@
     <link rel="stylesheet" href="/static/css/viewer.css">
 </head>
 <body>
-    <!-- Skip navigation link – WCAG 2.4.1 -->
-    <a href="#main-content" class="sr-only" style="position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden;z-index:10000;" onfocus="this.style.position='static';this.style.width='auto';this.style.height='auto';this.style.left='auto';this.style.overflow='visible';this.style.padding='8px 16px';this.style.background='#2c3e50';this.style.color='#fff';this.style.fontSize='1em';this.style.textDecoration='underline';" onblur="this.style.position='absolute';this.style.left='-9999px';this.style.width='1px';this.style.height='1px';this.style.overflow='hidden';this.style.padding='0';">Skip to main content</a>
     <div class="container">
         <!--
             DEMO MODE INDICATOR — revealed by viewer.js on /demo, hidden everywhere
@@ -41,6 +39,12 @@
 
         <header role="banner">
             <h1 id="page-title" tabindex="-1">Accessible 3D Model Viewer</h1>
+            <!--
+                Skip link (WCAG 2.4.1), after the title rather than first on the page:
+                focusTopOfPage() puts focus on the title at load, so the first Tab
+                reaches this link before the menu (#262).
+            -->
+            <a href="#main-content" class="skip-link">Skip to main content</a>
             <!--
                 Said before the Connect button, and read as its description (#232):
                 the focus-mode note until Connect has had focus once in this
@@ -147,7 +151,7 @@
         <div id="announcement-window" class="sr-only" role="alert" aria-atomic="true"></div> 
         <div id="announcement-window-polite" class="sr-only" role="status" aria-atomic="true"></div>
 
-       <main id="main-content">
+       <main id="main-content" tabindex="-1">
 
             <!--
                 STUDY SESSION REGION — only shown at /studies/<slug> (viewer.js adds
