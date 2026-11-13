@@ -61,7 +61,8 @@ from src.converter.render_low_res import dilate_mask, raised_ink_mask, save_bina
 app = Flask(__name__)
 CORS(app)
 # Cap request bodies (uploads and /ingest); default 100 MB. Oversized requests
-# are rejected with 413 before the handler runs.
+# are rejected with 413 before the handler runs, once waitress has read them, up
+# to its own limit in SERVER_OPTIONS.
 app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_UPLOAD_MB", "100") or "100") * 1024 * 1024
 # /api/v1, where tools will send models (#236), and its one error shape.
 api.install(app)
@@ -2779,13 +2780,27 @@ def serve_static_css(filename):
     return response
 
 
-# Production runs under waitress, not Flask's development server (#211). Each open
-# viewer tab holds an /events stream, and so one of these threads, for as long as
-# it is open; once every thread holds a stream, every other request waits. Renders
+# Production runs under waitress, not Flask's development server (#211). A viewer
+# tab holds one thread for its /events stream, and a study participant's page two
+# (/events and the study's /stream), for as long as the page is open and about 50
+# seconds after it closes, until a heartbeat write fails. Once every thread holds a
+# stream, every other request waits, /health included. A parked thread costs
+# little, so the pool is sized well above the pages expected at once. Renders
 # still queue behind render_lock whatever this is.
-SERVER_THREADS = 64
-# Each tab keeps its stream open and polls /get_data on a second connection.
-SERVER_CONNECTION_LIMIT = 4 * SERVER_THREADS
+SERVER_THREADS = 256
+SERVER_OPTIONS = {
+    "threads": SERVER_THREADS,
+    # Pages keep streams open and poll on other connections. Past the limit, new
+    # connections wait in the listen backlog rather than being refused.
+    "connection_limit": 4 * SERVER_THREADS,
+    # Apache ends TLS and says so in X-Forwarded-Proto, which is what gives the
+    # session and study panel cookies Secure. Waitress drops proxy headers unless
+    # told to keep them; the development server passed them through.
+    "clear_untrusted_proxy_headers": False,
+    # Waitress stores a whole body before the app sees it. This bounds that, and
+    # sits above Flask's limit so a body just over it still gets Flask's JSON 413.
+    "max_request_body_size": 2 * app.config["MAX_CONTENT_LENGTH"],
+}
 
 
 def main() -> int:
@@ -2848,13 +2863,7 @@ def main() -> int:
     open_viewer_in_browser(port)
 
     _log("Ready.", force=True)
-    serve(
-        app,
-        host="0.0.0.0",
-        port=port,
-        threads=SERVER_THREADS,
-        connection_limit=SERVER_CONNECTION_LIMIT,
-    )
+    serve(app, host="0.0.0.0", port=port, **SERVER_OPTIONS)
     return 0
 
 
