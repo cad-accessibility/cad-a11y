@@ -614,6 +614,16 @@ def _announce_models_changed() -> None:
     _push_sse({"models_changed": True})
 
 
+@app.errorhandler(413)
+def _upload_too_large(_error):
+    """In JSON like every other refusal, with the limit, instead of Flask's HTML
+    page, which the viewer read out as a JSON parse error (#239)."""
+    limit_mb = app.config["MAX_CONTENT_LENGTH"] / (1024 * 1024)
+    return jsonify(
+        {"status": "error", "message": f"That file is larger than the {limit_mb:g} MB upload limit."}
+    ), 413
+
+
 class ModelNotAvailable(LookupError):
     """A request named a model this server cannot show."""
 
@@ -2174,12 +2184,15 @@ def _save_and_index_stl(
     """
     global AVAILABLE_MODELS, MODEL_NAME_LIST
 
-    filename = secure_filename(requested_name or "")
-    if not filename:
+    original = Path((requested_name or "").replace("\\", "/")).name
+    if not original:
         raise ValueError("No file selected")
-    suffix = Path(filename).suffix.lower()
+    suffix = Path(original).suffix.lower()
     if suffix not in MODEL_SUFFIXES:
         raise ValueError(f"Unsupported file type '{suffix}'. Use .stl or .step")
+    # The stem on its own: secure_filename drops what it cannot spell in ASCII,
+    # so 茶杯.stl would lose its extension with its stem and be refused (#239).
+    filename = (secure_filename(Path(original).stem) or "model") + Path(original).suffix
 
     target_dir = MODEL_DIR if public else UPLOAD_DIR
     # Uniqueness is checked on the stem across BOTH directories, not just on

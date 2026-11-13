@@ -3276,7 +3276,14 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             body: formData,
             mode: 'cors',
         });
-        const data = await resp.json();
+        // A body far over the limit, or a proxy error, is answered with a page
+        // of HTML or plain text, which used to be read out as a parse error (#239).
+        const data = await resp.json().catch(() => ({
+            status: 'error',
+            message: resp.status === 413
+                ? 'the file is too large to upload.'
+                : `the server answered ${resp.status}.`,
+        }));
 
         if (data.status === 'success') {
             if (data.filename) {
