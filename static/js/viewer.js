@@ -3332,6 +3332,12 @@ document.getElementById('upload-model-input').addEventListener('change', async f
 // message to one window: the client registry is a list of queues with nothing
 // attached to say who is who.
 function applyServerState(data) {
+    const retention = document.getElementById('upload-model-retention');
+    if (retention && Number.isFinite(data.upload_retention_days)) {
+        const days = data.upload_retention_days;
+        retention.textContent = days > 0
+            ? `Uploaded models are deleted after ${days} day${days === 1 ? '' : 's'}.` : '';
+    }
     // Something was uploaded or removed, here or in another window, or a file
     // changed on disk. Ask for this window's own list now, so it doesn't go on
     // offering a model that has gone (#238). The signal names no model.
