@@ -2021,8 +2021,9 @@ def models_endpoint():
 # from before #237 made its ids from the clock and Math.random (#243 review).
 _UPLOAD_SESSION_ID_RE = re.compile(r"^tab-[0-9a-f]{32}$")
 
-# Tracks uploaded model paths by browser-tab session id so they can be cleaned up
-# when the page closes. Values are absolute path strings under UPLOAD_DIR.
+# Tracks uploaded model paths by browser-tab session id, so a tab sees its own
+# uploads and a demo tab's can be cleaned up when it closes. Values are absolute
+# path strings under UPLOAD_DIR.
 uploaded_models_by_session: dict[str, set[str]] = {}
 uploaded_models_lock = threading.Lock()
 

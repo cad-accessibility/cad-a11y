@@ -4900,12 +4900,14 @@ window.addEventListener('pageshow', function(event) {
     if (event.persisted) focusTopOfPage();
 });
 
-// Tell the server to delete this tab's uploads when the tab goes away.
+// On a demo station, tell the server to delete this tab's uploads when the tab
+// goes away: a model somebody brought along must not outlive their turn at the
+// display.
 //
-// The endpoint has been there since uploads were made per-tab; nothing was
-// calling it, so an uploaded file sat on disk until something else removed it.
-// That matters most on a demo station, where a model somebody brought along
-// must not outlive their turn at the display.
+// Only there. pagehide fires on a reload too, and everywhere else that deleted
+// the model someone had just uploaded (#239). A reload keeps the tab's id, so
+// the server goes on listing the upload. An upload with no cookie behind it is
+// removed at the server's next start, once no tab can see it.
 //
 // pagehide rather than beforeunload: beforeunload does not fire reliably on
 // mobile or when a tab is discarded, and pagehide does. keepalive rather than
@@ -4913,6 +4915,7 @@ window.addEventListener('pageshow', function(event) {
 // it cannot be discarded server-side) and keepalive is what lets an ordinary
 // fetch outlive the document.
 window.addEventListener('pagehide', function() {
+    if (!demoMode) return;
     try {
         fetch(`${SERVER_URL}/uploads/cleanup`, {
             method: 'POST',
