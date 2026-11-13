@@ -20,7 +20,6 @@ import contextlib
 import hashlib
 import io
 import json
-import logging
 import os
 import queue as _queue_module
 import re
@@ -43,8 +42,9 @@ from flask import Flask, Response, has_request_context, jsonify, redirect, reque
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
+from waitress import serve
 
-from . import api, db, email_address, recording, tutorial, usage_routes
+from . import api, db, email_address, recording, sse, tutorial, usage_routes
 from .studies import engine as studies_engine
 from .studies import registry as studies_registry
 from .braille_display import (
@@ -58,12 +58,11 @@ from .braille_display import (
 from .cad_comparison_lib import DEFAULT_SCREEN_SIZE, CADComparisonRenderer, RenderResult
 from src.converter.render_low_res import dilate_mask, raised_ink_mask, save_binary_array_as_vector_pdf
 
-logging.getLogger("werkzeug").setLevel(logging.ERROR)
-
 app = Flask(__name__)
 CORS(app)
 # Cap request bodies (uploads and /ingest); default 100 MB. Oversized requests
-# are rejected with 413 before the handler runs.
+# are rejected with 413 before the handler runs, once waitress has read them, up
+# to its own limit in SERVER_OPTIONS.
 app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_UPLOAD_MB", "100") or "100") * 1024 * 1024
 # /api/v1, where tools will send models (#236), and its one error shape.
 api.install(app)
@@ -2581,6 +2580,9 @@ def sse_events():
     # which send the id in a header.
     initial: dict[str, Any] = {}
 
+    # Read now: the generator runs after this returns.
+    environ = request.environ
+
     def generate():
         client_queue = _queue_module.Queue(maxsize=20)
         with _sse_clients_lock:
@@ -2588,12 +2590,7 @@ def sse_events():
         try:
             # Send current state immediately on connect so the client is in sync.
             yield f"data: {json.dumps(initial)}\n\n"
-            while True:
-                try:
-                    msg = client_queue.get(timeout=25)
-                    yield msg
-                except _queue_module.Empty:
-                    yield ": heartbeat\n\n"  # Keep TCP alive through proxies
+            yield from sse.messages(client_queue, environ)
         finally:
             with _sse_clients_lock:
                 if client_queue in _sse_clients:
@@ -2605,7 +2602,6 @@ def sse_events():
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
         },
     )
 
@@ -2782,6 +2778,45 @@ def serve_static_css(filename):
     return response
 
 
+@app.teardown_appcontext
+def _close_thread_db_connections(_error) -> None:
+    """Each request's database connections end with it. Waitress reuses its
+    threads, so connections kept per thread held file descriptors, up to two per
+    database per thread, and any transaction left open, into later requests."""
+    db.close_thread_connections()
+    for served in studies_registry.runtimes():
+        served.store.close_thread_connection()
+
+
+# Production runs under waitress, not Flask's development server (#211). A viewer
+# tab holds one thread for its /events stream, and a study participant's page two
+# (/events and the study's /stream), for as long as the page is open and until
+# waitress sees its connection close. Once every thread holds a stream, every
+# other request waits, /health included. A parked thread costs little, so the
+# pool is sized well above the pages expected at once. A render waiting for
+# render_lock holds a thread too.
+SERVER_THREADS = 256
+SERVER_OPTIONS = {
+    "threads": SERVER_THREADS,
+    # Pages keep streams open and poll on other connections. Past the limit, new
+    # connections wait in the listen backlog rather than being refused.
+    "connection_limit": 4 * SERVER_THREADS,
+    # Apache ends TLS and says so in X-Forwarded-Proto, which is what gives the
+    # session and study panel cookies Secure. Waitress drops proxy headers unless
+    # told to keep them; the development server passed them through.
+    "clear_untrusted_proxy_headers": False,
+    # select() cannot wait on a descriptor numbered 1024 or more, and waitress's
+    # loop dies of it. poll() has no such limit.
+    "asyncore_use_poll": True,
+    # Read ahead on a connection while its request runs, so a page that closes
+    # frees its stream's thread then, not two heartbeats (up to 75 s) later.
+    "channel_request_lookahead": 1,
+    # Waitress stores a whole body before the app sees it. This bounds that, and
+    # sits above Flask's limit so a body just over it still gets Flask's 413.
+    "max_request_body_size": 2 * app.config["MAX_CONTENT_LENGTH"],
+}
+
+
 def main() -> int:
     # One station per process, so three stations on one machine need three ports.
     # See the demo section of the README.
@@ -2842,9 +2877,7 @@ def main() -> int:
     open_viewer_in_browser(port)
 
     _log("Ready.", force=True)
-    # threaded=True lets /events (SSE) and /get_data respond concurrently while
-    # a render is in progress; render_lock still serializes the renders themselves.
-    app.run(debug=False, host="0.0.0.0", port=port, threaded=True)
+    serve(app, host="0.0.0.0", port=port, **SERVER_OPTIONS)
     return 0
 
 
