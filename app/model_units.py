@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import struct
 from pathlib import Path
@@ -91,6 +92,25 @@ def units_for(path: Path) -> str | None:
     if header.startswith(_OPENSCAD_ASCII) or header.startswith(_OPENSCAD_BINARY):
         return "mm"
     return BUILTIN_UNITS_BY_SHA256.get(hashlib.sha256(path.read_bytes()).hexdigest())
+
+
+def slice_coordinate_fields(params: dict, bounds: list[float] | None) -> dict:
+    """A study row's cut_value and cut_units: where the slice was, in millimetres
+    from the origin, worked out from the cut the viewer reported (its axis, and
+    how far along the object from the low end) and the extent of the model the
+    server rendered. Blank when the model's unit is not known."""
+    axis, percent = params.get("cut_axis"), params.get("cut_percent")
+    if (
+        bounds is None
+        or axis not in ("x", "y", "z")
+        or isinstance(percent, bool)
+        or not isinstance(percent, (int, float))
+        or not math.isfinite(percent)
+    ):
+        return {"cut_value": None, "cut_units": None}
+    index = "xyz".index(axis)
+    low, high = bounds[index], bounds[index + 3]
+    return {"cut_value": round(low + percent / 100.0 * (high - low), 2), "cut_units": "mm"}
 
 
 def bounds_mm(raw_bbox, unit: str | None) -> list[float] | None:

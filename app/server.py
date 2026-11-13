@@ -1923,7 +1923,10 @@ def render_view():
                 # Recorded on the cache path too: a cached response still put a
                 # new image under the participant's fingers, and dropping those
                 # would lose most of a fast arrow-key traversal from the record.
-                recording.current().study_render(merged_params, model_stem=model_stem, cache_hit=True)
+                recording.current().study_render(
+                    {**merged_params, **model_units.slice_coordinate_fields(merged_params, cached_response.get("bounds_mm"))},
+                    model_stem=model_stem, cache_hit=True,
+                )
                 return jsonify(cached_response), 200
 
         response = _render_response(merged_params, source="http_render")
@@ -1936,7 +1939,10 @@ def render_view():
             }
         )
         response["debug"] = debug
-        recording.current().study_render(merged_params, model_stem=model_stem, cache_hit=False)
+        recording.current().study_render(
+            {**merged_params, **model_units.slice_coordinate_fields(merged_params, response.get("bounds_mm"))},
+            model_stem=model_stem, cache_hit=False,
+        )
 
         # A pan is not cacheable in either direction. "move left" means move from
         # wherever this window already was, and neither key carries that starting

@@ -721,6 +721,7 @@ def _record_render(
         resolve_step=lambda current: _current_step(runtime, current),
         only_if_active=True,
         **_axis_fields(params),
+        **_slice_coordinate_fields(params),
     )
 
 
@@ -745,8 +746,18 @@ def _axis_fields(params: dict[str, Any]) -> dict[str, Any]:
         "cut_axis": pick("cut_axis", {"x", "y", "z"}),
         "cut_side": pick("cut_side", {"above", "below", "front", "back", "right", "left"}),
         "cut_percent": number("cut_percent"),
-        "cut_value": number("cut_value"),
-        "cut_units": pick("cut_units", {"mm"}),
+    }
+
+
+def _slice_coordinate_fields(params: dict[str, Any]) -> dict[str, Any]:
+    """Where the slice was in millimetres from the model's origin (#264). The
+    server puts these in the params from the model it rendered, overwriting
+    anything the viewer sent; blank when the model's unit is not known (#234)."""
+    value = params.get("cut_value")
+    valid = not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+    return {
+        "cut_value": float(value) if valid else None,
+        "cut_units": "mm" if params.get("cut_units") == "mm" else None,
     }
 
 

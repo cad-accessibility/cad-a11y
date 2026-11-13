@@ -33,7 +33,7 @@ STUDY = dataclasses.replace(
     token_hash=tokens.hash_token(TOKEN),
     storage=None,
 )
-AXIS_COLUMNS = ["axis_mode", "cut_axis", "cut_side", "cut_percent", "cut_value", "cut_units"]
+AXIS_COLUMNS = ["axis_mode", "cut_axis", "cut_side", "cut_percent"]
 
 store: StudyStore
 
@@ -81,10 +81,7 @@ def _rows():
         conn.close()
 
 
-# cut_value is where the slice was in millimetres from the origin (#264), for a
-# model whose unit is known (#234).
-XYZ_CUT = {"axis_mode": "xyz", "cut_axis": "z", "cut_side": "above", "cut_percent": 40.0,
-           "cut_value": -12.5, "cut_units": "mm"}
+XYZ_CUT = {"axis_mode": "xyz", "cut_axis": "z", "cut_side": "above", "cut_percent": 40.0}
 
 
 def test_a_render_row_records_the_axis_mode_and_the_cut(client):
@@ -178,7 +175,6 @@ def test_the_render_request_is_what_fills_them(client):
 @pytest.mark.parametrize("field,bad", [
     ("axis_mode", "spin"), ("cut_axis", "w"), ("cut_side", "sideways"),
     ("cut_percent", "40"), ("cut_percent", float("nan")), ("cut_percent", True),
-    ("cut_value", "12"), ("cut_value", float("inf")), ("cut_units", "in"),
 ])
 def test_values_the_viewer_cannot_send_are_left_blank(field, bad):
     """A column is only worth grouping on if it holds the values the viewer
@@ -197,3 +193,80 @@ def test_the_csv_says_whether_shift_was_held(client):
     assert "key_shift" in store_module.LONG_EXPORT_COLUMNS
     shifts = [r["key_shift"] for r in store.export_long_rows(session_id) if r["event_type"] == "keyboard"]
     assert shifts == [True, False, None], "a key recorded before key_shift existed must read blank"
+
+
+# Where the slice was in millimetres from the model's origin (#264), for a model
+# whose unit is known (#234). The server works it out from the cut the viewer
+# reported and the model it rendered, so a value the viewer sends is ignored.
+SLICE_COLUMNS = ["cut_value", "cut_units"]
+
+
+def _slice_rows():
+    conn = sqlite3.connect(str(store.db_path))
+    try:
+        return conn.execute(f"SELECT {', '.join(SLICE_COLUMNS)} FROM study_renders ORDER BY seq").fetchall()
+    finally:
+        conn.close()
+
+
+def _render_in_session(client, session_id, model, **cut):
+    response = client.post(
+        "/render",
+        json={
+            "view": "z+", "renderMode": "Cut", "mode": "single", "depth": 60, "zoom": 0,
+            "current_model": model, "target_pixel_width": 96, "target_pixel_height": 40,
+            "input_source": "keyboard", **cut,
+        },
+        headers={"X-Study": SLUG, "X-Study-Key": store.get_study_session(session_id)["participant_key"]},
+    )
+    assert response.status_code == 200, response.get_data(as_text=True)
+
+
+def test_the_server_records_where_the_slice_was_in_millimetres(client):
+    """The tutorial mug is 95 mm tall from z = 0, so 40% along Z is 38 mm."""
+    session_id = _start(client)
+    _render_in_session(client, session_id, "tutorial_mug", **XYZ_CUT, cut_value=999.0, cut_units="mm")
+    assert _slice_rows()[-1] == pytest.approx((38.0, "mm"))
+
+
+def test_a_model_with_no_known_unit_leaves_them_blank(client):
+    session_id = _start(client)
+    _render_in_session(client, session_id, "cane_tip_fitted", **XYZ_CUT, cut_value=999.0, cut_units="mm")
+    assert _slice_rows()[-1] == (None, None)
+
+
+def test_the_long_csv_carries_the_millimetres_after_every_older_column(client):
+    session_id = _start(client)
+    store.record_render(
+        session_id, model="part", view="z+", render_mode="Cut", layout_mode="single",
+        depth=60, zoom=0, input_source="keyboard", cache_hit=False, **XYZ_CUT,
+        cut_value=-12.5, cut_units="mm",
+    )
+    _end(client, session_id)
+    assert list(store_module.LONG_EXPORT_COLUMNS[-2:]) == SLICE_COLUMNS
+    (row,) = [r for r in store.export_long_rows(session_id) if r["event_type"] == "render"]
+    assert (row["cut_value"], row["cut_units"]) == (-12.5, "mm")
+
+
+def test_a_database_from_before_the_millimetres_gains_them(tmp_path):
+    legacy = tmp_path / "legacy.db"
+    StudyStore(legacy, tmp_path / "logs").init_db()
+    conn = sqlite3.connect(str(legacy))
+    conn.execute("ALTER TABLE study_renders DROP COLUMN cut_units")
+    conn.execute("ALTER TABLE study_renders DROP COLUMN cut_value")
+    conn.commit()
+    conn.close()
+    reopened = StudyStore(legacy, tmp_path / "logs")
+    try:
+        reopened.init_db()
+        conn = sqlite3.connect(str(legacy))
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(study_renders)")}
+        conn.close()
+    finally:
+        reopened._local.__dict__.clear()
+    assert set(SLICE_COLUMNS) <= columns
+
+
+@pytest.mark.parametrize("field,bad", [("cut_value", "12"), ("cut_value", float("inf")), ("cut_units", "in")])
+def test_millimetre_values_the_server_cannot_produce_are_left_blank(field, bad):
+    assert engine._slice_coordinate_fields({"cut_value": 1.5, "cut_units": "mm", field: bad})[field] is None
