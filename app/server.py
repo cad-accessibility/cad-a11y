@@ -44,7 +44,7 @@ from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
 
-from . import api, db, email_address, recording, tutorial, usage_routes
+from . import api, db, email_address, model_units, recording, tutorial, usage_routes
 from .studies import engine as studies_engine
 from .studies import registry as studies_registry
 from .braille_display import (
@@ -769,6 +769,7 @@ def _renderer_for_path(model_path: Path) -> CADComparisonRenderer:
         # (CADComparisonRenderer._get_zoom_filtered_slice_profile) on first
         # actual use instead of unconditionally here.
         renderer = CADComparisonRenderer(str(model_path), str(model_path))
+    renderer.model_units = model_units.units_for(model_path)
 
     renderers_by_model[key] = renderer
     while len(renderers_by_model) > max(1, RENDERER_CACHE_MAX):
@@ -1501,6 +1502,11 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
         origin_fraction = engine.origin_fraction()
         if origin_fraction is not None:
             response["origin_fraction"] = origin_fraction
+    # The object's extent in millimetres, so the viewer can say where the slice
+    # is (#264). None when the model's unit is not known (#234).
+    response["bounds_mm"] = model_units.bounds_mm(
+        getattr(engine, "raw_bbox", None), getattr(engine, "model_units", None)
+    )
     # Where the origin landed on this frame, across from the left edge and up
     # from the bottom, as fractions of the display: what "," and "." say
     # (#235 review). Absent when the layout has no single view to place it in.
@@ -2155,6 +2161,7 @@ def _save_and_index_stl(
     session_id: str | None = None,
     original_name: str | None = None,
     public: bool = False,
+    units: str | None = None,
 ) -> tuple[str, Path, int]:
     """Persist an uploaded STL/STEP file and refresh the in-memory model list.
 
@@ -2211,6 +2218,9 @@ def _save_and_index_stl(
         dest.touch()
 
     save_fn(dest)
+    # A STEP file declares its own unit; an STL carries the one chosen for it.
+    if units and suffix == ".stl":
+        model_units.declare_stl_units(dest, units)
 
     if session_id:
         try:
@@ -2266,6 +2276,7 @@ def upload_model():
             file.filename,
             session_id=cookie_sid,
             original_name=file.filename,
+            units=model_units.parse_units(request.form.get("units")),
         )
     except ValueError as err:
         return jsonify({"status": "error", "message": str(err)}), 400
@@ -2346,6 +2357,7 @@ def ingest_model():
             original_name=requested_name,
             # Ingested models stay public; see the `public` note on the helper.
             public=True,
+            units=model_units.parse_units(request.form.get("units") or request.args.get("units")),
         )
     except ValueError as err:
         return jsonify({"status": "error", "message": str(err)}), 400
