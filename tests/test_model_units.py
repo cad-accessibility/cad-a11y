@@ -87,6 +87,16 @@ def test_a_declared_unit_is_kept_in_the_file_without_moving_the_geometry(tmp_pat
     np.testing.assert_array_equal(_vertices(path), before)
 
 
+def test_without_the_mug_s_landmarks_its_unit_is_unknown_and_nothing_breaks(tmp_path, monkeypatch):
+    monkeypatch.setattr(model_units, "_LANDMARKS", tmp_path / "missing.json")
+    model_units._builtin_units_by_sha256.cache_clear()
+    try:
+        assert model_units.units_for(BUILTINS / "tutorial_mug.stl") is None
+        assert model_units.units_for(BUILTINS / "lego_3002.stl") == "m"
+    finally:
+        model_units._builtin_units_by_sha256.cache_clear()
+
+
 def test_a_declared_unit_wins_over_the_openscad_stamp(tmp_path):
     path = _write(tmp_path, _ascii_stl("OpenSCAD_Model"))
     model_units.declare_stl_units(path, "in")

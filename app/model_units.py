@@ -16,6 +16,7 @@ from one of these, and is otherwise None:
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
@@ -24,6 +25,7 @@ import struct
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+_LANDMARKS = Path(__file__).resolve().with_name("tutorial_mug.landmarks.json")
 
 UNITS = ("mm", "in", "m")
 MM_PER_UNIT = {"mm": 1.0, "in": 25.4, "m": 1000.0}
@@ -34,17 +36,21 @@ _OPENSCAD_BINARY = b"OpenSCAD Model"
 _STL_HEADER = 80
 
 
+@functools.cache
 def _builtin_units_by_sha256() -> dict[str, str]:
-    landmarks = json.loads((REPO_ROOT / "app" / "tutorial_mug.landmarks.json").read_text(encoding="utf-8"))
-    return {
-        landmarks["stl_sha256"]: landmarks["units"],
+    units = {
         # lego_3002 and lego_3002e: 0.0238 x 0.0159 x 0.0114, a real 2x3 brick in metres.
         "e46161fc9cb885397449779b651075453718f0aaad0696e50c71ac92d7c9a151": "m",
         "9eb1493f6ba8ef9723d6cff3e63814302aa40cbb1bb97eb2de248eb97801aa1b": "m",
     }
-
-
-BUILTIN_UNITS_BY_SHA256 = _builtin_units_by_sha256()
+    # Read where app/tutorial.py reads it, and only when first needed, so a
+    # missing file leaves the mug's unit unknown instead of stopping the server.
+    try:
+        landmarks = json.loads(_LANDMARKS.read_text(encoding="utf-8"))
+        units[landmarks["stl_sha256"]] = landmarks["units"]
+    except (OSError, ValueError, KeyError):
+        pass
+    return units
 
 
 def parse_units(value: object) -> str | None:
@@ -91,26 +97,33 @@ def units_for(path: Path) -> str | None:
         return declared.group(1).decode()
     if header.startswith(_OPENSCAD_ASCII) or header.startswith(_OPENSCAD_BINARY):
         return "mm"
-    return BUILTIN_UNITS_BY_SHA256.get(hashlib.sha256(path.read_bytes()).hexdigest())
+    return _builtin_units_by_sha256().get(hashlib.sha256(path.read_bytes()).hexdigest())
 
 
 def slice_coordinate_fields(params: dict, bounds: list[float] | None) -> dict:
     """A study row's cut_value and cut_units: where the slice was, in millimetres
-    from the origin, worked out from the cut the viewer reported (its axis, and
-    how far along the object from the low end) and the extent of the model the
-    server rendered. Blank when the model's unit is not known."""
-    axis, percent = params.get("cut_axis"), params.get("cut_percent")
-    if (
-        bounds is None
-        or axis not in ("x", "y", "z")
-        or isinstance(percent, bool)
-        or not isinstance(percent, (int, float))
-        or not math.isfinite(percent)
-    ):
-        return {"cut_value": None, "cut_units": None}
-    index = "xyz".index(axis)
-    low, high = bounds[index], bounds[index + 3]
-    return {"cut_value": round(low + percent / 100.0 * (high - low), 2), "cut_units": "mm"}
+    from the origin. Worked out from the view and depth the server rendered and
+    the model's extent, the same way the renderer places the cut, so it cannot
+    disagree with the picture whatever the viewer reports. Blank when the
+    model's unit is not known, or the view does not face along an axis."""
+    from src.converter.single_view_stl import _get_view_basis
+
+    blank = {"cut_value": None, "cut_units": None}
+    try:
+        depth = float(params.get("depth"))
+    except (TypeError, ValueError):
+        return blank
+    if bounds is None or not math.isfinite(depth):
+        return blank
+    forward = _get_view_basis(params.get("view"), orientation_basis=params.get("orientation"))[2]
+    axis = max(range(3), key=lambda i: abs(forward[i]))
+    if not math.isclose(abs(forward[axis]), 1.0, abs_tol=1e-6):
+        return blank
+    low, high = bounds[axis], bounds[axis + 3]
+    # The renderer cuts 1 - depth/100 of the way along "forward", which points at
+    # the reader, so depth is measured in from the side the reader faces.
+    along = 1.0 - depth / 100.0 if forward[axis] > 0 else depth / 100.0
+    return {"cut_value": round(low + along * (high - low), 2), "cut_units": "mm"}
 
 
 def bounds_mm(raw_bbox, unit: str | None) -> list[float] | None:

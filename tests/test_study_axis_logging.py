@@ -222,20 +222,38 @@ def _render_in_session(client, session_id, model, **cut):
     assert response.status_code == 200, response.get_data(as_text=True)
 
 
+# The bases the viewer sends with every render: Z seen from above, and X seen
+# from its + side ("forward" points out of the display, at the reader).
+FROM_ABOVE = {"scheme": "basis-v1", "forward": [0, 0, 1], "up": [0, 1, 0], "right": [1, 0, 0]}
+FROM_PLUS_X = {"scheme": "basis-v1", "forward": [1, 0, 0], "up": [0, 0, 1], "right": [0, 1, 0]}
+
+
 def test_the_server_records_where_the_slice_was_in_millimetres(client):
-    """The tutorial mug is 95 mm tall from z = 0, so 40% along Z is 38 mm."""
+    """The tutorial mug is 95 mm tall from z = 0. Seen from above, 60% deep is
+    40% up from the bottom: 38 mm."""
     session_id = _start(client)
-    _render_in_session(client, session_id, "tutorial_mug", **XYZ_CUT, cut_value=999.0, cut_units="mm")
+    _render_in_session(client, session_id, "tutorial_mug", orientation=FROM_ABOVE,
+                       **XYZ_CUT, cut_value=999.0, cut_units="mm")
+    assert _slice_rows()[-1] == pytest.approx((38.0, "mm"))
+
+
+def test_the_millimetres_follow_what_was_drawn_not_what_the_viewer_says(client):
+    """cut_axis and cut_percent are the viewer's word; the coordinate comes from
+    the view and depth the server rendered, so they cannot contradict the picture."""
+    session_id = _start(client)
+    _render_in_session(client, session_id, "tutorial_mug", orientation=FROM_ABOVE,
+                       **{**XYZ_CUT, "cut_axis": "x", "cut_percent": 100.0})
     assert _slice_rows()[-1] == pytest.approx((38.0, "mm"))
 
 
 def test_a_cut_on_an_axis_whose_low_end_is_negative_counts_from_there(client):
-    """The mug spans X from -43.65 mm to 43.65 mm, so 25% along X is -21.8 mm.
-    Rendered twice, so the second row comes from the cache."""
+    """The mug spans X from -43.65 mm to 43.65 mm. Seen from +X, 75% deep is 25%
+    along X from its low end: -21.8 mm. Rendered twice, so the second row comes
+    from the cache."""
     session_id = _start(client)
     cut = {**XYZ_CUT, "cut_axis": "x", "cut_side": "right", "cut_percent": 25.0}
-    _render_in_session(client, session_id, "tutorial_mug", **cut)
-    _render_in_session(client, session_id, "tutorial_mug", **cut)
+    _render_in_session(client, session_id, "tutorial_mug", orientation=FROM_PLUS_X, **{**cut, "depth": 75})
+    _render_in_session(client, session_id, "tutorial_mug", orientation=FROM_PLUS_X, **{**cut, "depth": 75})
     rows = _slice_rows()[-2:]
     assert [row[0] for row in rows] == pytest.approx([-21.83, -21.83], abs=0.02)
 

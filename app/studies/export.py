@@ -227,7 +227,8 @@ LONG_COLUMN_DOCS: dict[str, dict[str, Any]] = {
     "cut_value": {
         "Description": (
             "Where the slice was along its axis, as a coordinate: its signed distance "
-            "from the model's origin, worked out from cut_percent and the model's extent. "
+            "from the model's origin, worked out on the server from the view and depth it "
+            "rendered and the model's extent. "
             "Blank when the model's unit is not known."
         ),
         "Units": "mm",
