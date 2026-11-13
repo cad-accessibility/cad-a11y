@@ -133,3 +133,56 @@ def test_the_load_announcement_warns_of_holes():
     js = (ROOT / "static" / "js" / "viewer.js").read_text(encoding="utf-8")
     assert "data.watertight === false" in js
     assert "It has holes, so some slices may be wrong." in js
+
+
+@pytest.mark.parametrize("model", ["src/models/brep/cube.step", "src/models/brep/cut_cube.step"])
+def test_a_closed_step_solid_is_not_said_to_have_holes(model):
+    """The STEP loader leaves each face's own copy of the vertices on its edges,
+    so the mesh as loaded is not watertight until they are merged, and every
+    STEP model was announced as having holes."""
+    from app.cad_comparison_lib import CADComparisonRenderer
+
+    path = str(ROOT / model)
+    assert CADComparisonRenderer(path, path).watertight is True
+
+
+def test_an_stl_the_renderer_cannot_read_is_refused_at_upload(client):
+    """Two solids in one ASCII STL load through trimesh's generic loader but not
+    through the renderer's, which is what the first render uses."""
+    body = (
+        b"solid {n}\n facet normal 0 0 1\n  outer loop\n   vertex 0 0 0\n   vertex 1 0 0\n"
+        b"   vertex 0 1 0\n  endloop\n endfacet\nendsolid {n}\n"
+    )
+    response = _upload(client, "two_bodies.stl", body.replace(b"{n}", b"a") + body.replace(b"{n}", b"b"))
+    assert response.status_code == 400, response.get_data(as_text=True)
+
+
+@pytest.mark.parametrize("name", ["part.stl ", "part.stl."])
+def test_a_name_with_trailing_space_or_dot_still_uploads(client, name):
+    response = _upload(client, name, MUG.read_bytes())
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert response.get_json()["filename"].lower().endswith(".stl")
+
+
+def test_a_413_under_the_api_keeps_the_api_s_error_shape(monkeypatch):
+    monkeypatch.setitem(flask_app.config, "MAX_CONTENT_LENGTH", 1024)
+    with flask_app.test_request_context("/api/v1/anything", method="POST", data=b"x" * 4096):
+        from werkzeug.exceptions import RequestEntityTooLarge
+
+        from app import server
+
+        response = server._upload_too_large(RequestEntityTooLarge())
+    assert response.status_code == 413
+    assert response.get_json()["code"] == "request_entity_too_large"
+
+
+def test_a_413_for_something_other_than_the_body_size_says_what_it_was(monkeypatch):
+    """Flask also answers 413 for too many form parts, with the body under the limit."""
+    from werkzeug.exceptions import RequestEntityTooLarge
+
+    from app import server
+
+    with flask_app.test_request_context("/upload", method="POST", data=b"x" * 10):
+        response = server._upload_too_large(RequestEntityTooLarge("Too many form parts."))
+    assert response.status_code == 413
+    assert response.get_json()["message"] == "Too many form parts."

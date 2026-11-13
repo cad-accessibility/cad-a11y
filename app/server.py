@@ -41,7 +41,6 @@ import uuid
 import numpy as np
 from flask import Flask, Response, has_request_context, jsonify, redirect, request, send_file, stream_with_context
 from werkzeug.utils import secure_filename
-import trimesh
 from flask_cors import CORS
 from PIL import Image
 
@@ -56,7 +55,7 @@ from .braille_display import (
     _DOTPAD_LINES,
     _DOTPAD_COLS,
 )
-from .cad_comparison_lib import DEFAULT_SCREEN_SIZE, CADComparisonRenderer, RenderResult
+from .cad_comparison_lib import DEFAULT_SCREEN_SIZE, CADComparisonRenderer, RenderResult, load_mesh_file
 from src.converter.render_low_res import dilate_mask, raised_ink_mask, save_binary_array_as_vector_pdf
 
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
@@ -616,13 +615,21 @@ def _announce_models_changed() -> None:
 
 
 @app.errorhandler(413)
-def _upload_too_large(_error):
+def _upload_too_large(error):
     """In JSON like every other refusal, with the limit, instead of Flask's HTML
-    page, which the viewer read out as a JSON parse error (#239)."""
-    limit_mb = app.config["MAX_CONTENT_LENGTH"] / (1024 * 1024)
-    return jsonify(
-        {"status": "error", "message": f"That file is larger than the {limit_mb:g} MB upload limit."}
-    ), 413
+    page, which the viewer read out as a JSON parse error (#239). Under /api, in
+    the API's own error shape."""
+    if api._is_api_request():
+        return api.json_errors_under_api(error)
+    limit = app.config["MAX_CONTENT_LENGTH"]
+    if limit and (request.content_length or 0) > limit:
+        message = f"That file is larger than the {limit / (1024 * 1024):g} MB upload limit."
+    else:
+        # Flask also answers 413 for too many form parts or too large a form field.
+        message = error.description
+    response = jsonify({"status": "error", "message": message})
+    response.status_code = 413
+    return response
 
 
 class ModelNotAvailable(LookupError):
@@ -2187,7 +2194,8 @@ def _save_and_index_stl(
     """
     global AVAILABLE_MODELS, MODEL_NAME_LIST
 
-    original = Path((requested_name or "").replace("\\", "/")).name
+    # Trailing spaces and dots go, as secure_filename drops them: "x.stl." is x.stl.
+    original = Path((requested_name or "").replace("\\", "/")).name.rstrip(" .")
     if not original:
         raise ValueError("No file selected")
     suffix = Path(original).suffix.lower()
@@ -2271,12 +2279,11 @@ def _model_is_unreadable(path: Path) -> bool:
     """Whether the renderer would fail on this file, loaded the way it loads it.
     Checked at upload, so the person hears why now, not "Processing failed" at
     the first render (#239)."""
-    options = {} if path.suffix.lower() == ".stl" else {"tol_linear": 0.001, "tol_relative": True}
     try:
-        mesh = trimesh.load(path, force="mesh", **options)
+        mesh = load_mesh_file(str(path))
     except Exception:
         return True
-    return not isinstance(mesh, trimesh.Trimesh) or len(mesh.faces) == 0
+    return len(mesh.faces) == 0
 
 
 @app.route("/upload", methods=["POST"])
