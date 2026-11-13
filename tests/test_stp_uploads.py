@@ -79,3 +79,22 @@ def test_the_file_chooser_offers_stp():
     html = (ROOT / "accessible-3d-viewer.html").read_text(encoding="utf-8")
     accept = re.search(r'id="upload-model-input" accept="([^"]+)"', html).group(1).split(",")
     assert {".stp", ".STP"} <= set(accept)
+
+
+def test_the_cleanup_script_finds_an_ingested_stp(tmp_path):
+    """/ingest writes into the public model directory, and this script is how an
+    operator clears participants' files out of it. It had its own list of suffixes."""
+    from scripts.cleanup_ingest_models import find_stale_models
+
+    models, builtins = tmp_path / "models", tmp_path / "builtin"
+    models.mkdir()
+    builtins.mkdir()
+    for name in ("result.stp", "RESULT_2.STP", "part.step"):
+        (models / name).write_bytes(b"x")
+    assert {p.name for p in find_stale_models(models, builtins)} == {"result.stp", "RESULT_2.STP", "part.step"}
+
+
+def test_the_ingest_sample_page_offers_stp():
+    html = (ROOT / "examples" / "ingest-test.html").read_text(encoding="utf-8")
+    accept = re.search(r'id="file" accept="([^"]+)"', html).group(1).split(",")
+    assert ".stp" in accept
