@@ -340,6 +340,9 @@ class CADComparisonRenderer:
         self.after_model_path = after_model_path
         self.shapes = []
         self.bbox = None
+        # Whether the repaired mesh is closed. One with holes renders slices
+        # wrong (#59), so the viewer warns when it loads one (#239).
+        self.watertight = None
         # How normalising moved the model, so its origin can still be found: see
         # _load_models and to_render_space.
         self.model_scale = 1.0
@@ -424,6 +427,7 @@ class CADComparisonRenderer:
         same_file = os.path.abspath(self.before_model_path) == os.path.abspath(self.after_model_path)
 
         before_mesh = self._load_one_mesh(self.before_model_path)
+        self.watertight = bool(before_mesh.is_watertight)
         # "before" and "after" are the same upload for every caller today (e.g. the
         # /ingest workshop flow never does a real comparison), so skip loading and
         # repairing the identical file a second time and just copy the result.

@@ -90,3 +90,46 @@ def test_the_viewer_says_why_when_the_answer_is_not_json():
     assert "const data = await resp.json();" not in handler
     assert re.search(r"await resp\.json\(\)\.catch\(", handler)
     assert "resp.status === 413" in handler
+
+
+def test_the_viewer_is_told_the_limit_and_checks_it_before_sending(client):
+    """A 300 MB file used to be sent in full before the server refused it."""
+    data = client.get("/get_data", headers={"X-Upload-Session": TAB}).get_json()
+    assert data["max_upload_bytes"] == flask_app.config["MAX_CONTENT_LENGTH"]
+    js = (ROOT / "static" / "js" / "viewer.js").read_text(encoding="utf-8")
+    assert "uploadLimitBytes = data.max_upload_bytes;" in js
+    start = js.index("document.getElementById('upload-model-input').addEventListener('change'")
+    handler = js[start:js.index("\n});\n", start)]
+    assert handler.index("file.size > uploadLimitBytes") < handler.index("fetch(`${SERVER_URL}/upload`")
+
+
+@pytest.mark.parametrize("name, data", [
+    ("junk.stl", b"this is a shopping list, not a mesh\n"),
+    ("empty.stl", b"solid empty\nendsolid empty\n"),
+    ("junk.step", b"ISO-10303-21;\nnot really\n"),
+])
+def test_a_file_that_is_not_a_model_is_refused_with_a_reason_and_not_kept(client, name, data):
+    from app import server
+
+    response = _upload(client, name, data)
+    assert response.status_code == 400, response.get_data(as_text=True)
+    assert "isn't a 3D model the viewer can read" in response.get_json()["message"]
+    stem = Path(name).stem
+    assert not [p for p in server.UPLOAD_DIR.glob(f"{stem}*") if p.suffix == Path(name).suffix]
+    assert stem not in client.get("/get_data", headers={"X-Upload-Session": TAB}).get_json()["model_list"]
+
+
+@pytest.mark.parametrize("model, watertight", [("rocking_chair", False), ("cube", True)])
+def test_a_render_says_whether_the_model_has_holes(client, model, watertight):
+    rendered = client.post(
+        "/render",
+        json={"current_model": model, "view": "z+", "zoom": 0, "depth": 50, "renderMode": "Cut",
+              "mode": "single", "target_pixel_width": 96, "target_pixel_height": 40},
+    ).get_json()
+    assert rendered["watertight"] is watertight
+
+
+def test_the_load_announcement_warns_of_holes():
+    js = (ROOT / "static" / "js" / "viewer.js").read_text(encoding="utf-8")
+    assert "data.watertight === false" in js
+    assert "It has holes, so some slices may be wrong." in js

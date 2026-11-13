@@ -41,6 +41,7 @@ import uuid
 import numpy as np
 from flask import Flask, Response, has_request_context, jsonify, redirect, request, send_file, stream_with_context
 from werkzeug.utils import secure_filename
+import trimesh
 from flask_cors import CORS
 from PIL import Image
 
@@ -1511,6 +1512,8 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
         origin_fraction = engine.origin_fraction()
         if origin_fraction is not None:
             response["origin_fraction"] = origin_fraction
+    if engine is not None and getattr(engine, "watertight", None) is not None:
+        response["watertight"] = engine.watertight
     # Where the origin landed on this frame, across from the left edge and up
     # from the bottom, as fractions of the display: what "," and "." say
     # (#235 review). Absent when the layout has no single view to place it in.
@@ -2224,6 +2227,12 @@ def _save_and_index_stl(
         dest.touch()
 
     save_fn(dest)
+    if _model_is_unreadable(dest):
+        dest.unlink(missing_ok=True)
+        raise ValueError(
+            "That file isn't a 3D model the viewer can read. "
+            "It may be damaged, or a different kind of file renamed."
+        )
 
     if session_id:
         try:
@@ -2256,6 +2265,18 @@ def _save_and_index_stl(
         preview_payload_cache.clear()
 
     return filename, dest, new_index
+
+
+def _model_is_unreadable(path: Path) -> bool:
+    """Whether the renderer would fail on this file, loaded the way it loads it.
+    Checked at upload, so the person hears why now, not "Processing failed" at
+    the first render (#239)."""
+    options = {} if path.suffix.lower() == ".stl" else {"tol_linear": 0.001, "tol_relative": True}
+    try:
+        mesh = trimesh.load(path, force="mesh", **options)
+    except Exception:
+        return True
+    return not isinstance(mesh, trimesh.Trimesh) or len(mesh.faces) == 0
 
 
 @app.route("/upload", methods=["POST"])
@@ -2633,6 +2654,8 @@ def get_data():
             "status": "success",
             "model_list": _visible_model_names(),
             "builtin_model_stems": _builtin_model_stems(),
+            # So the viewer can refuse a file over the limit before sending it.
+            "max_upload_bytes": app.config["MAX_CONTENT_LENGTH"],
         }
     return jsonify(payload), 200
 
