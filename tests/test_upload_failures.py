@@ -95,7 +95,10 @@ def test_the_viewer_says_why_when_the_answer_is_not_json():
 def test_the_viewer_is_told_the_limit_and_checks_it_before_sending(client):
     """A 300 MB file used to be sent in full before the server refused it."""
     data = client.get("/get_data", headers={"X-Upload-Session": TAB}).get_json()
-    assert data["max_upload_bytes"] == flask_app.config["MAX_CONTENT_LENGTH"]
+    from app import server
+
+    # The file alone: the rest of the request has to fit under Flask's limit too.
+    assert data["max_upload_bytes"] == flask_app.config["MAX_CONTENT_LENGTH"] - server.UPLOAD_REQUEST_OVERHEAD
     js = (ROOT / "static" / "js" / "viewer.js").read_text(encoding="utf-8")
     assert "uploadLimitBytes = data.max_upload_bytes;" in js
     start = js.index("document.getElementById('upload-model-input').addEventListener('change'")
@@ -186,3 +189,38 @@ def test_a_413_for_something_other_than_the_body_size_says_what_it_was(monkeypat
         response = server._upload_too_large(RequestEntityTooLarge("Too many form parts."))
     assert response.status_code == 413
     assert response.get_json()["message"] == "Too many form parts."
+
+
+def test_a_file_at_the_advertised_limit_is_not_refused_as_too_large(client, monkeypatch):
+    from app import server
+
+    monkeypatch.setitem(flask_app.config, "MAX_CONTENT_LENGTH", 256 * 1024)
+    advertised = client.get("/get_data").get_json()["max_upload_bytes"]
+    response = _upload(client, "at_limit.stl", b"\0" * advertised)
+    assert response.status_code != 413, "the viewer let this through and the server refused it"
+
+
+@pytest.mark.parametrize("public", [False, True], ids=["upload", "ingest"])
+def test_a_file_being_checked_is_never_in_the_model_list(client, public):
+    """Saved and checked out of sight, so a refused file is never offered."""
+    from app import server
+
+    seen: list[list[str]] = []
+
+    def save(path: Path, data: bytes) -> None:
+        path.write_bytes(data)
+        seen.append([p.name for p in server._discover_models()])
+
+    filename, dest, _ = server._save_and_index_stl(lambda p: save(p, MUG.read_bytes()), "checked.stl", public=public)
+    try:
+        assert filename not in seen[0]
+        assert dest.exists() and filename in [p.name for p in server._discover_models()]
+    finally:
+        dest.unlink(missing_ok=True)
+
+    seen.clear()
+    with pytest.raises(ValueError):
+        server._save_and_index_stl(lambda p: save(p, b"not a mesh"), "refused.stl", public=public)
+    assert "refused.stl" not in seen[0]
+    target = server.MODEL_DIR if public else server.UPLOAD_DIR
+    assert not list(target.rglob("refused*")), "the refused file was left behind"

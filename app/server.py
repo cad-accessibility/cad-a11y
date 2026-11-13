@@ -65,6 +65,9 @@ CORS(app)
 # Cap request bodies (uploads and /ingest); default 100 MB. Oversized requests
 # are rejected with 413 before the handler runs.
 app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_UPLOAD_MB", "100") or "100") * 1024 * 1024
+# Room in a request for what comes with the file: the multipart boundaries, the
+# part headers and the form fields, a few hundred bytes in practice.
+UPLOAD_REQUEST_OVERHEAD = 64 * 1024
 # /api/v1, where tools will send models (#236), and its one error shape.
 api.install(app)
 
@@ -2216,6 +2219,11 @@ def _save_and_index_stl(
     # step. Two uploads of the same name could otherwise both look free, both
     # rename to the same stem, and end up as two models claiming one name.
     target_dir.mkdir(parents=True, exist_ok=True)
+    # Saved and checked here first, out of sight of model discovery, which looks
+    # only at files directly in target_dir, so a file is never listed before it
+    # has passed (#239 review). Moved into place once it has.
+    staging = target_dir / ".staging"
+    staging.mkdir(exist_ok=True)
     with models_lock:
         dest = target_dir / filename
         # A name some session still holds a live row for is taken too, file or no
@@ -2224,6 +2232,7 @@ def _save_and_index_stl(
         # without their rows (#243 review).
         if (
             dest.exists()
+            or (staging / filename).exists()
             or _stem_is_taken(Path(filename).stem)
             or (recording.current().records and db.filename_has_live_owner(filename))
         ):
@@ -2232,15 +2241,20 @@ def _save_and_index_stl(
             dest = target_dir / filename
         # Reserve the name before releasing the lock, so a second upload arriving
         # now sees it taken. The real bytes overwrite this immediately below.
-        dest.touch()
+        staged = staging / filename
+        staged.touch()
 
-    save_fn(dest)
-    if _model_is_unreadable(dest):
-        dest.unlink(missing_ok=True)
-        raise ValueError(
-            "That file isn't a 3D model the viewer can read. "
-            "It may be damaged, or a different kind of file renamed."
-        )
+    try:
+        save_fn(staged)
+        if _model_is_unreadable(staged):
+            raise ValueError(
+                "That file isn't a 3D model the viewer can read. "
+                "It may be damaged, or a different kind of file renamed."
+            )
+        staged.replace(dest)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
 
     if session_id:
         try:
@@ -2661,8 +2675,9 @@ def get_data():
             "status": "success",
             "model_list": _visible_model_names(),
             "builtin_model_stems": _builtin_model_stems(),
-            # So the viewer can refuse a file over the limit before sending it.
-            "max_upload_bytes": app.config["MAX_CONTENT_LENGTH"],
+            # So the viewer can refuse a file over the limit before sending it:
+            # the file's share, since Flask's limit is on the whole request.
+            "max_upload_bytes": app.config["MAX_CONTENT_LENGTH"] - UPLOAD_REQUEST_OVERHEAD,
         }
     return jsonify(payload), 200
 
