@@ -164,16 +164,19 @@ git push gitlab v0.3.0   # last known-good tag
 
 Check GitHub Actions > "Mirror to GitLab" for the failure reason. Common causes:
 
-- The project access token expired or was revoked — rotate it (see below)
-- The token stored in `GITLAB_HTTPS_TOKEN` does not match the active token on GitLab — rotate it again
+- The project access token expired or was revoked — rotate it (see [Rotating the mirror credentials](#rotating-the-mirror-credentials))
+- The token stored in `GITLAB_HTTPS_TOKEN` does not match an active token on GitLab — rotate it, which creates a new token and stores it in the secret
 - GitLab HTTPS is unreachable from GitHub Actions — check `gitlab.cs.washington.edu` status
 
 While the mirror is broken, maintainers can deploy manually using their own GitLab SSH access.
 
 ## Rotating the mirror credentials
 
-The rotation procedure, and the details of the token currently in use, are kept with the maintainers rather than
-in this public repository. Ask a maintainer if you need them.
+Run `bash scripts/replace-deploy-key.sh`. It needs a GitLab account with the Maintainer role on the project and
+its SSH key, and the `gh` CLI signed in with write access to this repository. It asks before changing anything.
+
+The details of the token currently in use, such as its expiry date, are kept with the maintainers rather than in
+this public repository. GitLab shows the expiry date under `Settings > Access Tokens`.
 
 ## GitLab CI configuration reference
 
