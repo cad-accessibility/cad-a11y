@@ -33,7 +33,7 @@ STUDY = dataclasses.replace(
     token_hash=tokens.hash_token(TOKEN),
     storage=None,
 )
-AXIS_COLUMNS = ["axis_mode", "cut_axis", "cut_side", "cut_percent"]
+AXIS_COLUMNS = ["axis_mode", "cut_axis", "cut_side", "cut_percent", "cut_value", "cut_units"]
 
 store: StudyStore
 
@@ -81,7 +81,10 @@ def _rows():
         conn.close()
 
 
-XYZ_CUT = {"axis_mode": "xyz", "cut_axis": "z", "cut_side": "above", "cut_percent": 40.0}
+# cut_value is where the slice was in millimetres from the origin (#264), for a
+# model whose unit is known (#234).
+XYZ_CUT = {"axis_mode": "xyz", "cut_axis": "z", "cut_side": "above", "cut_percent": 40.0,
+           "cut_value": -12.5, "cut_units": "mm"}
 
 
 def test_a_render_row_records_the_axis_mode_and_the_cut(client):
@@ -175,6 +178,7 @@ def test_the_render_request_is_what_fills_them(client):
 @pytest.mark.parametrize("field,bad", [
     ("axis_mode", "spin"), ("cut_axis", "w"), ("cut_side", "sideways"),
     ("cut_percent", "40"), ("cut_percent", float("nan")), ("cut_percent", True),
+    ("cut_value", "12"), ("cut_value", float("inf")), ("cut_units", "in"),
 ])
 def test_values_the_viewer_cannot_send_are_left_blank(field, bad):
     """A column is only worth grouping on if it holds the values the viewer

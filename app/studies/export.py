@@ -224,6 +224,17 @@ LONG_COLUMN_DOCS: dict[str, dict[str, Any]] = {
         ),
         "Units": "percent",
     },
+    "cut_value": {
+        "Description": (
+            "Where the slice was along its axis, as a coordinate: its signed distance "
+            "from the model's origin. Blank when the model's unit is not known."
+        ),
+        "Units": "cut_units",
+    },
+    "cut_units": {
+        "Description": "The unit of cut_value. Blank when the model's unit is not known.",
+        "Levels": {"mm": "millimetres"},
+    },
 }
 
 SESSION_COLUMNS: tuple[str, ...] = (

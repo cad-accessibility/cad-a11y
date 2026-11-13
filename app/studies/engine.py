@@ -745,6 +745,8 @@ def _axis_fields(params: dict[str, Any]) -> dict[str, Any]:
         "cut_axis": pick("cut_axis", {"x", "y", "z"}),
         "cut_side": pick("cut_side", {"above", "below", "front", "back", "right", "left"}),
         "cut_percent": number("cut_percent"),
+        "cut_value": number("cut_value"),
+        "cut_units": pick("cut_units", {"mm"}),
     }
 
 
