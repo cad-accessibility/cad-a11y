@@ -489,6 +489,18 @@
                 </p>
                 <button type="button" id="delete-model-btn" hidden>Remove uploaded model</button>
                 <div style="margin-top: 12px;">
+                    <label for="upload-units">Unit of the model you upload</label>
+                    <select id="upload-units" aria-describedby="upload-units-note">
+                        <option value="unknown" selected>Don't know</option>
+                        <option value="mm">Millimetres</option>
+                        <option value="in">Inches</option>
+                        <option value="m">Metres</option>
+                    </select>
+                    <p id="upload-units-note" class="help-text">
+                        Choose before uploading. It lets the viewer say where the slice is in
+                        millimetres. A STEP file says its own unit, and an STL from OpenSCAD is
+                        read as millimetres.
+                    </p>
                     <input type="file" id="upload-model-input" accept=".stl,.step,.STEP"
                         aria-label="Upload an STL or STEP model file">
                     <label for="upload-model-input" id="upload-model-label">Upload model…</label>
@@ -869,6 +881,10 @@
             <label class="checkbox-label" for="settings-origin-marker">
                 <input type="checkbox" id="settings-origin-marker">
                 Origin mark on the display, the same as the M key
+            </label>
+            <label class="checkbox-label" for="settings-distance-unit">
+                <input type="checkbox" id="settings-distance-unit" checked>
+                Say "mm" after the slice's distance from the origin
             </label>
         </div>
 

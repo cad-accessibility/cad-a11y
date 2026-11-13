@@ -467,6 +467,7 @@ async function sendStateToServer() {
             if (data.bbox) {
                 updateBoundingBox(data.bbox);
             }
+            rememberSliceExtent(data);
             // Where the model's origin is on this frame, which "," and "." read.
             if (data.image_base64) setOriginDisplay(data.origin_display);
             if (data.model_list) {
@@ -1082,7 +1083,9 @@ function applyRelativeRotation(rotationName, emit = announceAlert) {
     // is a no-op there. Must run before updateView/sendStateToServer below so
     // the request they send already carries the re-derived depth.
     const depthChanged = syncSliceDepthFromPlanes();
-    const depthMessage = depthChanged ? `depth ${viewerState.currentSliceDepth}%` : "";
+    const depthMessage = depthChanged
+        ? `depth ${viewerState.currentSliceDepth}%${sliceDistanceText(viewerState.currentSliceDepth)}`
+        : "";
     const viewChanged = updateView(orientationViewFromDepth(viewerState.orientationDepth), false,
                                    { syncOrientation: false });
     const currentBasis = { right: viewerState.orientationRight, up: viewerState.orientationUp, depth: viewerState.orientationDepth };
@@ -1158,6 +1161,45 @@ function resetSlicePlanes() {
     viewerState.slicePlanes = { x: 0.5, y: 0.5, z: 0.5 };
 }
 
+/** Keep the object's extent in millimetres from a render, with the name of the
+ * model it measured, so a distance is never said against another model's
+ * extent while a newly chosen one is still loading. */
+function rememberSliceExtent(data) {
+    if (!data || !('bounds_mm' in data) || !data.model) return;
+    viewerState.sliceExtent = { model: data.model, mm: data.bounds_mm };
+    refreshDepthControls();
+}
+
+function shownModel() {
+    return viewerState.currentModel || lastShownModel;
+}
+
+/** The slice's coordinate on its axis, in millimetres from the model's origin
+ * (#264), for a view-relative depth. Null when the model's unit is not known
+ * (#234): a number in an unknown unit is worse than none. */
+function sliceCoordinate(depthPercent) {
+    const extent = viewerState.sliceExtent;
+    if (!extent || !extent.mm || extent.model !== shownModel()) return null;
+    const { axis, sign } = activeSliceAxis();
+    const index = 'xyz'.indexOf(axis);
+    const low = extent.mm[index];
+    const high = extent.mm[index + 3];
+    return low + planePositionFromDepth(depthPercent, sign) * (high - low);
+}
+
+/** "12mm", "minus 3.5mm", or "12" with the unit turned off. A word, not a sign:
+ * pilot participants could not read the sign glyphs on the display. */
+function distanceText(mm) {
+    const rounded = Math.round(mm * 10) / 10;
+    return `${rounded < 0 ? 'minus ' : ''}${Math.abs(rounded)}${viewerState.sayDistanceUnit ? 'mm' : ''}`;
+}
+
+/** ", 12mm" to follow a depth percentage, or nothing when there is no distance to give. */
+function sliceDistanceText(depthPercent) {
+    const mm = sliceCoordinate(depthPercent);
+    return mm === null ? '' : `, ${distanceText(mm)}`;
+}
+
 // Re-derive viewerState.currentSliceDepth from the persisted planes after the active axis
 // may have changed (any pitch/yaw, or picking a different named view). Roll
 // never changes the active axis, so this is a harmless no-op there. Does not
@@ -1185,6 +1227,7 @@ const SETTINGS_AXIS_MODE_KEY = 'settingsAxisMode';
 const SETTINGS_AXIS_LETTERS_KEY = 'settingsAxisLetters';
 const SETTINGS_VIEW_INFO_BOX_KEY = 'settingsViewInfoBox';
 const SETTINGS_SINGLE_KEY_SHORTCUTS_KEY = 'settingsSingleKeyShortcuts';
+const SETTINGS_DISTANCE_UNIT_KEY = 'settingsDistanceUnit';
 
 // Settings that shape what the pins draw, on unless turned off: the view label
 // (the "view info box" setting) and the axis letters at the display edges, both
@@ -1198,6 +1241,10 @@ viewerState.showOriginMarker = false;
 // The render mode M found showing, to go back to when the marker is turned off.
 viewerState.renderModeBeforeOriginMarker = null;
 viewerState.singleKeyShortcuts = true;
+// "Depth 40%, 12mm", or "Depth 40%, 12" with the unit word turned off (#264).
+viewerState.sayDistanceUnit = true;
+// The object's extent in millimetres and the model it belongs to; see rememberSliceExtent.
+viewerState.sliceExtent = null;
 
 /** The model axis the current view slices along: 'x', 'y' or 'z'. */
 function currentCutAxis() {
@@ -1456,6 +1503,16 @@ function announceWhereAmI(emit = announceAlert) {
     const description = isXyzMode() ? xyzDescription() : turnDescription();
     const speech = [description.speech];
     const braille = [...description.braille];
+    const mm = sliceCoordinate(viewerState.currentSliceDepth);
+    if (mm === null) {
+        speech.push('Unit unknown.');
+        braille.push('Unit unknown');
+    } else {
+        const axis = activeSliceAxis().axis.toUpperCase();
+        const coordinate = distanceText(mm);
+        speech.push(`Slice at ${axis} ${coordinate}.`);
+        braille.push(`Slice ${axis} ${coordinate}`);
+    }
     const origin = originOnDisplayPhrase();
     if (origin) {
         speech.push(`Origin: ${origin.short}.`);
@@ -1565,16 +1622,17 @@ function syncAxisModeUI() {
 function refreshDepthControls() {
     const xyz = isXyzMode();
     const depth = Math.round(viewerState.currentSliceDepth);
+    const distance = sliceDistanceText(depth);
     if (sliceSlider) {
         sliceSlider.value = depth;
         sliceSlider.setAttribute('aria-valuenow', String(depth));
-        sliceSlider.setAttribute('aria-valuetext', `${depth} percent depth`);
+        sliceSlider.setAttribute('aria-valuetext', `${depth} percent depth` + distance);
     }
-    if (slicePercentage) slicePercentage.textContent = `${viewerState.currentSliceDepth}%`;
+    if (slicePercentage) slicePercentage.textContent = `${viewerState.currentSliceDepth}%${distance}`;
     if (sliceHeading) sliceHeading.textContent = 'Depth';
     if (xyzPosition) {
         xyzPosition.textContent = xyz
-            ? `View from ${axisSide().speech}, ${displayAxesPhrase().speech}. Depth: ${viewerState.currentSliceDepth}%.`
+            ? `View from ${axisSide().speech}, ${displayAxesPhrase().speech}. Depth: ${viewerState.currentSliceDepth}%${distance}.`
             : '';
     }
     if (typeof updateButtonLabels === 'function' && deeperBtn) updateButtonLabels();
@@ -1607,6 +1665,7 @@ const axisModeRadios = () => document.querySelectorAll('input[name="axis-mode"]'
 const settingsAxisLettersCheckbox = document.getElementById('settings-axis-letters');
 const settingsOriginMarkerCheckbox = document.getElementById('settings-origin-marker');
 const settingsSingleKeyCheckbox = document.getElementById('settings-single-key-shortcuts');
+const settingsDistanceUnitCheckbox = document.getElementById('settings-distance-unit');
 const zoomInput = document.getElementById('zoom-input');
 const zoomLevelValue = document.getElementById('zoom-level-value');
 const zoomOutBtn = document.getElementById('zoom-out-btn');
@@ -1701,6 +1760,7 @@ function refreshStatusBar() {
     const xyz = isXyzMode();
     if (sbView) sbView.textContent = xyz ? axisSide().speech : viewName();
     if (sbDepth) sbDepth.textContent = viewerState.currentSliceDepth + '%';
+    if (sbDepth) sbDepth.textContent += sliceDistanceText(viewerState.currentSliceDepth);
     if (sbDepthLabel) sbDepthLabel.textContent = 'Depth';
     if (sbRenderMode) sbRenderMode.textContent = renderModeLabel();
     if (sbZoom) sbZoom.textContent = Number(viewerState.currentZoom).toFixed(1);
@@ -1735,7 +1795,8 @@ function announceDepthValue(depthValue, previousDepth = null, emit = announceAle
     // in the same words in both modes (#263).
     const to = clampDepth(depthValue);
     if (to === null) return;
-    announceParameterValue("depth", `Depth ${to}%`, `${to}%`, emit);
+    const distance = sliceDistanceText(to);
+    announceParameterValue("depth", `Depth ${to}%${distance}`, `${to}%${distance}`, emit);
 }
 
 function announceZoomValue(zoomValue, previousZoom = null, emit = announceAlert) {
@@ -3254,6 +3315,7 @@ document.getElementById('delete-model-btn').addEventListener('click', async func
 });
 
 // Handle STL/STEP file upload
+const uploadUnits = document.getElementById('upload-units');
 document.getElementById('upload-model-input').addEventListener('change', async function() {
     const file = this.files[0];
     if (!file) return;
@@ -3268,6 +3330,7 @@ document.getElementById('upload-model-input').addEventListener('change', async f
     const formData = new FormData();
     formData.append('file', file);
     formData.append('upload_session_id', getUploadSessionId());
+    formData.append('units', uploadUnits.value);
 
     try {
         const resp = await fetch(`${SERVER_URL}/upload`, {
@@ -3348,6 +3411,7 @@ function applyServerState(data) {
     if (data.bbox) {
         updateBoundingBox(data.bbox);
     }
+    rememberSliceExtent(data);
     // Live model switch pushed by /ingest?open=1 over SSE: jump an already-open
     // viewer to a freshly-ingested model. Transient — /get_data never carries this,
     // and the index guard keeps it idempotent.
@@ -4235,6 +4299,14 @@ if (settingsSingleKeyCheckbox) {
         persistSetting(SETTINGS_SINGLE_KEY_SHORTCUTS_KEY, this.checked);
     });
 }
+if (settingsDistanceUnitCheckbox) {
+    settingsDistanceUnitCheckbox.addEventListener('change', function() {
+        viewerState.sayDistanceUnit = this.checked;
+        persistSetting(SETTINGS_DISTANCE_UNIT_KEY, this.checked);
+        refreshDepthControls();
+        refreshStatusBar();
+    });
+}
 
 /** Read the axis settings back, before the first render so it draws in the
  * saved mode. Unset means the default: XYZ, with the edge letters and the
@@ -4250,6 +4322,8 @@ function initializeAxisSettings() {
     viewerState.showAxisLetters = read(SETTINGS_AXIS_LETTERS_KEY) !== '0';
     viewerState.showViewInfoBox = read(SETTINGS_VIEW_INFO_BOX_KEY) !== '0';
     viewerState.singleKeyShortcuts = read(SETTINGS_SINGLE_KEY_SHORTCUTS_KEY) !== '0';
+    viewerState.sayDistanceUnit = read(SETTINGS_DISTANCE_UNIT_KEY) !== '0';
+    if (settingsDistanceUnitCheckbox) settingsDistanceUnitCheckbox.checked = viewerState.sayDistanceUnit;
     if (settingsAxisLettersCheckbox) settingsAxisLettersCheckbox.checked = viewerState.showAxisLetters;
     if (showViewInfoBoxCheckbox) showViewInfoBoxCheckbox.checked = viewerState.showViewInfoBox;
     if (settingsSingleKeyCheckbox) settingsSingleKeyCheckbox.checked = viewerState.singleKeyShortcuts;
