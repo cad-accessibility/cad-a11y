@@ -662,7 +662,7 @@ class CADComparisonRenderer:
 
     # Background precompute is CPU-bound and runs in a plain thread, so without
     # yielding here it can hold the GIL long enough to starve Flask's other
-    # request-handling threads (threaded=True) for the whole job. Sleeping
+    # request-handling threads (waitress's pool) for the whole job. Sleeping
     # briefly and periodically gives those threads regular chances to run. The
     # intervals are tuned to yield often enough to stay responsive while keeping
     # the added wall-clock small (about ten yields per view in each loop).

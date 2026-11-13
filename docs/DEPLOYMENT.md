@@ -252,6 +252,20 @@ For reference, what we run and why:
 
 The `uploads` volume and `UPLOAD_MODEL_DIR` are newer than their advice. They keep participant uploads out of the directory holding the models that ship with the app, which is what stops every upload being served to every visitor.
 
+## How many people it serves at once
+
+The app runs under [waitress](https://docs.pylonsproject.org/projects/waitress/), a production WSGI server,
+in one process with 64 threads (`SERVER_THREADS` in `app/server.py`). Every open viewer tab holds one thread
+for its `/events` stream for as long as the tab is open. With about 60 tabs open, the threads are all taken,
+and every other request, page loads and renders included, waits until a tab closes. When that happens the
+container log shows waitress's `Task queue depth` warning.
+
+Renders are a separate limit: they queue behind one lock, so each waits for every render ahead of it, however
+many threads there are.
+
+To serve more tabs, raise `SERVER_THREADS`; `SERVER_CONNECTION_LIMIT` follows it. Do not run more than one
+process: the render caches, the model warm-up queue and the `/events` clients all live in the one process.
+
 ## Where data lives
 
 All persistent data is in Docker-managed named volumes, not on the host filesystem. There are five:

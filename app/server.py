@@ -20,7 +20,6 @@ import contextlib
 import hashlib
 import io
 import json
-import logging
 import os
 import queue as _queue_module
 import re
@@ -43,6 +42,7 @@ from flask import Flask, Response, has_request_context, jsonify, redirect, reque
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from PIL import Image
+from waitress import serve
 
 from . import api, db, email_address, recording, tutorial, usage_routes
 from .studies import engine as studies_engine
@@ -57,8 +57,6 @@ from .braille_display import (
 )
 from .cad_comparison_lib import DEFAULT_SCREEN_SIZE, CADComparisonRenderer, RenderResult
 from src.converter.render_low_res import dilate_mask, raised_ink_mask, save_binary_array_as_vector_pdf
-
-logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 app = Flask(__name__)
 CORS(app)
@@ -2782,6 +2780,15 @@ def serve_static_css(filename):
     return response
 
 
+# Production runs under waitress, not Flask's development server (#211). Each open
+# viewer tab holds an /events stream, and so one of these threads, for as long as
+# it is open; once every thread holds a stream, every other request waits. Renders
+# still queue behind render_lock whatever this is.
+SERVER_THREADS = 64
+# Each tab keeps its stream open and polls /get_data on a second connection.
+SERVER_CONNECTION_LIMIT = 4 * SERVER_THREADS
+
+
 def main() -> int:
     # One station per process, so three stations on one machine need three ports.
     # See the demo section of the README.
@@ -2842,9 +2849,13 @@ def main() -> int:
     open_viewer_in_browser(port)
 
     _log("Ready.", force=True)
-    # threaded=True lets /events (SSE) and /get_data respond concurrently while
-    # a render is in progress; render_lock still serializes the renders themselves.
-    app.run(debug=False, host="0.0.0.0", port=port, threaded=True)
+    serve(
+        app,
+        host="0.0.0.0",
+        port=port,
+        threads=SERVER_THREADS,
+        connection_limit=SERVER_CONNECTION_LIMIT,
+    )
     return 0
 
 
