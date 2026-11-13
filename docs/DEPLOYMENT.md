@@ -50,16 +50,16 @@ from GitHub Actions runner IPs (Azure data-center ranges) on port 22.
 
 The credential chain:
 
-1. **Project access token created on GitLab** — a project-scoped token with `write_repository` access,
+1. **Project access token created on GitLab**: a project-scoped token with `write_repository` access,
    created at `GitLab repo > Settings > Access Tokens`. It can push to this repository and nothing else.
    Project access tokens expire, so it has to be rotated before its expiry date.
 
-2. **Token stored as a GitHub Actions secret** — the token value is stored in the GitHub repository
+2. **Token stored as a GitHub Actions secret**: the token value is stored in the GitHub repository
    at `Settings > Secrets and variables > Actions` under the name `GITLAB_HTTPS_TOKEN`.
    GitHub encrypts it at rest. It is only injected into GitHub Actions runner environments and is never
    printed in logs.
 
-3. **Workflow uses the token at runtime** — when `mirror-to-gitlab.yml` runs, it pushes via HTTPS:
+3. **Workflow uses the token at runtime**: when `mirror-to-gitlab.yml` runs, it pushes via HTTPS:
    ```
    https://oauth2:<GITLAB_HTTPS_TOKEN>@gitlab.cs.washington.edu/make4all/cad-a11y.git
    ```
@@ -164,19 +164,22 @@ git push gitlab v0.3.0   # last known-good tag
 
 Check GitHub Actions > "Mirror to GitLab" for the failure reason. Common causes:
 
-- The project access token expired or was revoked — rotate it (see [Rotating the mirror credentials](#rotating-the-mirror-credentials))
-- The token stored in `GITLAB_HTTPS_TOKEN` does not match an active token on GitLab — rotate it, which creates a new token and stores it in the secret
-- GitLab HTTPS is unreachable from GitHub Actions — check `gitlab.cs.washington.edu` status
+- The project access token expired or was revoked: rotate it (see [Rotating the mirror credentials](#rotating-the-mirror-credentials)).
+- The token stored in `GITLAB_HTTPS_TOKEN` does not match an active token on GitLab: rotate it, which creates a new token and stores it in the secret.
+- GitLab HTTPS is unreachable from GitHub Actions: check `gitlab.cs.washington.edu` status.
+- GitLab's `master` has commits GitHub's doesn't, for example after a fix pushed straight to GitLab: the mirror pushes without force, so GitLab rejects it. Get the same commits onto GitHub's `master` and re-run the mirror.
+- The job is green but nothing deployed: GitLab refused the pipeline variable. See the pipeline-variable settings above.
 
 While the mirror is broken, maintainers can deploy manually using their own GitLab SSH access.
 
 ## Rotating the mirror credentials
 
 Run `bash scripts/replace-deploy-key.sh`. It needs a GitLab account with the Maintainer role on the project and
-its SSH key, and the `gh` CLI signed in with write access to this repository. It asks before changing anything.
+its SSH key, the `gh` CLI signed in with write access to this repository, and `curl`, `jq` and `ssh`. It asks
+before changing anything. The new token has the Maintainer role, which has to meet the pipeline-variable minimum
+described above. Then re-run "Mirror to GitLab" from the Actions tab.
 
-The details of the token currently in use, such as its expiry date, are kept with the maintainers rather than in
-this public repository. GitLab shows the expiry date under `Settings > Access Tokens`.
+Check the current token's expiry date under `Settings > Access Tokens` in GitLab.
 
 ## GitLab CI configuration reference
 
