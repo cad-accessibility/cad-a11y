@@ -167,7 +167,7 @@ Check GitHub Actions > "Mirror to GitLab" for the failure reason. Common causes:
 - The project access token expired or was revoked: rotate it (see [Rotating the mirror credentials](#rotating-the-mirror-credentials)).
 - The token stored in `GITLAB_HTTPS_TOKEN` does not match an active token on GitLab: rotate it, which creates a new token and stores it in the secret.
 - GitLab HTTPS is unreachable from GitHub Actions: check `gitlab.cs.washington.edu` status.
-- GitLab's `master` has commits GitHub's doesn't, for example after a fix pushed straight to GitLab: the mirror pushes without force, so GitLab rejects it. Get the same commits onto GitHub's `master` and re-run the mirror.
+- GitLab's `master` has commits GitHub's doesn't, for example after a fix pushed straight to GitLab: the mirror pushes without force, so GitLab rejects it. Don't force-push either side. Fetch GitLab's `master` and merge it, unchanged, into a branch on GitHub, then merge that branch's PR and re-run the mirror. Its push then fast-forwards GitLab. Cherry-picking the commits instead gives them new hashes, so GitLab still rejects the push.
 - The job is green but nothing deployed: GitLab refused the pipeline variable. See the pipeline-variable settings above.
 
 While the mirror is broken, maintainers can deploy manually using their own GitLab SSH access.
