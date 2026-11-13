@@ -7,6 +7,8 @@ other requests wait, so the pool has to leave room for the tabs.
 
 from __future__ import annotations
 
+from wsgiref.util import is_hop_by_hop
+
 from app import server
 
 
@@ -36,3 +38,13 @@ def test_connections_leave_room_for_every_thread():
     # Each tab keeps its stream open and polls on a second connection, so a
     # connection limit at or below the thread count would refuse tabs first.
     assert server.SERVER_CONNECTION_LIMIT >= 2 * server.SERVER_THREADS
+
+
+def test_the_event_stream_sets_no_hop_by_hop_header():
+    """PEP 3333 leaves hop-by-hop headers to the server. Waitress answers 500
+    to a response that sets one, where the development server let it through."""
+    with server.app.test_client() as client:
+        stream = client.get("/events")
+        hop = [name for name in stream.headers.keys() if is_hop_by_hop(name)]
+        stream.close()
+    assert not hop

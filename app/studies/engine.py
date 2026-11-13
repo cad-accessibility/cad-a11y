@@ -1491,7 +1491,6 @@ def _stream(runtime: StudyRuntime, role: str, session: dict[str, Any] | None) ->
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
         },
     )
 

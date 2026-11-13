@@ -2310,6 +2310,17 @@ class TestReconnectingToAFinishedSession:
         assert opening.get("unknown_code") is None
 
 
+def test_the_stream_sets_no_hop_by_hop_header(client):
+    """Waitress answers 500 to a response that sets one (PEP 3333, #211)."""
+    from wsgiref.util import is_hop_by_hop
+
+    state = _start(client).get_json()["state"]
+    stream = client.get(f"{BASE}/stream?s={state['participant_key']}")
+    hop = [name for name in stream.headers.keys() if is_hop_by_hop(name)]
+    stream.close()
+    assert not hop
+
+
 # Bases as the viewer sends them: right, up and forward, always axis aligned
 # because rotation happens in whole quarter turns.
 _IDENTITY_BASIS = {"scheme": "basis-v1", "right": [1, 0, 0], "up": [0, 1, 0], "forward": [0, 0, 1]}
