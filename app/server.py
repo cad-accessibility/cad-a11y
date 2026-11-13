@@ -2780,13 +2780,23 @@ def serve_static_css(filename):
     return response
 
 
+@app.teardown_appcontext
+def _close_thread_db_connections(_error) -> None:
+    """Each request's database connections end with it. Waitress reuses its
+    threads, so connections kept per thread held file descriptors, up to two per
+    database per thread, and any transaction left open, into later requests."""
+    db.close_thread_connections()
+    for served in studies_registry.runtimes():
+        served.store.close_thread_connection()
+
+
 # Production runs under waitress, not Flask's development server (#211). A viewer
 # tab holds one thread for its /events stream, and a study participant's page two
-# (/events and the study's /stream), for as long as the page is open and about 50
-# seconds after it closes, until a heartbeat write fails. Once every thread holds a
-# stream, every other request waits, /health included. A parked thread costs
-# little, so the pool is sized well above the pages expected at once. Renders
-# still queue behind render_lock whatever this is.
+# (/events and the study's /stream), for as long as the page is open and until
+# waitress sees its connection close. Once every thread holds a stream, every
+# other request waits, /health included. A parked thread costs little, so the
+# pool is sized well above the pages expected at once. A render waiting for
+# render_lock holds a thread too.
 SERVER_THREADS = 256
 SERVER_OPTIONS = {
     "threads": SERVER_THREADS,
@@ -2797,8 +2807,14 @@ SERVER_OPTIONS = {
     # session and study panel cookies Secure. Waitress drops proxy headers unless
     # told to keep them; the development server passed them through.
     "clear_untrusted_proxy_headers": False,
+    # select() cannot wait on a descriptor numbered 1024 or more, and waitress's
+    # loop dies of it. poll() has no such limit.
+    "asyncore_use_poll": True,
+    # Read ahead on a connection while its request runs, so a page that closes
+    # frees its stream's thread then, not two heartbeats (up to 75 s) later.
+    "channel_request_lookahead": 1,
     # Waitress stores a whole body before the app sees it. This bounds that, and
-    # sits above Flask's limit so a body just over it still gets Flask's JSON 413.
+    # sits above Flask's limit so a body just over it still gets Flask's 413.
     "max_request_body_size": 2 * app.config["MAX_CONTENT_LENGTH"],
 }
 

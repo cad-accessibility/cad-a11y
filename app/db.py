@@ -157,6 +157,22 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
+def close_thread_connections() -> None:
+    """Close this thread's connections, which also rolls back anything left
+    uncommitted. Waitress reuses its threads, so a connection kept per thread
+    would carry its file descriptors and any open transaction from one request
+    into the next; Werkzeug ended the thread after each request (#211)."""
+    for local in (_local, _contacts_local):
+        conn: sqlite3.Connection | None = getattr(local, "conn", None)
+        local.conn = None
+        local.conn_path = None
+        if conn is not None:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+
+
 _CONTACTS_DDL = """
 -- Addresses given in the consent dialog, to send project updates to, and nothing
 -- else: no session, no time and no order of arrival, so no address can be matched

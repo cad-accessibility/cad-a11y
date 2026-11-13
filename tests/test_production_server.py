@@ -110,3 +110,51 @@ def test_the_event_stream_opens_through_waitress(through_waitress):
     with urllib.request.urlopen(f"{through_waitress}/events", timeout=10) as response:
         assert response.status == 200
         assert response.readline().startswith(b"data:")
+
+
+def test_waitress_waits_on_its_sockets_with_poll():
+    """select() cannot take a descriptor numbered 1024 or more, and waitress's
+    loop dies of the ValueError. Its threads are reused, so the descriptors
+    they hold are what count, not the requests at once."""
+    assert server.SERVER_OPTIONS["asyncore_use_poll"] is True
+
+
+def test_a_closed_page_frees_its_thread_before_a_failed_heartbeat():
+    # Without lookahead waitress reads nothing while a stream runs, so it sees
+    # the client go only when a heartbeat write fails, two heartbeats later.
+    assert server.SERVER_OPTIONS["channel_request_lookahead"] >= 1
+
+
+def test_a_request_leaves_no_database_connection_on_its_thread(tmp_path, monkeypatch):
+    """Werkzeug ended the thread after each request, which closed its
+    connections and rolled back anything left open. A reused waitress thread
+    would keep both into the next request."""
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "usage.db")
+    db_module._local.__dict__.clear()
+    db_module.init_db()
+    with server.app.test_client() as client:
+        client.post("/session/identify", json={"consent": False})
+    assert getattr(db_module._local, "conn", None) is None
+    assert getattr(db_module._contacts_local, "conn", None) is None
+    for served in server.studies_registry.runtimes():
+        assert getattr(served.store._local, "conn", None) is None, served.slug
+    db_module._local.__dict__.clear()
+
+
+def test_the_server_answers_with_more_than_1024_descriptors_open(through_waitress):
+    resource = pytest.importorskip("resource")
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    wanted = 1200
+    if hard != resource.RLIM_INFINITY and hard < wanted:
+        pytest.skip(f"the hard descriptor limit is {hard}")
+    resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, wanted), hard))
+    held = []
+    try:
+        while len(held) < 1030:
+            held.append(open("/dev/null", "rb"))  # noqa: SIM115
+        with urllib.request.urlopen(f"{through_waitress}/health", timeout=10) as response:
+            assert response.status in (200, 503)
+    finally:
+        for handle in held:
+            handle.close()
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))

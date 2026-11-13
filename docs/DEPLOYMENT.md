@@ -263,8 +263,9 @@ in one process with 256 threads (`SERVER_THREADS` in `app/server.py`). Pages tha
 | A study participant's page | 2, for `/events` and the study's `/stream` |
 | A study's control panel | 1, for its stream |
 
-A page keeps its threads while it is open and for about 50 seconds after it closes or reloads, until a
-heartbeat write fails. So the pool serves about 250 viewer tabs, or about 120 study participants, at once.
+A page keeps its threads while it is open, and until waitress sees its connection close after it closes or
+reloads. Behind Apache that can take until the next heartbeat, up to 25 seconds, when Apache's own write to the
+browser fails. So the pool serves about 250 viewer tabs, or about 120 study participants, at once.
 
 When every thread is taken, every other request waits until one frees: page loads, renders and `/health`. The
 container log shows waitress's `Task queue depth` warning. Docker then marks the container unhealthy, and the
@@ -273,7 +274,8 @@ close. A deploy made while more pages are open than there are threads can fail t
 reconnect to the new container at once.
 
 Renders are a separate limit: they queue behind one lock, so each waits for every render ahead of it, however
-many threads there are.
+many threads there are. A render waiting its turn holds a thread too, so a burst of renders on top of many open
+pages fills the pool sooner than the table says.
 
 To serve more pages, raise `SERVER_THREADS`; the connection limit in `SERVER_OPTIONS` follows it. Do not run more than one
 process: the render caches, the model warm-up queue and the `/events` clients all live in the one process.
