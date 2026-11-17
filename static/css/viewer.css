@@ -1359,11 +1359,14 @@ body.demo-ui .tutorial-resume {
     }
 }
 
-/* The recheck control inside the demo banner. Inline with the sentence, because
-   it belongs to the claim it re-verifies rather than being a separate action. */
+/* The demo banner's recheck control. Under the title rather than inside the
+   banner, so it comes after the skip link in the Tab order (#296). */
+.demo-recheck-row {
+    margin: 0 0 12px;
+}
+
 .demo-recheck {
     display: inline-block;
-    margin-left: 10px;
     padding: 5px 12px;
     border: 2px solid currentColor;
     border-radius: 6px;
@@ -1378,8 +1381,7 @@ body.demo-ui .tutorial-resume {
     background: rgba(0, 0, 0, 0.06);
 }
 
-/* Focus is drawn from the banner's own colour so it stays visible against both
-   the normal and the warning background. */
+/* Focus is drawn in the text colour, so it stays visible in every contrast mode. */
 .demo-recheck:focus-visible {
     outline: 3px solid currentColor;
     outline-offset: 2px;

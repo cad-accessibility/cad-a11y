@@ -4746,6 +4746,8 @@ async function refreshDemoIndicator({ spoken }) {
         banner.hidden = false;
         banner.classList.toggle('demo-banner-warning', !recordingOff);
     }
+    const recheck = document.getElementById('demo-recheck');
+    if (recheck) recheck.hidden = false;
     if (textEl) textEl.textContent = sentence;
 
     // The checkable half. "suppressed writes" counts the writes this server
