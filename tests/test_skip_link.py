@@ -65,3 +65,25 @@ def test_viewer_skip_link_is_first_tab_stop_after_title():
 def test_viewer_main_is_focusable_in_markup():
     main = next(attrs for tag, attrs in _elements(VIEWER_HTML) if attrs.get("id") == "main-content")
     assert main.get("tabindex") == "-1"
+
+
+def _rule(css: str, selector: str) -> dict[str, str]:
+    import re
+
+    body = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css).group(1)
+    return dict(
+        (name.strip(), value.strip())
+        for name, value in (line.split(":", 1) for line in body.split(";") if ":" in line)
+    )
+
+
+def test_the_focused_skip_link_does_not_push_the_content_down():
+    """`position: static` put the focused link in the flow, so the notes and menu
+    under it in the header moved down while it had focus (#297). Taken out of the
+    flow it overlays the page instead. All three pages use viewer.css."""
+    css = (ROOT / "static" / "css" / "viewer.css").read_text(encoding="utf-8")
+    focused = _rule(css, ".skip-link:focus")
+    assert focused.get("position") in {"absolute", "fixed"}
+    assert focused.get("width") == "auto" and focused.get("height") == "auto"
+    for name in ("left", "top"):
+        assert focused.get(name) not in {None, "auto", "-9999px"}, f"{name} leaves it off screen"

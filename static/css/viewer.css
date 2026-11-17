@@ -1081,11 +1081,14 @@ body.simple-ui #tactile-preview-section { display: block; }
     height: 1px;
     overflow: hidden;
 }
+/* Laid over the page rather than in the flow, so focusing it moves nothing (#297). */
 .skip-link:focus {
-    position: static;
+    position: fixed;
+    top: 8px;
+    left: 8px;
+    z-index: 1000;
     width: auto;
     height: auto;
-    left: auto;
     overflow: visible;
     padding: 8px 16px;
     background: #1e6fa4;
