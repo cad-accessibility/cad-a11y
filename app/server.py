@@ -55,7 +55,7 @@ from .braille_display import (
     _DOTPAD_LINES,
     _DOTPAD_COLS,
 )
-from .cad_comparison_lib import DEFAULT_SCREEN_SIZE, CADComparisonRenderer, RenderResult
+from .cad_comparison_lib import DEFAULT_SCREEN_SIZE, MAX_RENDER_FACES, CADComparisonRenderer, RenderResult
 from src.converter.render_low_res import dilate_mask, raised_ink_mask, save_binary_array_as_vector_pdf
 
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
@@ -441,6 +441,18 @@ QUIET_MODE = os.getenv("SERVER_VERBOSE", "0").lower() not in {"1", "true", "yes"
 def _log(message: str, *, force: bool = False) -> None:
     if force or not QUIET_MODE:
         print(message)
+
+
+def _warn_if_decimation_unavailable() -> None:
+    """Large models render several times slower without it (#113)."""
+    try:
+        import fast_simplification  # noqa: F401
+    except Exception as error:
+        _log(
+            f"WARNING: mesh simplification is unavailable ({error!r}). Models over "
+            f"{MAX_RENDER_FACES} faces will render at full detail, several times slower.",
+            force=True,
+        )
 
 
 def _push_sse(data: dict) -> None:
@@ -2791,6 +2803,7 @@ def main() -> int:
     _log(f"Upload directory: {UPLOAD_DIR}", force=True)
     _log(f"Upload directory writable: {_is_writable_directory(UPLOAD_DIR)}", force=True)
     _log(f"Models found: {len(AVAILABLE_MODELS)}", force=True)
+    _warn_if_decimation_unavailable()
     _log("Endpoints: POST /render, GET /get_data", force=True)
 
     if DEMO_ONLY:
