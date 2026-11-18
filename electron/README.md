@@ -19,7 +19,7 @@ npm start -- path/to/model.scad
 
 The window opens on the viewer and loads the model once at start. After that:
 
-- Saving the `.scad` file compiles and loads it.
+- Saving the `.scad` file, or any other `.scad` file in its folder, compiles and loads it.
 - `Cmd+Shift+R` on macOS, `Ctrl+Shift+R` elsewhere, compiles and loads it while any app has focus, your editor included.
 - When OpenSCAD reports an error, the viewer's upload status shows it and a screen reader announces it.
 
@@ -36,8 +36,9 @@ Use `--url https://cada11y-test.cs.washington.edu` for staging, or `--url http:/
 
 ## Limits
 
-- Each compile is an upload, the same as choosing the file with "Upload model…". It adds an entry to the model list and resets the view.
-- The browser asks you to pick a braille display, slider or motion sensor; this window cannot show that picker, so it connects to the first device of that kind it finds.
+- Each compile is an upload, the same as choosing the file with "Upload model…". It adds an entry to the model list and resets the view. The viewer deletes this window's uploads from the server when you close it.
+- A file the model includes from another folder, such as a library, does not trigger a compile. Press the shortcut after editing one.
+- A browser asks you to pick a braille display, slider or motion sensor. This window has no picker, so it connects to the first device of that kind it finds.
 
 ## Tests
 

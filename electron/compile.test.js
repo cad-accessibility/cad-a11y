@@ -43,6 +43,12 @@ test('a syntax error rejects with what OpenSCAD said', { skip: noOpenscad }, asy
   );
 });
 
+test('a model that prints a lot still compiles', { skip: noOpenscad }, async (t) => {
+  const source = 'for (i = [0:100000]) echo("a line of output from the model");\ncube(1);\n';
+  const model = await compileScad(scadFile(t, source), { openscad: OPENSCAD });
+  assert.match(model.text, /^solid/);
+});
+
 test('triggers during a run queue exactly one rerun', async () => {
   const runs = [];
   let finish;

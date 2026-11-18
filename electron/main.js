@@ -24,10 +24,18 @@ function readConfig() {
   if (!fs.existsSync(scadPath)) fail(`No such .scad file: ${scadPath}`);
   return {
     scadPath,
-    url: values.url || process.env.CAD_A11Y_URL || 'https://cada11y.cs.washington.edu',
+    url: parseUrl(values.url || process.env.CAD_A11Y_URL || 'https://cada11y.cs.washington.edu'),
     shortcut: values.shortcut || process.env.CAD_A11Y_SHORTCUT || 'CommandOrControl+Shift+R',
     openscad: process.env.CAD_A11Y_OPENSCAD || 'openscad',
   };
+}
+
+function parseUrl(value) {
+  try {
+    return new URL(value).href;
+  } catch {
+    fail(`Not a URL: ${value}. Give one such as https://cada11y.cs.washington.edu`);
+  }
 }
 
 function fail(message) {
@@ -85,39 +93,58 @@ function main() {
       nodeIntegration: false,
     },
   });
-  allowDevices(win, new URL(config.url).origin);
+  const origin = new URL(config.url).origin;
+  allowDevices(win, origin);
   const pageLoaded = new Promise((resolve) => win.webContents.once('did-finish-load', resolve));
   win.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
     // -3 is ERR_ABORTED: a newer navigation replaced this one, nothing failed.
     if (!isMainFrame || code === -3) return;
     console.error(`Could not load ${url} (${description}), retrying in ${RETRY_MS / 1000} seconds`);
-    setTimeout(() => win.loadURL(config.url), RETRY_MS);
+    setTimeout(() => win.isDestroyed() || win.loadURL(config.url), RETRY_MS);
   });
+
+  // Only the viewer's own origin gets the model: the window may have been
+  // navigated elsewhere, and the preload runs on every page.
+  async function tell(channel, payload) {
+    await pageLoaded;
+    if (win.isDestroyed()) return;
+    const current = win.webContents.getURL();
+    if (!current.startsWith('http') || new URL(current).origin !== origin) {
+      console.error(`Not sending to ${current}: it is not ${origin}`);
+      return;
+    }
+    win.webContents.send(channel, payload);
+  }
 
   const recompile = serialize(async () => {
+    if (win.isDestroyed()) return;
     try {
       const model = await compileScad(config.scadPath, { openscad: config.openscad });
-      await pageLoaded;
       console.log(`Compiled ${model.name}, loading it in the viewer`);
-      win.webContents.send('scad:model', model);
+      await tell('scad:model', model);
     } catch (err) {
       console.error(`OpenSCAD failed: ${err.message}`);
-      await pageLoaded;
-      win.webContents.send('scad:error', err.message);
+      await tell('scad:error', `OpenSCAD could not compile the model. ${err.message}`);
     }
   });
+  const warn = (message) => {
+    console.warn(message);
+    tell('scad:notice', message);
+  };
 
-  // Watch the directory, not the file: editors save by renaming a new file over it.
+  // Watch the directory, not the file: editors save by renaming a new file over
+  // it. Any .scad there counts, so editing a file the model includes rebuilds it.
   let debounce;
-  const scadName = path.basename(config.scadPath);
   fs.watch(path.dirname(config.scadPath), (_event, filename) => {
-    if (filename && filename !== scadName) return;
+    if (filename && !filename.endsWith('.scad')) return;
     clearTimeout(debounce);
     debounce = setTimeout(recompile, WATCH_DEBOUNCE_MS);
+  }).on('error', (err) => {
+    warn(`Stopped watching ${path.basename(config.scadPath)} (${err.message}). The shortcut still compiles it.`);
   });
 
   if (!globalShortcut.register(config.shortcut, recompile)) {
-    console.warn(`Could not register ${config.shortcut}; saving the file still recompiles it.`);
+    warn(`Could not register the shortcut ${config.shortcut}. Saving the file still compiles it.`);
   }
 
   console.log(`Watching ${config.scadPath}; ${config.shortcut} recompiles it.`);

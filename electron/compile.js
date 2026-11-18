@@ -16,6 +16,8 @@ async function compileScad(scadPath, { openscad = 'openscad', timeoutMs = 120_00
     try {
       await execFileAsync(openscad, ['-o', out, '--export-format', 'asciistl', scadPath], {
         timeout: timeoutMs,
+        // echo() goes to stderr, and the 1 MB default kills a chatty model.
+        maxBuffer: 64 * 1024 * 1024,
       });
     } catch (err) {
       throw new Error(openscadFailure(err, timeoutMs));
