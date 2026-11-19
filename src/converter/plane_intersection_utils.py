@@ -3,6 +3,7 @@ from time import time
 from copy import copy
 from trimesh import Trimesh
 from trimesh.primitives import Box
+from trimesh import util as trimesh_util
 import numpy as np
 import meshlib.mrmeshpy as mrmeshpy
 import meshlib.mrmeshnumpy as mrmeshnumpy
@@ -66,13 +67,21 @@ def cut_shape_with_plane(shape, plane_origin, plane_normal):
     # TRIMESH version
     #diff = difference([shape, cut_box], use_exact=True)
     # MESHLIB version
-    shape_mrmesh = trimesh_to_meshlib_fast(shape)
     cut_box_mrmesh = trimesh_to_meshlib_fast(cut_box)
-    diff = meshlib_to_trimesh_fast(
-        mrmeshpy.boolean( shape_mrmesh, cut_box_mrmesh,
-                          
-                         mrmeshpy.BooleanOperation.DifferenceAB).mesh)
-    return diff, True
+    result = _difference(shape, cut_box_mrmesh)
+    if result.errorString:
+        # Bodies that touch face to face, or overlap, read to meshlib as one self-intersecting
+        # mesh, and it returns part of the model with nothing on the plane (#253).
+        # Each body on its own is fine, so cut them one at a time.
+        bodies = shape.split(only_watertight=False)
+        if len(bodies) > 1:
+            parts = [meshlib_to_trimesh_fast(_difference(body, cut_box_mrmesh).mesh) for body in bodies]
+            return trimesh_util.concatenate(parts), True
+    return meshlib_to_trimesh_fast(result.mesh), True
+
+
+def _difference(shape, cut_box_mrmesh):
+    return mrmeshpy.boolean(trimesh_to_meshlib_fast(shape), cut_box_mrmesh, mrmeshpy.BooleanOperation.DifferenceAB)
 
 def get_bbox_from_shapes(shapes):
     bbox = shapes[0].bounds
