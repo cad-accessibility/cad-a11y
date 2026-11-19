@@ -32,9 +32,27 @@ def touching_block() -> trimesh.Trimesh:
     return trimesh.load(io.BytesIO(data), file_type="stl")
 
 
-@pytest.mark.parametrize("view", ["y-", "z+", "x-"])
+@pytest.mark.parametrize("view", ["front", "top", "left"])
 @pytest.mark.parametrize("depth", [d / 10 for d in range(1, 10)])
 def test_every_slice_inside_the_model_has_something_on_the_plane(touching_block, view, depth):
     bbox = (*touching_block.bounds[0], *touching_block.bounds[1])
     faces = get_cut_faces(touching_block.copy(), view, depth, bbox)
     assert faces.area > 0, f"{view} at {depth:.0%} drew an empty display"
+
+
+def test_a_mesh_that_falls_apart_into_open_pieces_is_not_cut_piece_by_piece(monkeypatch):
+    """A mesh with every face written twice splits into one piece per face pair, none
+    of them closed. Cutting each on its own fixes nothing and ran thousands of
+    booleans per cut on the mug from #59, which has 3480 faces written twice."""
+    from src.converter import plane_intersection_utils as cut
+
+    box = trimesh.creation.box(extents=(4, 3, 2)).subdivide().subdivide()
+    doubled = trimesh.Trimesh(box.vertices, np.vstack([box.faces, box.faces[:, ::-1]]))
+    mesh = trimesh.load(io.BytesIO(doubled.export(file_type="stl")), file_type="stl")
+    assert len(mesh.split(only_watertight=False)) > 100
+
+    calls = []
+    real = cut._difference
+    monkeypatch.setattr(cut, "_difference", lambda *args: calls.append(1) or real(*args))
+    cut.cut_shape_with_plane(mesh, np.zeros(3), np.array([0.0, 1.0, 0.0]))
+    assert len(calls) <= 2

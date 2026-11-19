@@ -72,12 +72,21 @@ def cut_shape_with_plane(shape, plane_origin, plane_normal):
     if result.errorString:
         # Bodies that touch face to face, or overlap, read to meshlib as one self-intersecting
         # mesh, and it returns part of the model with nothing on the plane (#253).
-        # Each body on its own is fine, so cut them one at a time.
-        bodies = shape.split(only_watertight=False)
-        if len(bodies) > 1:
+        # Each body on its own is fine, so cut them one at a time. Only when every
+        # body is closed: a mesh that isn't falls apart into pieces that fail just
+        # the same, one per face on some exports (#59).
+        bodies = shape.split(only_watertight=False) if _could_be_closed_bodies(shape) else []
+        if len(bodies) > 1 and all(body.is_watertight for body in bodies):
             parts = [meshlib_to_trimesh_fast(_difference(body, cut_box_mrmesh).mesh) for body in bodies]
             return trimesh_util.concatenate(parts), True
     return meshlib_to_trimesh_fast(result.mesh), True
+
+
+def _could_be_closed_bodies(shape):
+    """A quick test before splitting, which is slow on a mesh in thousands of pieces:
+    closed bodies use each edge twice, or four times where two of them touch."""
+    _, uses = np.unique(shape.edges_sorted, axis=0, return_counts=True)
+    return bool(np.all(uses % 2 == 0)) and bool(shape.unique_faces().all())
 
 
 def _difference(shape, cut_box_mrmesh):
