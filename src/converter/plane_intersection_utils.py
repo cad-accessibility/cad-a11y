@@ -2,8 +2,13 @@ import os
 from time import time
 from copy import copy
 from trimesh import Trimesh
+from trimesh import util as trimesh_util
+from trimesh.geometry import plane_transform
+from trimesh.intersections import mesh_plane
+from trimesh.transformations import transform_points
 from trimesh.primitives import Box
 import numpy as np
+import shapely
 import meshlib.mrmeshpy as mrmeshpy
 import meshlib.mrmeshnumpy as mrmeshnumpy
 
@@ -66,13 +71,63 @@ def cut_shape_with_plane(shape, plane_origin, plane_normal):
     # TRIMESH version
     #diff = difference([shape, cut_box], use_exact=True)
     # MESHLIB version
-    shape_mrmesh = trimesh_to_meshlib_fast(shape)
     cut_box_mrmesh = trimesh_to_meshlib_fast(cut_box)
-    diff = meshlib_to_trimesh_fast(
-        mrmeshpy.boolean( shape_mrmesh, cut_box_mrmesh,
-                          
-                         mrmeshpy.BooleanOperation.DifferenceAB).mesh)
-    return diff, True
+    result = _difference(shape, cut_box_mrmesh)
+    if result.errorString:
+        # The boolean needs a closed mesh and returns nothing otherwise (#59). Some
+        # CAD exports write faces twice, and without the copies the mesh is closed.
+        unique = shape.unique_faces()
+        if not unique.all():
+            shape = Trimesh(vertices=shape.vertices, faces=shape.faces[unique], process=False)
+            result = _difference(shape, cut_box_mrmesh)
+    if result.errorString:
+        # Others have cracks, where a finely split face meets a coarser one.
+        return _cut_open_mesh(shape, plane_origin, plane_normal), True
+    return meshlib_to_trimesh_fast(result.mesh), True
+
+
+def _difference(shape, cut_box_mrmesh):
+    return mrmeshpy.boolean(trimesh_to_meshlib_fast(shape), cut_box_mrmesh, mrmeshpy.BooleanOperation.DifferenceAB)
+
+
+def _cut_open_mesh(shape, plane_origin, plane_normal):
+    """Cut without a boolean: keep the triangles behind the plane, and close the
+    cut with the cross-section outlined where the triangles cross the plane."""
+    normal = np.asarray(plane_normal, dtype=float)
+    kept = shape.slice_plane(plane_origin, -normal)
+    return trimesh_util.concatenate([kept, _cross_section(shape, plane_origin, normal)])
+
+
+def _cross_section(shape, plane_origin, normal):
+    lines = mesh_plane(shape, normal, plane_origin)
+    if len(lines) == 0:
+        return Trimesh()
+    to_plane = plane_transform(plane_origin, normal)
+    flat = transform_points(lines.reshape(-1, 3), to_plane)[:, :2].reshape(-1, 2, 2)
+    # Snap to a millionth of the model's size, so ends that meet only to rounding
+    # still join into closed outlines.
+    snapped = shapely.set_precision(shapely.linestrings(flat), shape.scale * 1e-6)
+    regions = shapely.get_parts(shapely.polygonize(shapely.get_parts(shapely.union_all(snapped))))
+    # A region is solid when a ray from inside it crosses the outline an odd number
+    # of times, so a hole stays a hole even where it is bounded by two parts, such
+    # as the space between a mug's handle and its wall.
+    inside = shapely.get_coordinates(shapely.point_on_surface(regions))
+    solid = [region for region, point in zip(regions, inside) if _crossings(flat, point) % 2]
+    triangles = shapely.get_parts(shapely.constrained_delaunay_triangles(shapely.union_all(solid)))
+    if len(triangles) == 0:
+        return Trimesh()
+    corners = np.array([shapely.get_coordinates(t.exterior)[:3] for t in triangles]).reshape(-1, 2)
+    vertices = transform_points(np.column_stack([corners, np.zeros(len(corners))]), np.linalg.inv(to_plane))
+    return Trimesh(vertices=vertices, faces=np.arange(len(vertices)).reshape(-1, 3), process=False)
+
+
+def _crossings(segments, point):
+    """How many of the segments a ray from the point towards +x crosses."""
+    (x1, y1), (x2, y2) = segments[:, 0].T, segments[:, 1].T
+    straddles = (y1 > point[1]) != (y2 > point[1])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        x_at = x1 + (point[1] - y1) * (x2 - x1) / (y2 - y1)
+    return int(np.sum(straddles & (x_at > point[0])))
 
 def get_bbox_from_shapes(shapes):
     bbox = shapes[0].bounds
