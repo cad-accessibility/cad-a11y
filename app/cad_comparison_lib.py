@@ -286,7 +286,14 @@ def _decimate_for_display(mesh):
         return mesh
     try:
         simplified = mesh.simplify_quadric_decimation(face_count=MAX_RENDER_FACES)
-    except Exception:
+    except Exception as error:
+        # Otherwise a missing backend looks like a slow renderer (#113).
+        # sys.__stderr__ gets past quiet mode's redirect.
+        import sys
+        print(
+            f"Mesh simplification failed, rendering all {len(mesh.faces)} faces: {error!r}",
+            file=sys.__stderr__, flush=True,
+        )
         return mesh
     return simplified if len(simplified.faces) > 0 else mesh
 
