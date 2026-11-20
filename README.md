@@ -11,6 +11,7 @@ A tool for making 3D CAD models accessible to blind and low-vision (BLV) users. 
 - [docs/STUDIES.md](docs/STUDIES.md): defining, running, exporting and retiring a study
 - [docs/STUDY_DATA_EXPORT.md](docs/STUDY_DATA_EXPORT.md): what a study's exported data means
 - [docs/MAINTAINER_GUIDE.md](docs/MAINTAINER_GUIDE.md) — release process, branch strategy, triage
+- [electron/README.md](electron/README.md): a desktop viewer that recompiles a watched OpenSCAD file
 
 ## Prerequisites
 

@@ -1,0 +1,13 @@
+{
+  "name": "cad-a11y-electron",
+  "private": true,
+  "description": "Electron shell for the cad-a11y viewer that recompiles a watched OpenSCAD file",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "electron": "45.2.1"
+  }
+}
