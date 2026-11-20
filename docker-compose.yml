@@ -19,6 +19,8 @@ services:
       # Uploads must never land in data/models: that directory is the built-in
       # set and everything in it is public to every visitor (#102).
       UPLOAD_MODEL_DIR: /project/data/uploads
+      # Days an upload is kept from when it was saved; 0 keeps them (#239).
+      UPLOAD_RETENTION_DAYS: "${UPLOAD_RETENTION_DAYS:-30}"
       # The release or commit being deployed, recorded with every study
       # session. scripts/docker_compose_build.sh sets it from the pipeline; the
       # image has no .git to ask.

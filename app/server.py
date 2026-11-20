@@ -21,6 +21,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import queue as _queue_module
 import re
@@ -2021,8 +2022,9 @@ def models_endpoint():
 # from before #237 made its ids from the clock and Math.random (#243 review).
 _UPLOAD_SESSION_ID_RE = re.compile(r"^tab-[0-9a-f]{32}$")
 
-# Tracks uploaded model paths by browser-tab session id so they can be cleaned up
-# when the page closes. Values are absolute path strings under UPLOAD_DIR.
+# Tracks uploaded model paths by browser-tab session id, so a tab sees its own
+# uploads and a demo tab's can be cleaned up when it closes. Values are absolute
+# path strings under UPLOAD_DIR.
 uploaded_models_by_session: dict[str, set[str]] = {}
 uploaded_models_lock = threading.Lock()
 
@@ -2491,37 +2493,126 @@ def delete_model(filename: str):
     if not safe_name or safe_name != filename:
         return jsonify({"status": "error", "message": "Invalid filename"}), 400
 
-    if not db.session_owns_model(session_id, safe_name):
-        return jsonify({"status": "error", "message": "Model not found or already deleted"}), 404
-
     dest = UPLOAD_DIR / safe_name
-    try:
-        if dest.exists():
-            dest.unlink()
-    except Exception as err:
-        return jsonify({"status": "error", "message": f"Could not remove file: {err}"}), 500
+    # The check and the unlink are one step under the lock an upload claims its
+    # name under, so expiry cannot free the name in between and let a new upload
+    # take it, which this would then delete (#298 review).
+    with models_lock:
+        if not db.session_owns_model(session_id, safe_name):
+            return jsonify({"status": "error", "message": "Model not found or already deleted"}), 404
+        try:
+            if dest.exists():
+                dest.unlink()
+        except Exception as err:
+            return jsonify({"status": "error", "message": f"Could not remove file: {err}"}), 500
 
-    # Every row for the file, not only this session's, and every tab still
+    _forget_uploads([dest], recording.current())
+    return jsonify({"status": "success", "filename": safe_name}), 200
+
+
+def _forget_uploads(removed: list[Path], recorder) -> None:
+    """Everything that still names uploads whose files are gone, then one
+    refresh and one announcement for all of them."""
+    # Every row for the file, not only one session's, and every tab still
     # holding its path: either one left behind would claim the next upload of
     # the same name, and a tab's cleanup on closing would delete it (#243 review).
-    recording.current().forget_file(safe_name)
-    resolved = str(dest.resolve())
+    for dest in removed:
+        recorder.forget_file(dest.name)
+    resolved = {str(dest.resolve()) for dest in removed}
     with uploaded_models_lock:
         for paths in uploaded_models_by_session.values():
-            paths.discard(resolved)
+            paths.difference_update(resolved)
 
     global AVAILABLE_MODELS, MODEL_NAME_LIST
     with models_lock:
         AVAILABLE_MODELS = _discover_models() or [DEFAULT_MODEL]
         MODEL_NAME_LIST = [p.stem for p in AVAILABLE_MODELS]
-        _forget_renderer(dest)
+        for dest in removed:
+            _forget_renderer(dest)
     with quantized_render_cache_lock:
         quantized_render_cache.clear()
     with preview_payload_cache_lock:
         preview_payload_cache.clear()
 
     _announce_models_changed()
-    return jsonify({"status": "success", "filename": safe_name}), 200
+
+
+def _retention_days_from_env() -> float:
+    raw = os.getenv("UPLOAD_RETENTION_DAYS", "30") or "30"
+    try:
+        days = float(raw)
+    except ValueError:
+        days = math.nan
+    # nan would make every upload look expired, and inf is not valid JSON.
+    if not math.isfinite(days) or days < 0:
+        raise RuntimeError(f"UPLOAD_RETENTION_DAYS must be a number of days, 0 or more, not {raw!r}")
+    return days
+
+
+# How long an upload is kept, in days from when it was saved; 0 keeps them all.
+# Stated next to the upload button, and enforced by _expire_uploads (#239).
+UPLOAD_RETENTION_DAYS = _retention_days_from_env()
+# Made by the first expiry run. An upload's age counts from it at the earliest,
+# so the deploy that starts expiry gives uploads already there the full period.
+_RETENTION_START = ".retention-started"
+_UPLOAD_EXPIRY_INTERVAL = 60 * 60.0
+_uploads_last_expired = float("-inf")
+_upload_expiry_lock = threading.Lock()
+
+
+def _expire_uploads() -> int:
+    """Delete every upload saved more than UPLOAD_RETENTION_DAYS ago. Returns how
+    many went. Only the upload directory, and never a built-in."""
+    if UPLOAD_RETENTION_DAYS <= 0 or not UPLOAD_DIR.is_dir() or UPLOAD_DIR.resolve() == _MODEL_DIR_RESOLVED:
+        return 0
+    marker = UPLOAD_DIR / _RETENTION_START
+    try:
+        if not marker.exists():
+            marker.touch()
+        started = marker.stat().st_mtime
+    except OSError as error:
+        _log(f"Upload expiry skipped, cannot write {marker}: {error}", force=True)
+        return 0
+    cutoff = time.time() - UPLOAD_RETENTION_DAYS * 24 * 60 * 60
+    removed: list[Path] = []
+    for path in list(UPLOAD_DIR.iterdir()):
+        try:
+            if (
+                not path.is_file()
+                or path.suffix.lower() not in MODEL_SUFFIXES
+                or _is_builtin(path)
+                or max(path.stat().st_mtime, started) >= cutoff
+            ):
+                continue
+            # Under the lock an upload claims its name under, as the delete route.
+            with models_lock:
+                path.unlink()
+            removed.append(path)
+        except Exception as error:
+            _log(f"Could not remove expired upload {path.name}: {error}", force=True)
+    if removed:
+        try:
+            # The process's own recorder: a demo request that set this off is
+            # bound to the null one, and these rows are not the demo's.
+            _forget_uploads(removed, recording.process_recorder())
+        except Exception as error:
+            _log(f"Expired uploads removed but not all forgotten: {error}", force=True)
+        _log(f"Expired uploads removed: {len(removed)}", force=True)
+    return len(removed)
+
+
+def _expire_uploads_if_due() -> None:
+    """At most hourly, from the viewers' poll: a server nobody restarts still expires."""
+    global _uploads_last_expired
+    if time.monotonic() - _uploads_last_expired < _UPLOAD_EXPIRY_INTERVAL:
+        return
+    if not _upload_expiry_lock.acquire(blocking=False):
+        return  # another request is already doing it
+    try:
+        _uploads_last_expired = time.monotonic()
+        _expire_uploads()
+    finally:
+        _upload_expiry_lock.release()
 
 
 @app.route("/events/track", methods=["POST"])
@@ -2615,11 +2706,14 @@ def get_data():
     # Every open viewer polls this, so a file added or removed behind the app's
     # back is noticed here even when nobody is rendering.
     _refresh_model_list_if_stale()
+    _expire_uploads_if_due()
     with models_lock:
         payload = {
             "status": "success",
             "model_list": _visible_model_names(),
             "builtin_model_stems": _builtin_model_stems(),
+            # Said next to the upload button; 0 means uploads are kept.
+            "upload_retention_days": UPLOAD_RETENTION_DAYS,
         }
     return jsonify(payload), 200
 
@@ -2820,6 +2914,7 @@ def main() -> int:
                 f"marked deleted, {reconciled['orphan_files']} unowned file(s) removed",
                 force=True,
             )
+        _expire_uploads()
     # Each study has a database of its own, separate from the analytics one, so
     # a session that cannot be re-run is never at the mercy of a change to
     # product telemetry. They were opened when the registry loaded; this says
