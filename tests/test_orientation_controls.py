@@ -406,7 +406,9 @@ def test_the_cut_follows_the_orientation():
         "up": rotated["up"].tolist(),
         "right": rotated["right"].tolist(),
     }
-    shallow = _render("front", payload, mode="cut", depth=0.25)
+    # 0.1 lands above the box, through the nub alone; 0.75 lands in the box. Both
+    # 0.25 and 0.75 cut the box itself and draw the same 3x2 rectangle (#253).
+    shallow = _render("front", payload, mode="cut", depth=0.1)
     deep = _render("front", payload, mode="cut", depth=0.75)
     assert not np.array_equal(shallow, deep), "cut depth had no effect once rotated"
 
