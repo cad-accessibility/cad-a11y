@@ -336,6 +336,9 @@ def test_the_control_case_proves_the_counters_actually_count(client, sinks):
 
 
 def test_a_demo_session_leaves_no_file_behind(client, sinks):
+    # As between any two requests: no connection is left open, so SQLite has
+    # removed the setup's -wal and -shm files, which it does when the last closes.
+    server._close_thread_db_connections(None)
     before = {p for p in sinks.data_root.rglob("*") if p.is_file()}
     _drive_a_demo_session(client)
     after = {p for p in sinks.data_root.rglob("*") if p.is_file()}
