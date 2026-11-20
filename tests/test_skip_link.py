@@ -65,3 +65,17 @@ def test_viewer_skip_link_is_first_tab_stop_after_title():
 def test_viewer_main_is_focusable_in_markup():
     main = next(attrs for tag, attrs in _elements(VIEWER_HTML) if attrs.get("id") == "main-content")
     assert main.get("tabindex") == "-1"
+
+
+def test_on_demo_the_skip_link_is_the_first_tab_stop_from_the_top_too():
+    """The demo banner sits above the header. Its recheck button came before the
+    skip link, so tabbing from the top of the document (from the address bar, or
+    Shift+Tab from the title) reached the button first (#296). The banner itself
+    stays the first thing a screen reader reaches. Read with every hidden element
+    shown, as /demo shows them."""
+    elements = _elements(VIEWER_HTML)
+    ids = [attrs.get("id") for _, attrs in elements]
+    first = next((t, a) for t, a in elements if _is_tabbable(t, {k: v for k, v in a.items() if k != "hidden"}))
+    assert (first[0], first[1].get("href")) == ("a", "#main-content")
+    assert ids.index("demo-banner") < ids.index("page-title")
+    assert ids.index("demo-recheck-btn") > ids.index("page-title")

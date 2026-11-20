@@ -31,9 +31,6 @@
         -->
         <p id="demo-banner" class="demo-banner" role="status" hidden>
             <span id="demo-banner-text"></span>
-            <button type="button" id="demo-recheck-btn" class="demo-recheck">
-                Check recording status again
-            </button>
             <span id="demo-banner-detail" class="demo-detail"></span>
         </p>
 
@@ -45,6 +42,16 @@
                 reaches this link before the menu (#262).
             -->
             <a href="#main-content" class="skip-link">Skip to main content</a>
+            <!--
+                The demo banner's recheck button, here rather than in the banner so
+                the skip link is also the first Tab stop from the top of the page
+                (#296). Revealed with the banner.
+            -->
+            <p id="demo-recheck" class="demo-recheck-row" hidden>
+                <button type="button" id="demo-recheck-btn" class="demo-recheck">
+                    Check recording status again
+                </button>
+            </p>
             <!--
                 Said before the Connect button, and read as its description (#232):
                 the focus-mode note until Connect has had focus once in this

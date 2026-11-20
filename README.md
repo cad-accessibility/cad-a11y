@@ -297,9 +297,10 @@ You do not need to read any code, and you do not need a terminal.
 1. **Look at the top of the page.** A boxed message reads *"Demo mode. Nothing
    you do here is recorded."* If that box is missing, or if it is red rather than
    cream, **stop and do not use the station**.
-2. **Press the "Check recording status again" button** inside that box. It asks
-   the server again, right then, and shows what the server said. You can do this
-   with somebody watching. The line underneath should read:
+2. **Press the "Check recording status again" button** just under the page
+   title. It asks the server again, right then, and shows what the server said
+   in the box. You can do this with somebody watching. The box's last line should
+   read:
 
    ```
    Server says: recording=false · sink=null · whole process in demo mode=true
