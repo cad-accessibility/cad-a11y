@@ -193,3 +193,109 @@ def test_the_csv_says_whether_shift_was_held(client):
     assert "key_shift" in store_module.LONG_EXPORT_COLUMNS
     shifts = [r["key_shift"] for r in store.export_long_rows(session_id) if r["event_type"] == "keyboard"]
     assert shifts == [True, False, None], "a key recorded before key_shift existed must read blank"
+
+
+# Where the slice was in millimetres from the model's origin (#264), for a model
+# whose unit is known (#234). The server works it out from the cut the viewer
+# reported and the model it rendered, so a value the viewer sends is ignored.
+SLICE_COLUMNS = ["cut_value", "cut_units"]
+
+
+def _slice_rows():
+    conn = sqlite3.connect(str(store.db_path))
+    try:
+        return conn.execute(f"SELECT {', '.join(SLICE_COLUMNS)} FROM study_renders ORDER BY seq").fetchall()
+    finally:
+        conn.close()
+
+
+def _render_in_session(client, session_id, model, **cut):
+    response = client.post(
+        "/render",
+        json={
+            "view": "z+", "renderMode": "Cut", "mode": "single", "depth": 60, "zoom": 0,
+            "current_model": model, "target_pixel_width": 96, "target_pixel_height": 40,
+            "input_source": "keyboard", **cut,
+        },
+        headers={"X-Study": SLUG, "X-Study-Key": store.get_study_session(session_id)["participant_key"]},
+    )
+    assert response.status_code == 200, response.get_data(as_text=True)
+
+
+# The bases the viewer sends with every render: Z seen from above, and X seen
+# from its + side ("forward" points out of the display, at the reader).
+FROM_ABOVE = {"scheme": "basis-v1", "forward": [0, 0, 1], "up": [0, 1, 0], "right": [1, 0, 0]}
+FROM_PLUS_X = {"scheme": "basis-v1", "forward": [1, 0, 0], "up": [0, 0, 1], "right": [0, 1, 0]}
+
+
+def test_the_server_records_where_the_slice_was_in_millimetres(client):
+    """The tutorial mug is 95 mm tall from z = 0. Seen from above, 60% deep is
+    40% up from the bottom: 38 mm."""
+    session_id = _start(client)
+    _render_in_session(client, session_id, "tutorial_mug", orientation=FROM_ABOVE,
+                       **XYZ_CUT, cut_value=999.0, cut_units="mm")
+    assert _slice_rows()[-1] == pytest.approx((38.0, "mm"))
+
+
+def test_the_millimetres_follow_what_was_drawn_not_what_the_viewer_says(client):
+    """cut_axis and cut_percent are the viewer's word; the coordinate comes from
+    the view and depth the server rendered, so they cannot contradict the picture."""
+    session_id = _start(client)
+    _render_in_session(client, session_id, "tutorial_mug", orientation=FROM_ABOVE,
+                       **{**XYZ_CUT, "cut_axis": "x", "cut_percent": 100.0})
+    assert _slice_rows()[-1] == pytest.approx((38.0, "mm"))
+
+
+def test_a_cut_on_an_axis_whose_low_end_is_negative_counts_from_there(client):
+    """The mug spans X from -43.65 mm to 43.65 mm. Seen from +X, 75% deep is 25%
+    along X from its low end: -21.8 mm. Rendered twice, so the second row comes
+    from the cache."""
+    session_id = _start(client)
+    cut = {**XYZ_CUT, "cut_axis": "x", "cut_side": "right", "cut_percent": 25.0}
+    _render_in_session(client, session_id, "tutorial_mug", orientation=FROM_PLUS_X, **{**cut, "depth": 75})
+    _render_in_session(client, session_id, "tutorial_mug", orientation=FROM_PLUS_X, **{**cut, "depth": 75})
+    rows = _slice_rows()[-2:]
+    assert [row[0] for row in rows] == pytest.approx([-21.83, -21.83], abs=0.02)
+
+
+def test_a_model_with_no_known_unit_leaves_them_blank(client):
+    session_id = _start(client)
+    _render_in_session(client, session_id, "cane_tip_fitted", **XYZ_CUT, cut_value=999.0, cut_units="mm")
+    assert _slice_rows()[-1] == (None, None)
+
+
+def test_the_long_csv_carries_the_millimetres_after_every_older_column(client):
+    session_id = _start(client)
+    store.record_render(
+        session_id, model="part", view="z+", render_mode="Cut", layout_mode="single",
+        depth=60, zoom=0, input_source="keyboard", cache_hit=False, **XYZ_CUT,
+        cut_value=-12.5, cut_units="mm",
+    )
+    _end(client, session_id)
+    assert list(store_module.LONG_EXPORT_COLUMNS[-2:]) == SLICE_COLUMNS
+    (row,) = [r for r in store.export_long_rows(session_id) if r["event_type"] == "render"]
+    assert (row["cut_value"], row["cut_units"]) == (-12.5, "mm")
+
+
+def test_a_database_from_before_the_millimetres_gains_them(tmp_path):
+    legacy = tmp_path / "legacy.db"
+    StudyStore(legacy, tmp_path / "logs").init_db()
+    conn = sqlite3.connect(str(legacy))
+    conn.execute("ALTER TABLE study_renders DROP COLUMN cut_units")
+    conn.execute("ALTER TABLE study_renders DROP COLUMN cut_value")
+    conn.commit()
+    conn.close()
+    reopened = StudyStore(legacy, tmp_path / "logs")
+    try:
+        reopened.init_db()
+        conn = sqlite3.connect(str(legacy))
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(study_renders)")}
+        conn.close()
+    finally:
+        reopened._local.__dict__.clear()
+    assert set(SLICE_COLUMNS) <= columns
+
+
+@pytest.mark.parametrize("field,bad", [("cut_value", "12"), ("cut_value", float("inf")), ("cut_units", "in")])
+def test_millimetre_values_the_server_cannot_produce_are_left_blank(field, bad):
+    assert engine._slice_coordinate_fields({"cut_value": 1.5, "cut_units": "mm", field: bad})[field] is None

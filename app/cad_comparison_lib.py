@@ -344,6 +344,7 @@ class CADComparisonRenderer:
         # _load_models and to_render_space.
         self.model_scale = 1.0
         self.model_offset = 0.0
+        self.raw_bbox = None
         self.longest_3d_dim = 0.0
         self.view_limits = None
         self.view_default_camera_center = []
@@ -436,6 +437,8 @@ class CADComparisonRenderer:
         # single number, the mean of all six bounding-box values. Measured after
         # decimation, like the normalised bbox below.
         raw_bbox = plane_inter_utils.get_bbox_from_shapes(shapes)
+        # In the file's own coordinates, for saying where the slice is (#264).
+        self.raw_bbox = [float(value) for value in raw_bbox]
         pmin = np.array(raw_bbox[:3], dtype=float)
         pmax = np.array(raw_bbox[3:], dtype=float)
         diagonal = float(np.linalg.norm(pmax - pmin))
