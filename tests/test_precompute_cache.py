@@ -134,6 +134,66 @@ def test_a_damaged_cache_is_a_miss_not_a_crash(renderer, tmp_path, content):
     assert renderer.load_precompute_cache() is False
 
 
+def _truncated() -> bytes:
+    whole = gzip.compress(json.dumps({"cache_version": 4, "padding": "x" * 5000}).encode())
+    return whole[: len(whole) // 2]
+
+
+def _bit_flipped() -> bytes:
+    whole = bytearray(gzip.compress(json.dumps({"padding": list(range(2000))}).encode()))
+    whole[len(whole) // 2] ^= 0xFF
+    return bytes(whole)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [_truncated(), _bit_flipped(), gzip.compress(b"[1, 2, 3]")],
+    ids=["truncated", "bit-flipped", "not-an-object"],
+)
+def test_a_cut_off_or_corrupted_cache_is_a_miss_and_is_rebuilt(renderer, tmp_path, content):
+    """A power loss mid-write or a part-copied volume (#259). These raised
+    EOFError, zlib.error and AttributeError, which escaped the load with the
+    precompute marked as running, so it never ran, even after a restart."""
+    damaged = tmp_path / "damaged.json.gz"
+    damaged.write_bytes(content)
+    renderer.cache_path = str(damaged)
+    assert renderer.load_precompute_cache() is False
+
+    _precompute(renderer)
+    assert renderer._slice_graphs_ready
+    assert renderer._precompute_in_progress is False
+    assert damaged.read_bytes() != content, "the bad file was not replaced"
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("slice_diff_mats", []), ("slice_cut_polygons", {"top": ["00ff"]})],
+    ids=["wrong-shape", "bad-wkb"],
+)
+def test_a_valid_file_with_bad_contents_is_a_miss(renderer, field, value):
+    _precompute(renderer)
+    with gzip.open(renderer.cache_path, "rt", encoding="utf-8") as fp:
+        payload = json.load(fp)
+    payload[field] = value
+    with gzip.open(renderer.cache_path, "wt", encoding="utf-8") as fp:
+        json.dump(payload, fp)
+
+    warm = cad_lib.CADComparisonRenderer(str(MODEL), str(MODEL))
+    warm.cache_path = renderer.cache_path
+    assert warm.load_precompute_cache() is False
+
+
+def test_a_load_that_raises_does_not_leave_the_precompute_stuck(renderer, monkeypatch):
+    def broken():
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(renderer, "load_precompute_cache", broken)
+    with pytest.raises(RuntimeError):
+        renderer.start_background_slice_precompute()
+    assert renderer._precompute_in_progress is False
+    assert renderer._precompute_done.is_set()
+
+
 def test_an_unwritable_location_does_not_break_rendering(renderer, tmp_path):
     """Best effort: a read-only or full disk costs speed, not the model."""
     renderer.cache_path = str(tmp_path / "nope" / "\0bad" / "x.json.gz")

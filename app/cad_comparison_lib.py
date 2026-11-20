@@ -730,7 +730,16 @@ class CADComparisonRenderer:
             self._precompute_in_progress = True
             self._precompute_done.clear()
 
-        if self.load_precompute_cache():
+        try:
+            loaded = self.load_precompute_cache()
+        except BaseException:
+            # Otherwise the model stays marked as computing and is never computed.
+            with self._precompute_lock:
+                self._precompute_in_progress = False
+                self._precompute_done.set()
+            raise
+
+        if loaded:
             with self._precompute_lock:
                 self._slice_graphs_ready = True
                 self._precompute_in_progress = False
@@ -803,9 +812,17 @@ class CADComparisonRenderer:
         try:
             with gzip.open(self.cache_path, "rt", encoding="utf-8") as fp:
                 payload = json.load(fp)
-        except (OSError, ValueError):
+        except FileNotFoundError:
+            return False
+        except Exception as error:
+            # A cut-off or corrupted file raises EOFError or zlib.error as well as
+            # OSError. The recompute that follows replaces it.
+            import sys
+            print(f"Ignoring unreadable slice cache {self.cache_path}: {error!r}", file=sys.__stderr__, flush=True)
             return False
 
+        if not isinstance(payload, dict):
+            return False
         if payload.get("cache_version") != self.cache_version:
             return False
         if payload.get("model_signature") != self._model_signature():
@@ -820,7 +837,8 @@ class CADComparisonRenderer:
                 key: [from_wkb(bytes.fromhex(blob)) for blob in blobs]
                 for key, blobs in payload["slice_cut_polygons"].items()
             }
-        except (KeyError, TypeError, ValueError):
+        except Exception:
+            # Bad WKB raises shapely's GEOSException, a wrong shape AttributeError.
             return False
 
         if not diff_mats or set(diff_mats) != set(cut_polygons):
