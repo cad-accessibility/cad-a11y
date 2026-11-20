@@ -56,7 +56,7 @@ POST /ingest
         "workshop_url": "http://<host>/workshop?name=Alex",   // opens their latest model
         "workshop_entry_url": "http://<host>/workshop"
       }
-  Errors: 400 (no/invalid file or unsupported type; only .stl and .step are allowed)
+  Errors: 400 (no/invalid file or unsupported type; only .stl, .step and .stp are allowed)
           413 (larger than MAX_UPLOAD_MB)
           500 (could not save)
 
@@ -150,6 +150,6 @@ These environment variables (see `.env.example`) tune the behaviour:
 
 ## Notes
 
-* `.stl` and `.step` are the only accepted file types.
+* `.stl`, `.step` and `.stp` are the only accepted file types.
 * Sending several models under the same first name keeps them all; entering that name
   opens the most recent one.

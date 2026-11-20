@@ -470,7 +470,8 @@ def _renderer_stdio_guard():
 # that ignores it, so an upload named MUG.STL passed the upload check, was saved,
 # and was never found. The viewer then asked for MUG and silently got the default
 # model (#238). Several CAD tools export .STL in capitals by default.
-MODEL_SUFFIXES = frozenset({".stl", ".step"})
+# .stp is the other common STEP suffix; the loader reads it the same way.
+MODEL_SUFFIXES = frozenset({".stl", ".step", ".stp"})
 
 
 def _discover_models() -> list[Path]:
@@ -489,7 +490,7 @@ def _find_default_model() -> Path:
     models = _discover_models()
     if models:
         return models[0]
-    raise FileNotFoundError(f"No .stl/.step model found in {MODEL_DIR}")
+    raise FileNotFoundError(f"No .stl/.step/.stp model found in {MODEL_DIR}")
 
 
 # Seed before the first discovery so a fresh MODEL_DIR (or a Docker volume that
@@ -2179,7 +2180,7 @@ def _save_and_index_stl(
         raise ValueError("No file selected")
     suffix = Path(filename).suffix.lower()
     if suffix not in MODEL_SUFFIXES:
-        raise ValueError(f"Unsupported file type '{suffix}'. Use .stl or .step")
+        raise ValueError(f"Unsupported file type '{suffix}'. Use .stl, .step or .stp")
 
     target_dir = MODEL_DIR if public else UPLOAD_DIR
     # Uniqueness is checked on the stem across BOTH directories, not just on
