@@ -29,6 +29,12 @@ from app.server import (
 from scripts.cleanup_ingest_models import REPO_ROOT as ROOT
 from scripts.cleanup_ingest_models import find_stale_models
 
+# An upload has to be a mesh the viewer can read (#239): one triangle is enough.
+ONE_TRIANGLE_STL = (
+    b"solid x\n facet normal 0 0 1\n  outer loop\n   vertex 0 0 0\n   vertex 1 0 0\n"
+    b"   vertex 0 1 0\n  endloop\n endfacet\nendsolid x\n"
+)
+
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
@@ -163,7 +169,7 @@ def test_upload_cannot_reuse_a_builtin_stem(client):
     tells them apart by stem, so the upload would be shown to every visitor, and
     the stem would stop identifying one model.
     """
-    payload = {"file": (io.BytesIO(b"solid x\nendsolid x\n"), "mug.stl")}
+    payload = {"file": (io.BytesIO(ONE_TRIANGLE_STL), "mug.stl")}
     response = client.post("/upload", data=payload, content_type="multipart/form-data")
     assert response.status_code == 200
 
@@ -511,7 +517,7 @@ def test_open_viewers_are_told_when_the_models_change(client, monkeypatch):
     tab = "tab-" + "c238" * 8
     response = client.post(
         "/upload",
-        data={"file": (io.BytesIO(b"solid x\nendsolid x\n"), "signal_238.stl"), "upload_session_id": tab},
+        data={"file": (io.BytesIO(ONE_TRIANGLE_STL), "signal_238.stl"), "upload_session_id": tab},
         content_type="multipart/form-data",
     )
     assert response.status_code == 200

@@ -499,7 +499,9 @@ async function sendStateToServer() {
                     // one consolidated step announcement already covers it, and
                     // the task still needs clearing either way.
                     if (activeModelLoadTask.source !== 'study') {
-                        announce(`${activeModelLoadTask.label} loaded. Tactile preview ready.`);
+                        const holes = data.watertight === false
+                            ? ' It has holes, so some slices may be wrong.' : '';
+                        announce(`${activeModelLoadTask.label} loaded. Tactile preview ready.${holes}`);
                     }
                     clearModelLoadTask(activeModelLoadTask);
                 }
@@ -674,6 +676,8 @@ let sessionOwnedModels = new Set(); // filenames (with extension) owned by the c
 // survive sessionOwnedModels being rebuilt from /session/models, which only
 // knows a cookie session's uploads.
 const tabUploadedModels = new Set();
+// The server's upload limit in bytes, from /get_data, once it has said.
+let uploadLimitBytes = null;
 // The model on the display, as the server reported it. currentModel is what this
 // window last asked for; the two differ while a request is out, and when the
 // one asked for could not be shown (#238).
@@ -3259,6 +3263,15 @@ document.getElementById('upload-model-input').addEventListener('change', async f
     if (!file) return;
 
     const statusEl = document.getElementById('upload-model-status');
+    // Said before sending, not after the whole file has gone up and been refused.
+    if (uploadLimitBytes && file.size > uploadLimitBytes) {
+        const mb = bytes => Math.ceil(bytes / (1024 * 1024));
+        statusEl.textContent = `Upload failed: that file is ${mb(file.size)} MB, `
+            + `larger than the ${mb(uploadLimitBytes)} MB upload limit.`;
+        announceAlert(statusEl.textContent);
+        this.value = '';
+        return;
+    }
     const label = document.getElementById('upload-model-label');
 
     statusEl.textContent = `Uploading ${file.name}…`;
@@ -3276,7 +3289,14 @@ document.getElementById('upload-model-input').addEventListener('change', async f
             body: formData,
             mode: 'cors',
         });
-        const data = await resp.json();
+        // A body far over the limit, or a proxy error, is answered with a page
+        // of HTML or plain text, which used to be read out as a parse error (#239).
+        const data = await resp.json().catch(() => ({
+            status: 'error',
+            message: resp.status === 413
+                ? 'the file is too large to upload.'
+                : `the server answered ${resp.status}.`,
+        }));
 
         if (data.status === 'success') {
             if (data.filename) {
@@ -3332,6 +3352,7 @@ document.getElementById('upload-model-input').addEventListener('change', async f
 // message to one window: the client registry is a list of queues with nothing
 // attached to say who is who.
 function applyServerState(data) {
+    if (Number.isFinite(data.max_upload_bytes)) uploadLimitBytes = data.max_upload_bytes;
     // Something was uploaded or removed, here or in another window, or a file
     // changed on disk. Ask for this window's own list now, so it doesn't go on
     // offering a model that has gone (#238). The signal names no model.

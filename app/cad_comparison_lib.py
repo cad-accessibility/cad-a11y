@@ -315,6 +315,52 @@ _STRIP_MIN_MODEL = 8   # with fewer pins left for the model, no labels are drawn
 _VIEW_LABEL_CORNER = 8
 
 
+def load_mesh_file(model_file):
+    """Read a model file into one mesh, before any repair. The upload's check
+    calls this too, so a file it accepts is one the renderer can read (#239)."""
+    ext = os.path.splitext(model_file)[1].lower()
+
+    if ext == ".stl":
+        # STL parsing expects binary bytes for binary STL files.
+        with open(model_file, "rb") as fp:
+            mesh_dict = load_stl(fp)
+            mesh = Trimesh(mesh_dict["vertices"], mesh_dict["faces"], mesh_dict["face_normals"])
+    else:
+        # STEP/BREP and other mesh-like formats should go through trimesh's generic loader.
+        # For STEP, trimesh's default OpenCASCADE tessellation tolerance is far finer
+        # than a 96x40 tactile display (or even the ~800px high-fidelity preview) can
+        # resolve -- a modestly curved model like a mug can explode into 200K+ faces,
+        # taking 10-30+ seconds to load. tol_relative=True scales the tolerance to each
+        # model's own size instead of a fixed absolute unit, so it holds up across
+        # differently-scaled STEP files; 0.001 (0.1% of the bounding-box diagonal) was
+        # visually indistinguishable from the untessellated default in testing while
+        # cutting load time by 1-2 orders of magnitude. Ignored for non-STEP formats.
+        try:
+            loaded = tm.load(model_file, force='mesh', tol_linear=0.001, tol_relative=True)
+        except Exception as exc:
+            raise ValueError(f"Failed to load model file '{model_file}': {exc}") from exc
+
+        if isinstance(loaded, tm.Scene):
+            geometries = [geom for geom in loaded.geometry.values() if isinstance(geom, tm.Trimesh)]
+            if not geometries:
+                raise ValueError(f"Model file '{model_file}' produced an empty scene")
+            mesh = tm.util.concatenate(geometries)
+        elif isinstance(loaded, tm.Trimesh):
+            mesh = loaded
+        else:
+            raise ValueError(f"Unsupported mesh object type for '{model_file}': {type(loaded)}")
+
+    return mesh
+
+
+def _is_closed(mesh):
+    """Watertight once each face's own copies of shared vertices are merged,
+    which the STEP loader leaves apart (#239)."""
+    merged = mesh.copy()
+    merged.merge_vertices(merge_norm=True, merge_tex=True)
+    return bool(merged.is_watertight)
+
+
 class CADComparisonRenderer:
     """
     Renderer for CAD model comparisons.
@@ -340,6 +386,9 @@ class CADComparisonRenderer:
         self.after_model_path = after_model_path
         self.shapes = []
         self.bbox = None
+        # Whether the repaired mesh is closed. One with holes renders slices
+        # wrong (#59), so the viewer warns when it loads one (#239).
+        self.watertight = None
         # How normalising moved the model, so its origin can still be found: see
         # _load_models and to_render_space.
         self.model_scale = 1.0
@@ -381,42 +430,16 @@ class CADComparisonRenderer:
         
     def _load_one_mesh(self, model_file):
         """Load a single mesh file and apply the standard repairs."""
-        ext = os.path.splitext(model_file)[1].lower()
-
-        if ext == ".stl":
-            # STL parsing expects binary bytes for binary STL files.
-            with open(model_file, "rb") as fp:
-                mesh_dict = load_stl(fp)
-                mesh = Trimesh(mesh_dict["vertices"], mesh_dict["faces"], mesh_dict["face_normals"])
-        else:
-            # STEP/BREP and other mesh-like formats should go through trimesh's generic loader.
-            # For STEP, trimesh's default OpenCASCADE tessellation tolerance is far finer
-            # than a 96x40 tactile display (or even the ~800px high-fidelity preview) can
-            # resolve -- a modestly curved model like a mug can explode into 200K+ faces,
-            # taking 10-30+ seconds to load. tol_relative=True scales the tolerance to each
-            # model's own size instead of a fixed absolute unit, so it holds up across
-            # differently-scaled STEP files; 0.001 (0.1% of the bounding-box diagonal) was
-            # visually indistinguishable from the untessellated default in testing while
-            # cutting load time by 1-2 orders of magnitude. Ignored for non-STEP formats.
-            try:
-                loaded = tm.load(model_file, force='mesh', tol_linear=0.001, tol_relative=True)
-            except Exception as exc:
-                raise ValueError(f"Failed to load model file '{model_file}': {exc}") from exc
-
-            if isinstance(loaded, tm.Scene):
-                geometries = [geom for geom in loaded.geometry.values() if isinstance(geom, tm.Trimesh)]
-                if not geometries:
-                    raise ValueError(f"Model file '{model_file}' produced an empty scene")
-                mesh = tm.util.concatenate(geometries)
-            elif isinstance(loaded, tm.Trimesh):
-                mesh = loaded
-            else:
-                raise ValueError(f"Unsupported mesh object type for '{model_file}': {type(loaded)}")
-
+        mesh = load_mesh_file(model_file)
+        # Closed as loaded, or once repaired. fill_holes can add faces along a
+        # STEP mesh's unmerged seams, so the repaired mesh alone is not the test.
+        closed = _is_closed(mesh)
         fill_holes(mesh)
         fix_inversion(mesh)
         fix_winding(mesh)
         #stitch(mesh)
+        if model_file == self.before_model_path:
+            self.watertight = closed or _is_closed(mesh)
         return _decimate_for_display(mesh)
 
     def _load_models(self):

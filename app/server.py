@@ -55,7 +55,7 @@ from .braille_display import (
     _DOTPAD_LINES,
     _DOTPAD_COLS,
 )
-from .cad_comparison_lib import DEFAULT_SCREEN_SIZE, CADComparisonRenderer, RenderResult
+from .cad_comparison_lib import DEFAULT_SCREEN_SIZE, CADComparisonRenderer, RenderResult, load_mesh_file
 from src.converter.render_low_res import dilate_mask, raised_ink_mask, save_binary_array_as_vector_pdf
 
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
@@ -65,6 +65,9 @@ CORS(app)
 # Cap request bodies (uploads and /ingest); default 100 MB. Oversized requests
 # are rejected with 413 before the handler runs.
 app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_UPLOAD_MB", "100") or "100") * 1024 * 1024
+# Room in a request for what comes with the file: the multipart boundaries, the
+# part headers and the form fields, a few hundred bytes in practice.
+UPLOAD_REQUEST_OVERHEAD = 64 * 1024
 # /api/v1, where tools will send models (#236), and its one error shape.
 api.install(app)
 
@@ -612,6 +615,24 @@ def _announce_models_changed() -> None:
     It names nothing. What a viewer may see is for that viewer to ask.
     """
     _push_sse({"models_changed": True})
+
+
+@app.errorhandler(413)
+def _upload_too_large(error):
+    """In JSON like every other refusal, with the limit, instead of Flask's HTML
+    page, which the viewer read out as a JSON parse error (#239). Under /api, in
+    the API's own error shape."""
+    if api._is_api_request():
+        return api.json_errors_under_api(error)
+    limit = app.config["MAX_CONTENT_LENGTH"]
+    if limit and (request.content_length or 0) > limit:
+        message = f"That file is larger than the {limit / (1024 * 1024):g} MB upload limit."
+    else:
+        # Flask also answers 413 for too many form parts or too large a form field.
+        message = error.description
+    response = jsonify({"status": "error", "message": message})
+    response.status_code = 413
+    return response
 
 
 class ModelNotAvailable(LookupError):
@@ -1501,6 +1522,8 @@ def _render_response(params: dict[str, Any], *, source: str) -> dict[str, Any]:
         origin_fraction = engine.origin_fraction()
         if origin_fraction is not None:
             response["origin_fraction"] = origin_fraction
+    if engine is not None and getattr(engine, "watertight", None) is not None:
+        response["watertight"] = engine.watertight
     # Where the origin landed on this frame, across from the left edge and up
     # from the bottom, as fractions of the display: what "," and "." say
     # (#235 review). Absent when the layout has no single view to place it in.
@@ -2174,12 +2197,16 @@ def _save_and_index_stl(
     """
     global AVAILABLE_MODELS, MODEL_NAME_LIST
 
-    filename = secure_filename(requested_name or "")
-    if not filename:
+    # Trailing spaces and dots go, as secure_filename drops them: "x.stl." is x.stl.
+    original = Path((requested_name or "").replace("\\", "/")).name.rstrip(" .")
+    if not original:
         raise ValueError("No file selected")
-    suffix = Path(filename).suffix.lower()
+    suffix = Path(original).suffix.lower()
     if suffix not in MODEL_SUFFIXES:
         raise ValueError(f"Unsupported file type '{suffix}'. Use .stl or .step")
+    # The stem on its own: secure_filename drops what it cannot spell in ASCII,
+    # so 茶杯.stl would lose its extension with its stem and be refused (#239).
+    filename = (secure_filename(Path(original).stem) or "model") + Path(original).suffix
 
     target_dir = MODEL_DIR if public else UPLOAD_DIR
     # Uniqueness is checked on the stem across BOTH directories, not just on
@@ -2192,6 +2219,11 @@ def _save_and_index_stl(
     # step. Two uploads of the same name could otherwise both look free, both
     # rename to the same stem, and end up as two models claiming one name.
     target_dir.mkdir(parents=True, exist_ok=True)
+    # Saved and checked here first, out of sight of model discovery, which looks
+    # only at files directly in target_dir, so a file is never listed before it
+    # has passed (#239 review). Moved into place once it has.
+    staging = target_dir / ".staging"
+    staging.mkdir(exist_ok=True)
     with models_lock:
         dest = target_dir / filename
         # A name some session still holds a live row for is taken too, file or no
@@ -2200,6 +2232,7 @@ def _save_and_index_stl(
         # without their rows (#243 review).
         if (
             dest.exists()
+            or (staging / filename).exists()
             or _stem_is_taken(Path(filename).stem)
             or (recording.current().records and db.filename_has_live_owner(filename))
         ):
@@ -2208,9 +2241,20 @@ def _save_and_index_stl(
             dest = target_dir / filename
         # Reserve the name before releasing the lock, so a second upload arriving
         # now sees it taken. The real bytes overwrite this immediately below.
-        dest.touch()
+        staged = staging / filename
+        staged.touch()
 
-    save_fn(dest)
+    try:
+        save_fn(staged)
+        if _model_is_unreadable(staged):
+            raise ValueError(
+                "That file isn't a 3D model the viewer can read. "
+                "It may be damaged, or a different kind of file renamed."
+            )
+        staged.replace(dest)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
 
     if session_id:
         try:
@@ -2243,6 +2287,17 @@ def _save_and_index_stl(
         preview_payload_cache.clear()
 
     return filename, dest, new_index
+
+
+def _model_is_unreadable(path: Path) -> bool:
+    """Whether the renderer would fail on this file, loaded the way it loads it.
+    Checked at upload, so the person hears why now, not "Processing failed" at
+    the first render (#239)."""
+    try:
+        mesh = load_mesh_file(str(path))
+    except Exception:
+        return True
+    return len(mesh.faces) == 0
 
 
 @app.route("/upload", methods=["POST"])
@@ -2620,6 +2675,9 @@ def get_data():
             "status": "success",
             "model_list": _visible_model_names(),
             "builtin_model_stems": _builtin_model_stems(),
+            # So the viewer can refuse a file over the limit before sending it:
+            # the file's share, since Flask's limit is on the whole request.
+            "max_upload_bytes": app.config["MAX_CONTENT_LENGTH"] - UPLOAD_REQUEST_OVERHEAD,
         }
     return jsonify(payload), 200
 
