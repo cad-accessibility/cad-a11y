@@ -408,6 +408,9 @@ RENDERER_CACHE_MAX = int(os.getenv("RENDERER_CACHE_MAX", "24"))
 STARTUP_WARMUP_LIMIT = max(0, int(os.getenv("STARTUP_WARMUP_LIMIT", "1")))
 renderers_by_model: OrderedDict[str, CADComparisonRenderer] = OrderedDict()
 models_lock = threading.Lock()
+# One per model being built, so a slow mesh load holds up only requests for that
+# model. Taken without models_lock held; the dict itself is guarded by models_lock.
+_model_load_locks: dict[str, threading.Lock] = {}
 # Serialize all engine.render() calls, because matplotlib is not thread-safe:
 # the converters below it drive the pyplot module globals and call a bare
 # plt.close(). That is the whole reason. It used to also stand in for the camera
@@ -745,22 +748,55 @@ def _path_for_stem(model_stem: str) -> Path:
 def get_or_create_renderer(model_stem: str | None = None) -> CADComparisonRenderer:
     stem = _resolve_model_stem(model_stem)
     with models_lock:
-        return _renderer_for_path(_path_for_stem(stem))
+        model_path = _path_for_stem(stem)
+    return _renderer_for_path(model_path)
+
+
+def _cached_renderer(key: str) -> CADComparisonRenderer | None:
+    """Caller holds models_lock."""
+    existing = renderers_by_model.get(key)
+    if existing is not None:
+        renderers_by_model.move_to_end(key)
+    return existing
 
 
 def _renderer_for_path(model_path: Path) -> CADComparisonRenderer:
     """The renderer for this file, building it if nobody has yet.
 
-    Caller holds models_lock. Construction happens inside it, which serialises a
-    mesh load against the model list, but the alternative is two threads building
-    the same renderer and one of them being discarded.
+    Caller must not hold models_lock. The mesh load runs under this model's own
+    lock, so two different new models load at once and the model list stays
+    free, while a second request for the same model waits and gets the first
+    one's renderer instead of building another (#168).
     """
     key = str(model_path)
-    existing = renderers_by_model.get(key)
-    if existing is not None:
-        renderers_by_model.move_to_end(key)
-        return existing
+    with models_lock:
+        existing = _cached_renderer(key)
+        if existing is not None:
+            return existing
+        load_lock = _model_load_locks.setdefault(key, threading.Lock())
 
+    with load_lock:
+        with models_lock:
+            existing = _cached_renderer(key)
+        if existing is not None:
+            return existing
+        renderer = _build_renderer(model_path)
+        with models_lock:
+            if _model_load_locks.get(key) is not load_lock:
+                # Deleted while it loaded, and perhaps uploaded again under the
+                # same name: _forget_renderer dropped this lock. Deleting no longer
+                # waits for a load, so caching this renderer would bring back the
+                # old file, and its precompute would write a cache nothing matches.
+                renderer._discarded = True
+                return renderer
+            del _model_load_locks[key]
+            renderers_by_model[key] = renderer
+            while len(renderers_by_model) > max(1, RENDERER_CACHE_MAX):
+                renderers_by_model.popitem(last=False)
+        return renderer
+
+
+def _build_renderer(model_path: Path) -> CADComparisonRenderer:
     _log(f"Initializing CAD renderer with: {model_path}")
     out_guard, err_guard = _renderer_stdio_guard()
     with out_guard, err_guard:
@@ -768,12 +804,7 @@ def _renderer_for_path(model_path: Path) -> CADComparisonRenderer:
         # simplified workshop viewer can't reach, so it's kicked off lazily
         # (CADComparisonRenderer._get_zoom_filtered_slice_profile) on first
         # actual use instead of unconditionally here.
-        renderer = CADComparisonRenderer(str(model_path), str(model_path))
-
-    renderers_by_model[key] = renderer
-    while len(renderers_by_model) > max(1, RENDERER_CACHE_MAX):
-        renderers_by_model.popitem(last=False)
-    return renderer
+        return CADComparisonRenderer(str(model_path), str(model_path))
 
 
 def _forget_renderer(model_path: Path) -> None:
@@ -784,6 +815,8 @@ def _forget_renderer(model_path: Path) -> None:
     nothing can ever match again. A workshop's worth of uploads and deletions
     would fill the volume with data for models that no longer exist.
     """
+    # A load still running for this path finds its lock gone and keeps nothing.
+    _model_load_locks.pop(str(model_path), None)
     engine = renderers_by_model.pop(str(model_path), None)
     if engine is None:
         return
@@ -830,8 +863,7 @@ def _warm_one_model(model_path: Path) -> None:
     Skipped cheaply when a previous run already cached it: the renderer's own
     loader checks the signature, so an unchanged model costs a file read.
     """
-    with models_lock:
-        engine = _renderer_for_path(model_path)
+    engine = _renderer_for_path(model_path)
     engine.start_background_slice_precompute()
     # Wait, so the queue really is one model at a time. Without this the worker
     # would start every model's precompute thread at once, which is the pool this
