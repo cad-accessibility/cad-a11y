@@ -613,6 +613,17 @@ class StudyStore:
         }
 
 
+    def close_thread_connection(self) -> None:
+        """Close this thread's connection, as db.close_thread_connections does."""
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        self._local.conn = None
+        self._local.conn_path = None
+        if conn is not None:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+
     def _get_conn(self) -> sqlite3.Connection:
         """Return this thread's connection, reopening when self.db_path changes (tests)."""
         conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
